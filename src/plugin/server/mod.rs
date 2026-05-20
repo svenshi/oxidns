@@ -19,7 +19,7 @@
 //! This separation keeps protocol code isolated from matchers, executors, and
 //! providers, while preserving a common request lifecycle across all servers.
 
-use std::net::SocketAddr;
+use std::net::{SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -228,7 +228,8 @@ impl RequestHandle {
     ) -> RequestResult {
         let metrics_start = self.metrics.as_ref().map(|m| m.on_request_start());
 
-        let mut context = DnsContext::new(src_addr, msg);
+        let mut context = DnsContext::new(canonicalize_addr(src_addr), msg);
+
         self.apply_request_meta(&mut context, meta);
 
         // Log request details only when debug logging is enabled
@@ -342,6 +343,20 @@ impl RequestHandle {
             }
             response.set_edns(edns);
         }
+    }
+}
+
+#[inline]
+fn canonicalize_addr(addr: SocketAddr) -> SocketAddr {
+    match addr {
+        SocketAddr::V6(v6) => {
+            if let Some(ipv4) = v6.ip().to_ipv4_mapped() {
+                SocketAddr::V4(SocketAddrV4::new(ipv4, v6.port()))
+            } else {
+                SocketAddr::V6(v6)
+            }
+        }
+        SocketAddr::V4(_) => addr,
     }
 }
 
