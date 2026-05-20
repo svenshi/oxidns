@@ -118,8 +118,8 @@ export function DnsRecordDetailDialog({
           <div className="space-y-4 pr-2 text-sm">
             {summaryItems.length > 0 && (
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                {summaryItems.map((item) => (
-                  <DetailItem key={item.label} item={item} />
+                {summaryItems.map((item, i) => (
+                  <DetailItem key={i} item={item} />
                 ))}
               </div>
             )}
