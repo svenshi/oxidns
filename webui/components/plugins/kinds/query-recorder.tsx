@@ -2,11 +2,16 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { BarChart3, Filter, Radio, RefreshCw, X } from "lucide-react";
+import { BarChart3, Filter, Info, Radio, RefreshCw, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { DateTimePicker } from "@/components/ui/datetime-picker";
 import {
   Select,
@@ -36,6 +41,7 @@ import {
   type QueryRecorderPluginStatsRow,
 } from "@/lib/oxidns-api";
 import { useAppStore } from "@/lib/store";
+import { cn } from "@/lib/utils";
 import type {
   PluginComponentDefinition,
   PluginDetailComponentProps,
@@ -497,7 +503,28 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
                   <TableHead>时间</TableHead>
                   <TableHead>结果</TableHead>
                   <TableHead>耗时</TableHead>
-                  <TableHead>记录数</TableHead>
+                  <TableHead>
+                    <span className="inline-flex items-center gap-1">
+                      记录数
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none"
+                            aria-label="记录数说明"
+                          >
+                            <Info className="h-3.5 w-3.5" />
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent
+                          side="top"
+                          className="w-auto max-w-[16rem] p-2 text-xs"
+                        >
+                          Answer / Authority / Additional
+                        </PopoverContent>
+                      </Popover>
+                    </span>
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -513,11 +540,11 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
                           className="truncate font-mono"
                           title={formatQuestion(record)}
                         >
-                          {formatQuestion(record)}
+                          {formatQuestionName(record)}
                         </span>
-                        {record.has_response && (
+                        {formatQuestionType(record) !== "-" && (
                           <Badge variant="outline" className="font-mono">
-                            resp
+                            {formatQuestionType(record)}
                           </Badge>
                         )}
                       </div>
@@ -530,7 +557,15 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
                     </TableCell>
                     <TableCell>{queryStatusBadge(record)}</TableCell>
                     <TableCell className="font-mono">
-                      {record.elapsed_ms}ms
+                      <span
+                        className={cn(
+                          "inline-flex min-w-16 justify-center rounded border px-1.5 py-0.5 text-xs font-medium tabular-nums",
+                          queryElapsedClassName(record.elapsed_ms),
+                        )}
+                        title={queryElapsedTitle(record.elapsed_ms)}
+                      >
+                        {record.elapsed_ms}ms
+                      </span>
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-1 font-mono text-xs">
@@ -758,9 +793,29 @@ function RecordDetailDialog({
               { label: "耗时", value: `${record.elapsed_ms}ms`, mono: true },
               { label: "RCODE", value: record.rcode ?? "-", mono: true },
               {
-                label: "响应记录",
+                label: (
+                  <span className="inline-flex items-center gap-1">
+                    响应记录
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <button
+                          type="button"
+                          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none"
+                          aria-label="响应记录说明"
+                        >
+                          <Info className="h-3.5 w-3.5" />
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent
+                        side="top"
+                        className="w-auto max-w-[16rem] p-2 text-xs"
+                      >
+                        Answer / Authority / Additional
+                      </PopoverContent>
+                    </Popover>
+                  </span>
+                ),
                 value: `${record.answer_count} / ${record.authority_count} / ${record.additional_count}`,
-                title: "answer / authority / additional",
                 mono: true,
               },
               {
@@ -837,6 +892,26 @@ function queryStatusBadge(record: QueryRecordRow | QueryRecordDetail) {
     return <Badge variant="secondary">No Error</Badge>;
   }
   return <Badge variant="outline">{record.rcode ?? "-"}</Badge>;
+}
+
+function queryElapsedClassName(elapsedMs: number) {
+  if (elapsedMs < 20) {
+    return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+  }
+  if (elapsedMs < 100) {
+    return "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300";
+  }
+  if (elapsedMs < 300) {
+    return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+  }
+  return "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300";
+}
+
+function queryElapsedTitle(elapsedMs: number) {
+  if (elapsedMs < 20) return "低延迟：< 20ms";
+  if (elapsedMs < 100) return "正常：20-99ms";
+  if (elapsedMs < 300) return "偏慢：100-299ms";
+  return "慢查询：>= 300ms";
 }
 
 function filtersFromForm(form: QueryRecordFilterForm): QueryRecordFilters {
@@ -971,6 +1046,16 @@ function formatQuestion(record: QueryRecordRow) {
   const first = record.questions_json[0];
   if (!first) return "-";
   return `${first.name} ${first.qtype}`;
+}
+
+function formatQuestionName(record: QueryRecordRow) {
+  const first = record.questions_json[0];
+  return first?.name ?? "-";
+}
+
+function formatQuestionType(record: QueryRecordRow) {
+  const first = record.questions_json[0];
+  return first?.qtype ?? "-";
 }
 
 export const queryRecorderPlugin: PluginComponentDefinition = {

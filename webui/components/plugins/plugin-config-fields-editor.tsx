@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/tooltip";
 import type { ConfigField, ConfigFieldChild } from "@/lib/plugin-definitions";
 import type { PluginInstance, PluginType } from "@/lib/types";
+import { cn } from "@/lib/utils";
 import { ChevronDown, Info, Minus, Plus } from "lucide-react";
 import { Fragment, useState, type ReactNode } from "react";
 
@@ -251,9 +252,14 @@ export function PluginConfigFieldsEditor({
   }
 
   return (
-    <FieldGroup>
+    <FieldGroup className="grid grid-cols-1 gap-x-5 gap-y-5 @md/field-group:grid-cols-2">
       {fields.map((field) => (
-        <Field key={field.key}>
+        <Field
+          key={field.key}
+          className={cn(
+            isFullWidthConfigField(field) && "@md/field-group:col-span-2",
+          )}
+        >
           <ConfigFieldLabel field={field} />
           <ConfigFieldControl
             field={field}
@@ -267,6 +273,19 @@ export function PluginConfigFieldsEditor({
       ))}
     </FieldGroup>
   );
+}
+
+function isFullWidthConfigField(field: ConfigField): boolean {
+  switch (field.type) {
+    case "textarea":
+    case "json":
+    case "object":
+    case "array":
+    case "record":
+      return true;
+    default:
+      return false;
+  }
 }
 
 function ConfigFieldLabel({ field }: { field: ConfigField }) {

@@ -36,7 +36,7 @@ export interface DnsRecordStepView {
 }
 
 export interface DnsDetailItem {
-  label: string;
+  label: ReactNode;
   value: ReactNode;
   title?: string;
   mono?: boolean;
@@ -95,10 +95,12 @@ export function DnsRecordDetailDialog({
           wide ? "sm:max-w-6xl xl:max-w-7xl" : "sm:max-w-4xl",
         )}
       >
-        <DialogHeader className="px-4 pt-4 pr-12 pb-3">
+        <DialogHeader className="px-4 pt-5 pr-12 pb-3">
           <div className="flex min-w-0 items-start justify-between gap-3">
             <div className="min-w-0">
-              <DialogTitle className="truncate">{title}</DialogTitle>
+              <DialogTitle className="truncate py-0.5 leading-6">
+                {title}
+              </DialogTitle>
               <DialogDescription className="sr-only">
                 {subtitle ? `${title}，${subtitle}` : title}
               </DialogDescription>

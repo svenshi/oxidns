@@ -49,7 +49,7 @@ export function PluginDetailSheet() {
           "gap-0 overflow-y-auto bg-background p-0 shadow-2xl data-[side=right]:!max-w-none data-[side=right]:!w-full",
           expanded
             ? "data-[side=right]:!inset-0 data-[side=right]:!h-svh data-[side=right]:!border-l-0 sm:data-[side=right]:!w-full"
-            : "sm:data-[side=right]:!w-[min(920px,calc(100vw-3rem))]",
+            : "sm:data-[side=right]:!w-[min(1120px,calc(100vw-2rem))]",
         )}
         onPointerDownOutside={(event) => {
           if (isSequenceFullscreenEvent(event)) event.preventDefault();

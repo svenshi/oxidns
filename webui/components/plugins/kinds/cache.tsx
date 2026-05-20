@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   DatabaseZap,
   Download,
+  Info,
   RefreshCw,
   Search,
   Trash2,
@@ -14,6 +15,23 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogMedia,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import {
   Table,
   TableBody,
@@ -122,20 +140,30 @@ function CacheEntriesPanel({ tag }: { tag: string }) {
   }, [load]);
 
   const handleDelete = async (entry: CacheEntryRow) => {
-    if (!window.confirm(`删除缓存项 ${entry.domain} ${entry.record_type}？`)) {
-      return;
+    setError(null);
+    try {
+      await deleteCacheEntry(tag, entry.id);
+      setEntries((current) => current.filter((item) => item.id !== entry.id));
+      setTotal((current) => Math.max(0, current - 1));
+      if (selected?.id === entry.id) {
+        setSelected(null);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除缓存项失败");
     }
-    await deleteCacheEntry(tag, entry.id);
-    setEntries((current) => current.filter((item) => item.id !== entry.id));
-    setTotal((current) => Math.max(0, current - 1));
   };
 
   const handleFlush = async () => {
-    if (!window.confirm(`清空 ${tag} 的所有缓存项？`)) return;
-    await flushCache(tag);
-    setEntries([]);
-    setTotal(0);
-    setNextCursor(undefined);
+    setError(null);
+    try {
+      await flushCache(tag);
+      setEntries([]);
+      setTotal(0);
+      setNextCursor(undefined);
+      setSelected(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "清空缓存失败");
+    }
   };
 
   const applyQnameFilter = () => {
@@ -164,10 +192,10 @@ function CacheEntriesPanel({ tag }: { tag: string }) {
                 已载入 {entries.length} 项
               </span>
               <span className="rounded-full border bg-muted/30 px-2 py-0.5">
-                新鲜 {entries.filter((entry) => entry.fresh).length}
+                fresh {entries.filter((entry) => entry.fresh).length}
               </span>
               <span className="rounded-full border bg-muted/30 px-2 py-0.5">
-                过期可用 {entries.filter((entry) => entry.stale).length}
+                stale {entries.filter((entry) => entry.stale).length}
               </span>
             </div>
           </div>
@@ -181,10 +209,35 @@ function CacheEntriesPanel({ tag }: { tag: string }) {
               <RefreshCw className="h-4 w-4" />
               刷新
             </Button>
-            <Button variant="outline" size="sm" onClick={handleFlush}>
-              <Trash2 className="h-4 w-4" />
-              清空
-            </Button>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="outline" size="sm" disabled={loading}>
+                  <Trash2 className="h-4 w-4" />
+                  清空
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogMedia className="bg-destructive/10 text-destructive">
+                    <Trash2 className="h-5 w-5" />
+                  </AlertDialogMedia>
+                  <AlertDialogTitle>清空缓存项？</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    将清空插件 &ldquo;{tag}&rdquo;
+                    当前保存的所有缓存项。此操作无法撤销。
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>取消</AlertDialogCancel>
+                  <AlertDialogAction
+                    variant="destructive"
+                    onClick={() => void handleFlush()}
+                  >
+                    清空
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </div>
         </CardHeader>
         <CardContent className="p-4 pt-0">
@@ -239,9 +292,51 @@ function CacheEntriesPanel({ tag }: { tag: string }) {
                 <TableRow className="bg-muted/30 hover:bg-muted/30">
                   <TableHead>缓存键</TableHead>
                   <TableHead>状态</TableHead>
-                  <TableHead>TTL</TableHead>
+                  <TableHead>
+                    <span className="inline-flex items-center gap-1">
+                      TTL
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none"
+                            aria-label="TTL 说明"
+                          >
+                            <Info className="h-3.5 w-3.5" />
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent
+                          side="top"
+                          className="w-auto max-w-[16rem] p-2 text-xs"
+                        >
+                          剩余 TTL / 原始 TTL
+                        </PopoverContent>
+                      </Popover>
+                    </span>
+                  </TableHead>
                   <TableHead>RCODE</TableHead>
-                  <TableHead>答案</TableHead>
+                  <TableHead>
+                    <span className="inline-flex items-center gap-1">
+                      答案
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none"
+                            aria-label="答案说明"
+                          >
+                            <Info className="h-3.5 w-3.5" />
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent
+                          side="top"
+                          className="w-auto max-w-[16rem] p-2 text-xs"
+                        >
+                          Answer / Authority / Additional
+                        </PopoverContent>
+                      </Popover>
+                    </span>
+                  </TableHead>
                   <TableHead>最近访问</TableHead>
                   <TableHead className="w-16" />
                 </TableRow>
@@ -257,15 +352,12 @@ function CacheEntriesPanel({ tag }: { tag: string }) {
                       <div className="flex min-w-0 items-center gap-2">
                         <span
                           className="truncate font-mono"
-                          title={`${entry.domain} ${entry.dns_class} ${entry.record_type}`}
+                          title={`${entry.domain} ${entry.record_type}`}
                         >
                           {entry.domain}
                         </span>
-                        <Badge variant="secondary" className="font-mono">
-                          {entry.record_type}
-                        </Badge>
                         <Badge variant="outline" className="font-mono">
-                          {entry.dns_class}
+                          {entry.record_type}
                         </Badge>
                       </div>
                     </TableCell>
@@ -278,7 +370,7 @@ function CacheEntriesPanel({ tag }: { tag: string }) {
                         </span>
                       </div>
                     </TableCell>
-                    <TableCell className="font-mono">{entry.rcode}</TableCell>
+                    <TableCell>{rcodeBadge(entry.rcode)}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-1 font-mono text-xs">
                         <span>{entry.answer_count}</span>
@@ -315,18 +407,46 @@ function CacheEntriesPanel({ tag }: { tag: string }) {
                         )}
                       </div>
                     </TableCell>
-                    <TableCell>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void handleDelete(entry);
-                        }}
-                        aria-label="删除缓存项"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
+                    <TableCell
+                      onClick={(event) => event.stopPropagation()}
+                      onPointerDown={(event) => event.stopPropagation()}
+                    >
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={(event) => event.stopPropagation()}
+                            aria-label="删除缓存项"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogMedia className="bg-destructive/10 text-destructive">
+                              <Trash2 className="h-5 w-5" />
+                            </AlertDialogMedia>
+                            <AlertDialogTitle>删除缓存项？</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              将删除 &ldquo;{entry.domain}&rdquo; 的{" "}
+                              {entry.record_type} 缓存记录。此操作无法撤销。
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>取消</AlertDialogCancel>
+                            <AlertDialogAction
+                              variant="destructive"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void handleDelete(entry);
+                              }}
+                            >
+                              删除
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -506,9 +626,29 @@ function CacheEntryDetailDialog({
                 mono: true,
               },
               {
-                label: "响应记录",
+                label: (
+                  <span className="inline-flex items-center gap-1">
+                    响应记录
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <button
+                          type="button"
+                          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none"
+                          aria-label="响应记录说明"
+                        >
+                          <Info className="h-3.5 w-3.5" />
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent
+                        side="top"
+                        className="w-auto max-w-[16rem] p-2 text-xs"
+                      >
+                        Answer / Authority / Additional
+                      </PopoverContent>
+                    </Popover>
+                  </span>
+                ),
                 value: `${entry.answer_count} / ${entry.authority_count ?? entry.authorities_json?.length ?? 0} / ${entry.additional_count ?? entry.additionals_json?.length ?? 0}`,
-                title: "answer / authority / additional",
                 mono: true,
               },
               {
@@ -622,9 +762,16 @@ function CacheEntryDetailDialog({
 }
 
 function cacheStatusBadge(entry: CacheEntryRow) {
-  if (entry.fresh) return <Badge variant="secondary">新鲜</Badge>;
-  if (entry.stale) return <Badge variant="outline">过期可用</Badge>;
+  if (entry.fresh) return <Badge variant="secondary">fresh</Badge>;
+  if (entry.stale) return <Badge variant="outline">stale</Badge>;
   return <Badge variant="destructive">已过期</Badge>;
+}
+
+function rcodeBadge(rcode: string) {
+  if (rcode?.toLowerCase() === "no error") {
+    return <Badge variant="secondary">No Error</Badge>;
+  }
+  return <Badge variant="outline">{rcode}</Badge>;
 }
 
 function formatCacheShortTime(ms?: number, runtimeMs?: number) {

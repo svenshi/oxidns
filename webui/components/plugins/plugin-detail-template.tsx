@@ -114,114 +114,119 @@ export function PluginDetailTemplate({
 
   return (
     <div className="flex min-h-full flex-col">
-      <header className="border-b bg-sidebar/70 px-5 py-5 pr-24">
-        <div className="flex min-w-0 items-start gap-4">
-          <div className="flex size-12 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/12 text-primary [&_svg]:size-5">
-            {resolvedIcon}
-          </div>
-          <div className="min-w-0 flex-1 pt-0.5">
-            {editingName ? (
-              <div className="flex items-center gap-2">
-                <Input
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  className="h-9 font-mono text-lg"
-                  onKeyDown={(e) => e.key === "Enter" && handleSaveName()}
-                />
-                <Button size="icon-sm" onClick={handleSaveName}>
-                  <Save className="h-4 w-4" />
-                </Button>
-              </div>
-            ) : (
-              <SheetTitle
-                className="cursor-pointer truncate font-mono text-xl font-semibold leading-none transition-colors hover:text-primary"
-                onClick={() => setEditingName(true)}
-              >
-                {plugin.name}
-              </SheetTitle>
-            )}
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Badge
-                variant="outline"
-                className={cn("gap-1", pluginTypeColors[plugin.type])}
-              >
-                {PLUGIN_TYPE_LABELS[plugin.type]}
-              </Badge>
-              <Badge variant="outline" className="bg-background/70">
-                {definition?.name ?? plugin.pluginKind}
-              </Badge>
+      <header className="border-b bg-sidebar/70">
+        <div className="mx-auto w-full max-w-6xl px-5 py-5">
+          <div className="flex min-w-0 items-start gap-4 pr-14">
+            <div className="flex size-12 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/12 text-primary [&_svg]:size-5">
+              {resolvedIcon}
             </div>
-            {definition?.description && (
-              <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-                {definition.description}
-              </p>
-            )}
-          </div>
-        </div>
-
-        {resolvedSummaryItems.length > 0 && (
-          <div className="mt-5 grid grid-cols-3 gap-2">
-            {resolvedSummaryItems.map((item) => (
-              <SummaryItem key={item.label} item={item} />
-            ))}
-          </div>
-        )}
-
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => togglePluginPin(plugin.id)}
-          >
-            {plugin.pinned ? (
-              <>
-                <PinOff className="mr-1.5 h-4 w-4" />
-                取消固定
-              </>
-            ) : (
-              <>
-                <Pin className="mr-1.5 h-4 w-4" />
-                固定
-              </>
-            )}
-          </Button>
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-destructive hover:text-destructive"
-              >
-                <Trash2 className="mr-1.5 h-4 w-4" />
-                删除
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>确认删除</AlertDialogTitle>
-                <AlertDialogDescription>
-                  确定要删除插件 &ldquo;{plugin.name}&rdquo;
-                  吗？此操作无法撤销。
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>取消</AlertDialogCancel>
-                <AlertDialogAction
-                  onClick={() => {
-                    deletePlugin(plugin.id);
-                    onClose();
-                  }}
-                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            <div className="min-w-0 flex-1 pt-0.5">
+              {editingName ? (
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    className="h-9 max-w-md font-mono text-lg"
+                    onKeyDown={(e) => e.key === "Enter" && handleSaveName()}
+                  />
+                  <Button size="icon-sm" onClick={handleSaveName}>
+                    <Save className="h-4 w-4" />
+                  </Button>
+                </div>
+              ) : (
+                <SheetTitle
+                  className="cursor-pointer truncate font-mono text-xl font-semibold leading-none transition-colors hover:text-primary"
+                  onClick={() => setEditingName(true)}
                 >
+                  {plugin.name}
+                </SheetTitle>
+              )}
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Badge
+                  variant="outline"
+                  className={cn("gap-1", pluginTypeColors[plugin.type])}
+                >
+                  {PLUGIN_TYPE_LABELS[plugin.type]}
+                </Badge>
+                <Badge variant="outline" className="bg-background/70">
+                  {definition?.name ?? plugin.pluginKind}
+                </Badge>
+              </div>
+              {definition?.description && (
+                <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+                  {definition.description}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {resolvedSummaryItems.length > 0 && (
+            <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+              {resolvedSummaryItems.map((item) => (
+                <SummaryItem key={item.label} item={item} />
+              ))}
+            </div>
+          )}
+
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => togglePluginPin(plugin.id)}
+            >
+              {plugin.pinned ? (
+                <>
+                  <PinOff className="mr-1.5 h-4 w-4" />
+                  取消固定
+                </>
+              ) : (
+                <>
+                  <Pin className="mr-1.5 h-4 w-4" />
+                  固定
+                </>
+              )}
+            </Button>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-destructive hover:text-destructive"
+                >
+                  <Trash2 className="mr-1.5 h-4 w-4" />
                   删除
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>确认删除</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    确定要删除插件 &ldquo;{plugin.name}&rdquo;
+                    吗？此操作无法撤销。
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>取消</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={() => {
+                      deletePlugin(plugin.id);
+                      onClose();
+                    }}
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    删除
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
         </div>
       </header>
 
-      <Tabs defaultValue="config" className="flex-1 px-5 py-5">
+      <Tabs
+        defaultValue="config"
+        className="mx-auto w-full max-w-6xl flex-1 px-5 py-5"
+      >
         <TabsList
           className={cn(
             "grid w-full",
