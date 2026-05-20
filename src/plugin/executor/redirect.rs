@@ -137,7 +137,12 @@ impl RedirectExecutor {
         }
 
         let answers = response.answers_mut();
-        answers.push(Record::from_rdata(original, 1, RData::CNAME(CNAME(target))));
+        // CNAME must be first in the answer section so glibc and other strict
+        // resolvers can follow the chain (RFC 1034 §3.6.2).
+        answers.insert(
+            0,
+            Record::from_rdata(original, 1, RData::CNAME(CNAME(target))),
+        );
         Ok(step)
     }
 
@@ -467,12 +472,9 @@ mod tests {
         let response = ctx.response().expect("response should exist");
         assert_eq!(response.questions()[0].name().to_fqdn(), "example.com.");
         assert_eq!(response.answers().len(), 2);
-        assert!(
-            response
-                .answers()
-                .iter()
-                .any(|record| record.rr_type() == RecordType::CNAME)
-        );
+        // CNAME must be first so glibc resolvers can follow the chain correctly.
+        assert_eq!(response.answers()[0].rr_type(), RecordType::CNAME);
+        assert_eq!(response.answers()[1].rr_type(), RecordType::A);
     }
 
     #[test]
