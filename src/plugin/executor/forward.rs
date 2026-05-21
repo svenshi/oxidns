@@ -251,7 +251,7 @@ impl MetricSource for ForwardMetrics {
 
 /// Resolve a stable, collision-free label value for each upstream.
 ///
-/// Uses the upstream tag when configured, otherwise its resolved address. Any
+/// Uses the upstream tag when configured, otherwise its configured address. Any
 /// duplicate identity is disambiguated with a `#<index>` suffix so emitted
 /// time series never share an identical label set.
 fn upstream_metric_names(infos: &[&ConnectionInfo]) -> Vec<String> {
@@ -521,9 +521,7 @@ fn validate_forward_config(cfg: &ForwardConfig) -> Result<()> {
 }
 
 fn validate_upstream_addr(addr: &str) -> std::result::Result<(), String> {
-    ConnectionInfo::with_addr(addr)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    ConnectionInfo::validate_addr(addr).map_err(|e| e.to_string())
 }
 
 fn build_upstream(upstream_config: UpstreamConfig) -> Result<Box<dyn Upstream>> {
@@ -873,6 +871,12 @@ upstreams:
             Err(err) => err,
         };
         assert!(err.to_string().contains("is invalid"));
+    }
+
+    #[test]
+    fn validate_accepts_domain_upstream_addr_without_resolution() {
+        validate_upstream_addr("tls://dns.example.invalid:853")
+            .expect("domain upstream validation should only parse address syntax");
     }
 
     #[test]

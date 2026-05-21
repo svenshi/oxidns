@@ -135,7 +135,8 @@ pub struct UpstreamConfig {
     ///
     /// Useful when you want to connect to a specific IP but use SNI for TLS.
     /// If provided, this IP is used instead of resolving the hostname from
-    /// `addr`.
+    /// `addr`. Mutually exclusive with `bootstrap` at runtime: when both are
+    /// configured, `dial_addr` takes precedence and `bootstrap` is ignored.
     pub dial_addr: Option<IpAddr>,
 
     /// Override the server port (if not specified in `addr`)
@@ -148,9 +149,13 @@ pub struct UpstreamConfig {
 
     /// Bootstrap DNS server for resolving the upstream hostname
     ///
-    /// Required when `addr` contains a hostname instead of an IP address.
-    /// The bootstrap server must be specified as IP:port (e.g., "8.8.8.8:53").
-    /// This prevents circular dependencies in DNS resolution.
+    /// Recommended when `addr` contains a hostname instead of an IP address.
+    /// Without bootstrap, hostname resolution is deferred to connection time
+    /// and uses the operating system resolver. The bootstrap server should be
+    /// specified as IP:port (e.g., "8.8.8.8:53") to avoid circular
+    /// dependencies in DNS resolution. Mutually exclusive with `dial_addr` at
+    /// runtime: when both are configured, `dial_addr` takes precedence and
+    /// bootstrap resolution is skipped.
     ///
     /// # Example
     /// ```yaml
@@ -387,8 +392,8 @@ pub struct ConnectionInfo {
     /// Original address string from configuration (for logging)
     pub raw_addr: String,
 
-    /// Resolved or configured IP address (`None` if it needs runtime resolution
-    /// via bootstrap)
+    /// Literal or explicitly configured IP address (`None` if hostname
+    /// resolution is deferred to bootstrap or connection time)
     pub remote_ip: Option<IpAddr>,
 
     /// Server port (protocol default or explicitly configured)
@@ -446,7 +451,7 @@ impl ConnectionInfo {
             connection_type, host, port, path
         );
 
-        let remote_ip = resolve_ip_from_host(&host, None, false);
+        let remote_ip = static_remote_ip_from_host(&host, None);
 
         Ok(ConnectionInfo {
             tag: None,
@@ -467,6 +472,10 @@ impl ConnectionInfo {
             bind_to_device: None,
             max_conns: None,
         })
+    }
+
+    pub fn validate_addr(addr: &str) -> Result<()> {
+        detect_connection_type(addr).map(|_| ())
     }
 }
 
@@ -511,8 +520,15 @@ impl TryFrom<UpstreamConfig> for ConnectionInfo {
             connection_type, &host, port, path
         );
 
-        let has_bootstrap = bootstrap.is_some();
-        let remote_ip = resolve_ip_from_host(&host, dial_addr, has_bootstrap);
+        let dial_addr_configured = dial_addr.is_some();
+        let remote_ip = static_remote_ip_from_host(&host, dial_addr);
+
+        if dial_addr_configured && bootstrap.is_some() {
+            warn!(
+                upstream = %addr,
+                "Both dial_addr and bootstrap are configured; dial_addr takes precedence and bootstrap will be ignored"
+            );
+        }
 
         let bootstrap = if let Some(bootstrap_server) = bootstrap
             && remote_ip.is_none()
@@ -568,21 +584,18 @@ impl TryFrom<UpstreamConfig> for ConnectionInfo {
     }
 }
 
-/// Resolve IP address from hostname
+/// Determine the startup-known remote IP address.
 ///
 /// # Arguments
 /// - `host`: The hostname or IP address string
 /// - `dial_addr`: Optional pre-configured IP address to use directly
-/// - `has_bootstrap`: Whether a bootstrap server is configured (skip resolution
-///   if true)
 ///
 /// # Returns
-/// `Some(IpAddr)` if successfully resolved or provided, `None` otherwise
-fn resolve_ip_from_host(
-    host: &str,
-    dial_addr: Option<IpAddr>,
-    has_bootstrap: bool,
-) -> Option<IpAddr> {
+/// `Some(IpAddr)` if an IP address is explicitly configured or present
+/// literally in `host`; `None` for hostnames. Hostname resolution is deferred
+/// to bootstrap or connection creation so startup and config validation do not
+/// depend on the local system resolver.
+fn static_remote_ip_from_host(host: &str, dial_addr: Option<IpAddr>) -> Option<IpAddr> {
     // 1. Use dial_addr if provided
     if let Some(ip) = dial_addr {
         return Some(ip);
@@ -593,19 +606,7 @@ fn resolve_ip_from_host(
         return Some(ip);
     }
 
-    // 3. For domain names: resolve only if no bootstrap configured
-    if !has_bootstrap {
-        match try_lookup_server_name(host) {
-            Ok(ip) => Some(ip),
-            Err(e) => {
-                warn!("Failed to resolve server name '{}': {}", host, e);
-                None
-            }
-        }
-    } else {
-        // Bootstrap will handle resolution later
-        None
-    }
+    None
 }
 
 /// Detect the connection type from the config address
@@ -1387,6 +1388,48 @@ mod tests {
         let info = ConnectionInfo::try_from(cfg).expect("helper scheme should be accepted");
         assert_eq!(info.connection_type, ConnectionType::DoH);
         assert!(info.enable_http3);
+    }
+
+    #[test]
+    fn test_connection_info_defers_domain_resolution() {
+        let info = ConnectionInfo::with_addr("tls://dns.example.invalid:853")
+            .expect("domain upstream should parse without DNS resolution");
+        assert_eq!(info.server_name, "dns.example.invalid");
+        assert!(info.remote_ip.is_none());
+
+        let info = ConnectionInfo::try_from(make_upstream_config(
+            "https://resolver.example.invalid/dns-query",
+        ))
+        .expect("domain upstream config should parse without DNS resolution");
+        assert_eq!(info.server_name, "resolver.example.invalid");
+        assert!(info.remote_ip.is_none());
+    }
+
+    #[test]
+    fn test_connection_info_uses_dial_addr_for_domain() {
+        let mut cfg = make_upstream_config("tls://dns.example.invalid:853");
+        cfg.dial_addr = Some(IpAddr::from_str("203.0.113.53").unwrap());
+
+        let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
+        assert_eq!(info.server_name, "dns.example.invalid");
+        assert_eq!(
+            info.remote_ip,
+            Some(IpAddr::from_str("203.0.113.53").unwrap())
+        );
+    }
+
+    #[test]
+    fn test_connection_info_dial_addr_takes_precedence_over_bootstrap() {
+        let mut cfg = make_upstream_config("tls://dns.example.invalid:853");
+        cfg.dial_addr = Some(IpAddr::from_str("203.0.113.53").unwrap());
+        cfg.bootstrap = Some("8.8.8.8:53".to_string());
+
+        let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
+        assert_eq!(
+            info.remote_ip,
+            Some(IpAddr::from_str("203.0.113.53").unwrap())
+        );
+        assert!(info.bootstrap.is_none());
     }
 
     #[test]

@@ -236,7 +236,9 @@ sidebar_position: 3
   - `https://` / `doh://` 表示 DoH，`h3://` 表示强制 DoH over HTTP/3。
   - `tcp+pipeline://` 与 `tls+pipeline://` 会直接启用流水线模式。
   - DoH 地址应包含实际请求路径，例如 `/dns-query`。
-- 配置建议：域名型上游建议同时配置 `bootstrap`，避免形成引导解析依赖。
+- 解析行为：启动和配置校验阶段不会解析域名型上游；未配置 `bootstrap` 或 `dial_addr` 时，会在首次建连时使用系统解析。
+- 配置建议：域名型上游建议在 `bootstrap` 和 `dial_addr` 中二选一，避免运行期形成对本机 DNS 的引导解析依赖。
+- 互斥规则：`bootstrap` 和 `dial_addr` 同时配置时，只有 `dial_addr` 生效，`bootstrap` 会被忽略。
 
 #### `upstreams[].tag`
 
@@ -250,6 +252,7 @@ sidebar_position: 3
 - 作用：指定实际连接 IP，同时保留 `addr` 中的主机名用于 SNI、Host 和证书校验。
 - 示例：`dial_addr: "1.1.1.1"`
 - 适用场景：固定拨号地址、绕过本机解析或配合自定义路由出口。
+- 互斥规则：与 `bootstrap` 同时配置时，本字段优先生效。
 
 #### `upstreams[].port`
 
@@ -268,6 +271,8 @@ sidebar_position: 3
   - 仅在 `addr` 使用域名时有意义。
   - 应写为 `IP:port`，不能再写域名。
   - 典型用于 DoT、DoQ、DoH 域名上游的首次解析。
+  - 使用 `bootstrap` 后，上游域名解析由 OxiDNS 查询该引导服务器完成，并按 TTL 缓存。
+  - 与 `dial_addr` 同时配置时，本字段会被忽略。
 
 #### `upstreams[].bootstrap_version`
 
