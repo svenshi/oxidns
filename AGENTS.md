@@ -90,6 +90,7 @@
 - If a change adds or renames plugin types, config fields, default behaviors, supported protocols, or user-visible capabilities, update `README.md`, and `README_EN.md` in the same change when applicable.
 - If a change adds, removes, or modifies a plugin, also sync the dedicated documentation in `docs/` for both Chinese and English. Treat plugin code changes and plugin docs updates as part of the same change whenever the behavior, config shape, dependencies, lifecycle, side effects, or examples are affected.
 - When a Rust plugin is added or its config shape changes, update the corresponding entry in `webui/lib/plugin-definitions/` (one file per category: `executor.ts`, `matcher.ts`, `provider.ts`, `server.ts`) to keep the WebUI console aligned. Adding an entry to the right category file is sufficient — the catalog, create dialog, cards, detail drawer, sequence composer, and YAML editor all auto-derive from it.
+- When preparing a release, follow the standalone workflow in `docs/release-process.md` for tag-based changelog generation, Cargo version bumps, and release-note updates.
 - Prefer descriptive plugin tags such as `forward_main`, `cache_main`, `udp_server`, or `seq_main`.
 - Keep `sequence` examples readable; use tagged reusable plugins once logic becomes non-trivial.
 

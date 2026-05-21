@@ -10,7 +10,29 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-05
 
 <div className="release-stack">
-   <ReleaseCard version="v1.0.1" badge="Patch Release" date="2026-05-20" defaultOpen>
+   <ReleaseCard version="v1.0.2" badge="Patch Release" date="2026-05-21" defaultOpen>
+       **版本定位**
+
+       - Patch Release，修复域名型 upstream 在启动和配置校验阶段依赖本机 DNS 的问题，并明确 `bootstrap` 与 `dial_addr` 的解析优先级。
+
+       **主要变更**
+
+       - 修复 `forward` 插件地址校验复用完整 `ConnectionInfo` 构造逻辑的问题。域名型 upstream 现在只做地址格式校验，不会在启动校验阶段触发系统 DNS 解析。
+       - 调整 upstream 连接信息构造：仅字面 IP 和显式 `dial_addr` 会在启动阶段写入连接目标 IP；域名保留为 `server_name`，后续由 `bootstrap` 或首次建连时的系统解析处理。
+       - 明确 `dial_addr` 与 `bootstrap` 同时配置时的互斥行为：`dial_addr` 优先生效，`bootstrap` 会被忽略，并在初始化时输出 warning。
+       - 更新 `forward` 插件参考文档和 WebUI 插件字段说明，补充域名解析时机、`bootstrap` / `dial_addr` 二选一建议以及运行期优先级。
+       - 补充回归测试，覆盖域名 upstream 不预解析、`dial_addr` 保留 SNI 主机名，以及 `dial_addr` 覆盖 `bootstrap` 的行为。
+
+       **配置与升级说明**
+
+       - 根 crate 版本号升级为 `1.0.2`；release tag 应使用 `v1.0.2`。
+       - `v1.0.1` 配置可直接升级到 `v1.0.2`，未引入新的必填配置字段。
+       - 未配置 `bootstrap` 或 `dial_addr` 的域名型 upstream 不再阻塞启动；首次建连时仍会使用系统解析。
+       - 如需完全避免运行期对本机 DNS 的依赖，域名型 upstream 建议在 `bootstrap` 和 `dial_addr` 中二选一配置。
+       - 同时配置 `bootstrap` 和 `dial_addr` 的现有配置仍可启动，但只有 `dial_addr` 生效。
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.0.1" badge="Patch Release" date="2026-05-20">
        **版本定位**
 
        - Patch Release，修复 `v1.0.0` 中的 DNS 响应合规性问题、客户端 IP 规范化缺陷和 WebUI 使用问题，同时新增服务管理能力、安装器脚本和查询审计交互改进。

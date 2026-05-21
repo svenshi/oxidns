@@ -10,7 +10,29 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-05
 
 <div className="release-stack">
-   <ReleaseCard version="v1.0.1" badge="Patch Release" date="2026-05-20" defaultOpen>
+   <ReleaseCard version="v1.0.2" badge="Patch Release" date="2026-05-21" defaultOpen>
+       **Release Scope**
+
+       - Patch Release fixing domain-based upstreams depending on local DNS during startup and config validation, and clarifying `bootstrap` versus `dial_addr` resolution precedence.
+
+       **Changes**
+
+       - Fixed `forward` address validation reusing full `ConnectionInfo` construction. Domain-based upstreams now perform syntax validation only and no longer trigger system DNS resolution during startup validation.
+       - Changed upstream connection-info construction so only literal IPs and explicit `dial_addr` values become startup-known remote IPs; hostnames remain as `server_name` and are resolved later through `bootstrap` or at first connection time.
+       - Clarified the runtime mutual exclusion between `dial_addr` and `bootstrap`: when both are configured, `dial_addr` takes precedence, `bootstrap` is ignored, and initialization emits a warning.
+       - Updated `forward` plugin reference docs and WebUI field descriptions with hostname resolution timing, the `bootstrap` / `dial_addr` either-or recommendation, and precedence behavior.
+       - Added regression coverage for deferring domain upstream resolution, preserving the SNI hostname with `dial_addr`, and `dial_addr` overriding `bootstrap`.
+
+       **Compatibility and Upgrade Notes**
+
+       - Root crate version bumped to `1.0.2`; release tag should use `v1.0.2`.
+       - `v1.0.1` configs upgrade directly to `v1.0.2` with no new required fields.
+       - Domain-based upstreams without `bootstrap` or `dial_addr` no longer block startup; the first connection still uses the operating system resolver.
+       - To avoid runtime dependence on local DNS entirely, configure exactly one of `bootstrap` or `dial_addr` for domain-based upstreams.
+       - Existing configs that set both `bootstrap` and `dial_addr` still start, but only `dial_addr` is effective.
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.0.1" badge="Patch Release" date="2026-05-20">
        **Release Scope**
 
        - Patch Release fixing DNS response compliance issues, client-IP canonicalization, and WebUI usability problems from `v1.0.0`, while adding service management capabilities, installer scripts, and query-auditing UX improvements.
