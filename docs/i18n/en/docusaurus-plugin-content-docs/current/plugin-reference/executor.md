@@ -221,6 +221,9 @@ Sends DNS queries to upstreams.
 - Notes:
   - No scheme means UDP.
   - DoH addresses should include the full request path.
+  - Startup and config validation do not resolve domain-based upstreams. Without `bootstrap` or `dial_addr`, the hostname is resolved through the OS resolver when the first connection is created.
+  - For domain-based upstreams, choose either `bootstrap` or `dial_addr` to avoid runtime bootstrap dependency on the local DNS setup.
+  - `bootstrap` and `dial_addr` are mutually exclusive at runtime. If both are configured, only `dial_addr` is effective and `bootstrap` is ignored.
 
 #### `upstreams[].tag`
 
@@ -231,6 +234,7 @@ Sends DNS queries to upstreams.
 
 - Type: `ip`; Required: no
 - Purpose: Actual connection IP while preserving the hostname from `addr` for SNI, Host, and certificate validation.
+- Notes: Takes precedence over `bootstrap` when both are configured.
 
 #### `upstreams[].port`
 
@@ -241,6 +245,7 @@ Sends DNS queries to upstreams.
 
 - Type: `string`; Required: no
 - Purpose: Bootstrap resolver for domain-based upstreams.
+- Notes: Use an `IP:port` address. With bootstrap enabled, OxiDNS resolves the upstream hostname through that resolver and caches it according to DNS TTL. Ignored when `dial_addr` is also configured.
 
 #### `upstreams[].bootstrap_version`
 

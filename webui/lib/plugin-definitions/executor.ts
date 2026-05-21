@@ -150,7 +150,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
             {
               key: "dial_addr",
               description:
-                "指定实际连接 IP，同时保留 addr 中的主机名用于 SNI、Host 和证书校验。",
+                "指定实际连接 IP，同时保留 addr 中的主机名用于 SNI、Host 和证书校验；与 bootstrap 同时配置时本字段优先生效。",
               label: "拨号 IP",
               type: "text",
               placeholder: "203.0.113.53",
@@ -164,7 +164,8 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
             },
             {
               key: "bootstrap",
-              description: "为域名型上游提供引导解析服务器。",
+              description:
+                "为域名型上游提供引导解析服务器；未配置时会在首次建连时使用系统解析；与 dial_addr 同时配置时会被忽略。",
               label: "Bootstrap",
               type: "text",
               placeholder: "8.8.8.8:53",

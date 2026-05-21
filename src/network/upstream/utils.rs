@@ -272,8 +272,8 @@ pub fn build_doh_request_uri(connection_info: &ConnectionInfo) -> String {
 /// - `Err(DnsError)` if resolution fails or returns no results
 ///
 /// # Notes
-/// - This is typically used once during initialization for static upstream
-///   servers
+/// - This is used at connection time when no literal IP, `dial_addr`, or
+///   bootstrap-resolved address is available
 /// - For dynamic resolution with TTL support, use Bootstrap instead
 /// - Blocks the current task - consider using bootstrap for async resolution
 /// - Returns the first address from the system resolver (maybe IPv4 or IPv6)
