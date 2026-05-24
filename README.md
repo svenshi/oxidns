@@ -193,7 +193,7 @@ uname -s && uname -m
 Windows 可在 PowerShell 中执行：
 
 ```powershell
-[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+(Get-CimInstance Win32_OperatingSystem).OSArchitecture
 ```
 
 完整安装流程请参考 [快速开始](https://oxidns.org/quickstart)。

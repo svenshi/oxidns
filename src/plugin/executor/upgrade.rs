@@ -14,7 +14,6 @@ use serde::Deserialize;
 use serde_yaml_ng::Value;
 use tracing::info;
 
-use crate::app::cli::RestartMode;
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
 use crate::core::error::{DnsError, Result};
@@ -56,7 +55,7 @@ impl Executor for UpgradeExecutor {
             backup_dir = %self.config.backup_dir.display(),
             webui_dir = %self.config.webui_dir.display(),
             skip_webui = self.config.skip_webui,
-            restart = ?self.config.restart,
+            no_restart = self.config.no_restart,
             force = self.config.force,
             cleanup = self.config.cleanup_after_apply,
             "upgrade apply started"
@@ -158,7 +157,7 @@ struct UpgradePluginConfig {
     backup_dir: Option<PathBuf>,
     webui_dir: Option<PathBuf>,
     skip_webui: Option<bool>,
-    restart: Option<RestartMode>,
+    no_restart: Option<bool>,
     allow_prerelease: Option<bool>,
     force: Option<bool>,
     cleanup: Option<bool>,
@@ -189,8 +188,8 @@ impl UpgradePluginConfig {
         if let Some(value) = self.skip_webui {
             config.skip_webui = value;
         }
-        if let Some(value) = self.restart {
-            config.restart = value;
+        if let Some(value) = self.no_restart {
+            config.no_restart = value;
         }
         if let Some(value) = self.allow_prerelease {
             config.allow_prerelease = value;
@@ -240,6 +239,10 @@ fn parse_quick_setup(param: Option<String>) -> Result<UpgradeConfig> {
             config.force = true;
             continue;
         }
+        if token == "no_restart" {
+            config.no_restart = true;
+            continue;
+        }
 
         let Some((key, value)) = token.split_once('=') else {
             return Err(DnsError::plugin(format!(
@@ -251,6 +254,12 @@ fn parse_quick_setup(param: Option<String>) -> Result<UpgradeConfig> {
         match key {
             "force" => {
                 config.force = parse_bool_quick_setup(key, value)?;
+            }
+            "no_restart" => {
+                config.no_restart = parse_bool_quick_setup(key, value)?;
+            }
+            "github_token" => {
+                config.github_token = Some(value.to_string());
             }
             _ => {
                 return Err(DnsError::plugin(format!(
@@ -301,6 +310,7 @@ mod tests {
         let parsed = parse_upgrade_config(None).unwrap();
         let config = parsed.into_upgrade_config().unwrap();
         assert!(!config.force);
+        assert!(!config.no_restart);
         assert!(config.cleanup_after_apply);
     }
 
@@ -318,6 +328,43 @@ mod tests {
         let parsed = parse_upgrade_config(Some(value)).unwrap();
         let config = parsed.into_upgrade_config().unwrap();
         assert!(!config.cleanup_after_apply);
+    }
+
+    #[test]
+    fn parse_upgrade_config_accepts_no_restart_flag() {
+        let value = serde_yaml_ng::from_str::<Value>("no_restart: true").unwrap();
+        let parsed = parse_upgrade_config(Some(value)).unwrap();
+        let config = parsed.into_upgrade_config().unwrap();
+        assert!(config.no_restart);
+    }
+
+    #[test]
+    fn parse_upgrade_config_rejects_cli_style_no_restart_alias() {
+        let value = serde_yaml_ng::from_str::<Value>("no-restart: true").unwrap();
+        let err = parse_upgrade_config(Some(value)).unwrap_err();
+        assert!(err.to_string().contains("unknown field `no-restart`"));
+    }
+
+    #[test]
+    fn parse_upgrade_config_accepts_github_token() {
+        let value = serde_yaml_ng::from_str::<Value>("github_token: ghp_test").unwrap();
+        let parsed = parse_upgrade_config(Some(value)).unwrap();
+        let config = parsed.into_upgrade_config().unwrap();
+        assert_eq!(config.github_token.as_deref(), Some("ghp_test"));
+    }
+
+    #[test]
+    fn parse_upgrade_config_rejects_cli_style_github_token_alias() {
+        let value = serde_yaml_ng::from_str::<Value>("github-token: ghp_test").unwrap();
+        let err = parse_upgrade_config(Some(value)).unwrap_err();
+        assert!(err.to_string().contains("unknown field `github-token`"));
+    }
+
+    #[test]
+    fn parse_upgrade_config_rejects_old_restart_field() {
+        let value = serde_yaml_ng::from_str::<Value>("restart: service").unwrap();
+        let err = parse_upgrade_config(Some(value)).unwrap_err();
+        assert!(err.to_string().contains("unknown field `restart`"));
     }
 
     #[test]
@@ -375,8 +422,13 @@ mod tests {
 
     #[test]
     fn quick_setup_accepts_apply_options() {
-        let config = parse_quick_setup(Some("force=true".to_string())).unwrap();
+        let config = parse_quick_setup(Some(
+            "force=true no_restart=true github_token=ghp_test".to_string(),
+        ))
+        .unwrap();
         assert!(config.force);
+        assert!(config.no_restart);
+        assert_eq!(config.github_token.as_deref(), Some("ghp_test"));
         assert_eq!(config.repository, "svenshi/oxidns");
     }
 
@@ -392,6 +444,21 @@ mod tests {
     #[test]
     fn quick_setup_rejects_non_force_options() {
         let err = parse_quick_setup(Some("restart=service".to_string())).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unsupported upgrade quick setup token")
+        );
+    }
+
+    #[test]
+    fn quick_setup_rejects_hyphenated_plugin_config_keys() {
+        let err = parse_quick_setup(Some("no-restart=true".to_string())).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unsupported upgrade quick setup token")
+        );
+
+        let err = parse_quick_setup(Some("github-token=ghp_test".to_string())).unwrap_err();
         assert!(
             err.to_string()
                 .contains("unsupported upgrade quick setup token")

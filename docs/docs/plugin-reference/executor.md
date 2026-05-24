@@ -2200,11 +2200,12 @@ sidebar_position: 3
   args:
       repository: svenshi/oxidns
       asset: auto
+      github_token: ghp_xxx
       cache_dir: ./upgrade/cache
       backup_dir: ./upgrade/backups
       webui_dir: ./webui
       skip_webui: false
-      restart: service
+      no_restart: false
       force: false
       cleanup: true
       timeout: 30s
@@ -2226,6 +2227,9 @@ sidebar_position: 3
     - GitHub 仓库，默认 `svenshi/oxidns`。
 - `asset`
     - Release asset 名称；`auto` 会按当前平台选择 archive。
+- `github_token`
+    - GitHub 个人访问令牌，用于提高 API 速率限制或访问私有仓库。
+    - 会作为 GitHub API 请求的 Bearer token 使用。
 - `cache_dir` / `backup_dir`
     - 下载缓存目录和替换前备份目录。
 - `webui_dir`
@@ -2236,8 +2240,11 @@ sidebar_position: 3
     - 类型：`bool`
     - 默认值：`false`
     - 设为 `true` 时只替换二进制文件，跳过 WebUI 目录升级。
-- `restart`
-    - 可选值为 `none` 或 `service`。设置为 `service` 时，升级成功替换二进制文件后，应用会主动退出并返回错误码，以便 systemd 自动重启。因此，对应的 service 必须将 `Restart` 设置为 `always` 或 `on-failure`。
+- `no_restart`
+    - 类型：`bool`
+    - 默认值：`false`
+    - 设为 `true` 时，升级成功后不触发自动重启。
+    - 默认值 `false` 会在升级成功后自动重启：CLI `apply` 通过系统服务管理器重启已安装服务，插件内执行时通过应用控制通道触发优雅重启并加载新二进制。
 - `timeout`、`socks5`、`insecure_skip_verify`
     - 与 CLI `upgrade` 参数含义一致。
 

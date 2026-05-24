@@ -7,7 +7,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
-use serde::Deserialize;
 
 /// Top-level CLI definition.
 #[derive(Parser, Clone, Debug)]
@@ -188,14 +187,6 @@ pub enum UpgradeAction {
     Apply,
 }
 
-/// Restart behavior after applying an upgrade.
-#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RestartMode {
-    None,
-    Service,
-}
-
 fn parse_cli_duration(raw: &str) -> std::result::Result<Duration, String> {
     crate::core::system_utils::parse_simple_duration(raw)
 }
@@ -352,6 +343,8 @@ mod tests {
             "--socks5",
             "127.0.0.1:1080",
             "--insecure-skip-verify",
+            "--github-token",
+            "ghp_test_token",
         ];
 
         let cli = Cli::parse_from(args);
@@ -372,7 +365,7 @@ mod tests {
                 timeout: Duration::from_secs(120),
                 socks5: Some("127.0.0.1:1080".to_string()),
                 insecure_skip_verify: true,
-                github_token: None,
+                github_token: Some("ghp_test_token".to_string()),
             })
         );
     }

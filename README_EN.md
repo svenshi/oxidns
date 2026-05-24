@@ -193,7 +193,7 @@ uname -s && uname -m
 On Windows PowerShell, run:
 
 ```powershell
-[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+(Get-CimInstance Win32_OperatingSystem).OSArchitecture
 ```
 
 For the full installation flow, see [Quick Start](https://oxidns.org/en/quickstart).

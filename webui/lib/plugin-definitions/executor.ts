@@ -1510,6 +1510,13 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         default: "auto",
       },
       {
+        key: "github_token",
+        description:
+          "GitHub 个人访问令牌，用于提高 API 速率限制或访问私有仓库。",
+        label: "GitHub Token",
+        type: "text",
+      },
+      {
         key: "cache_dir",
         description: "下载缓存目录。",
         label: "下载缓存目录",
@@ -1538,15 +1545,12 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         default: false,
       },
       {
-        key: "restart",
+        key: "no_restart",
         description:
-          "设置为 service 时，升级成功替换二进制文件后应用会主动退出并返回错误码，以便 systemd 自动重启。",
-        label: "重启策略",
-        type: "select",
-        options: [
-          { label: "None", value: "none" },
-          { label: "Service", value: "service" },
-        ],
+          "启用后升级成功也不会触发自动重启。",
+        label: "跳过自动重启",
+        type: "switch",
+        default: false,
       },
       {
         key: "timeout",

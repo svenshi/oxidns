@@ -21,7 +21,18 @@ pub mod export_dat;
 mod graph;
 mod logging;
 
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
 use tokio::runtime;
+
+/// Executable path captured at process startup, before any binary replacement.
+///
+/// On Linux, after an atomic rename-over-self upgrade `/proc/self/exe` acquires
+/// a ` (deleted)` suffix that makes the path non-executable. Reading the path
+/// here — before the upgrade plugin has a chance to replace the binary —
+/// guarantees `exec_restart()` always has a valid path to hand to `execvp()`.
+static ORIGINAL_EXE: OnceLock<PathBuf> = OnceLock::new();
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info};
 
@@ -36,6 +47,8 @@ use crate::{config, core};
 
 /// Start OxiDNS in the foreground using the provided CLI options.
 pub fn run(start: StartOptions) -> Result<()> {
+    // Capture the exe path before any binary replacement can invalidate it.
+    ORIGINAL_EXE.get_or_init(|| std::env::current_exe().unwrap_or_default());
     AppClock::start();
     prepare_working_dir(start.working_dir.as_ref())?;
     // Clean up any leftover staging file from an interrupted Windows upgrade.
@@ -138,8 +151,11 @@ fn init_runtime(options: StartOptions, config: Config) -> Result<()> {
 /// launchd, Docker, etc.) continues tracking the process without interruption.
 /// On non-Unix platforms a new process is spawned and the current one exits.
 pub(crate) fn exec_restart() -> Result<()> {
-    let exe = std::env::current_exe()
-        .map_err(|e| DnsError::runtime(format!("restart: cannot get current executable: {e}")))?;
+    let exe = ORIGINAL_EXE
+        .get()
+        .cloned()
+        .or_else(|| std::env::current_exe().ok())
+        .ok_or_else(|| DnsError::runtime("restart: cannot determine executable path"))?;
     // std::env::args() reads the OS-level process arguments and is safe to
     // call at any point during the process lifetime.
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
