@@ -389,8 +389,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ isRestarting: true });
     try {
       await get().saveConfig();
+      // Capture the running process's uptime before the request: pollReconnect
+      // uses it to detect a uptime-reset signature when the down transition
+      // happens faster than the polling interval can observe.
+      let baselineUptimeMs: number | undefined;
+      try {
+        baselineUptimeMs = (await fetchHealth()).uptime_ms;
+      } catch {
+        // Health probe failures here are fine; pollReconnect falls back to
+        // requiring an observed down transition.
+      }
       await requestRestart();
-      await pollReconnect();
+      await pollReconnect(baselineUptimeMs);
       await get().loadConfig();
     } finally {
       set({ isRestarting: false });
@@ -614,10 +624,22 @@ function delay(ms: number): Promise<void> {
 }
 
 // Wait for the server to go down and then come back up after a restart request.
-// Phase 1: poll until health fails (process stopped, max 30s).
-// Phase 2: poll until health succeeds (new process ready, max 60s).
-// Throws if either phase times out.
-async function pollReconnect(): Promise<void> {
+//
+// Restart success requires positive evidence that the process actually
+// recycled — otherwise an ignored or silently-failed restart command would
+// look identical to a normal healthy response from the unchanged old process.
+//
+// Phase 1 (max 30s): poll until health fails (down transition observed).
+// Phase 2 (max 60s): poll until health succeeds AND uptime_ms is lower than
+//   the pre-restart baseline (uptime reset proves a new process).
+// Either an observed down transition OR a uptime decrease is sufficient
+// evidence — between them they cover both "slow restart" (phase 1 sees the
+// gap) and "fast restart" (phase 1 misses the gap but uptime confirms it).
+// If phase 2 deadline passes without either signal, throw — this surfaces
+// "restart never happened" instead of silently returning success.
+async function pollReconnect(baselineUptimeMs?: number): Promise<void> {
+  let sawDown = false;
+
   // Phase 1: wait for the old process to shut down
   const downDeadline = Date.now() + 30_000;
   while (Date.now() < downDeadline) {
@@ -626,7 +648,8 @@ async function pollReconnect(): Promise<void> {
       await fetchHealth();
       // Still up — keep waiting
     } catch {
-      break; // Process is down, move to phase 2
+      sawDown = true;
+      break;
     }
   }
 
@@ -634,14 +657,30 @@ async function pollReconnect(): Promise<void> {
   const upDeadline = Date.now() + 60_000;
   while (Date.now() < upDeadline) {
     await delay(1500);
+    let health;
     try {
-      await fetchHealth();
-      return; // New process is up
+      health = await fetchHealth();
     } catch {
       // Not yet up, keep polling
+      continue;
     }
+    // Healthy. Verify this is the *new* process — either we already saw a
+    // down transition, or the uptime is strictly lower than the baseline
+    // (the only way the same process could report a lower uptime is the
+    // monotonic-clock semantics, which oxidns does not violate).
+    const uptimeReset =
+      baselineUptimeMs !== undefined && health.uptime_ms < baselineUptimeMs;
+    if (sawDown || uptimeReset) {
+      return;
+    }
+    // Same process as before — restart request likely ignored/failed.
+    // Keep polling in case a delayed restart still happens; the deadline
+    // will surface the real failure if it never does.
   }
 
+  if (!sawDown) {
+    throw new Error("重启未生效：未观察到服务停机，请检查后端日志");
+  }
   throw new Error("重启超时，请刷新页面后手动重新连接");
 }
 
