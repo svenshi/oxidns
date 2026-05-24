@@ -136,8 +136,8 @@ See [Matcher Plugins](matcher.md) for full field reference.
 | Plugin | Purpose |
 | --- | --- |
 | [`any_match`](matcher.md#any_match) | Composes multiple matcher expressions; returns `true` when any one matches. |
-| [`_true`](matcher.md#true) | Always true. |
-| [`_false`](matcher.md#false) | Always false. |
+| [`_true`](matcher.md#_true) | Always true. |
+| [`_false`](matcher.md#_false) | Always false. |
 
 ## Provider plugins
 

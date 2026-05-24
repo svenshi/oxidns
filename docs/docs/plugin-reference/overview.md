@@ -136,8 +136,8 @@ server -> sequence
 | 插件 | 作用 |
 | --- | --- |
 | [`any_match`](matcher.md#any_match) | 组合多个 matcher 表达式，任意一个命中即返回 `true`。 |
-| [`_true`](matcher.md#true) | 恒为真。 |
-| [`_false`](matcher.md#false) | 恒为假。 |
+| [`_true`](matcher.md#_true) | 恒为真。 |
+| [`_false`](matcher.md#_false) | 恒为假。 |
 
 ## 数据提供器插件（provider）
 
