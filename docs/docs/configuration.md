@@ -54,6 +54,42 @@ oxidns check -c config.yaml -d /etc/oxidns
 
 尚未确定插件组合方式时，建议先阅读《[常见策略场景](scenarios.md)》，再回到本页查询字段含义。
 
+## 环境变量替换
+
+OxiDNS 在启动、`oxidns check`、管理 API 配置校验和保存前校验时，会先对 YAML 文本做一次环境变量替换，再解析配置。替换只发生在内存中，`config.yaml` 文件本身不会被改写；WebUI 读取和保存配置时看到的仍然是原始占位符。
+
+支持的写法：
+
+| 写法 | 行为 |
+| --- | --- |
+| `${VAR}` | 使用进程环境变量 `VAR` 的值；未定义时报错 |
+| `${VAR:-default}` | `VAR` 未定义或为空字符串时使用 `default` |
+| `$${...}` | 输出字面量 `${...}` |
+
+未定义变量会立即报错，并在错误中包含变量名、行号和列号，避免空密码、空证书路径等问题静默通过。
+
+示例：
+
+```yaml
+api:
+  http:
+    listen: "${API_LISTEN:-0.0.0.0:8080}"
+    ssl:
+      cert: "${API_TLS_CERT}"
+      key: "${API_TLS_KEY}"
+    auth:
+      type: basic
+      username: "${ADMIN_USER}"
+      password: "${ADMIN_PASS}"
+```
+
+因为替换发生在 YAML 文本层，如果环境变量值包含 `:`、`#`、换行等 YAML 特殊字符，请把占位符放在引号里。`include` 路径同样支持占位符，例如：
+
+```yaml
+include:
+  - "${OXIDNS_CONF_DIR}/plugins/common.yaml"
+```
+
 ## 顶层字段
 
 ### `include`

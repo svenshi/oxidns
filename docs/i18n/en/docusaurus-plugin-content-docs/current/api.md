@@ -267,6 +267,7 @@ Purpose:
 
 * Reads the config file referenced by the current startup options.
 * Returns the raw YAML text, config path, content version, and file update time.
+* Does not expand environment variable placeholders; `content` matches the file on disk.
 
 Example response:
 
@@ -288,6 +289,7 @@ Purpose:
 * Saves the full YAML config file.
 * Runs the same validation as `POST /api/config/validate` before writing by default.
 * Can request an application-level reload after a successful save.
+* Writes the original request text, not the expanded values of `${VAR}` placeholders.
 
 Request body:
 
@@ -315,6 +317,7 @@ Responses:
 Purpose:
 
 * Validates the config file at the current config path.
+* Expands environment variable placeholders in memory for validation, without modifying the file on disk.
 
 Good fit:
 
@@ -326,6 +329,7 @@ Purpose:
 
 * Validates YAML config text sent directly in the request body.
 * Also accepts the JSON envelope used by `PUT /api/config`.
+* Expands environment variable placeholders in memory for validation, without returning or saving expanded config text.
 
 Request body requirements:
 

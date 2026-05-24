@@ -54,6 +54,42 @@ oxidns check -c config.yaml -d /etc/oxidns
 
 When the plugin composition is still undecided, start from [Common Scenarios](scenarios.md), then return to this page for field details.
 
+## Environment Variable Substitution
+
+During startup, `oxidns check`, management API validation, and validation before saving a config, OxiDNS expands environment variables in the YAML text before parsing it. Expansion happens only in memory. The `config.yaml` file itself is not rewritten, so the WebUI still reads and saves the original placeholders.
+
+Supported syntax:
+
+| Syntax | Behavior |
+| --- | --- |
+| `${VAR}` | Use the value of process environment variable `VAR`; fail if it is undefined |
+| `${VAR:-default}` | Use `default` when `VAR` is undefined or an empty string |
+| `$${...}` | Emit a literal `${...}` |
+
+Undefined variables fail fast, and the error includes the variable name, line, and column so empty passwords or certificate paths do not silently pass validation.
+
+Example:
+
+```yaml
+api:
+  http:
+    listen: "${API_LISTEN:-0.0.0.0:8080}"
+    ssl:
+      cert: "${API_TLS_CERT}"
+      key: "${API_TLS_KEY}"
+    auth:
+      type: basic
+      username: "${ADMIN_USER}"
+      password: "${ADMIN_PASS}"
+```
+
+Because expansion happens at the YAML text layer, quote placeholders when the environment value may contain YAML-sensitive characters such as `:`, `#`, or newlines. `include` paths can also use placeholders:
+
+```yaml
+include:
+  - "${OXIDNS_CONF_DIR}/plugins/common.yaml"
+```
+
 ## Top-Level Fields
 
 ### `include`

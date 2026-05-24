@@ -23,6 +23,7 @@ use serde_yaml_ng::Value;
 
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
+use crate::core::env;
 use crate::core::error::{DnsError, Result as DnsResult};
 use crate::plugin::matcher::Matcher;
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
@@ -133,7 +134,7 @@ impl Plugin for StringExpMatcher {
 
     async fn init(&mut self, _context: &crate::plugin::PluginInitContext<'_>) -> DnsResult<()> {
         if let StringSource::Env(key) = &self.expression.source {
-            self.env_cache = std::env::var(key).ok();
+            self.env_cache = env::var_lossy(key);
         }
         Ok(())
     }

@@ -11,6 +11,7 @@ use async_trait::async_trait;
 
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
+use crate::core::env;
 use crate::core::error::{DnsError, Result as DnsResult};
 use crate::plugin::matcher::Matcher;
 use crate::plugin::matcher::matcher_utils::{parse_quick_setup_rules, parse_rules_from_value};
@@ -85,7 +86,7 @@ impl Plugin for EnvMatcher {
     }
 
     async fn init(&mut self, _context: &crate::plugin::PluginInitContext<'_>) -> DnsResult<()> {
-        let raw = std::env::var_os(&self.key);
+        let raw = env::var_os(&self.key);
         self.cached_exists = raw.is_some();
         self.cached_value = raw.map(|v| v.to_string_lossy().into_owned());
         Ok(())

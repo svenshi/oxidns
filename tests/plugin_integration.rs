@@ -464,7 +464,7 @@ async fn handle_test_socks5_client(mut client: TcpStream) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn linux_system_plugin_tests_enabled() -> bool {
-    std::env::var_os("TEST_LINUX_SYSTEM_PLUGINS").is_some()
+    oxidns::core::env::exists("TEST_LINUX_SYSTEM_PLUGINS")
 }
 
 #[cfg(target_os = "linux")]

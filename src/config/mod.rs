@@ -7,6 +7,7 @@
 //! [`types::Config`]. This module keeps the file-loading boundary small:
 //!
 //! - read the configuration file from disk;
+//! - expand environment variable placeholders in the YAML text;
 //! - deserialize it into strongly typed Rust structures; and
 //! - trigger semantic validation before the runtime starts.
 //!
@@ -22,6 +23,7 @@ use crate::core::error::{DnsError, Result};
 use crate::plugin::DependencyGraphReport;
 
 pub mod diagnostic;
+pub mod env_expand;
 pub mod types;
 
 const MAX_INCLUDE_DEPTH: usize = 8;
@@ -57,7 +59,9 @@ pub fn validate_file(path: &Path) -> Result<ConfigValidationSummary> {
 
 /// Validate configuration from YAML text.
 pub fn validate_text(text: &str) -> Result<ConfigValidationSummary> {
-    let config: Config = serde_yaml_ng::from_str(text)?;
+    let expanded = env_expand::expand_env(text)
+        .map_err(|err| DnsError::config(format!("env expansion failed: {err}")))?;
+    let config: Config = serde_yaml_ng::from_str(&expanded)?;
     if !config.include.is_empty() {
         return Err(DnsError::config(
             "include is only supported when validating configuration from a file",
@@ -106,7 +110,14 @@ fn read_config(path: &Path) -> Result<Config> {
     let string = fs::read_to_string(path).map_err(|err| {
         DnsError::config(format!("failed to read config {}: {}", path.display(), err))
     })?;
-    serde_yaml_ng::from_str(&string).map_err(|err| {
+    let expanded = env_expand::expand_env(&string).map_err(|err| {
+        DnsError::config(format!(
+            "env expansion failed in {}: {}",
+            path.display(),
+            err
+        ))
+    })?;
+    serde_yaml_ng::from_str(&expanded).map_err(|err| {
         DnsError::config(format!(
             "failed to parse config {}: {}",
             path.display(),
@@ -126,7 +137,9 @@ fn resolve_include_path(base_dir: &Path, include: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use tempfile::{NamedTempFile, TempDir};
+    use std::path::{Path, PathBuf};
+
+    use tempfile::{Builder, NamedTempFile, TempDir};
 
     use super::*;
 
@@ -136,6 +149,23 @@ plugins:
   - tag: debug_main
     type: debug_print
 "#
+    }
+
+    fn yaml_path(path: &Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
+    }
+
+    fn existing_env_path_root() -> (&'static str, PathBuf) {
+        for name in ["TMPDIR", "HOME", "USERPROFILE"] {
+            if let Some(value) = crate::core::env::var_os(name) {
+                let path = PathBuf::from(value);
+                if path.is_dir() {
+                    return (name, path);
+                }
+            }
+        }
+
+        panic!("expected TMPDIR, HOME, or USERPROFILE to point to an existing directory");
     }
 
     #[test]
@@ -171,6 +201,56 @@ plugins:
         .expect_err("unknown plugin should fail");
 
         assert!(err.to_string().contains("Unknown plugin type"));
+    }
+
+    #[test]
+    fn validate_text_expands_env_vars() {
+        let expected_path =
+            crate::core::env::var_lossy("PATH").expect("PATH should exist in test environment");
+        let summary = validate_text(
+            r#"
+plugins:
+  - tag: '${PATH}'
+    type: debug_print
+"#,
+        )
+        .expect("PATH placeholder should expand");
+
+        assert_eq!(summary.plugin_count, 1);
+        assert_eq!(summary.dependency_graph.init_order, vec![expected_path]);
+    }
+
+    #[test]
+    fn validate_text_supports_default_value() {
+        let summary = validate_text(
+            r#"
+plugins:
+  - tag: debug_main
+    type: ${OXIDNS_MISSING_VALIDATE_TEXT_DEFAULT_7485F1D6:-debug_print}
+"#,
+        )
+        .expect("default value should be used");
+
+        assert_eq!(summary.plugin_count, 1);
+        assert_eq!(
+            summary.dependency_graph.init_order,
+            vec!["debug_main".to_string()]
+        );
+    }
+
+    #[test]
+    fn validate_text_rejects_missing_env_var() {
+        let err = validate_text(
+            r#"
+plugins:
+  - tag: debug_main
+    type: ${OXIDNS_MISSING_VALIDATE_TEXT_REQUIRED_D6D7F2AE}
+"#,
+        )
+        .expect_err("missing environment variable should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("env expansion failed"));
+        assert!(msg.contains("OXIDNS_MISSING_VALIDATE_TEXT_REQUIRED_D6D7F2AE"));
     }
 
     #[test]
@@ -369,6 +449,53 @@ plugins:
 
         let err = validate_file(&main_path).expect_err("duplicate tag should fail");
         assert!(err.to_string().contains("Duplicate plugin tag 'dup'"));
+    }
+
+    #[test]
+    fn validate_file_expands_env_in_include_path() {
+        let (env_name, root) = existing_env_path_root();
+        let dir = Builder::new()
+            .prefix("oxidns-env-include-")
+            .tempdir_in(&root)
+            .expect("temp dir under env root");
+        std::fs::write(
+            dir.path().join("included.yaml"),
+            r#"
+plugins:
+  - tag: included_debug
+    type: debug_print
+"#,
+        )
+        .expect("write included config");
+
+        let suffix = dir.path().strip_prefix(&root).expect("strip env root");
+        let include_path = if suffix.as_os_str().is_empty() {
+            format!("${{{env_name}}}/included.yaml")
+        } else {
+            format!("${{{env_name}}}/{}/included.yaml", yaml_path(suffix))
+        };
+        let main_path = dir.path().join("config.yaml");
+        std::fs::write(
+            &main_path,
+            format!(
+                r#"
+include:
+  - '{}'
+plugins:
+  - tag: main_debug
+    type: debug_print
+"#,
+                include_path
+            ),
+        )
+        .expect("write main config");
+
+        let summary = validate_file(&main_path).expect("include path should expand");
+        assert_eq!(summary.plugin_count, 2);
+        assert_eq!(
+            summary.dependency_graph.init_order,
+            vec!["included_debug".to_string(), "main_debug".to_string()]
+        );
     }
 
     #[test]
