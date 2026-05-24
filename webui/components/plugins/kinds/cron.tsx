@@ -104,8 +104,10 @@ function parseCronJobs(value: unknown): CronJob[] {
 
 function serializeCronJobs(jobs: CronJob[]): object[] {
   return jobs.map((job) => {
-    const entry: Record<string, unknown> = {};
-    if (job.name.trim()) entry.name = job.name.trim();
+    // `name` is required by the backend (see cron docs: args.jobs[].name).
+    // Always emit it — even when empty — so saving an unfilled job surfaces
+    // the validation error instead of producing a silently-malformed config.
+    const entry: Record<string, unknown> = { name: job.name.trim() };
     if (job.schedule.trim()) entry.schedule = job.schedule.trim();
     if (job.interval.trim()) entry.interval = job.interval.trim();
     const executors = job.executors
@@ -116,10 +118,17 @@ function serializeCronJobs(jobs: CronJob[]): object[] {
   });
 }
 
-function createEmptyCronJob(): CronJob {
+function createEmptyCronJob(existing: CronJob[] = []): CronJob {
+  const used = new Set(existing.map((job) => job.name.trim()).filter(Boolean));
+  let index = existing.length + 1;
+  let candidate = `job_${index}`;
+  while (used.has(candidate)) {
+    index += 1;
+    candidate = `job_${index}`;
+  }
   return {
     id: createItemId(),
-    name: "",
+    name: candidate,
     schedule: "",
     interval: "",
     executors: [],
@@ -162,7 +171,7 @@ export function CronComposer({
     onChange({ ...value, jobs: serializeCronJobs(nextJobs) });
   };
 
-  const addJob = () => updateJobs([...jobs, createEmptyCronJob()]);
+  const addJob = () => updateJobs([...jobs, createEmptyCronJob(jobs)]);
 
   const updateJob = (jobId: string, patch: Partial<CronJob>) => {
     updateJobs(
@@ -343,12 +352,26 @@ function CronJobCard({
               )}
             </span>
           ) : (
-            <Input
-              value={job.name}
-              onChange={(e) => onChange({ name: e.target.value })}
-              placeholder={`任务名称（如 refresh_sets）`}
-              className="h-7 min-w-0 flex-1 font-mono text-xs"
-            />
+            <div className="flex min-w-0 flex-1 items-center gap-1.5">
+              <Input
+                value={job.name}
+                onChange={(e) => onChange({ name: e.target.value })}
+                placeholder={`任务名称（必填，如 refresh_sets）`}
+                aria-invalid={!job.name.trim()}
+                className={cn(
+                  "h-7 min-w-0 flex-1 font-mono text-xs",
+                  !job.name.trim() &&
+                    "border-destructive focus-visible:ring-destructive",
+                )}
+              />
+              <span
+                className="text-destructive"
+                aria-hidden="true"
+                title="必填"
+              >
+                *
+              </span>
+            </div>
           )}
           <Badge variant="outline" className="shrink-0 font-mono text-[10px]">
             #{index + 1} / {total}

@@ -9,6 +9,7 @@ import {
   pluginsFromConfig,
   serializePluginsPreserving,
   stringifyOxiDnsConfig,
+  topLevelConfigChanged,
   type OxiDnsConfig,
 } from "./oxidns-config";
 import {
@@ -32,6 +33,14 @@ import {
 } from "./oxidns-api";
 import { parsePrometheusMetrics, type PluginMetricsMap } from "./metrics";
 import {
+  getIncomingPluginReferences,
+  getReplacementCandidates,
+  removeSafePluginReferences,
+  renamePluginConfigTag,
+  replacePluginReferences,
+  type PluginReferenceImpact,
+} from "./plugin-reference-operations";
+import {
   annotateApply,
   clearSnapshots,
   deleteSnapshot,
@@ -44,6 +53,31 @@ import {
 type StoreSet = (
   partial: Partial<AppState> | ((state: AppState) => Partial<AppState>),
 ) => void;
+
+export type RestartPhase =
+  | "saving"
+  | "requesting"
+  | "waiting_down"
+  | "waiting_up"
+  | "reloading";
+
+export type PluginDeletePreview =
+  | {
+      status: "ready";
+      plugin: PluginInstance;
+      references: PluginReferenceImpact[];
+      canRemoveReferences: boolean;
+      replacementCandidates: PluginInstance[];
+    }
+  | { status: "blocked"; message: string };
+
+export type PluginRenameResult =
+  | { status: "renamed" }
+  | {
+      status: "needs-confirmation";
+      references: PluginReferenceImpact[];
+    }
+  | { status: "invalid"; message: string };
 
 interface AppState {
   plugins: PluginInstance[];
@@ -63,6 +97,11 @@ interface AppState {
   isConfigSaving: boolean;
   isApplying: boolean;
   isRestarting: boolean;
+  /**
+   * Current phase of an in-flight restart, surfaced by the blocking overlay.
+   * `null` when no restart is in progress.
+   */
+  restartPhase: RestartPhase | null;
   configModel: OxiDnsConfig;
   configText: string;
   configVersion: string | null;
@@ -97,11 +136,39 @@ interface AppState {
   togglePluginPin: (id: string) => void;
   togglePluginEnabled: (id: string) => void;
   updatePluginConfig: (id: string, config: Record<string, unknown>) => void;
-  deletePlugin: (id: string) => void;
+  previewPluginDelete: (id: string) => Promise<PluginDeletePreview>;
+  confirmDeletePlugin: (id: string) => Promise<void>;
+  replaceAndDeletePlugin: (id: string, replacementTag: string) => Promise<void>;
+  removeReferencesAndDeletePlugin: (id: string) => Promise<void>;
+  forceDeletePluginInEditor: (id: string) => void;
   addPlugin: (
     plugin: Omit<PluginInstance, "id" | "createdAt" | "updatedAt" | "metrics">,
   ) => void;
-  renamePlugin: (id: string, name: string) => void;
+  renamePlugin: (
+    id: string,
+    name: string,
+    options?: { confirmed?: boolean },
+  ) => Promise<PluginRenameResult>;
+}
+
+let queuedConfigSave: Promise<void> = Promise.resolve();
+let pendingConfigSaveCount = 0;
+
+function enqueueConfigSave(
+  set: StoreSet,
+  task: () => Promise<void>,
+): Promise<void> {
+  pendingConfigSaveCount += 1;
+  set({ isConfigSaving: true });
+
+  const run = () => task();
+  const current = queuedConfigSave.then(run, run);
+  queuedConfigSave = current.catch(() => {});
+
+  return current.finally(() => {
+    pendingConfigSaveCount -= 1;
+    if (pendingConfigSaveCount === 0) set({ isConfigSaving: false });
+  });
 }
 
 const initialConfigModel = createDefaultOxiDnsConfig();
@@ -125,6 +192,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isConfigSaving: false,
   isApplying: false,
   isRestarting: false,
+  restartPhase: null,
   configModel: initialConfigModel,
   configText: initialConfigText,
   configVersion: null,
@@ -278,45 +346,44 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // Save only. Hot-reload is a separate explicit step (applyConfig) so the
   // disk write and the running-config swap are never coupled.
-  saveConfig: async () => {
-    const state = get();
-    if (state.configError) throw new Error(state.configError);
+  saveConfig: () =>
+    enqueueConfigSave(set, async () => {
+      const state = get();
+      if (state.configError) throw new Error(state.configError);
 
-    set({ isConfigSaving: true, configError: null });
-    try {
-      const validation = await validateConfigText(state.configText);
-      applyConfigValidationResponse(validation, set);
-      const content = state.configText;
-      const response = await saveConfigFile({
-        content,
-        baseVersion: state.configVersion,
-        validate: true,
-        reload: false,
-      });
-      const scope = getScopeKey(response.path);
-      recordSnapshot(scope, {
-        content,
-        version: response.version,
-        source: "save",
-        pluginCount: pluginCountOf(content),
-        applyStatus: "not-applied",
-      });
-      set({
-        configVersion: response.version,
-        configPath: response.path,
-        reloadStatus: response.reload ?? get().reloadStatus,
-        configHistory: listSnapshots(scope),
-      });
-      await get().refreshRuntimeState();
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "保存配置文件失败";
-      set({ configError: message });
-      throw error;
-    } finally {
-      set({ isConfigSaving: false });
-    }
-  },
+      set({ configError: null });
+      try {
+        const validation = await validateConfigText(state.configText);
+        applyConfigValidationResponse(validation, set);
+        const content = state.configText;
+        const response = await saveConfigFile({
+          content,
+          baseVersion: state.configVersion,
+          validate: true,
+          reload: false,
+        });
+        const scope = getScopeKey(response.path);
+        recordSnapshot(scope, {
+          content,
+          version: response.version,
+          source: "save",
+          pluginCount: pluginCountOf(content),
+          applyStatus: "not-applied",
+        });
+        set({
+          configVersion: response.version,
+          configPath: response.path,
+          reloadStatus: response.reload ?? get().reloadStatus,
+          configHistory: listSnapshots(scope),
+        });
+        await get().refreshRuntimeState();
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "保存配置文件失败";
+        set({ configError: message });
+        throw error;
+      }
+    }),
 
   // Trigger a backend hot-reload of the on-disk config and wait for the
   // outcome. The backend already rolls the running pipeline back to the
@@ -386,9 +453,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   // old process has stopped and the new one has come back up, then reloads
   // the config from the fresh process.
   restartApp: async () => {
-    set({ isRestarting: true });
+    set({ isRestarting: true, restartPhase: "saving" });
+    let savedVersion: string | null = null;
     try {
       await get().saveConfig();
+      savedVersion = get().configVersion;
       // Capture the running process's uptime before the request: pollReconnect
       // uses it to detect a uptime-reset signature when the down transition
       // happens faster than the polling interval can observe.
@@ -399,11 +468,27 @@ export const useAppStore = create<AppState>((set, get) => ({
         // Health probe failures here are fine; pollReconnect falls back to
         // requiring an observed down transition.
       }
+      set({ restartPhase: "requesting" });
       await requestRestart();
-      await pollReconnect(baselineUptimeMs);
+      await pollReconnect(baselineUptimeMs, (phase) =>
+        set({ restartPhase: phase }),
+      );
+      set({ restartPhase: "reloading" });
       await get().loadConfig();
+    } catch (error) {
+      if (savedVersion) {
+        const scope = getScopeKey(get().configPath);
+        annotateApply(
+          scope,
+          savedVersion,
+          "apply-failed",
+          error instanceof Error ? error.message : "重启失败",
+        );
+        set({ configHistory: listSnapshots(scope) });
+      }
+      throw error;
     } finally {
-      set({ isRestarting: false });
+      set({ isRestarting: false, restartPhase: null });
     }
   },
 
@@ -417,15 +502,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   // One-click rollback usable in BOTH console and editor mode: load the
-  // snapshot, persist it to disk, then hot-reload so it becomes live. This is
-  // the path users actually want from history; the old "load into buffer
-  // only" was a dead end in console mode (no visible 保存 button there).
+  // snapshot, persist it to disk, then choose hot-reload or full restart based
+  // on whether the rollback touches restart-only top-level fields.
   rollbackToSnapshot: async (id) => {
     const entry = get().configHistory.find((s) => s.id === id);
     if (!entry) return;
+    const running = get().configHistory.find(
+      (s) => s.version === get().runningVersion,
+    );
+    const requiresRestart = Boolean(
+      running && topLevelConfigChanged(entry.content, running.content),
+    );
     get().setYamlConfig(entry.content);
     await get().saveConfig();
-    await get().applyConfig();
+    if (requiresRestart) {
+      await get().restartApp();
+    } else {
+      await get().applyConfig();
+    }
   },
 
   deleteConfigSnapshot: (id) => {
@@ -474,18 +568,114 @@ export const useAppStore = create<AppState>((set, get) => ({
       );
     }),
 
-  deletePlugin: (id) =>
-    set((state) => {
-      const next = syncPluginsToConfig(state, (plugins) =>
-        plugins.filter((p) => p.id !== id),
-      );
+  previewPluginDelete: async (id) => {
+    const state = get();
+    if (state.configError) {
       return {
-        ...next,
-        selectedPlugin:
-          state.selectedPlugin?.id === id ? null : next.selectedPlugin,
-        detailOpen: state.selectedPlugin?.id === id ? false : state.detailOpen,
+        status: "blocked",
+        message: "当前配置有错误，请先在编辑器中修复后再删除插件",
       };
-    }),
+    }
+    const plugin = state.plugins.find((p) => p.id === id);
+    if (!plugin) {
+      return { status: "blocked", message: "插件不存在或已被删除" };
+    }
+
+    await get().validateCurrentConfig();
+    const latest = get();
+    const references = incomingReferences(latest, plugin.name);
+    return {
+      status: "ready",
+      plugin,
+      references,
+      canRemoveReferences:
+        references.length > 0 && references.every((edge) => edge.removable),
+      replacementCandidates: replacementCandidates(latest, plugin, references),
+    };
+  },
+
+  confirmDeletePlugin: async (id) => {
+    await get().validateCurrentConfig();
+    const state = get();
+    const plugin = state.plugins.find((p) => p.id === id);
+    if (!plugin) throw new Error("插件不存在或已被删除");
+    const references = incomingReferences(state, plugin.name);
+    if (references.length > 0) {
+      throw new Error("该插件仍被其它插件引用，无法直接删除");
+    }
+    set((current) => deletePluginFromState(current, id));
+    await get().saveConfig();
+  },
+
+  replaceAndDeletePlugin: async (id, replacementTag) => {
+    await get().validateCurrentConfig();
+    const state = get();
+    const plugin = state.plugins.find((p) => p.id === id);
+    const replacement = state.plugins.find((p) => p.name === replacementTag);
+    if (!plugin) throw new Error("插件不存在或已被删除");
+    if (!replacement) throw new Error("替换目标不存在");
+    const references = incomingReferences(state, plugin.name);
+    if (
+      !replacementCandidates(state, plugin, references).some(
+        (candidate) => candidate.name === replacementTag,
+      )
+    ) {
+      throw new Error("替换目标类型不兼容");
+    }
+
+    const replaced = replacePluginReferences(
+      state.configModel,
+      references,
+      plugin.name,
+      replacementTag,
+    );
+    set((current) => {
+      const applied = applyConfigModelToState(current, replaced.config, [
+        ...replaced.changedTags,
+        plugin.name,
+      ]);
+      return deletePluginFromState({ ...current, ...applied }, id);
+    });
+    await get().saveConfig();
+  },
+
+  removeReferencesAndDeletePlugin: async (id) => {
+    await get().validateCurrentConfig();
+    const state = get();
+    const plugin = state.plugins.find((p) => p.id === id);
+    if (!plugin) throw new Error("插件不存在或已被删除");
+    const references = incomingReferences(state, plugin.name);
+    if (references.length === 0) {
+      set((current) => deletePluginFromState(current, id));
+      await get().saveConfig();
+      return;
+    }
+    if (!references.every((edge) => edge.removable)) {
+      throw new Error("存在无法安全移除的引用，请改用替换或编辑器手动修复");
+    }
+
+    const removed = removeSafePluginReferences(state.configModel, references);
+    set((current) => {
+      const applied = applyConfigModelToState(current, removed.config, [
+        ...removed.changedTags,
+        plugin.name,
+      ]);
+      return deletePluginFromState({ ...current, ...applied }, id);
+    });
+    await get().saveConfig();
+  },
+
+  forceDeletePluginInEditor: (id) => {
+    set((state) => ({
+      ...deletePluginFromState(state, id),
+      editorMode: true,
+    }));
+    void get()
+      .validateCurrentConfig()
+      .catch(() => {
+        // The editor and header expose the dangling-reference validation error.
+      });
+  },
 
   addPlugin: (plugin) =>
     set((state) =>
@@ -501,25 +691,54 @@ export const useAppStore = create<AppState>((set, get) => ({
       ]),
     ),
 
-  renamePlugin: (id, name) =>
-    set((state) => {
-      const oldTag = state.plugins.find((p) => p.id === id)?.name;
-      return syncPluginsToConfig(
-        state,
-        (plugins) =>
-          plugins.map((p) =>
-            p.id === id
-              ? {
-                  ...p,
-                  id: name,
-                  name,
-                  updatedAt: new Date().toISOString(),
-                }
-              : p,
-          ),
-        oldTag ? [oldTag, name] : [name],
-      );
-    }),
+  renamePlugin: async (id, name, options) => {
+    const nextName = name.trim();
+    const state = get();
+    const plugin = state.plugins.find((p) => p.id === id);
+    if (!plugin) return { status: "invalid", message: "插件不存在或已被删除" };
+    if (!nextName) return { status: "invalid", message: "插件名称不能为空" };
+    if (nextName === plugin.name) {
+      return { status: "invalid", message: "插件名称没有变化" };
+    }
+    if (state.plugins.some((p) => p.id !== id && p.name === nextName)) {
+      return { status: "invalid", message: "插件名称已存在" };
+    }
+    if (state.configError) {
+      return {
+        status: "invalid",
+        message: "当前配置有错误，请先在编辑器中修复后再重命名",
+      };
+    }
+
+    await get().validateCurrentConfig();
+    const latest = get();
+    const references = incomingReferences(latest, plugin.name);
+    if (references.length > 0 && !options?.confirmed) {
+      return { status: "needs-confirmation", references };
+    }
+
+    const replaced = replacePluginReferences(
+      latest.configModel,
+      references,
+      plugin.name,
+      nextName,
+    );
+    const renamed = renamePluginConfigTag(
+      replaced.config,
+      plugin.name,
+      nextName,
+    );
+    set((current) =>
+      applyConfigModelToState(
+        current,
+        renamed.config,
+        [...replaced.changedTags, ...renamed.changedTags],
+        nextName,
+      ),
+    );
+    await get().saveConfig();
+    return { status: "renamed" };
+  },
 }));
 
 function applyConfigFileResponse(response: ConfigFileResponse, set: StoreSet) {
@@ -584,6 +803,69 @@ function syncPluginsToConfig(
   };
 }
 
+function applyConfigModelToState(
+  state: AppState,
+  configModel: OxiDnsConfig,
+  changedTags: string[],
+  selectedTag?: string | null,
+) {
+  const plugins = restorePinnedState(pluginsFromConfig(configModel));
+  const configText = serializePluginsPreserving(
+    state.configText,
+    configModel,
+    new Set(changedTags),
+  );
+  return {
+    plugins,
+    configModel,
+    configText,
+    yamlConfig: configText,
+    selectedPlugin:
+      selectedTag === null
+        ? null
+        : selectedTag
+          ? (plugins.find((plugin) => plugin.name === selectedTag) ?? null)
+          : syncSelectedPlugin(state.selectedPlugin, plugins),
+    configError: null,
+    configDiagnostics: [],
+  };
+}
+
+function deletePluginFromState(state: AppState, id: string) {
+  const plugin = state.plugins.find((p) => p.id === id);
+  if (!plugin) return {};
+  const configModel: OxiDnsConfig = {
+    ...state.configModel,
+    plugins: state.configModel.plugins.filter((p) => p.tag !== plugin.name),
+  };
+  const selectedWasDeleted = state.selectedPlugin?.id === id;
+  return {
+    ...applyConfigModelToState(
+      state,
+      configModel,
+      [plugin.name],
+      selectedWasDeleted ? null : undefined,
+    ),
+    detailOpen: selectedWasDeleted ? false : state.detailOpen,
+  };
+}
+
+function incomingReferences(state: AppState, tag: string) {
+  return getIncomingPluginReferences(
+    state.plugins,
+    state.dependencyGraph?.edges,
+    tag,
+  );
+}
+
+function replacementCandidates(
+  state: AppState,
+  plugin: PluginInstance,
+  references: PluginReferenceImpact[],
+) {
+  return getReplacementCandidates(state.plugins, plugin.id, references);
+}
+
 function syncSelectedPlugin(
   selectedPlugin: PluginInstance | null,
   plugins: PluginInstance[],
@@ -646,11 +928,15 @@ function delay(ms: number): Promise<void> {
 // "restart never happened" instead of silently returning success.
 const FRESH_PROCESS_BUFFER_MS = 2_000;
 
-async function pollReconnect(baselineUptimeMs?: number): Promise<void> {
+async function pollReconnect(
+  baselineUptimeMs?: number,
+  onPhase?: (phase: "waiting_down" | "waiting_up") => void,
+): Promise<void> {
   const startTime = Date.now();
   let sawDown = false;
 
   // Phase 1: wait for the old process to shut down
+  onPhase?.("waiting_down");
   const downDeadline = startTime + 30_000;
   while (Date.now() < downDeadline) {
     await delay(800);
@@ -664,6 +950,7 @@ async function pollReconnect(baselineUptimeMs?: number): Promise<void> {
   }
 
   // Phase 2: wait for the new process to come up
+  onPhase?.("waiting_up");
   const upDeadline = Date.now() + 60_000;
   while (Date.now() < upDeadline) {
     await delay(1500);

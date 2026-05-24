@@ -18,9 +18,8 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Pencil, Pin, PinOff, Save, Trash2 } from "lucide-react";
+import { Pencil, Pin, PinOff, Save } from "lucide-react";
 import { PLUGIN_TYPE_LABELS } from "@/lib/types";
 import { useAppStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -29,6 +28,8 @@ import { pluginTypeColors, pluginTypeIcons } from "./display";
 import { getPluginCatalogItem, renderPluginKindIcon } from "./catalog";
 import { PluginConfigModeEditor } from "./plugin-config-mode-editor";
 import { PluginMetricsPanel } from "./plugin-metrics-panel";
+import { PluginDeleteButton } from "./plugin-delete-button";
+import type { PluginReferenceImpact } from "@/lib/plugin-reference-operations";
 
 export function PluginDetailTemplate({
   plugin,
@@ -41,11 +42,13 @@ export function PluginDetailTemplate({
 }: PluginDetailTemplateProps) {
   const {
     togglePluginPin,
-    deletePlugin,
     updatePluginConfig,
     renamePlugin,
     saveConfig,
     isConfigSaving,
+    isApplying,
+    isRestarting,
+    configError,
     plugins,
     dependencyGraph,
   } = useAppStore();
@@ -68,6 +71,13 @@ export function PluginDetailTemplate({
   const [editingConfig, setEditingConfig] = useState(false);
   const [configValid, setConfigValid] = useState(true);
   const [newName, setNewName] = useState(plugin.name);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [pendingRename, setPendingRename] = useState<{
+    name: string;
+    references: PluginReferenceImpact[];
+  } | null>(null);
+
+  const configBusy = isConfigSaving || isApplying || isRestarting;
 
   const handleSaveConfig = async () => {
     if (!configValid) return;
@@ -98,10 +108,42 @@ export function PluginDetailTemplate({
     setEditingConfig(false);
   };
 
-  const handleSaveName = () => {
-    if (newName.trim()) {
-      renamePlugin(plugin.id, newName.trim());
+  const handleSaveName = async () => {
+    setNameError(null);
+    try {
+      const result = await renamePlugin(plugin.id, newName.trim());
+      if (result.status === "invalid") {
+        setNameError(result.message);
+        return;
+      }
+      if (result.status === "needs-confirmation") {
+        setPendingRename({
+          name: newName.trim(),
+          references: result.references,
+        });
+        return;
+      }
       setEditingName(false);
+    } catch (error) {
+      setNameError(error instanceof Error ? error.message : "重命名失败");
+    }
+  };
+
+  const handleConfirmRename = async () => {
+    if (!pendingRename) return;
+    setNameError(null);
+    try {
+      const result = await renamePlugin(plugin.id, pendingRename.name, {
+        confirmed: true,
+      });
+      if (result.status === "invalid") {
+        setNameError(result.message);
+        return;
+      }
+      setPendingRename(null);
+      setEditingName(false);
+    } catch (error) {
+      setNameError(error instanceof Error ? error.message : "重命名失败");
     }
   };
 
@@ -127,21 +169,50 @@ export function PluginDetailTemplate({
             </div>
             <div className="min-w-0 flex-1 pt-0.5">
               {editingName ? (
-                <div className="flex items-center gap-2">
-                  <Input
-                    value={newName}
-                    onChange={(e) => setNewName(e.target.value)}
-                    className="h-9 max-w-md font-mono text-lg"
-                    onKeyDown={(e) => e.key === "Enter" && handleSaveName()}
-                  />
-                  <Button size="icon-sm" onClick={handleSaveName}>
-                    <Save className="h-4 w-4" />
-                  </Button>
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={newName}
+                      onChange={(e) => {
+                        setNewName(e.target.value);
+                        setNameError(null);
+                      }}
+                      disabled={configBusy || Boolean(configError)}
+                      className="h-9 max-w-md font-mono text-lg"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !configBusy) {
+                          void handleSaveName();
+                        }
+                        if (e.key === "Escape") {
+                          setNewName(plugin.name);
+                          setNameError(null);
+                          setEditingName(false);
+                        }
+                      }}
+                    />
+                    <Button
+                      size="icon-sm"
+                      disabled={configBusy || Boolean(configError)}
+                      onClick={() => void handleSaveName()}
+                    >
+                      <Save className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  {nameError && (
+                    <p className="text-xs text-destructive">{nameError}</p>
+                  )}
                 </div>
               ) : (
                 <SheetTitle
-                  className="cursor-pointer truncate font-mono text-xl font-semibold leading-none transition-colors hover:text-primary"
-                  onClick={() => setEditingName(true)}
+                  className={cn(
+                    "truncate font-mono text-xl font-semibold leading-none transition-colors",
+                    configBusy || configError
+                      ? "cursor-default"
+                      : "cursor-pointer hover:text-primary",
+                  )}
+                  onClick={() => {
+                    if (!configBusy && !configError) setEditingName(true);
+                  }}
                 >
                   {plugin.name}
                 </SheetTitle>
@@ -191,39 +262,16 @@ export function PluginDetailTemplate({
                 </>
               )}
             </Button>
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="text-destructive hover:text-destructive"
-                >
-                  <Trash2 className="mr-1.5 h-4 w-4" />
-                  删除
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>确认删除</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    确定要删除插件 &ldquo;{plugin.name}&rdquo;
-                    吗？此操作无法撤销。
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>取消</AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={() => {
-                      deletePlugin(plugin.id);
-                      onClose();
-                    }}
-                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  >
-                    删除
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
+            <PluginDeleteButton
+              plugin={plugin}
+              variant="outline"
+              size="sm"
+              className="gap-1.5 text-destructive hover:text-destructive"
+              iconClassName="mr-0 h-4 w-4"
+              label="删除"
+              stopPropagation={false}
+              onDeleted={onClose}
+            />
           </div>
         </div>
       </header>
@@ -341,6 +389,50 @@ export function PluginDetailTemplate({
           </TabsContent>
         )}
       </Tabs>
+
+      <AlertDialog
+        open={Boolean(pendingRename)}
+        onOpenChange={(open) => {
+          if (!open) setPendingRename(null);
+        }}
+      >
+        <AlertDialogContent className="max-w-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle>同步更新引用？</AlertDialogTitle>
+            <AlertDialogDescription>
+              插件 “{plugin.name}” 被其它配置引用。重命名为 “
+              {pendingRename?.name}” 时会同步更新这些引用，并保存配置。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="max-h-56 space-y-2 overflow-auto rounded-md border bg-muted/20 p-2">
+            {pendingRename?.references.map((reference) => (
+              <div
+                key={`${reference.source_tag}:${reference.field}`}
+                className="rounded-md border bg-background px-3 py-2 text-xs"
+              >
+                <div className="font-mono font-medium">
+                  {reference.source_tag}
+                </div>
+                <div className="mt-1 font-mono text-muted-foreground">
+                  {reference.field}
+                </div>
+              </div>
+            ))}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={configBusy}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={configBusy}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleConfirmRename();
+              }}
+            >
+              更新引用并保存
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

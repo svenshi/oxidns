@@ -15,6 +15,7 @@ import {
   ConnectionRequired,
   ConnectionPending,
 } from "@/components/shell/connection-required";
+import { RestartingOverlay } from "@/components/shell/restarting-overlay";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 export default function ConsoleLayout({
@@ -140,6 +141,7 @@ export default function ConsoleLayout({
         </SidebarInset>
         <PluginDetailSheet />
         <ConfigHistorySheet open={historyOpen} onOpenChange={setHistoryOpen} />
+        <RestartingOverlay />
       </SidebarProvider>
     </TooltipProvider>
   );

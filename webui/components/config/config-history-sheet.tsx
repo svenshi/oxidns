@@ -75,7 +75,7 @@ export function ConfigHistorySheet({
             配置历史
           </SheetTitle>
           <SheetDescription>
-            仅保存在本浏览器，按服务实例隔离。「回滚此版本」会写入磁盘并热重载使其生效。
+            仅保存在本浏览器，按服务实例隔离。「回滚此版本」会写入磁盘，并根据改动类型热重载或重启生效。
           </SheetDescription>
         </SheetHeader>
 
@@ -160,7 +160,9 @@ export function ConfigHistorySheet({
                         <AlertDialogHeader>
                           <AlertDialogTitle>回滚到此版本？</AlertDialogTitle>
                           <AlertDialogDescription>
-                            将把该版本写入磁盘配置文件并立即热重载，使其成为正在运行的配置。
+                            将把该版本写入磁盘配置文件；如果包含
+                            runtime、api、log
+                            等顶层配置变更，会通过重启服务生效。
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
@@ -168,7 +170,7 @@ export function ConfigHistorySheet({
                           <AlertDialogAction
                             onClick={() => handleRollback(entry.id)}
                           >
-                            回滚并应用
+                            回滚并生效
                           </AlertDialogAction>
                         </AlertDialogFooter>
                       </AlertDialogContent>

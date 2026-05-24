@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { AppHeader } from "@/components/shell/app-header";
 import { PluginCard } from "@/components/plugins/plugin-card";
 import { CreatePluginDialog } from "@/components/plugins/create-plugin-dialog";
+import { PluginDeleteButton } from "@/components/plugins/plugin-delete-button";
 import { useAppStore } from "@/lib/store";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
@@ -18,15 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  Search,
-  LayoutGrid,
-  List,
-  Pin,
-  PinOff,
-  Trash2,
-  GitBranch,
-} from "lucide-react";
+import { Search, LayoutGrid, List, Pin, PinOff, GitBranch } from "lucide-react";
 import type { PluginType } from "@/lib/types";
 import { PLUGIN_TYPE_LABELS } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -66,8 +59,7 @@ function PluginsPageContent() {
 
   const plugins = useAppStore((s) => s.plugins);
   const dependencyGraph = useAppStore((s) => s.dependencyGraph);
-  const { setSelectedPlugin, setDetailOpen, togglePluginPin, deletePlugin } =
-    useAppStore();
+  const { setSelectedPlugin, setDetailOpen, togglePluginPin } = useAppStore();
 
   const filteredPlugins = plugins.filter((p) => {
     const definition = getPluginCatalogItem(p.pluginKind);
@@ -248,24 +240,10 @@ function PluginsPageContent() {
                                   {plugin.pinned ? "取消固定" : "固定到仪表盘"}
                                 </TooltipContent>
                               </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-7 w-7 hover:text-destructive"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      deletePlugin(plugin.id);
-                                    }}
-                                  >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent side="bottom">
-                                  删除
-                                </TooltipContent>
-                              </Tooltip>
+                              <PluginDeleteButton
+                                plugin={plugin}
+                                className="h-7 w-7 hover:text-destructive"
+                              />
                             </div>
                           </TableCell>
                         </TableRow>

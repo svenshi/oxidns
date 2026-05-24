@@ -218,6 +218,31 @@ export function pluginArgsFromUiConfig(
   return config;
 }
 
+// Compare two OxiDNS YAML configs and return true when anything outside the
+// `plugins:` list differs. Top-level keys (runtime, api, log, include, …) only
+// take effect on process start — they are NOT hot-reloadable. Used by the
+// header sync control to switch the pending-change pill from "应用更改"
+// (hot reload) to "需要重启" (full process restart) whenever the diff is
+// load-bearing for restart-only fields.
+export function topLevelConfigChanged(a: string, b: string): boolean {
+  const left = stripPluginsForCompare(a);
+  const right = stripPluginsForCompare(b);
+  if (left === null || right === null) {
+    // Unparseable input: fall back to a textual compare so the caller still
+    // sees a difference and can prompt the safer (restart) action.
+    return a.trim() !== b.trim();
+  }
+  return JSON.stringify(left) !== JSON.stringify(right);
+}
+
+function stripPluginsForCompare(text: string): Record<string, unknown> | null {
+  const parsed = parseOxiDnsYaml(text);
+  if (!parsed.config) return null;
+  const rest: Record<string, unknown> = { ...parsed.config };
+  delete rest.plugins;
+  return rest;
+}
+
 export function createDefaultOxiDnsConfig(): OxiDnsConfig {
   return {
     log: { level: "info" },

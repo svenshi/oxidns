@@ -35,6 +35,7 @@ export function ConfigEditorView() {
   const saveConfig = useAppStore((s) => s.saveConfig);
   const isConfigLoading = useAppStore((s) => s.isConfigLoading);
   const isConfigSaving = useAppStore((s) => s.isConfigSaving);
+  const isRestarting = useAppStore((s) => s.isRestarting);
   const configError = useAppStore((s) => s.configError);
   const configPath = useAppStore((s) => s.configPath);
   const configVersion = useAppStore((s) => s.configVersion);
@@ -82,7 +83,7 @@ export function ConfigEditorView() {
     setSaveStatus("idle");
     try {
       await saveConfig();
-      setOriginalConfig(yamlConfig);
+      setOriginalConfig(useAppStore.getState().configText);
       setSaveStatus("success");
       setTimeout(() => setSaveStatus("idle"), 3000);
     } catch {
@@ -121,7 +122,7 @@ export function ConfigEditorView() {
       });
   };
 
-  const busy = isConfigSaving;
+  const busy = isConfigSaving || isRestarting;
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -247,7 +248,7 @@ export function ConfigEditorView() {
                 if (hasChanges && !busy && !configError) void handleSave();
               }}
               className="h-full"
-              readOnly={isConfigLoading}
+              readOnly={isConfigLoading || busy}
               variant="config"
               backendValidation={!isOfflineMode}
               plugins={plugins}
