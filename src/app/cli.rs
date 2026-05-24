@@ -150,9 +150,9 @@ pub struct UpgradeOptions {
     #[arg(long = "skip-webui", default_value_t = false, global = true)]
     pub skip_webui: bool,
 
-    /// Restart strategy after a successful apply.
-    #[arg(long = "restart", value_enum, default_value_t = RestartMode::None, global = true)]
-    pub restart: RestartMode,
+    /// Skip restarting the service after a successful apply.
+    #[arg(long = "no-restart", default_value_t = false, global = true)]
+    pub no_restart: bool,
 
     /// Allow prerelease GitHub releases.
     #[arg(long = "allow-prerelease", default_value_t = false, global = true)]
@@ -174,6 +174,10 @@ pub struct UpgradeOptions {
     /// Disable TLS certificate verification for upgrade downloads.
     #[arg(long = "insecure-skip-verify", default_value_t = false, global = true)]
     pub insecure_skip_verify: bool,
+
+    /// GitHub personal access token for API requests.
+    #[arg(long = "github-token", global = true)]
+    pub github_token: Option<String>,
 }
 
 /// Upgrade subcommands.
@@ -342,8 +346,6 @@ mod tests {
             "./cache",
             "--backup-dir",
             "./backups",
-            "--restart",
-            "service",
             "--allow-prerelease",
             "--timeout",
             "2m",
@@ -364,14 +366,29 @@ mod tests {
                 backup_dir: PathBuf::from("./backups"),
                 webui_dir: PathBuf::from("./webui"),
                 skip_webui: false,
-                restart: RestartMode::Service,
+                no_restart: false,
                 allow_prerelease: true,
                 force: false,
                 timeout: Duration::from_secs(120),
                 socks5: Some("127.0.0.1:1080".to_string()),
                 insecure_skip_verify: true,
+                github_token: None,
             })
         );
+    }
+
+    #[test]
+    fn parse_upgrade_no_restart_flag() {
+        let args = ["oxidns", "upgrade", "apply", "--no-restart"];
+
+        let cli = Cli::parse_from(args);
+        assert!(matches!(
+            cli.command,
+            Command::Upgrade(UpgradeOptions {
+                no_restart: true,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -390,12 +407,13 @@ mod tests {
                 backup_dir: PathBuf::from("./upgrade-backups"),
                 webui_dir: PathBuf::from("./webui"),
                 skip_webui: false,
-                restart: RestartMode::None,
+                no_restart: false,
                 allow_prerelease: false,
                 force: true,
                 timeout: Duration::from_secs(30),
                 socks5: None,
                 insecure_skip_verify: false,
+                github_token: None,
             })
         );
     }

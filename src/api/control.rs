@@ -27,6 +27,7 @@ use crate::core::error::Result;
 pub enum ControlCommand {
     Shutdown,
     Reload,
+    Restart,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -174,6 +175,16 @@ impl AppController {
         }
         self.command_tx
             .send(ControlCommand::Shutdown)
+            .map_err(|_| ControlRequestError::CommandChannelClosed)
+    }
+
+    pub fn request_restart(&self) -> std::result::Result<(), ControlRequestError> {
+        {
+            let mut state = self.state.lock().expect("control state poisoned");
+            state.shutdown_requested = true;
+        }
+        self.command_tx
+            .send(ControlCommand::Restart)
             .map_err(|_| ControlRequestError::CommandChannelClosed)
     }
 
@@ -366,6 +377,32 @@ impl ApiHandler for ShutdownHandler {
                 &ActionAcceptedResponse {
                     ok: true,
                     action: "shutdown",
+                    status: "accepted",
+                },
+            ),
+            Err(err) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "control_command_failed",
+                err.to_string(),
+            ),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RestartHandler {
+    controller: Arc<AppController>,
+}
+
+#[async_trait]
+impl ApiHandler for RestartHandler {
+    async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
+        match self.controller.request_restart() {
+            Ok(()) => json_ok(
+                StatusCode::ACCEPTED,
+                &ActionAcceptedResponse {
+                    ok: true,
+                    action: "restart",
                     status: "accepted",
                 },
             ),
@@ -790,6 +827,12 @@ pub fn register_builtin_routes(
     register.register_post(
         "/shutdown",
         Arc::new(ShutdownHandler {
+            controller: controller.clone(),
+        }),
+    )?;
+    register.register_post(
+        "/restart",
+        Arc::new(RestartHandler {
             controller: controller.clone(),
         }),
     )?;

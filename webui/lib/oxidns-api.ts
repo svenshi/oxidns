@@ -383,6 +383,14 @@ export async function requestReload(): Promise<void> {
   await readJsonResponse<unknown>(response);
 }
 
+export async function requestRestart(): Promise<void> {
+  const response = await fetch(apiUrl("/restart"), {
+    method: "POST",
+    headers: apiHeaders(),
+  });
+  await readJsonResponse<unknown>(response);
+}
+
 export async function fetchCacheEntries(
   tag: string,
   options: { limit?: number; cursor?: string; qname?: string } = {},

@@ -19,6 +19,7 @@ import {
   fetchReloadStatus,
   fetchSystem,
   requestReload,
+  requestRestart,
   saveConfigFile,
   validateConfigText,
   type ConfigFileResponse,
@@ -61,6 +62,7 @@ interface AppState {
   isConfigLoading: boolean;
   isConfigSaving: boolean;
   isApplying: boolean;
+  isRestarting: boolean;
   configModel: OxiDnsConfig;
   configText: string;
   configVersion: string | null;
@@ -87,6 +89,7 @@ interface AppState {
   validateCurrentConfig: () => Promise<void>;
   saveConfig: () => Promise<void>;
   applyConfig: () => Promise<void>;
+  restartApp: () => Promise<void>;
   restoreSnapshot: (id: string) => void;
   rollbackToSnapshot: (id: string) => Promise<void>;
   deleteConfigSnapshot: (id: string) => void;
@@ -121,6 +124,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isConfigLoading: false,
   isConfigSaving: false,
   isApplying: false,
+  isRestarting: false,
   configModel: initialConfigModel,
   configText: initialConfigText,
   configVersion: null,
@@ -377,6 +381,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  // Save the current config to disk and restart the server process. After the
+  // restart request is accepted the client polls the health endpoint until the
+  // old process has stopped and the new one has come back up, then reloads
+  // the config from the fresh process.
+  restartApp: async () => {
+    set({ isRestarting: true });
+    try {
+      await get().saveConfig();
+      await requestRestart();
+      await pollReconnect();
+      await get().loadConfig();
+    } finally {
+      set({ isRestarting: false });
+    }
+  },
+
   // Load a historical snapshot back into the editor only. It is NOT persisted
   // or applied — the operator still goes through 保存 → 应用, so a rollback
   // also produces its own history entry.
@@ -591,6 +611,38 @@ function pluginCountOf(text: string): number {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Wait for the server to go down and then come back up after a restart request.
+// Phase 1: poll until health fails (process stopped, max 30s).
+// Phase 2: poll until health succeeds (new process ready, max 60s).
+// Throws if either phase times out.
+async function pollReconnect(): Promise<void> {
+  // Phase 1: wait for the old process to shut down
+  const downDeadline = Date.now() + 30_000;
+  while (Date.now() < downDeadline) {
+    await delay(800);
+    try {
+      await fetchHealth();
+      // Still up — keep waiting
+    } catch {
+      break; // Process is down, move to phase 2
+    }
+  }
+
+  // Phase 2: wait for the new process to come up
+  const upDeadline = Date.now() + 60_000;
+  while (Date.now() < upDeadline) {
+    await delay(1500);
+    try {
+      await fetchHealth();
+      return; // New process is up
+    } catch {
+      // Not yet up, keep polling
+    }
+  }
+
+  throw new Error("重启超时，请刷新页面后手动重新连接");
 }
 
 // Poll the reload status until the backend settles on a new completion.

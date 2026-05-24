@@ -99,6 +99,9 @@ zoneparser = { package = "oxidns-zoneparser", version = "0.1.0", path = "crates/
 [target.'cfg(target_os = "linux")'.dependencies]
 ripset = { package = "oxidns-ripset", version = "0.1.0", path = "crates/ripset" }
 
+[target.'cfg(windows)'.dependencies]
+zip = "2"
+
 
 [features]
 hotpath = ["hotpath/hotpath"]

@@ -9,6 +9,7 @@ import {
   GitCompare,
   Undo2,
   RefreshCw,
+  Power,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -24,6 +25,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useAppStore } from "@/lib/store";
 import { useAuthStore } from "@/lib/auth-store";
 import type { ConfigSnapshot } from "@/lib/config-history";
@@ -109,6 +120,8 @@ const PILL_TONE: Record<"warning" | "destructive", string> = {
 export function ConfigSyncControl() {
   const isConnected = useAuthStore((s) => s.isConnected);
   const applyConfig = useAppStore((s) => s.applyConfig);
+  const restartApp = useAppStore((s) => s.restartApp);
+  const isRestarting = useAppStore((s) => s.isRestarting);
   const restoreSnapshot = useAppStore((s) => s.restoreSnapshot);
   const saveConfig = useAppStore((s) => s.saveConfig);
   const setHistoryOpen = useAppStore((s) => s.setHistoryOpen);
@@ -117,6 +130,7 @@ export function ConfigSyncControl() {
   const { state, label, tone, lastGood } = useConfigSyncStatus();
 
   const [diffOpen, setDiffOpen] = useState(false);
+  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
 
   if (!isConnected) return null;
 
@@ -125,6 +139,15 @@ export function ConfigSyncControl() {
       await applyConfig();
     } catch {
       // Surfaced via the snapshot status (red pill + label).
+    }
+  };
+
+  const handleRestart = async () => {
+    try {
+      await restartApp();
+    } catch {
+      // The store surfaces failures via toast/console; UI state recovers via
+      // pollReconnect timing out.
     }
   };
 
@@ -171,7 +194,17 @@ export function ConfigSyncControl() {
         disabled
       >
         <Spinner className="h-3.5 w-3.5" />
-        应用中
+        {isRestarting ? "重启中" : "应用中"}
+      </Button>
+    ) : isRestarting ? (
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-7 gap-1.5 rounded-md px-2.5"
+        disabled
+      >
+        <Spinner className="h-3.5 w-3.5" />
+        重启中
       </Button>
     ) : (
       <Tooltip>
@@ -235,11 +268,23 @@ export function ConfigSyncControl() {
             )}
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              disabled={state === "applying" || state === "error"}
+              disabled={state === "applying" || state === "error" || isRestarting}
               onClick={handleApply}
             >
               <RefreshCw className="h-4 w-4" />
               重载当前配置
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={state === "applying" || isRestarting}
+              onClick={(event) => {
+                // Prevent the menu's default focus-restore so the AlertDialog
+                // can take focus cleanly after the menu closes.
+                event.preventDefault();
+                setRestartConfirmOpen(true);
+              }}
+            >
+              <Power className="h-4 w-4" />
+              重启服务
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -255,6 +300,26 @@ export function ConfigSyncControl() {
           modifiedTitle="待应用（当前配置）"
         />
       )}
+
+      <AlertDialog
+        open={restartConfirmOpen}
+        onOpenChange={setRestartConfirmOpen}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>重启 OxiDNS 服务？</AlertDialogTitle>
+            <AlertDialogDescription>
+              将以新进程替换正在运行的服务。期间 DNS 解析会短暂中断，所有内存中的状态（如缓存）将被清空。配置会先保存到磁盘再触发重启。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={handleRestart}>
+              确认重启
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

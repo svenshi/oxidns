@@ -123,6 +123,15 @@ impl PluginRuntimeManager {
         })
     }
 
+    pub fn request_app_restart(&self) -> Result<()> {
+        let controller = self
+            .controller()
+            .ok_or_else(|| DnsError::plugin("restart requires application control context"))?;
+        controller
+            .request_restart()
+            .map_err(|err| DnsError::plugin(err.to_string()))
+    }
+
     pub async fn reload_provider(&self, tag: &str) -> Result<()> {
         let runtime = self
             .current_runtime()
@@ -180,6 +189,10 @@ pub fn clear_app_controller() {
 
 pub fn request_app_reload() -> Result<()> {
     global_manager().request_app_reload()
+}
+
+pub fn request_app_restart() -> Result<()> {
+    global_manager().request_app_restart()
 }
 
 pub async fn reload_provider(tag: &str) -> Result<()> {

@@ -165,6 +165,7 @@ struct UpgradePluginConfig {
     timeout: Option<String>,
     socks5: Option<String>,
     insecure_skip_verify: Option<bool>,
+    github_token: Option<String>,
 }
 
 impl UpgradePluginConfig {
@@ -212,6 +213,7 @@ impl UpgradePluginConfig {
         if let Some(value) = self.insecure_skip_verify {
             config.insecure_skip_verify = value;
         }
+        config.github_token = self.github_token;
         Ok(config)
     }
 }

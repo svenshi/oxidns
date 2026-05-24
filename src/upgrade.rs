@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
-use http::header::{HeaderValue, USER_AGENT};
+use http::header::{AUTHORIZATION, HeaderValue, USER_AGENT};
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -50,6 +50,7 @@ pub struct UpgradeConfig {
     pub timeout: Duration,
     pub socks5: Option<String>,
     pub insecure_skip_verify: bool,
+    pub github_token: Option<String>,
 }
 
 impl Default for UpgradeConfig {
@@ -62,13 +63,14 @@ impl Default for UpgradeConfig {
             backup_dir: PathBuf::from(DEFAULT_BACKUP_DIR),
             webui_dir: PathBuf::from(DEFAULT_WEBUI_DIR),
             skip_webui: false,
-            restart: RestartMode::None,
+            restart: RestartMode::Service,
             allow_prerelease: false,
             force: false,
             cleanup_after_apply: false,
             timeout: Duration::from_secs(30),
             socks5: None,
             insecure_skip_verify: false,
+            github_token: None,
         }
     }
 }
@@ -83,13 +85,18 @@ impl UpgradeConfig {
             backup_dir: options.backup_dir.clone(),
             webui_dir: options.webui_dir.clone(),
             skip_webui: options.skip_webui,
-            restart: options.restart,
+            restart: if options.no_restart {
+                RestartMode::None
+            } else {
+                RestartMode::Service
+            },
             allow_prerelease: options.allow_prerelease,
             force: options.force,
             cleanup_after_apply: false,
             timeout: options.timeout,
             socks5: options.socks5.clone(),
             insecure_skip_verify: options.insecure_skip_verify,
+            github_token: options.github_token.clone(),
         }
     }
 }
@@ -323,10 +330,8 @@ where
     timeout(
         config.timeout,
         client.download_with_progress(
-            HttpRequestOptions::from_url(asset.browser_download_url.as_str()).with_headers(vec![(
-                USER_AGENT,
-                HeaderValue::from_static(GITHUB_USER_AGENT),
-            )]),
+            HttpRequestOptions::from_url(asset.browser_download_url.as_str())
+                .with_headers(github_request_headers(config.github_token.as_deref())),
             &archive_path,
             progress,
         ),
@@ -369,88 +374,102 @@ async fn apply_unchecked(
     config: &UpgradeConfig,
     restart_context: UpgradeContext,
 ) -> Result<ApplyOutcome> {
-    #[cfg(windows)]
-    {
-        let _ = config;
-        return Err(DnsError::runtime(
-            "upgrade apply is not supported on Windows; use check or download",
-        ));
-    }
+    print_cli_apply_step(restart_context, "Acquiring upgrade lock...");
+    let lock_path = config.cache_dir.join(".upgrade.lock");
+    fs::create_dir_all(&config.cache_dir)?;
+    let lock_file = File::create(&lock_path).map_err(|err| {
+        DnsError::runtime(format!(
+            "failed to create upgrade lock '{}': {}",
+            lock_path.display(),
+            err
+        ))
+    })?;
+    lock_file.try_lock_exclusive().map_err(|err| {
+        DnsError::runtime(format!("another upgrade appears to be running: {err}"))
+    })?;
+
+    print_cli_apply_step(
+        restart_context,
+        "Downloading archive and verifying GitHub asset digest...",
+    );
+    let progress_reporter = UpgradeDownloadProgressReporter::new(restart_context);
+    let downloaded = download(config, move |progress| {
+        progress_reporter.report(progress);
+    })
+    .await?;
+    print_cli_apply_step(
+        restart_context,
+        format!(
+            "Archive ready: {} (sha256 {})",
+            downloaded.archive_path.display(),
+            downloaded.sha256
+        ),
+    );
 
     #[cfg(not(windows))]
+    if !downloaded.asset_name.ends_with(".tar.gz") {
+        return Err(DnsError::runtime(format!(
+            "upgrade apply requires a .tar.gz asset, got '{}'",
+            downloaded.asset_name
+        )));
+    }
+    #[cfg(windows)]
+    if !downloaded.asset_name.ends_with(".zip") {
+        return Err(DnsError::runtime(format!(
+            "upgrade apply requires a .zip asset, got '{}'",
+            downloaded.asset_name
+        )));
+    }
+
+    let unpack_dir = config.cache_dir.join(format!(
+        ".unpack-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    ));
+    if unpack_dir.exists() {
+        fs::remove_dir_all(&unpack_dir)?;
+    }
+    fs::create_dir_all(&unpack_dir)?;
+    print_cli_apply_step(
+        restart_context,
+        format!("Unpacking archive into {}...", unpack_dir.display()),
+    );
+    #[cfg(not(windows))]
+    unpack_tar_gz(&downloaded.archive_path, &unpack_dir)?;
+    #[cfg(windows)]
+    unpack_zip(&downloaded.archive_path, &unpack_dir)?;
+
+    #[cfg(not(windows))]
+    let extracted = find_extracted_binary(&unpack_dir)?;
+    #[cfg(windows)]
+    let extracted = find_extracted_binary_windows(&unpack_dir)?;
+
+    let current_exe = std::env::current_exe()
+        .map_err(|err| DnsError::runtime(format!("failed to resolve current exe: {err}")))?;
+    fs::create_dir_all(&config.backup_dir)?;
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    #[cfg(not(windows))]
+    let backup_path = config.backup_dir.join(format!("oxidns-{}-{}", VERSION, ts));
+    #[cfg(windows)]
+    let backup_path = config
+        .backup_dir
+        .join(format!("oxidns-{}-{}.exe", VERSION, ts));
+
+    print_cli_apply_step(
+        restart_context,
+        format!("Creating backup at {}...", backup_path.display()),
+    );
+    print_cli_apply_step(
+        restart_context,
+        format!("Replacing binary at {}...", current_exe.display()),
+    );
+    #[cfg(not(windows))]
     {
-        print_cli_apply_step(restart_context, "Acquiring upgrade lock...");
-        let lock_path = config.cache_dir.join(".upgrade.lock");
-        fs::create_dir_all(&config.cache_dir)?;
-        let lock_file = File::create(&lock_path).map_err(|err| {
-            DnsError::runtime(format!(
-                "failed to create upgrade lock '{}': {}",
-                lock_path.display(),
-                err
-            ))
-        })?;
-        lock_file.try_lock_exclusive().map_err(|err| {
-            DnsError::runtime(format!("another upgrade appears to be running: {err}"))
-        })?;
-
-        print_cli_apply_step(
-            restart_context,
-            "Downloading archive and verifying GitHub asset digest...",
-        );
-        let progress_reporter = UpgradeDownloadProgressReporter::new(restart_context);
-        let downloaded = download(config, move |progress| {
-            progress_reporter.report(progress);
-        })
-        .await?;
-        print_cli_apply_step(
-            restart_context,
-            format!(
-                "Archive ready: {} (sha256 {})",
-                downloaded.archive_path.display(),
-                downloaded.sha256
-            ),
-        );
-        if !downloaded.asset_name.ends_with(".tar.gz") {
-            return Err(DnsError::runtime(format!(
-                "upgrade apply requires a .tar.gz asset, got '{}'",
-                downloaded.asset_name
-            )));
-        }
-
-        let unpack_dir = config.cache_dir.join(format!(
-            ".unpack-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-        ));
-        if unpack_dir.exists() {
-            fs::remove_dir_all(&unpack_dir)?;
-        }
-        fs::create_dir_all(&unpack_dir)?;
-        print_cli_apply_step(
-            restart_context,
-            format!("Unpacking archive into {}...", unpack_dir.display()),
-        );
-        unpack_tar_gz(&downloaded.archive_path, &unpack_dir)?;
-
-        let extracted = find_extracted_binary(&unpack_dir)?;
-        let current_exe = std::env::current_exe()
-            .map_err(|err| DnsError::runtime(format!("failed to resolve current exe: {err}")))?;
-        fs::create_dir_all(&config.backup_dir)?;
-        let backup_path = config.backup_dir.join(format!(
-            "oxidns-{}-{}",
-            VERSION,
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-        ));
-
-        print_cli_apply_step(
-            restart_context,
-            format!("Creating backup at {}...", backup_path.display()),
-        );
         fs::copy(&current_exe, &backup_path).map_err(|err| {
             DnsError::runtime(format!(
                 "failed to create binary backup '{}': {}",
@@ -458,64 +477,63 @@ async fn apply_unchecked(
                 err
             ))
         })?;
-
-        print_cli_apply_step(
-            restart_context,
-            format!("Replacing binary at {}...", current_exe.display()),
-        );
         if let Err(err) = replace_binary(&extracted, &current_exe) {
             let _ = fs::copy(&backup_path, &current_exe);
             return Err(err);
         }
-        print_cli_apply_step(restart_context, "Binary replacement completed.");
-
-        let (webui_path, webui_backup_path) = if config.skip_webui {
-            print_cli_apply_step(restart_context, "Skipping WebUI upgrade (--skip-webui).");
-            (None, None)
-        } else {
-            match find_extracted_webui(&unpack_dir) {
-                None => {
-                    print_cli_apply_step(
-                        restart_context,
-                        "Archive contains no webui directory; skipping WebUI upgrade.",
-                    );
-                    (None, None)
-                }
-                Some(src) => {
-                    print_cli_apply_step(
-                        restart_context,
-                        format!("Installing WebUI into {}...", config.webui_dir.display()),
-                    );
-                    let (path, backup) = replace_webui(
-                        &src,
-                        &config.webui_dir,
-                        &config.backup_dir,
-                        &downloaded.version,
-                    )?;
-                    print_cli_apply_step(restart_context, "WebUI upgrade completed.");
-                    (Some(path), backup)
-                }
-            }
-        };
-
-        if config.cleanup_after_apply {
-            let _ = cleanup_upgrade_artifacts(config);
-        }
-
-        if config.restart == RestartMode::Service {
-            print_cli_apply_step(restart_context, "Restarting installed service...");
-            restart_after_apply(restart_context)?;
-        }
-
-        Ok(ApplyOutcome {
-            installed_version: downloaded.version,
-            asset_name: downloaded.asset_name,
-            backup_path,
-            binary_path: current_exe,
-            webui_path,
-            webui_backup_path,
-        })
     }
+    // Windows: rename running exe to backup then place new binary at original path.
+    // replace_binary_windows() handles backup creation and rollback atomically.
+    #[cfg(windows)]
+    replace_binary_windows(&extracted, &current_exe, &backup_path)?;
+    print_cli_apply_step(restart_context, "Binary replacement completed.");
+
+    let (webui_path, webui_backup_path) = if config.skip_webui {
+        print_cli_apply_step(restart_context, "Skipping WebUI upgrade (--skip-webui).");
+        (None, None)
+    } else {
+        match find_extracted_webui(&unpack_dir) {
+            None => {
+                print_cli_apply_step(
+                    restart_context,
+                    "Archive contains no webui directory; skipping WebUI upgrade.",
+                );
+                (None, None)
+            }
+            Some(src) => {
+                print_cli_apply_step(
+                    restart_context,
+                    format!("Installing WebUI into {}...", config.webui_dir.display()),
+                );
+                let (path, backup) = replace_webui(
+                    &src,
+                    &config.webui_dir,
+                    &config.backup_dir,
+                    &downloaded.version,
+                )?;
+                print_cli_apply_step(restart_context, "WebUI upgrade completed.");
+                (Some(path), backup)
+            }
+        }
+    };
+
+    if config.cleanup_after_apply {
+        let _ = cleanup_upgrade_artifacts(config);
+    }
+
+    if config.restart == RestartMode::Service {
+        print_cli_apply_step(restart_context, "Restarting installed service...");
+        restart_after_apply(restart_context)?;
+    }
+
+    Ok(ApplyOutcome {
+        installed_version: downloaded.version,
+        asset_name: downloaded.asset_name,
+        backup_path,
+        binary_path: current_exe,
+        webui_path,
+        webui_backup_path,
+    })
 }
 
 #[derive(Clone)]
@@ -668,12 +686,129 @@ fn print_cli_apply_step(restart_context: UpgradeContext, message: impl AsRef<str
     }
 }
 
-#[cfg(not(windows))]
 fn restart_after_apply(restart_context: UpgradeContext) -> Result<()> {
     match restart_context {
+        // CLI is a separate process; ask the platform service manager to restart
+        // the running daemon.
         UpgradeContext::Cli => service::restart_installed_service(),
-        UpgradeContext::Plugin => std::process::exit(EXIT_RESTART_REQUIRED),
+        // Plugin runs inside the server process: signal the main event loop to
+        // do a graceful shutdown + exec_restart(), which loads the new binary
+        // already on disk. Fall back to exit(75) if the controller is gone.
+        UpgradeContext::Plugin => {
+            crate::plugin::request_app_restart()
+                .unwrap_or_else(|_| std::process::exit(EXIT_RESTART_REQUIRED));
+            Ok(())
+        }
     }
+}
+
+#[cfg(windows)]
+fn unpack_zip(archive: &std::path::Path, out_dir: &std::path::Path) -> Result<()> {
+    use std::io::Read as _;
+    let file = File::open(archive).map_err(|e| {
+        DnsError::runtime(format!("failed to open zip '{}': {e}", archive.display()))
+    })?;
+    let mut zip = zip::ZipArchive::new(file)
+        .map_err(|e| DnsError::runtime(format!("failed to read zip archive: {e}")))?;
+    // Canonicalize `out_dir` once so the post-join containment check is
+    // resilient to relative components and current-dir changes.
+    let out_dir_canon = fs::canonicalize(out_dir).map_err(|e| {
+        DnsError::runtime(format!(
+            "failed to canonicalize unpack dir '{}': {e}",
+            out_dir.display()
+        ))
+    })?;
+    for i in 0..zip.len() {
+        let mut entry = zip
+            .by_index(i)
+            .map_err(|e| DnsError::runtime(format!("failed to access zip entry {i}: {e}")))?;
+        if entry.is_dir() {
+            continue;
+        }
+        // `enclosed_name()` rejects absolute paths and `..` components that
+        // would escape the unpack root, mitigating zip-slip on Windows where
+        // backslashes and drive letters add extra footguns. Treat any
+        // rejected entry as a hard error so a malicious archive cannot
+        // silently skip files and leave the install in a half-applied state.
+        let Some(rel_path) = entry.enclosed_name() else {
+            return Err(DnsError::runtime(format!(
+                "refusing to extract zip entry with unsafe path: '{}'",
+                entry.name()
+            )));
+        };
+        let dest = out_dir_canon.join(&rel_path);
+        // Defense in depth: ensure the resolved parent stays under
+        // `out_dir_canon` even after the join. `enclosed_name()` already
+        // enforces this, but the extra check protects against future zip
+        // crate behavior changes and any host-side symlink trickery.
+        let parent = dest.parent().unwrap_or(&out_dir_canon);
+        fs::create_dir_all(parent).map_err(|e| {
+            DnsError::runtime(format!("failed to create '{}': {e}", parent.display()))
+        })?;
+        if !parent.starts_with(&out_dir_canon) {
+            return Err(DnsError::runtime(format!(
+                "refusing to extract zip entry outside unpack dir: '{}'",
+                rel_path.display()
+            )));
+        }
+        let mut out = File::create(&dest).map_err(|e| {
+            DnsError::runtime(format!("failed to create '{}': {e}", dest.display()))
+        })?;
+        std::io::copy(&mut entry, &mut out)
+            .map_err(|e| DnsError::runtime(format!("failed to extract '{}': {e}", entry.name())))?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn find_extracted_binary_windows(unpack_dir: &std::path::Path) -> Result<PathBuf> {
+    let candidate = unpack_dir.join("oxidns.exe");
+    if candidate.is_file() {
+        return Ok(candidate);
+    }
+    Err(DnsError::runtime(format!(
+        "archive did not contain oxidns.exe at '{}'",
+        candidate.display()
+    )))
+}
+
+/// Windows binary replacement using the rename trick.
+///
+/// Windows prevents overwriting a running executable but allows renaming it.
+/// This function stages the new binary first, renames the running exe to the
+/// backup path, then moves the staged binary to the original path.
+/// `current_exe()` returns the original path even after the rename, so
+/// `exec_restart()` naturally loads the new binary on its next spawn.
+#[cfg(windows)]
+fn replace_binary_windows(source: &Path, target: &Path, backup_path: &Path) -> Result<()> {
+    if let Some(parent) = backup_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let staging = target.with_extension("upgrade-new.exe");
+    fs::copy(source, &staging).map_err(|e| {
+        DnsError::runtime(format!(
+            "failed to stage new binary '{}': {e}",
+            staging.display()
+        ))
+    })?;
+    // Rename the running exe to backup (allowed by Windows even while running).
+    if let Err(e) = fs::rename(target, backup_path) {
+        let _ = fs::remove_file(&staging);
+        return Err(DnsError::runtime(format!(
+            "failed to move running binary to backup '{}': {e}",
+            backup_path.display()
+        )));
+    }
+    // Move staged binary to the original path.
+    if let Err(e) = fs::rename(&staging, target) {
+        let _ = fs::rename(backup_path, target); // attempt rollback
+        let _ = fs::remove_file(&staging);
+        return Err(DnsError::runtime(format!(
+            "failed to place new binary at '{}': {e}",
+            target.display()
+        )));
+    }
+    Ok(())
 }
 
 async fn fetch_release(config: &UpgradeConfig) -> Result<GitHubRelease> {
@@ -693,10 +828,8 @@ async fn fetch_release(config: &UpgradeConfig) -> Result<GitHubRelease> {
     let response = timeout(
         config.timeout,
         client.get_request(
-            HttpRequestOptions::from_url(url.as_str()).with_headers(vec![(
-                USER_AGENT,
-                HeaderValue::from_static(GITHUB_USER_AGENT),
-            )]),
+            HttpRequestOptions::from_url(url.as_str())
+                .with_headers(github_request_headers(config.github_token.as_deref())),
         ),
     )
     .await
@@ -711,6 +844,16 @@ async fn fetch_release(config: &UpgradeConfig) -> Result<GitHubRelease> {
         )));
     }
     Ok(release)
+}
+
+fn github_request_headers(token: Option<&str>) -> Vec<(http::header::HeaderName, HeaderValue)> {
+    let mut headers = vec![(USER_AGENT, HeaderValue::from_static(GITHUB_USER_AGENT))];
+    if let Some(token) = token
+        && let Ok(value) = HeaderValue::try_from(format!("Bearer {token}"))
+    {
+        headers.push((AUTHORIZATION, value));
+    }
+    headers
 }
 
 fn build_asset_http_client(config: &UpgradeConfig) -> Result<HttpClient> {
@@ -897,16 +1040,12 @@ fn replace_binary(source: &Path, target: &Path) -> Result<()> {
     })
 }
 
-#[cfg(not(windows))]
 fn find_extracted_webui(unpack_dir: &Path) -> Option<PathBuf> {
     let candidate = unpack_dir.join("webui");
     candidate.is_dir().then_some(candidate)
 }
 
-/// Recursively copies a directory tree using std only. The Next.js static
-/// export contains no symlinks, so files are copied by content; `fs::copy`
-/// preserves Unix permission bits.
-#[cfg(not(windows))]
+/// Recursively copies a directory tree using std only.
 fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
@@ -924,7 +1063,6 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 /// Moves a directory, falling back to a recursive copy when the source and
 /// destination live on different filesystems.
-#[cfg(not(windows))]
 fn move_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     match fs::rename(from, to) {
         Ok(()) => Ok(()),
@@ -949,7 +1087,6 @@ fn move_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 ///
 /// Returns `(installed_path, backup_path)`; `backup_path` is `None` on a fresh
 /// install where `target` did not previously exist.
-#[cfg(not(windows))]
 fn replace_webui(
     unpacked_webui: &Path,
     target: &Path,

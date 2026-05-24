@@ -58,7 +58,8 @@ export default function SettingsPage() {
   const applyConfig = useAppStore((s) => s.applyConfig);
   const loadConfig = useAppStore((s) => s.loadConfig);
   const isConfigSaving = useAppStore((s) => s.isConfigSaving);
-  const isApplying = useAppStore((s) => s.isApplying);
+  const isRestarting = useAppStore((s) => s.isRestarting);
+  const restartApp = useAppStore((s) => s.restartApp);
 
   const [backendUrl, setBackendUrl] = useState(serverConfig.url);
   const [requiresAuth, setRequiresAuth] = useState(serverConfig.requiresAuth);
@@ -409,17 +410,20 @@ export default function SettingsPage() {
               <div className="flex flex-wrap gap-2">
                 <Button
                   onClick={() => handleSaveTopLevelConfig(false)}
-                  disabled={isConfigSaving || isApplying || !isConnected}
+                  disabled={isConfigSaving || isRestarting || !isConnected}
                 >
                   保存配置
                 </Button>
                 <Button
                   variant="outline"
-                  onClick={() => handleSaveTopLevelConfig(true)}
-                  disabled={isConfigSaving || isApplying || !isConnected}
+                  onClick={async () => {
+                    await handleSaveTopLevelConfig(false);
+                    await restartApp();
+                  }}
+                  disabled={isConfigSaving || isRestarting || !isConnected}
                 >
                   <RefreshCw className="h-4 w-4 mr-1.5" />
-                  保存并应用
+                  {isRestarting ? "重启中…" : "保存并重启"}
                 </Button>
               </div>
             </CardContent>
@@ -627,17 +631,20 @@ export default function SettingsPage() {
               <div className="flex flex-wrap gap-2">
                 <Button
                   onClick={() => handleSaveTopLevelConfig(false)}
-                  disabled={isConfigSaving || isApplying || !isConnected}
+                  disabled={isConfigSaving || isRestarting || !isConnected}
                 >
                   保存配置
                 </Button>
                 <Button
                   variant="outline"
-                  onClick={() => handleSaveTopLevelConfig(true)}
-                  disabled={isConfigSaving || isApplying || !isConnected}
+                  onClick={async () => {
+                    await handleSaveTopLevelConfig(false);
+                    await restartApp();
+                  }}
+                  disabled={isConfigSaving || isRestarting || !isConnected}
                 >
                   <RefreshCw className="h-4 w-4 mr-1.5" />
-                  保存并应用
+                  {isRestarting ? "重启中…" : "保存并重启"}
                 </Button>
               </div>
             </CardContent>
@@ -727,17 +734,20 @@ export default function SettingsPage() {
               <div className="flex flex-wrap gap-2">
                 <Button
                   onClick={() => handleSaveTopLevelConfig(false)}
-                  disabled={isConfigSaving || isApplying || !isConnected}
+                  disabled={isConfigSaving || isRestarting || !isConnected}
                 >
                   保存配置
                 </Button>
                 <Button
                   variant="outline"
-                  onClick={() => handleSaveTopLevelConfig(true)}
-                  disabled={isConfigSaving || isApplying || !isConnected}
+                  onClick={async () => {
+                    await handleSaveTopLevelConfig(false);
+                    await restartApp();
+                  }}
+                  disabled={isConfigSaving || isRestarting || !isConnected}
                 >
                   <RefreshCw className="h-4 w-4 mr-1.5" />
-                  保存并应用
+                  {isRestarting ? "重启中…" : "保存并重启"}
                 </Button>
               </div>
             </CardContent>

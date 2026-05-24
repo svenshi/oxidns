@@ -38,6 +38,11 @@ use crate::{config, core};
 pub fn run(start: StartOptions) -> Result<()> {
     AppClock::start();
     prepare_working_dir(start.working_dir.as_ref())?;
+    // Clean up any leftover staging file from an interrupted Windows upgrade.
+    #[cfg(windows)]
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::fs::remove_file(exe.with_extension("upgrade-new.exe"));
+    }
     banner::print_startup_banner()?;
     let config = load_config(&start)?;
     init_runtime(start, config)
@@ -120,7 +125,82 @@ fn init_runtime(options: StartOptions, config: Config) -> Result<()> {
     let tokio_runtime = tokio_runtime
         .build()
         .map_err(|err| DnsError::runtime(format!("Failed to initialize Tokio runtime: {err}")))?;
-    tokio_runtime.block_on(run_async_main(options, config))
+    match tokio_runtime.block_on(run_async_main(options, config))? {
+        ShutdownSignal::Restart => exec_restart(),
+        _ => Ok(()),
+    }
+}
+
+/// Replace the current process image with a fresh copy of OxiDNS using the
+/// original command-line arguments.
+///
+/// On Unix, `exec()` keeps the same PID so any process supervisor (systemd,
+/// launchd, Docker, etc.) continues tracking the process without interruption.
+/// On non-Unix platforms a new process is spawned and the current one exits.
+pub(crate) fn exec_restart() -> Result<()> {
+    let exe = std::env::current_exe()
+        .map_err(|e| DnsError::runtime(format!("restart: cannot get current executable: {e}")))?;
+    // std::env::args() reads the OS-level process arguments and is safe to
+    // call at any point during the process lifetime.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(&exe).args(&args).exec();
+        Err(DnsError::runtime(format!("exec restart failed: {err}")))
+    }
+
+    #[cfg(windows)]
+    {
+        if windows_running_as_service() {
+            // Under Windows SCM: do not spawn a duplicate — SCM will restart the
+            // service on our behalf. Exit with a non-zero code to trigger the
+            // OnFailure restart policy configured at install time.
+            std::process::exit(1);
+        } else {
+            // Foreground mode: spawn the replacement process then exit cleanly.
+            std::process::Command::new(&exe)
+                .args(&args)
+                .spawn()
+                .map_err(|e| DnsError::runtime(format!("restart: spawn failed: {e}")))?;
+            std::process::exit(0);
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        std::process::Command::new(&exe)
+            .args(&args)
+            .spawn()
+            .map_err(|e| DnsError::runtime(format!("restart: spawn failed: {e}")))?;
+        std::process::exit(0);
+    }
+}
+
+/// Detect whether this process is running under the Windows Service Control
+/// Manager by checking if the parent process is `services.exe`.
+///
+/// Uses the already-available `sysinfo` crate — no extra dependencies needed.
+/// Falls back to `false` (assume foreground) on any lookup error.
+#[cfg(windows)]
+fn windows_running_as_service() -> bool {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
+
+    let refresh = ProcessRefreshKind::nothing();
+    let mut sys = System::new_with_specifics(RefreshKind::nothing().with_processes(refresh));
+    sys.refresh_processes(ProcessesToUpdate::All, false);
+
+    let current_pid = Pid::from_u32(std::process::id());
+    sys.process(current_pid)
+        .and_then(|p| p.parent())
+        .and_then(|parent_pid| sys.process(parent_pid))
+        .is_some_and(|parent| {
+            parent
+                .name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("services.exe")
+        })
 }
 
 fn load_config(options: &StartOptions) -> Result<Config> {
@@ -341,6 +421,7 @@ plugins:
 #[derive(Clone, Copy, Debug)]
 pub(super) enum ShutdownSignal {
     ApiRequest,
+    Restart,
     #[cfg(unix)]
     SigInt,
     #[cfg(unix)]
@@ -363,6 +444,7 @@ impl ShutdownSignal {
     const fn as_str(self) -> &'static str {
         match self {
             ShutdownSignal::ApiRequest => "API_REQUEST",
+            ShutdownSignal::Restart => "RESTART",
             #[cfg(unix)]
             ShutdownSignal::SigInt => "SIGINT",
             #[cfg(unix)]
@@ -436,7 +518,7 @@ async fn wait_for_shutdown_signal() -> Result<ShutdownSignal> {
 }
 
 #[hotpath::main]
-async fn run_async_main(options: StartOptions, config: Config) -> Result<()> {
+async fn run_async_main(options: StartOptions, config: Config) -> Result<ShutdownSignal> {
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<Result<ShutdownSignal>>();
     tokio::spawn(async move {
         let _ = shutdown_tx.send(wait_for_shutdown_signal().await);
@@ -507,7 +589,7 @@ async fn run_async_main(options: StartOptions, config: Config) -> Result<()> {
         signal = shutdown_signal.as_str(),
         "Graceful shutdown complete"
     );
-    Ok(())
+    Ok(shutdown_signal)
 }
 
 async fn wait_for_termination(
@@ -533,6 +615,10 @@ async fn wait_for_termination(
                     Some(ControlCommand::Shutdown) => {
                         info!("Received shutdown request from management API");
                         return Ok(ShutdownSignal::ApiRequest);
+                    }
+                    Some(ControlCommand::Restart) => {
+                        info!("Received restart request from management API");
+                        return Ok(ShutdownSignal::Restart);
                     }
                     Some(ControlCommand::Reload) => {
                         handle_reload_command(assembly, current_config, controller.clone()).await?;

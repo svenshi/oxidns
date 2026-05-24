@@ -284,7 +284,8 @@ oxidns upgrade
 oxidns upgrade --force
 oxidns upgrade check
 oxidns upgrade download --target latest
-sudo oxidns upgrade apply --restart service
+sudo oxidns upgrade apply
+sudo oxidns upgrade apply --no-restart
 ```
 
 Common arguments:
@@ -309,9 +310,8 @@ Common arguments:
   - Default: `./webui`
 - `--skip-webui`
   - For `apply`, skip the WebUI directory upgrade and replace only the binary.
-- `--restart <none|service>`
-  - Restart strategy after a successful `apply`.
-  - Default: `none`
+- `--no-restart`
+  - Skip restarting the service after a successful `apply`. By default the installed service is restarted automatically via the system service manager (systemd / launchd / Windows SCM).
 - `--allow-prerelease`
   - Allows prerelease releases.
 - `--force`
@@ -322,6 +322,8 @@ Common arguments:
   - Optional SOCKS5 proxy.
 - `--insecure-skip-verify`
   - Disables TLS certificate verification.
+- `--github-token <TOKEN>`
+  - GitHub personal access token for API requests, used to raise the rate limit or access private repositories.
 
 Behavior:
 
@@ -329,8 +331,9 @@ Behavior:
 - `download` downloads the archive and verifies SHA256 with the GitHub release asset `digest` field.
 - Omitting the subcommand defaults to `apply`.
 - `apply` updates only when a newer version is available by default. `--force` forces the update.
-- On Unix, `apply` unpacks the `.tar.gz`, backs up the current binary, and replaces it. Windows currently supports only `check` and `download`.
+- On Unix, `apply` unpacks the `.tar.gz`, backs up the current binary, and replaces it. On Windows, `apply` unpacks the `.zip`, backs up and replaces the binary, and also upgrades the WebUI directory.
 - By default, after replacing the binary `apply` backs up and installs the archive's `webui/` directory into `--webui-dir`; `--skip-webui` skips it, and an archive without `webui/` is skipped without affecting the binary upgrade.
+- After a successful `apply`, the service is restarted automatically via the system service manager. Pass `--no-restart` to skip the automatic restart.
 - After a successful `apply`, the CLI asks whether to clean the cache and backup directories. The default answer is `Y`.
 
 ## Page Scope

@@ -41,7 +41,7 @@ pub use registry::{
     PluginBuildSession, PluginCatalog, PluginInitContext, PluginRegistry, PluginResolver,
     PluginRuntime, PluginRuntimeManager, clear_app_controller, current_runtime, destroy_runtime,
     global_catalog, global_manager, init, plugin_count, reload_provider, request_app_reload,
-    server_plugin_count, set_app_controller,
+    request_app_restart, server_plugin_count, set_app_controller,
 };
 #[cfg(test)]
 pub use registry::{reset_runtime_for_test, set_current_runtime_for_test};

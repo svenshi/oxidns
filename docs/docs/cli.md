@@ -284,7 +284,8 @@ oxidns upgrade
 oxidns upgrade --force
 oxidns upgrade check
 oxidns upgrade download --target latest
-sudo oxidns upgrade apply --restart service
+sudo oxidns upgrade apply
+sudo oxidns upgrade apply --no-restart
 ```
 
 通用参数：
@@ -309,9 +310,8 @@ sudo oxidns upgrade apply --restart service
   - 默认值：`./webui`
 - `--skip-webui`
   - `apply` 时跳过 WebUI 目录升级，仅替换二进制文件。
-- `--restart <none|service>`
-  - `apply` 成功后的重启策略。
-  - 默认值：`none`
+- `--no-restart`
+  - `apply` 成功后跳过服务重启。默认会通过系统服务管理器（systemd / launchd / Windows SCM）自动重启已安装的服务。
 - `--allow-prerelease`
   - 允许使用 prerelease。
 - `--force`
@@ -322,6 +322,8 @@ sudo oxidns upgrade apply --restart service
   - 可选 SOCKS5 代理。
 - `--insecure-skip-verify`
   - 跳过 TLS 证书校验。
+- `--github-token <TOKEN>`
+  - GitHub 个人访问令牌，用于提高 API 速率限制或访问私有仓库。
 
 行为说明：
 
@@ -329,8 +331,9 @@ sudo oxidns upgrade apply --restart service
 - `download` 下载 archive，并使用 GitHub release asset 的 `digest` 字段校验 SHA256。
 - 不写子命令时默认执行 `apply`。
 - `apply` 默认只有检测到新版本才会更新；`--force` 会强制更新。
-- `apply` 在 Unix 平台会解包 `.tar.gz`、备份当前二进制并替换；Windows 当前只支持 `check` 和 `download`。
+- `apply` 在 Unix 平台会解包 `.tar.gz`、备份当前二进制并替换；Windows 会解包 `.zip`、备份并替换二进制，同样支持 WebUI 目录升级。
 - `apply` 默认在替换二进制后，将 archive 中的 `webui/` 目录备份并安装到 `--webui-dir`；`--skip-webui` 可跳过；archive 不含 `webui/` 时跳过且不影响二进制升级。
+- `apply` 成功后默认通过系统服务管理器重启服务；如果不想自动重启，传 `--no-restart`。
 - `apply` 成功后会询问是否清理缓存目录和备份目录，默认选择 `Y`。
 
 ## 页面范围
