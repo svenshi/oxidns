@@ -259,6 +259,11 @@ export interface QueryRecordDetailResponse {
   record: QueryRecordDetail;
 }
 
+export interface QueryRecorderClearResponse {
+  ok: boolean;
+  cleared_records: number;
+}
+
 export type QueryRecordStatusFilter =
   | "all"
   | "error"
@@ -581,6 +586,16 @@ export async function fetchQueryRecordDetail(
     { method: "GET", headers: apiHeaders() },
   );
   return readJsonResponse<QueryRecordDetailResponse>(response);
+}
+
+export async function clearQueryRecorderHistory(
+  tag: string,
+): Promise<QueryRecorderClearResponse> {
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/records`),
+    { method: "DELETE", headers: apiHeaders() },
+  );
+  return readJsonResponse<QueryRecorderClearResponse>(response);
 }
 
 export async function fetchQueryRecorderTopClients(

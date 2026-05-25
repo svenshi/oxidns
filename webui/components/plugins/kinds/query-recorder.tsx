@@ -13,6 +13,7 @@ import {
   RefreshCw,
   ServerCrash,
   Timer,
+  Trash2,
   TrendingUp,
   Users,
   X,
@@ -36,6 +37,18 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogMedia,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import {
   Popover,
   PopoverContent,
@@ -61,6 +74,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   apiHeaders,
   apiUrl,
+  clearQueryRecorderHistory,
   fetchQueryRecordDetail,
   fetchQueryRecorderLatency,
   fetchQueryRecorderPluginStats,
@@ -193,9 +207,11 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
   const [appliedFilters, setAppliedFilters] = useState<QueryRecordFilters>({});
   const [loading, setLoading] = useState(false);
   const [statsLoading, setStatsLoading] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statsError, setStatsError] = useState<string | null>(null);
+  const [lastClearCount, setLastClearCount] = useState<number | null>(null);
   // SSE controller (existing behavior).
   const abortRef = useRef<AbortController | null>(null);
   // Cancel the previous /records load when a new one starts (e.g. rapid
@@ -318,6 +334,29 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
     }
   };
 
+  const handleClearHistory = async () => {
+    recordsAbortRef.current?.abort();
+    statsAbortRef.current?.abort();
+    setClearing(true);
+    setError(null);
+    setStatsError(null);
+    setLastClearCount(null);
+    try {
+      const response = await clearQueryRecorderHistory(tag);
+      setRecords([]);
+      setNextCursor(undefined);
+      setSelected(null);
+      setMatcherStats([]);
+      setStatsQueryTotal(0);
+      setLastClearCount(response.cleared_records);
+      await refresh(appliedFilters);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "清空查询历史失败");
+    } finally {
+      setClearing(false);
+    }
+  };
+
   const toggleStream = async () => {
     if (streaming) {
       abortRef.current?.abort();
@@ -419,6 +458,17 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
                   正在加载…
                 </span>
               )}
+              {clearing && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-destructive">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  正在清空…
+                </span>
+              )}
+              {lastClearCount !== null && !clearing && (
+                <span className="rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-destructive">
+                  已清空 {lastClearCount} 条
+                </span>
+              )}
               {streaming && (
                 <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-primary">
                   实时接收中
@@ -430,7 +480,7 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
             <Button
               variant="outline"
               size="sm"
-              disabled={loading}
+              disabled={loading || clearing}
               onClick={() => void refresh(appliedFilters)}
             >
               <RefreshCw className="h-4 w-4" />
@@ -439,11 +489,47 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
             <Button
               variant={streaming ? "secondary" : "outline"}
               size="sm"
+              disabled={clearing}
               onClick={() => void toggleStream()}
             >
               <Radio className="h-4 w-4" />
               {streaming ? "停止实时" : "实时"}
             </Button>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="outline" size="sm" disabled={clearing}>
+                  {clearing ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-4 w-4" />
+                  )}
+                  清空历史
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogMedia className="bg-destructive/10 text-destructive">
+                    <Trash2 className="h-5 w-5" />
+                  </AlertDialogMedia>
+                  <AlertDialogTitle>清空查询历史？</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    将删除插件 &ldquo;{tag}&rdquo;
+                    已持久化的所有查询记录和执行路径事件，并清空内存
+                    tail。此操作无法撤销。
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={clearing}>取消</AlertDialogCancel>
+                  <AlertDialogAction
+                    variant="destructive"
+                    disabled={clearing}
+                    onClick={() => void handleClearHistory()}
+                  >
+                    清空历史
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </div>
         </CardHeader>
         <CardContent className="p-4 pt-0">

@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{SyncSender, sync_channel};
+use std::sync::mpsc::{Sender as ReplySender, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -31,9 +31,21 @@ pub(super) struct RecorderBackend {
 }
 
 #[derive(Debug, Clone)]
+pub(super) struct ClearHistoryResult {
+    pub(super) cleared_records: usize,
+}
+
+pub(super) type ClearHistoryReply = std::result::Result<ClearHistoryResult, String>;
+
+#[derive(Debug)]
 pub(super) enum WriterCommand {
     Insert(Box<PendingRecord>),
-    Cleanup { cutoff_ms: i64 },
+    Cleanup {
+        cutoff_ms: i64,
+    },
+    ClearHistory {
+        reply_tx: ReplySender<ClearHistoryReply>,
+    },
 }
 
 #[derive(Debug)]
@@ -141,5 +153,15 @@ impl RecorderBackend {
         if let Err(err) = self.queue_tx.try_send(WriterCommand::Cleanup { cutoff_ms }) {
             warn!("query_recorder cleanup skipped: {}", err);
         }
+    }
+
+    pub(super) fn clear_history(&self) -> ClearHistoryReply {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.queue_tx
+            .send(WriterCommand::ClearHistory { reply_tx })
+            .map_err(|err| format!("query_recorder clear enqueue failed: {err}"))?;
+        reply_rx
+            .recv()
+            .map_err(|err| format!("query_recorder clear reply failed: {err}"))?
     }
 }

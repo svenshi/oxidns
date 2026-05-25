@@ -49,6 +49,12 @@ struct RecordDetailResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct RecordsClearResponse {
+    ok: bool,
+    cleared_records: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct PluginStatsResponse {
     ok: bool,
     query_total: u64,
@@ -64,6 +70,11 @@ struct RecordsListHandler {
 struct RecordDetailHandler {
     backend: Arc<RecorderBackend>,
     path_prefix: String,
+}
+
+#[derive(Debug)]
+struct RecordsClearHandler {
+    backend: Arc<RecorderBackend>,
 }
 
 #[derive(Debug)]
@@ -180,6 +191,32 @@ impl ApiHandler for RecordDetailHandler {
             Err(err) => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "query_recorder_record_failed",
+                format!("blocking task failed: {err}"),
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl ApiHandler for RecordsClearHandler {
+    async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
+        let backend = self.backend.clone();
+        match tokio::task::spawn_blocking(move || backend.clear_history()).await {
+            Ok(Ok(result)) => json_ok(
+                StatusCode::OK,
+                &RecordsClearResponse {
+                    ok: true,
+                    cleared_records: result.cleared_records,
+                },
+            ),
+            Ok(Err(err)) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "query_recorder_clear_failed",
+                err,
+            ),
+            Err(err) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "query_recorder_clear_failed",
                 format!("blocking task failed: {err}"),
             ),
         }
@@ -748,6 +785,9 @@ pub(super) fn register(backend: &Arc<RecorderBackend>) -> Result<()> {
         &backend.tag,
         |plugin_api|
         GET "/records" => RecordsListHandler {
+            backend: backend.clone(),
+        },
+        DELETE "/records" => RecordsClearHandler {
             backend: backend.clone(),
         },
         GET_PREFIX "/records/" => RecordDetailHandler {

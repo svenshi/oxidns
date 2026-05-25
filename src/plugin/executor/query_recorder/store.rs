@@ -13,7 +13,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::sync::broadcast;
 
-use super::backend::{RecorderBackend, WriterCommand, WriterThreadContext};
+use super::backend::{ClearHistoryResult, RecorderBackend, WriterCommand, WriterThreadContext};
 use super::model::{
     DistributionQuery, DistributionResponse, DistributionRow, LatencyHistogramBucket, LatencyQuery,
     LatencySlowRow, LatencySummary, ListCursor, ListQuery, PendingRecord, PluginStatsKind,
@@ -30,6 +30,9 @@ const PLUGIN_STATS_SAMPLE_LIMIT: usize = 10_000;
 pub(super) fn open_database(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
     // Tuned for a workload of "one writer + bursty readers".
+    // - auto_vacuum must be selected before WAL or schema creation for a fresh
+    //   database; otherwise SQLite keeps the default NONE mode until a manual
+    //   VACUUM rewrites the file.
     // - WAL + synchronous=NORMAL is the standard high-throughput combo for the
     //   writer thread and keeps readers non-blocking.
     // - temp_store=MEMORY keeps the implicit temp tables that GROUP BY / ORDER BY /
@@ -40,10 +43,10 @@ pub(super) fn open_database(path: &Path) -> rusqlite::Result<Connection> {
     // - mmap_size lets SQLite memory-map the DB pages, which is a noticeable
     //   speedup for read-heavy SELECTs once the OS page cache is warm.
     conn.execute_batch(
-        "PRAGMA journal_mode=WAL;
+        "PRAGMA auto_vacuum=INCREMENTAL;
+         PRAGMA journal_mode=WAL;
          PRAGMA synchronous=NORMAL;
          PRAGMA foreign_keys=ON;
-         PRAGMA auto_vacuum=INCREMENTAL;
          PRAGMA temp_store=MEMORY;
          PRAGMA cache_size=-32768;
          PRAGMA mmap_size=134217728;",
@@ -193,6 +196,19 @@ pub(super) fn run_writer_thread(
                     &broadcaster,
                 )?;
                 run_cleanup(&mut conn, &tables, cutoff_ms)?;
+            }
+            Ok(WriterCommand::ClearHistory { reply_tx }) => {
+                let result = flush_pending(
+                    &mut conn,
+                    &tables,
+                    &mut pending,
+                    &tail,
+                    memory_tail,
+                    &broadcaster,
+                )
+                .and_then(|_| run_clear_history(&mut conn, &tables, &tail))
+                .map_err(|err| err.to_string());
+                let _ = reply_tx.send(result);
             }
             Err(RecvTimeoutError::Timeout) => {
                 flush_pending(
@@ -403,6 +419,24 @@ fn run_cleanup(conn: &mut Connection, tables: &TableNames, cutoff_ms: i64) -> ru
         }
     }
     conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE); PRAGMA incremental_vacuum;")
+}
+
+fn run_clear_history(
+    conn: &mut Connection,
+    tables: &TableNames,
+    tail: &Arc<Mutex<VecDeque<RecordDetail>>>,
+) -> Result<ClearHistoryResult> {
+    let tx = conn.transaction()?;
+    let cleared_records = tx.execute(&format!("DELETE FROM {}", tables.records), [])?;
+    tx.commit()?;
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum;")?;
+
+    let mut tail_guard = tail
+        .lock()
+        .map_err(|_| "query_recorder tail buffer lock poisoned".to_string())?;
+    tail_guard.clear();
+
+    Ok(ClearHistoryResult { cleared_records })
 }
 
 pub(super) fn query_records(

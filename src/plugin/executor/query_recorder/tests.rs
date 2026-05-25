@@ -12,8 +12,9 @@ use super::model::{
     TopQuery,
 };
 use super::store::{
-    load_latency_summary, load_plugin_stats, load_qtype_distribution, load_rcode_distribution,
-    load_timeseries, load_top_clients, load_top_qnames, query_records, table_names,
+    create_schema, load_latency_summary, load_plugin_stats, load_qtype_distribution,
+    load_rcode_distribution, load_timeseries, load_top_clients, load_top_qnames, open_database,
+    query_records, table_names,
 };
 use super::{QueryRecorder, QueryRecorderFactory, resolve_config};
 use crate::core::app_clock::AppClock;
@@ -108,6 +109,20 @@ fn test_table_names_include_tag_hash_and_version() {
     assert!(tables.records.starts_with("qr_recorder_main_"));
     assert!(tables.records.ends_with("_v1_records"));
     assert!(tables.steps.ends_with("_v1_steps"));
+}
+
+#[test]
+fn test_open_database_enables_incremental_auto_vacuum_for_new_database() {
+    let temp = NamedTempFile::new().unwrap();
+    let tables = table_names("rec");
+    let mut conn = open_database(temp.path()).unwrap();
+
+    create_schema(&mut conn, &tables).unwrap();
+
+    let mode: i64 = conn
+        .query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(mode, 2);
 }
 
 #[test]
@@ -329,6 +344,35 @@ async fn test_query_recorder_list_cursor_only_when_more_records_exist() {
 
     assert_eq!(second_page.len(), 1);
     assert!(second_cursor.is_none());
+
+    plugin.destroy().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_query_recorder_clear_history_removes_records_and_tail() {
+    AppClock::start();
+
+    let temp = NamedTempFile::new().unwrap();
+    let config = resolve_config(Some(recorder_config(&temp.path().display().to_string()))).unwrap();
+    let mut plugin = QueryRecorder::new("rec".to_string(), config);
+    plugin.init_for_test().await.unwrap();
+    let backend = plugin.backend.as_ref().unwrap().clone();
+
+    seed_demo_records(&backend).await;
+    assert!(!backend.tail.lock().unwrap().is_empty());
+
+    let clear_backend = backend.clone();
+    let clear_result = tokio::task::spawn_blocking(move || clear_backend.clear_history())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(clear_result.cleared_records, 5);
+    assert!(backend.tail.lock().unwrap().is_empty());
+
+    let records = query_records(backend, list_query(QueryRecordFilter::default()))
+        .unwrap()
+        .0;
+    assert!(records.is_empty());
 
     plugin.destroy().await.unwrap();
 }

@@ -1374,6 +1374,9 @@ Persists the entry request, the post-`next` response, and `sequence` execution-p
     - `qtype=<type>` / `rcode=<rcode>` / `status=all|error|has_response|no_response`
 - `GET /plugins/<tag>/records/<id>`
   - Returns one full record plus `steps`.
+- `DELETE /plugins/<tag>/records`
+  - Clears all history rows and `steps` for the current recorder, and clears the in-memory tail.
+  - The operation first flushes the background writer queue and returns `cleared_records` for the number of deleted main-table rows.
 - `GET /plugins/<tag>/stats/plugins`
   - Returns hit stats grouped by `matcher / executor / builtin`.
   - Supports `since_ms`, `until_ms`, `kind=matcher|executor|builtin|all`, and the record filters.

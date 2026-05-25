@@ -512,6 +512,22 @@ GET /api/plugins/reverse_lookup_main?ip=8.8.8.8
 * `404 Not Found`
   * 记录不存在。
 
+#### `DELETE /api/plugins/<tag>/records`
+
+清空当前 recorder 的所有历史查询记录和 `steps` 路径事件。清空操作会先 flush 后台写入队列，随后删除 SQLite 记录表中的所有行，并清空内存 tail。
+
+返回：
+
+* `200 OK`
+  * JSON，形如：
+
+```json
+{
+  "ok": true,
+  "cleared_records": 128
+}
+```
+
 #### `GET /api/plugins/<tag>/stats/plugins`
 
 按路径事件聚合插件命中情况。

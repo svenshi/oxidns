@@ -512,6 +512,22 @@ Responses:
 * `404 Not Found`
   * The record does not exist.
 
+#### `DELETE /api/plugins/<tag>/records`
+
+Clears all persisted query-history rows and `steps` path events for the current recorder. The operation first flushes the background writer queue, then deletes all rows from the SQLite records table and clears the in-memory tail.
+
+Responses:
+
+* `200 OK`
+  * JSON shaped like:
+
+```json
+{
+  "ok": true,
+  "cleared_records": 128
+}
+```
+
 #### `GET /api/plugins/<tag>/stats/plugins`
 
 Aggregates plugin hit information from recorded path events.

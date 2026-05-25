@@ -1463,6 +1463,9 @@ old-static.example.com static.example.net
     - `qtype=<type>` / `rcode=<rcode>` / `status=all|error|has_response|no_response`
 - `GET /plugins/<tag>/records/<id>`
   - 返回单条完整记录，并附带 `steps`。
+- `DELETE /plugins/<tag>/records`
+  - 清空当前 recorder 的所有历史记录和 `steps`，并清空内存 tail。
+  - 操作会先 flush 后台写入队列，返回 `cleared_records` 表示删除的主表记录数。
 - `GET /plugins/<tag>/stats/plugins`
   - 返回按 `matcher / executor / builtin` 聚合的命中统计。
   - 支持 `since_ms`、`until_ms`、`kind=matcher|executor|builtin|all` 和 records 的过滤参数。
