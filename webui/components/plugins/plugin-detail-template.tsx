@@ -396,7 +396,7 @@ export function PluginDetailTemplate({
           if (!open) setPendingRename(null);
         }}
       >
-        <AlertDialogContent className="max-w-lg">
+        <AlertDialogContent size="lg">
           <AlertDialogHeader>
             <AlertDialogTitle>同步更新引用？</AlertDialogTitle>
             <AlertDialogDescription>

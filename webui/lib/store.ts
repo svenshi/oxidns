@@ -140,7 +140,7 @@ interface AppState {
   confirmDeletePlugin: (id: string) => Promise<void>;
   replaceAndDeletePlugin: (id: string, replacementTag: string) => Promise<void>;
   removeReferencesAndDeletePlugin: (id: string) => Promise<void>;
-  forceDeletePluginInEditor: (id: string) => void;
+  enterEditorForPluginReferences: () => void;
   addPlugin: (
     plugin: Omit<PluginInstance, "id" | "createdAt" | "updatedAt" | "metrics">,
   ) => void;
@@ -665,17 +665,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().saveConfig();
   },
 
-  forceDeletePluginInEditor: (id) => {
-    set((state) => ({
-      ...deletePluginFromState(state, id),
-      editorMode: true,
-    }));
-    void get()
-      .validateCurrentConfig()
-      .catch(() => {
-        // The editor and header expose the dangling-reference validation error.
-      });
-  },
+  enterEditorForPluginReferences: () => set({ editorMode: true }),
 
   addPlugin: (plugin) =>
     set((state) =>

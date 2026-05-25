@@ -56,8 +56,8 @@ export function PluginDeleteButton({
   const removeReferencesAndDeletePlugin = useAppStore(
     (s) => s.removeReferencesAndDeletePlugin,
   );
-  const forceDeletePluginInEditor = useAppStore(
-    (s) => s.forceDeletePluginInEditor,
+  const enterEditorForPluginReferences = useAppStore(
+    (s) => s.enterEditorForPluginReferences,
   );
   const isConfigSaving = useAppStore((s) => s.isConfigSaving);
   const isApplying = useAppStore((s) => s.isApplying);
@@ -71,7 +71,7 @@ export function PluginDeleteButton({
   const [loading, setLoading] = useState(false);
 
   const busy = isConfigSaving || isApplying || isRestarting || loading;
-  const disabled = busy || Boolean(configError);
+  const disabled = busy;
 
   const openDialog = async () => {
     setOpen(true);
@@ -111,13 +111,13 @@ export function PluginDeleteButton({
   };
 
   const handleManualFix = () => {
-    forceDeletePluginInEditor(plugin.id);
+    enterEditorForPluginReferences();
     setOpen(false);
     onDeleted?.();
   };
 
   const tooltip = configError
-    ? "配置有错误，需先修复"
+    ? "配置有错误，点击查看原因"
     : busy
       ? "配置操作进行中"
       : "删除";
@@ -146,16 +146,24 @@ export function PluginDeleteButton({
       </Tooltip>
 
       <AlertDialog open={open} onOpenChange={setOpen}>
-        <AlertDialogContent className="max-w-xl">
+        <AlertDialogContent
+          size="wide"
+          onClick={(event) => {
+            if (stopPropagation) event.stopPropagation();
+          }}
+          onPointerDown={(event) => {
+            if (stopPropagation) event.stopPropagation();
+          }}
+        >
           <AlertDialogHeader>
             <AlertDialogTitle>
               {readyPreview && readyPreview.references.length > 0
-                ? "该插件仍被引用"
+                ? `插件 “${plugin.name}” 仍被引用`
                 : "确认删除插件？"}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {readyPreview && readyPreview.references.length > 0
-                ? "删除前需要先处理所有引用，否则配置会产生悬空依赖。"
+                ? "删除前请先替换或修复下列引用，否则配置会产生悬空依赖。"
                 : `确定要删除插件 “${plugin.name}” 吗？此操作会先保存到磁盘，但不会自动应用。`}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -174,17 +182,28 @@ export function PluginDeleteButton({
                 {readyPreview.references.map((reference) => (
                   <div
                     key={`${reference.source_tag}:${reference.field}`}
-                    className="rounded-md border bg-background px-3 py-2 text-xs"
+                    className="min-w-0 rounded-md border bg-background px-3 py-2 text-xs"
                   >
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="font-mono font-medium">
+                    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                      <span className="min-w-0 break-all font-mono font-medium">
                         {reference.source_tag}
                       </span>
                       <Badge
                         variant="outline"
                         className="font-mono text-[10px]"
                       >
-                        {reference.expected_kind}
+                        来源{" "}
+                        {reference.sourcePlugin?.pluginKind ??
+                          reference.sourcePlugin?.type ??
+                          "未知"}
+                      </Badge>
+                      <Badge
+                        variant="outline"
+                        className="font-mono text-[10px]"
+                      >
+                        需要{" "}
+                        {reference.expected_plugin_type ??
+                          reference.expected_kind}
                       </Badge>
                       {!reference.removable && (
                         <Badge variant="outline" className="text-[10px]">
@@ -192,11 +211,11 @@ export function PluginDeleteButton({
                         </Badge>
                       )}
                     </div>
-                    <div className="mt-1 font-mono text-muted-foreground">
+                    <div className="mt-1 break-all font-mono text-muted-foreground">
                       {reference.field}
                     </div>
                     {reference.removeBlockedReason && (
-                      <div className="mt-1 text-muted-foreground">
+                      <div className="mt-1 break-words text-muted-foreground">
                         {reference.removeBlockedReason}
                       </div>
                     )}
@@ -216,7 +235,7 @@ export function PluginDeleteButton({
                     loading || readyPreview.replacementCandidates.length === 0
                   }
                 >
-                  <SelectTrigger>
+                  <SelectTrigger className="w-full min-w-0">
                     <SelectValue placeholder="选择兼容的替换插件" />
                   </SelectTrigger>
                   <SelectContent>
@@ -237,17 +256,20 @@ export function PluginDeleteButton({
           ) : null}
 
           {actionError && (
-            <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            <div className="flex min-w-0 items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               <AlertTriangle className="h-4 w-4" />
-              {actionError}
+              <span className="min-w-0 break-words">{actionError}</span>
             </div>
           )}
 
-          <AlertDialogFooter className="gap-2 sm:gap-2">
-            <AlertDialogCancel disabled={loading}>取消</AlertDialogCancel>
+          <AlertDialogFooter className="gap-2 sm:flex-wrap sm:gap-2">
+            <AlertDialogCancel size="sm" disabled={loading}>
+              取消
+            </AlertDialogCancel>
             {readyPreview && readyPreview.references.length === 0 && (
               <Button
                 variant="destructive"
+                size="sm"
                 disabled={loading}
                 onClick={() => runAction(() => confirmDeletePlugin(plugin.id))}
               >
@@ -258,6 +280,7 @@ export function PluginDeleteButton({
               <>
                 <Button
                   variant="outline"
+                  size="sm"
                   disabled={loading}
                   onClick={handleManualFix}
                 >
@@ -266,6 +289,7 @@ export function PluginDeleteButton({
                 </Button>
                 <Button
                   variant="outline"
+                  size="sm"
                   disabled={loading || !readyPreview.canRemoveReferences}
                   onClick={() =>
                     runAction(() => removeReferencesAndDeletePlugin(plugin.id))
@@ -275,6 +299,7 @@ export function PluginDeleteButton({
                 </Button>
                 <Button
                   variant="destructive"
+                  size="sm"
                   disabled={loading || !replacementTag}
                   onClick={() =>
                     runAction(() =>
