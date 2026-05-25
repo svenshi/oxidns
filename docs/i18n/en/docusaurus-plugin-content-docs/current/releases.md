@@ -10,7 +10,29 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-05
 
 <div className="release-stack">
-   <ReleaseCard version="v1.1.0" badge="Minor Release" date="2026-05-25" defaultOpen>
+   <ReleaseCard version="v1.1.1" badge="Patch Release" date="2026-05-25" defaultOpen>
+       **Release Scope**
+
+       - Patch Release adding `query_recorder` history clearing and tightening the WebUI plugin-deletion workflow. This release does not introduce breaking configuration changes.
+
+       **Changes**
+
+       - Added `DELETE /api/plugins/<tag>/records` for `query_recorder`, clearing persisted query records, execution-path `steps`, and the in-memory tail after flushing the background write queue. The response reports `cleared_records`.
+       - Added a “Clear history” action to the WebUI query records panel with a confirmation dialog, clearing-state feedback, and automatic refresh of records, selected detail, and plugin-hit stats after completion.
+       - Polished the WebUI plugin delete dialog: wider dependency-impact layout, wrapping for long fields, and clearer source / expected-target / removal-blocker details.
+       - Fixed delete-dialog cancellation bubbling into plugin cards and opening the plugin detail sheet.
+       - Fixed “repair in editor” removing the plugin before the user edits config; it now only switches to the editor for manual reference handling.
+       - Fixed delete icons becoming permanently visible and unclickable when config validation errors are present; the dialog can now open and show the error reason.
+
+       **Compatibility and Upgrade Notes**
+
+       - Root crate version bumped to `1.1.1`; release tag should use `v1.1.1`.
+       - `v1.1.0` configs upgrade directly to `v1.1.1` with no new required fields.
+       - `query_recorder` history clearing is optional and does not affect existing record capture, retention cleanup, or stats query behavior.
+       - Clearing history is irreversible and removes persisted query records plus path events for the selected recorder; on production systems, confirm the audit data is no longer needed before using it.
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.1.0" badge="Minor Release" date="2026-05-25">
        **Release Scope**
 
        - Minor Release focused on safer configuration loading, upgrade and restart handling, `query_recorder` analytics, WebUI operations, and refreshed plugin documentation/navigation. This release includes a breaking `upgrade` configuration change; review related configs or automation before upgrading.

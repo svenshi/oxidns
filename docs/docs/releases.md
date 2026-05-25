@@ -10,7 +10,29 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-05
 
 <div className="release-stack">
-   <ReleaseCard version="v1.1.0" badge="Minor Release" date="2026-05-25" defaultOpen>
+   <ReleaseCard version="v1.1.1" badge="Patch Release" date="2026-05-25" defaultOpen>
+       **版本定位**
+
+       - Patch Release，重点补齐 `query_recorder` 历史记录清理能力，并修复 WebUI 插件删除流程中的交互闭环问题。本版本不引入破坏性配置变更。
+
+       **主要变更**
+
+       - `query_recorder` 新增 `DELETE /api/plugins/<tag>/records` 管理接口，可清空当前 recorder 的历史查询记录、执行路径 `steps` 和内存 tail；清空前会先 flush 后台写入队列，并返回 `cleared_records`。
+       - WebUI 查询记录面板新增“清空历史”按钮，提供二次确认、清空中状态反馈，并在完成后刷新记录列表、选中详情和插件命中统计。
+       - WebUI 插件删除弹窗体验优化：引用提示弹窗加宽，长字段可换行，并更清晰展示引用来源、目标类型和不可安全移除的原因。
+       - 修复插件删除弹窗取消后误打开插件详情抽屉的问题。
+       - 修复“进入编辑器修复”会提前从插件中心移除插件的问题；现在该操作只进入编辑器，由用户手动处理引用。
+       - 修复配置存在错误时删除 icon 常显且无法点击的问题；现在仍可打开弹窗查看错误原因。
+
+       **配置与升级说明**
+
+       - 根 crate 版本号升级为 `1.1.1`；release tag 应使用 `v1.1.1`。
+       - `v1.1.0` 配置可直接升级到 `v1.1.1`，未引入新的必填配置字段。
+       - `query_recorder` 清空历史是可选管理能力，不影响现有查询记录采集、保留期清理或统计查询行为。
+       - “清空历史”操作不可撤销，会删除当前 recorder 已持久化的查询记录和路径事件；生产环境建议确认不再需要这些审计数据后再执行。
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.1.0" badge="Minor Release" date="2026-05-25">
        **版本定位**
 
        - Minor Release，重点增强配置安全性、升级与重启流程、`query_recorder` 统计分析和 WebUI 运维体验，同时补齐插件文档导航与路线图。本版本包含 `upgrade` 配置的破坏性变更，请升级前检查相关配置或自动化脚本。
