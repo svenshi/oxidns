@@ -467,7 +467,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       stringArrayField(
         "entries",
         "内联 hosts 规则",
-        "router.local 192.168.1.1\ndomain:svc.local 10.0.0.10",
+        "router.local 192.168.1.1\nfull:gateway.local 192.168.1.2\ndomain:svc.local 10.0.0.10\nkeyword:nas 192.168.1.20\nregexp:^api[0-9]+\\.corp\\.local$ 10.10.0.5",
         false,
         "定义内联 hosts 规则。",
       ),
@@ -521,13 +521,13 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
     kind: "redirect",
     type: "executor",
     name: "Redirect",
-    description: "改写请求域名，并在返回阶段补回 CNAME",
+    description: "改写请求域名，配合 forward 生成目标响应",
     icon: "Pencil",
     configSchema: [
       stringArrayField(
         "rules",
         "重定向规则",
-        "full:old.example.com new.example.net\ndomain:legacy.example.com modern.example.net",
+        "full:old.example.com new.example.net\ndomain:legacy.example.com modern.example.net\nkeyword:staging staging-gateway.example.net\nregexp:^api[0-9]+\\.legacy\\.example\\.com$ api-gateway.example.net",
         false,
         "定义内联重定向规则。",
       ),
@@ -1546,8 +1546,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "no_restart",
-        description:
-          "启用后升级成功也不会触发自动重启。",
+        description: "启用后升级成功也不会触发自动重启。",
         label: "跳过自动重启",
         type: "switch",
         default: false,

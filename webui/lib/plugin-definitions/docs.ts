@@ -118,7 +118,7 @@ export const pluginFieldDocs = {
   },
   hosts: {
     entries:
-      "- 类型：`array`；必填：否；默认值：空数组\n- 作用：定义内联 hosts 规则。\n- 规则格式：\n  - `<域名规则> <ip1> <ip2> ...`",
+      "- 类型：`array`；必填：否；默认值：空数组\n- 作用：定义内联 hosts 规则。\n- 规则格式：\n  - `<域名规则> <ip1> <ip2> ...`\n- `<域名规则>` 支持：\n  - `full:`\n  - `domain:`\n  - `keyword:`\n  - `regexp:`\n  - 无前缀域名（按 `full:` 精确匹配处理）",
     files:
       "- 类型：`array`；必填：否；默认值：空数组\n- 作用：指定外部 hosts 规则文件列表。",
     short_circuit:
@@ -134,9 +134,9 @@ export const pluginFieldDocs = {
   },
   redirect: {
     rules:
-      "- 类型：`array`；必填：否；默认值：空数组\n- 作用：定义内联重定向规则。\n- 规则格式：\n  - `<域名规则> <目标域名>`",
+      "- 类型：`array`；必填：否；默认值：空数组\n- 作用：定义内联重定向规则。\n- 规则格式：\n  - `<域名规则> <目标域名>`\n- `<域名规则>` 支持：\n  - `full:`\n  - `domain:`\n  - `keyword:`\n  - `regexp:`\n  - 无前缀域名（按 `full:` 精确匹配处理）\n- 使用说明：`redirect` 本身不解析目标域名，通常需要在 `sequence` 中放在 `forward` 之前使用，由 `forward` 生成目标域名的真实响应。",
     files:
-      "- 类型：`array`；必填：否；默认值：空数组\n- 作用：指定外部重定向规则文件列表。\n\n规则格式：",
+      "- 类型：`array`；必填：否；默认值：空数组\n- 作用：指定外部重定向规则文件列表。\n- 文件格式与 `rules` 相同，每行一条；空行和 `#` 注释会被忽略。",
   },
   ecs_handler: {
     forward:
@@ -335,7 +335,7 @@ export const pluginFieldDocs = {
     args: '`any_match` 的 `args` 为 matcher 表达式列表。\n\n- 类型：`array[string]`；必填：是；默认值：无\n- 支持元素：\n  - matcher tag 引用（如 `"$match_tag"`）\n  - 快捷 matcher 表达式（如 `"qname domain:example.com"`）\n  - 取反 matcher 表达式（如 `"!$has_resp"`）\n- 运行影响：\n  - 按配置顺序依次判断，命中任意一个后立即短路返回 `true`。\n  - 全部不命中时返回 `false`。',
   },
   qname: {
-    args: "`qname` 的 `args` 采用规则列表形式，列表中的每个元素均独立生效。\n\n- 类型：`array`；必填：是；默认值：无\n- 作用：定义域名匹配规则来源。\n- 支持元素：\n  - 域名表达式\n  - 具备域名匹配能力的 provider 引用，例如 `domain_set`、`geosite`\n  - 文件引用\n- 运行影响：\n  - 当前请求中的任意问题域名命中任一规则时，matcher 返回 `true`。",
+    args: "`qname` 的 `args` 采用规则列表形式，列表中的每个元素均独立生效。\n\n- 类型：`array`；必填：是；默认值：无\n- 作用：定义域名匹配规则来源。\n- 支持元素：\n  - 域名表达式（支持 `full:`、`domain:`、`keyword:`、`regexp:`，无前缀时按 `domain:` 处理）\n  - 具备域名匹配能力的 provider 引用，例如 `domain_set`、`geosite`\n  - 文件引用\n- 运行影响：\n  - 当前请求中的任意问题域名命中任一规则时，matcher 返回 `true`。",
   },
   question: {
     args: '- `args`\n  - 类型：`array[string]`；必填：是；默认值：无\n  - 作用：使用 `"$provider_tag"` 形式引用实现了 `contains_question` 的 provider。',
@@ -356,7 +356,7 @@ export const pluginFieldDocs = {
     args: "`ptr_ip` 的 `args` 采用规则列表形式。\n\n- 类型：`array`；必填：是；默认值：无\n- 作用：定义 PTR 请求名解析出的地址匹配条件。\n- 支持元素：\n  - 单个 IP\n  - CIDR\n  - `ip_set` 引用\n- 运行影响：\n  - 仅对 PTR 查询生效。\n  - PTR 请求名解析出的地址命中任一规则时返回 `true`。",
   },
   cname: {
-    args: "`cname` 的 `args` 采用规则列表形式。\n\n- 类型：`array`；必填：是；默认值：无\n- 作用：定义 CNAME 目标名称匹配条件。\n- 支持元素：\n  - 域名表达式\n  - `domain_set` 引用\n  - 文件引用\n- 运行影响：\n  - 只检查响应中的 CNAME 目标。\n  - 任一 CNAME 目标命中时返回 `true`。",
+    args: "`cname` 的 `args` 采用规则列表形式。\n\n- 类型：`array`；必填：是；默认值：无\n- 作用：定义 CNAME 目标名称匹配条件。\n- 支持元素：\n  - 域名表达式（支持 `full:`、`domain:`、`keyword:`、`regexp:`，无前缀时按 `domain:` 处理）\n  - 具备域名匹配能力的 provider 引用，例如 `domain_set`、`geosite`\n  - 文件引用\n- 运行影响：\n  - 只检查响应中的 CNAME 目标。\n  - 任一 CNAME 目标命中时返回 `true`。",
   },
   rcode: {
     args: "`rcode` 的 `args` 为 rcode 列表。\n\n- 类型：`array`；必填：是；默认值：无\n- 作用：定义可命中的响应码集合。\n- 同时支持枚举文本和十进制数值，例如 `NOERROR` / `SERVFAIL` / `NXDOMAIN` 或 `0` / `2` / `3`；同一个列表中可以混用两种格式。\n- 未知或未来扩展响应码可继续使用数值形式匹配。\n- 运行影响：\n  - 仅当上下文中已有响应且 rcode 命中配置集合时返回 `true`。",
@@ -395,10 +395,10 @@ export const pluginFieldDocs = {
     args: "无独立配置字段。",
   },
   domain_set: {
-    exps: "- 类型：`array`；必填：否；默认值：空数组\n- 作用：定义内联域名表达式列表。\n- 支持内容：\n  - `full:`\n  - `domain:`\n  - `keyword:`\n  - `regexp:`\n  - 无前缀域名\n- 运行影响：\n  - 在初始化阶段编译为可直接匹配的规则集合。",
+    exps: "- 类型：`array`；必填：否；默认值：空数组\n- 作用：定义内联域名表达式列表。\n- 支持内容：\n  - `full:`\n  - `domain:`\n  - `keyword:`\n  - `regexp:`\n  - 无前缀域名（按 `domain:` 处理）\n- 运行影响：\n  - 在初始化阶段编译为可直接匹配的规则集合。",
     files:
       "- 类型：`array`；必填：否；默认值：空数组\n- 作用：指定外部规则文件路径列表。\n- 文件要求：\n  - 每行一条规则。\n  - 空行与注释行会被忽略。\n- 运行影响：\n  - 文件内容会在初始化或 `reload_provider` 时重新读取，并编译进当前 provider 的本地 matcher。",
-    sets: "- 类型：`array`；必填：否；默认值：空数组\n- 作用：引用其它 `domain_set` 实例。\n- 约束：\n  - 允许引用任意具备域名匹配能力的 provider，例如 `domain_set`、`geosite`、`adguard_rule`。\n- 运行影响：\n  - 当前 provider 只保存被引用 provider 的稳定句柄，不复制其规则。\n  - 下游 provider 单独 reload 后，当前 `domain_set` 无需 reload 即可看到新结果。",
+    sets: "- 类型：`array`；必填：否；默认值：空数组\n- 作用：引用其它具备域名匹配能力的 provider。\n- 约束：\n  - 允许引用任意具备域名匹配能力的 provider，例如 `domain_set`、`geosite`、`adguard_rule`。\n- 运行影响：\n  - 当前 provider 只保存被引用 provider 的稳定句柄，不复制其规则。\n  - 下游 provider 单独 reload 后，当前 `domain_set` 无需 reload 即可看到新结果。",
   },
   geosite: {
     file: "- 类型：`string`；必填：是\n- 作用：指定 `geosite.dat` 文件路径。",

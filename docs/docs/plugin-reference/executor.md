@@ -809,6 +809,10 @@ sidebar_position: 3
       - "domain:legacy.example.com modern.example.net"
       # 关键字重定向
       - "keyword:staging staging-gateway.example.net"
+      # 正则重定向
+      - "regexp:^api[0-9]+\\.legacy\\.example\\.com$ api-gateway.example.net"
+      # 无前缀规则默认按 full: 处理
+      - "old-static.example.com static.example.net"
     files:
       # 从文件合并更多重定向规则
       - "/etc/oxidns/redirect.txt"
@@ -822,24 +826,45 @@ sidebar_position: 3
 - 作用：定义内联重定向规则。
 - 规则格式：
   - `<域名规则> <目标域名>`
+- `<域名规则>` 支持：
+  - `full:`
+  - `domain:`
+  - `keyword:`
+  - `regexp:`
+  - 无前缀域名（按 `full:` 精确匹配处理）
 
 #### `files`
 
 - 类型：`array`；必填：否；默认值：空数组
 - 作用：指定外部重定向规则文件列表。
+- 文件格式与 `rules` 相同，每行一条；空行和 `#` 注释会被忽略。
 
 规则格式：
 
 ```text
-<域名规则> <目标域名>
+full:old.example.com new.example.net
+domain:legacy.example.com modern.example.net
+keyword:staging staging-gateway.example.net
+regexp:^api[0-9]+\.legacy\.example\.com$ api-gateway.example.net
+old-static.example.com static.example.net
 ```
 
 ### 行为说明
 
+- 仅处理 `IN` 类请求；没有 question 或未命中时透传后续 executor。
+- 多条规则同时命中时，按加载顺序最先出现的规则生效；加载顺序为 `rules` 先，再按 `files` 顺序逐文件逐行加载。
+- `redirect` 本身不解析目标域名，需要在 `sequence` 中配合 `forward` 等后续 executor 使用，由后续 executor 生成目标域名的真实响应。
 - 正向阶段：改写请求的 QUESTION NAME。
 - 回程阶段：
   - 把 response question 中的目标名还原为原始名。
-  - 在 answers 里追加一条 `CNAME original -> target`。
+  - 在 answers 开头插入一条 `CNAME original -> target`。
+
+常见 sequence 用法：
+
+```yaml
+- exec: "$redirect_main"
+- exec: "$forward_main"
+```
 
 ### 典型用途
 
@@ -848,6 +873,7 @@ sidebar_position: 3
 
 ### 注意事项
 
+- 通常应把 `redirect` 放在 `forward` 之前；如果后续链路没有产生 response，`redirect` 不会凭空生成目标记录。
 - 更适合 A/AAAA/TXT 这类简单请求。
 - 对复杂记录和某些扩展场景不保证完全语义透明。
 

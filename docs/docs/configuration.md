@@ -510,7 +510,7 @@ api:
 - `regexp:^api[0-9]+\\.example\\.com$`
   - 正则匹配。
 - `example.com`
-  - 未写前缀时，通常等价于 `domain:example.com`。
+  - 未写前缀时，`qname`、`cname`、`domain_set` 等通用域名规则通常等价于 `domain:example.com`；`hosts` 和 `redirect` 按 `full:example.com` 精确匹配处理。
 
 ### IP 规则
 

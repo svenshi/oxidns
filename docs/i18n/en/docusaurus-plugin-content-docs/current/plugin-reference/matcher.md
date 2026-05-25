@@ -83,8 +83,14 @@ Matches the query name in the request.
 - tag: match_domain
   type: qname
   args:
-    # Domain expression
+    # Exact match
+    - "full:login.example.com"
+    # Suffix match
     - "domain:example.com"
+    # Keyword match
+    - "keyword:cdn"
+    # Regex match
+    - "regexp:^api[0-9]+\\.example\\.net$"
     # Reuse an existing domain-capable provider
     - "$core_domains"
     # Load rules from file
@@ -97,7 +103,8 @@ Matches the query name in the request.
 
 - Type: `array`; Required: yes; Default: none
 - Supported items:
-  - domain expressions
+  - domain expressions, supporting `full:`, `domain:`, `keyword:`, `regexp:`,
+    and bare domains without a prefix as `domain:` rules
   - provider references with domain match capability, such as `domain_set` or `geosite`
   - file references
 - Runtime impact:
@@ -367,7 +374,10 @@ Matches CNAME targets in the response.
 - tag: cname_target
   type: cname
   args:
+    - "full:alias.example.com"
     - "domain:example.com"
+    - "keyword:cdn"
+    - "regexp:^edge[0-9]+\\.example\\.net$"
     - "$core_domains"
     - "&/etc/oxidns/cnames.txt"
 ```
@@ -376,7 +386,8 @@ Matches CNAME targets in the response.
 
 - Type: `array`; Required: yes; Default: none
 - Supported items:
-  - domain expressions
+  - domain expressions, supporting `full:`, `domain:`, `keyword:`, `regexp:`,
+    and bare domains without a prefix as `domain:` rules
   - provider references with domain match capability, such as `domain_set` or `geosite`
   - file references
 - Runtime impact:

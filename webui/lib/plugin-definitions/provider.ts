@@ -12,7 +12,7 @@ export const providerPluginDefinitions: PluginKindDefinition[] = [
       stringArrayField(
         "exps",
         "内联域名规则",
-        "full:login.example.com\ndomain:example.com\nkeyword:cdn",
+        "full:login.example.com\ndomain:example.com\nkeyword:cdn\nregexp:^api[0-9]+\\.example\\.net$",
         false,
         "定义内联域名表达式列表。",
       ),
@@ -28,7 +28,7 @@ export const providerPluginDefinitions: PluginKindDefinition[] = [
         "下游 Provider",
         "shared_domains\nshared_geosite",
         false,
-        "引用其它 domain_set 实例。",
+        "引用其它具备域名匹配能力的 provider。",
         {
           type: "reference",
           label: "引用 provider",

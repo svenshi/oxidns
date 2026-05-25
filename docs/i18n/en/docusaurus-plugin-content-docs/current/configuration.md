@@ -509,7 +509,9 @@ These forms appear in plugins such as `qname`, `cname`, `domain_set`, `hosts`, a
 - `regexp:^api[0-9]+\\.example\\.com$`
   - Regular-expression match.
 - `example.com`
-  - Without a prefix, this usually behaves like `domain:example.com`.
+  - Without a prefix, common domain-rule users such as `qname`, `cname`, and
+    `domain_set` usually treat it as `domain:example.com`; `hosts` and
+    `redirect` treat it as an exact `full:example.com` match.
 
 ### IP Rules
 

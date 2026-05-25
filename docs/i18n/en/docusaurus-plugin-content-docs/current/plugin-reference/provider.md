@@ -55,6 +55,7 @@ Provides a high-performance domain rule set that can be referenced by plugins su
   - `- "full:example.com"`
   - `- "domain:example.com"`
   - `- "keyword:cdn"`
+  - `- "regexp:^api[0-9]+\\.example\\.net$"`
 - Supported forms:
   - `full:`
   - `domain:`

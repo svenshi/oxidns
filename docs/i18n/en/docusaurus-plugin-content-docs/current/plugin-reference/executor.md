@@ -745,6 +745,10 @@ Rewrites matching names toward different target names or answer destinations.
       - "domain:legacy.example.com modern.example.net"
       # Keyword redirect
       - "keyword:staging staging-gateway.example.net"
+      # Regex redirect
+      - "regexp:^api[0-9]+\\.legacy\\.example\\.com$ api-gateway.example.net"
+      # Unprefixed rules default to full:
+      - "old-static.example.com static.example.net"
     files:
       # Merge more redirect rules from files
       - "/etc/oxidns/redirect.txt"
@@ -758,25 +762,51 @@ Rewrites matching names toward different target names or answer destinations.
 - Purpose: Defines inline redirect rules.
 - Rule format:
   - `<domain_rule> <target_name>`
+- `<domain_rule>` supports:
+  - `full:`
+  - `domain:`
+  - `keyword:`
+  - `regexp:`
+  - bare domains without a prefix, treated as exact `full:` matches
 
 #### `files`
 
 - Type: `array`; Required: no; Default: empty array
 - Purpose: Specifies the list of external redirect rule files.
+- File format is the same as `rules`, one rule per line. Empty lines and `#`
+  comments are ignored.
 
 Rule format:
 
 ```text
-<domain_rule> <target_name>
+full:old.example.com new.example.net
+domain:legacy.example.com modern.example.net
+keyword:staging staging-gateway.example.net
+regexp:^api[0-9]+\.legacy\.example\.com$ api-gateway.example.net
+old-static.example.com static.example.net
 ```
 
 ### Behavior
 
+- Only handles `IN` queries. If there is no question or no matching rule, the
+  executor passes through to the remaining chain.
+- If multiple rules match, the earliest loaded matching rule wins. Load order is
+  inline `rules` first, then `files` in declaration order and line order.
+- `redirect` does not resolve the target name by itself. Use it with a later
+  executor such as `forward` in a `sequence` so that executor can produce the
+  real response for the rewritten target name.
 - Forward phase:
   - Rewrites the request QUESTION NAME.
 - Return phase:
   - Restores the target name in the response question back to the original name.
-  - Appends a `CNAME original -> target` record in the answers.
+  - Prepends a `CNAME original -> target` record to the answers.
+
+Common `sequence` usage:
+
+```yaml
+- exec: "$redirect_main"
+- exec: "$forward_main"
+```
 
 ### Typical Uses
 
@@ -785,6 +815,9 @@ Rule format:
 
 ### Notes
 
+- Put `redirect` before `forward` in the usual case. If the remaining chain does
+  not produce a response, `redirect` will not synthesize target records by
+  itself.
 - It is better suited for simple queries such as `A` / `AAAA` / `TXT`.
 - Full semantic transparency is not guaranteed for complex records and some extension scenarios.
 

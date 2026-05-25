@@ -83,8 +83,14 @@ sidebar_position: 4
 - tag: match_domain
   type: qname
   args:
-    # 域名表达式
+    # 精确匹配
+    - "full:login.example.com"
+    # 后缀匹配
     - "domain:example.com"
+    # 关键字匹配
+    - "keyword:cdn"
+    # 正则匹配
+    - "regexp:^api[0-9]+\\.example\\.net$"
     # 复用已有 domain_set
     - "$core_domains"
     # 从文件加载规则
@@ -98,7 +104,7 @@ sidebar_position: 4
 - 类型：`array`；必填：是；默认值：无
 - 作用：定义域名匹配规则来源。
 - 支持元素：
-  - 域名表达式
+  - 域名表达式（支持 `full:`、`domain:`、`keyword:`、`regexp:`，无前缀时按 `domain:` 处理）
   - 具备域名匹配能力的 provider 引用，例如 `domain_set`、`geosite`
   - 文件引用
 - 运行影响：
@@ -377,7 +383,10 @@ sidebar_position: 4
 - tag: cname_target
   type: cname
   args:
+    - "full:alias.example.com"
     - "domain:example.com"
+    - "keyword:cdn"
+    - "regexp:^edge[0-9]+\\.example\\.net$"
     - "$core_domains"
     - "&/etc/oxidns/cnames.txt"
 ```
@@ -389,8 +398,8 @@ sidebar_position: 4
 - 类型：`array`；必填：是；默认值：无
 - 作用：定义 CNAME 目标名称匹配条件。
 - 支持元素：
-  - 域名表达式
-  - `domain_set` 引用
+  - 域名表达式（支持 `full:`、`domain:`、`keyword:`、`regexp:`，无前缀时按 `domain:` 处理）
+  - 具备域名匹配能力的 provider 引用，例如 `domain_set`、`geosite`
   - 文件引用
 - 运行影响：
   - 只检查响应中的 CNAME 目标。
