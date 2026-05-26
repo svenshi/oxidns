@@ -1324,6 +1324,7 @@ Persists the entry request, the post-`next` response, and `sequence` execution-p
 - It captures a structured snapshot of the entry request, enables `DnsContext.execution_path`, runs `next`, and commits immediately after `next` returns.
 - Successful runs store the current response. Failed runs store `error` and an empty response shape.
 - Request and response payloads are not stored as wire blobs. Question, RR, and EDNS fields are extracted into JSON text columns.
+- The `client_ip` field comes from the transport source address seen by OxiDNS; if a local forwarding chain such as systemd-resolved, dnsmasq, AdGuardHome, dae, or clash sits in front, rows may show only `127.0.0.1`.
 - Each recorder uses exactly two tables:
   - `qr_<safe_tag>_<fnv64hex>_v1_records`
   - `qr_<safe_tag>_<fnv64hex>_v1_steps`
@@ -1380,9 +1381,23 @@ Persists the entry request, the post-`next` response, and `sequence` execution-p
 - `GET /plugins/<tag>/stats/plugins`
   - Returns hit stats grouped by `matcher / executor / builtin`.
   - Supports `since_ms`, `until_ms`, `kind=matcher|executor|builtin|all`, and the record filters.
+- `GET /plugins/<tag>/stats/top_clients` / `stats/top_qnames`
+  - Returns client IP or QNAME rankings.
+  - Supports `limit=<n>`, default `20`; the backend no longer enforces a `200` cap.
+  - Supports the same time range and filter parameters as records.
+- `GET /plugins/<tag>/stats/qtype` / `stats/rcode`
+  - Returns QTYPE or RCODE distribution.
+  - Supports the same time range and filter parameters as records.
+- `GET /plugins/<tag>/stats/latency`
+  - Returns latency summary values, histogram buckets, and slow-query rankings.
+  - Supports `slow_limit=<n>` or `limit=<n>`, default `20`; the backend no longer enforces a `200` cap.
+- `GET /plugins/<tag>/stats/timeseries`
+  - Returns query trends aggregated by minute or hour.
+  - Supports `bucket=minute|hour` and `buckets=<n>` (default `60`, maximum `720`).
 - `GET /plugins/<tag>/stream`
   - Streams newly written records over SSE.
   - Supports `tail=<n>` to replay the in-memory tail.
+  - Clients should send `Accept: text/event-stream` and tolerate heartbeat frames, error events, empty payloads, and brief disconnects.
 
 ### Typical Uses
 
@@ -1396,6 +1411,7 @@ Persists the entry request, the post-`next` response, and `sequence` execution-p
 - If an earlier branch short-circuits before the recorder, that request will not be recorded.
 - If `next` fails and the server later emits a fallback response, the database still reflects the plugin's point of view: `error` plus an empty response.
 - If the management API is disabled, the recorder still writes SQLite data but does not expose query or SSE routes.
+- To preserve real client IPs, point clients directly at OxiDNS or configure a trusted `src_ip_header` for HTTP/DoH reverse-proxy deployments.
 
 ---
 

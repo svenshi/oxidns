@@ -731,8 +731,7 @@ pub(super) fn load_top_clients(
     )?;
     let where_sql = join_clauses(&clauses);
     params.push(Value::Integer(PLUGIN_STATS_SAMPLE_LIMIT as i64));
-    let limit = top_limit(query.limit);
-    params.push(Value::Integer(limit as i64));
+    params.push(Value::Integer(limit_to_i64(query.limit)?));
 
     let sql = format!(
         "WITH sample_records AS (
@@ -792,8 +791,7 @@ pub(super) fn load_top_qnames(
     )?;
     let where_sql = join_clauses(&clauses);
     params.push(Value::Integer(PLUGIN_STATS_SAMPLE_LIMIT as i64));
-    let limit = top_limit(query.limit);
-    params.push(Value::Integer(limit as i64));
+    params.push(Value::Integer(limit_to_i64(query.limit)?));
 
     let sql = format!(
         "WITH sample_records AS (
@@ -1008,7 +1006,7 @@ pub(super) fn load_latency_summary(
     let (avg_ms, p50_ms, p95_ms, p99_ms, max_ms) = latency_percentiles(&mut elapsed_values);
     let histogram = latency_histogram(&elapsed_values);
 
-    let slow_limit = top_limit(query.slow_limit);
+    let slow_limit = query.slow_limit;
     let (slow_clauses, mut slow_params) = record_filter_clauses(
         "r",
         &backend.tables,
@@ -1018,7 +1016,7 @@ pub(super) fn load_latency_summary(
     )?;
     let slow_where_sql = join_clauses(&slow_clauses);
     slow_params.push(Value::Integer(PLUGIN_STATS_SAMPLE_LIMIT as i64));
-    slow_params.push(Value::Integer(slow_limit as i64));
+    slow_params.push(Value::Integer(limit_to_i64(slow_limit)?));
     let slow_sql = format!(
         "WITH sample_records AS (
             SELECT r.id, r.elapsed_ms, r.questions_json
@@ -1156,10 +1154,6 @@ pub(super) fn load_timeseries(
         bucket_ms,
         points,
     })
-}
-
-fn top_limit(limit: usize) -> usize {
-    limit.clamp(1, 200)
 }
 
 fn bucket_share(count: u64, sample_size: u64) -> f64 {
@@ -1418,6 +1412,10 @@ fn read_optional_bool(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result
 }
 
 fn as_i64(value: u64) -> rusqlite::Result<i64> {
+    i64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, i64::MAX))
+}
+
+fn limit_to_i64(value: usize) -> rusqlite::Result<i64> {
     i64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, i64::MAX))
 }
 

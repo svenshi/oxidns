@@ -2,7 +2,6 @@
 Description=OxiDNS Server
 
 [Service]
-WorkingDirectory=/var/lib/oxidns
 ExecStart=/usr/bin/oxidns start -c /etc/oxidns/config.yaml -d /var/lib/oxidns
 Restart=on-failure
 RestartSec=3

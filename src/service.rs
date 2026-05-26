@@ -69,7 +69,10 @@ fn install_service(options: ServiceInstallOptions) -> Result<()> {
         ],
         contents: None,
         username: None,
-        working_directory: Some(working_dir),
+        // Keep `-d` as the single source of truth for runtime-relative paths.
+        // This lets OxiDNS report path problems after startup instead of the
+        // service manager failing an earlier chdir with less context.
+        working_directory: None,
         environment: None,
         autostart: true,
         restart_policy: RestartPolicy::OnFailure {
@@ -176,5 +179,18 @@ mod tests {
     fn normalize_working_dir_rejects_relative_paths() {
         let err = normalize_working_dir(Path::new("relative/path")).expect_err("should fail");
         assert!(err.to_string().contains("must be absolute"));
+    }
+
+    #[test]
+    fn packaged_systemd_unit_uses_cli_working_dir_only() {
+        let unit = include_str!("../packaging/oxidns.service");
+        assert!(
+            !unit
+                .lines()
+                .any(|line| line.starts_with("WorkingDirectory="))
+        );
+        assert!(unit.contains(
+            "ExecStart=/usr/bin/oxidns start -c /etc/oxidns/config.yaml -d /var/lib/oxidns"
+        ));
     }
 }

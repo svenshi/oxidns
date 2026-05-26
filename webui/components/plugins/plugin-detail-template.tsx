@@ -160,8 +160,8 @@ export function PluginDetailTemplate({
     (hasMetricSeries ? 1 : 0);
 
   return (
-    <div className="flex min-h-full flex-col">
-      <header className="border-b bg-sidebar/70">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <header className="shrink-0 border-b bg-sidebar/70">
         <div className="mx-auto w-full max-w-6xl px-5 py-5">
           <div className="flex min-w-0 items-start gap-4 pr-14">
             <div className="flex size-12 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/12 text-primary [&_svg]:size-5">
@@ -278,7 +278,7 @@ export function PluginDetailTemplate({
 
       <Tabs
         defaultValue="config"
-        className="mx-auto w-full max-w-6xl flex-1 px-5 py-5"
+        className="mx-auto min-h-0 w-full max-w-6xl flex-1 overflow-y-auto px-5 py-5 [scrollbar-gutter:stable]"
       >
         <TabsList
           className={cn(

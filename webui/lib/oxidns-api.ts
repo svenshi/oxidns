@@ -814,26 +814,66 @@ export function apiHeaders() {
 
 async function readJsonResponse<T>(response: Response): Promise<T> {
   const text = await response.text();
-  const body = text ? JSON.parse(text) : {};
+  const parsed = parseJsonResponseText(text);
+  const body = parsed.ok ? parsed.value : undefined;
   if (!response.ok) {
+    const bodyRecord = isRecord(body) ? body : undefined;
     const message =
-      body && typeof body.message === "string"
-        ? body.message
-        : `HTTP ${response.status}`;
+      typeof bodyRecord?.message === "string"
+        ? bodyRecord.message
+        : httpErrorMessage(response, parsed.ok ? undefined : parsed.preview);
     if (
-      body &&
-      Array.isArray(body.diagnostics) &&
-      body.diagnostics.every((item: unknown) => typeof item === "string")
+      bodyRecord &&
+      Array.isArray(bodyRecord.diagnostics) &&
+      bodyRecord.diagnostics.every((item: unknown) => typeof item === "string")
     ) {
       throw new ConfigValidationError(
         message,
-        body.diagnostics,
-        Array.isArray(body.diagnostic_details)
-          ? (body.diagnostic_details as ConfigDiagnostic[])
+        bodyRecord.diagnostics,
+        Array.isArray(bodyRecord.diagnostic_details)
+          ? (bodyRecord.diagnostic_details as ConfigDiagnostic[])
           : [],
       );
     }
     throw new Error(message);
   }
+
+  if (!parsed.ok) {
+    throw new Error(`响应不是有效 JSON：${parsed.preview}`);
+  }
+
   return body as T;
+}
+
+type JsonResponseParseResult =
+  | { ok: true; value: unknown }
+  | { ok: false; preview: string };
+
+function parseJsonResponseText(text: string): JsonResponseParseResult {
+  const trimmed = text.trim();
+  if (!trimmed) return { ok: true, value: {} };
+
+  try {
+    return { ok: true, value: JSON.parse(trimmed) as unknown };
+  } catch {
+    return { ok: false, preview: previewResponseText(trimmed) };
+  }
+}
+
+function httpErrorMessage(response: Response, preview?: string) {
+  const status = response.statusText
+    ? `HTTP ${response.status} ${response.statusText}`
+    : `HTTP ${response.status}`;
+  return preview ? `${status}: ${preview}` : status;
+}
+
+function previewResponseText(text: string) {
+  const singleLine = text.replace(/\s+/g, " ").trim();
+  return singleLine.length > 160
+    ? `${singleLine.slice(0, 157)}...`
+    : singleLine;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }

@@ -29,7 +29,6 @@ use crate::register_plugin_api;
 const DEFAULT_LIST_LIMIT: usize = 100;
 const MAX_LIST_LIMIT: usize = 500;
 const DEFAULT_TOP_LIMIT: usize = 20;
-const MAX_TOP_LIMIT: usize = 200;
 const DEFAULT_SLOW_LIMIT: usize = 20;
 const DEFAULT_TIMESERIES_BUCKETS: usize = 60;
 const MAX_TIMESERIES_BUCKETS: usize = 720;
@@ -666,7 +665,13 @@ fn parse_top_limit(raw: &str) -> std::result::Result<usize, String> {
     if parsed == 0 {
         return Err("limit must be greater than 0".to_string());
     }
-    Ok(parsed.min(MAX_TOP_LIMIT))
+    let max_sql_limit = usize::try_from(i64::MAX).unwrap_or(usize::MAX);
+    if parsed > max_sql_limit {
+        return Err(format!(
+            "limit must be less than or equal to {max_sql_limit}"
+        ));
+    }
+    Ok(parsed)
 }
 
 fn parse_timeseries_buckets(raw: &str) -> std::result::Result<usize, String> {

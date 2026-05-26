@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use tempfile::NamedTempFile;
@@ -407,6 +408,13 @@ fn test_query_recorder_query_parsers_accept_common_filters() {
     let stats_with_matcher =
         super::api::parse_plugins_stats_query(Some("kind=matcher&matcher_tag=cn")).unwrap();
     assert_eq!(stats_with_matcher.filter.matcher_tag.as_deref(), Some("cn"));
+
+    let top = super::api::parse_top_query(Some("limit=250&qname=example")).unwrap();
+    assert_eq!(top.limit, 250);
+    assert_eq!(top.filter.qname.as_deref(), Some("example"));
+
+    let latency = super::api::parse_latency_query(Some("slow_limit=250")).unwrap();
+    assert_eq!(latency.slow_limit, 250);
 }
 
 #[tokio::test]
@@ -780,6 +788,58 @@ async fn test_load_top_clients_ranks_by_count() {
     assert_eq!(response.rows[0].key, "192.0.2.1");
     assert_eq!(response.rows[0].count, 2);
     assert!((response.rows[0].share - 0.4).abs() < 1.0e-9);
+
+    plugin.destroy().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_load_top_clients_allows_limit_above_200() {
+    let temp = NamedTempFile::new().unwrap();
+    let config = resolve_config(Some(
+        serde_yaml_ng::to_value(QueryRecorderConfig {
+            path: temp.path().display().to_string(),
+            queue_size: Some(512),
+            batch_size: Some(64),
+            flush_interval_ms: Some(10),
+            memory_tail: Some(16),
+            retention_days: Some(7),
+            cleanup_interval_hours: Some(1),
+        })
+        .unwrap(),
+    ))
+    .unwrap();
+    let mut plugin = QueryRecorder::new("rec".to_string(), config);
+    plugin.init_for_test().await.unwrap();
+    let backend = plugin.backend.as_ref().unwrap().clone();
+
+    for index in 0..250u16 {
+        let octet = (index + 1) as u8;
+        backend.enqueue(pending_record(
+            1_000 + i64::from(index),
+            index + 1,
+            &format!("host-{index}.example."),
+            RecordType::A,
+            Ipv4Addr::new(10, 0, 0, octet),
+            Some(Rcode::NoError),
+            None,
+            &[],
+        ));
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(backend.dropped_total.load(Ordering::Relaxed), 0);
+
+    let response = load_top_clients(
+        backend,
+        TopQuery {
+            since_ms: None,
+            until_ms: None,
+            filter: QueryRecordFilter::default(),
+            limit: 250,
+        },
+    )
+    .unwrap();
+    assert_eq!(response.sample_size, 250);
+    assert_eq!(response.rows.len(), 250);
 
     plugin.destroy().await.unwrap();
 }

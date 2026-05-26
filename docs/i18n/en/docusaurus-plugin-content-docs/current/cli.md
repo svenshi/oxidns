@@ -23,7 +23,7 @@ Available top-level commands:
 | Start in the foreground | `oxidns start -c config.yaml` |
 | Temporarily enable debug logging | `oxidns start -c config.yaml -l debug` |
 | Print the plugin dependency graph | `oxidns check -c config.yaml --graph` |
-| Install as a system service | `sudo oxidns service install -d /etc/oxidns -c /etc/oxidns/config.yaml` |
+| Install as a system service | `sudo oxidns service install -d /var/lib/oxidns -c /etc/oxidns/config.yaml` |
 | Check for a new release | `oxidns upgrade check` |
 | Export rules from a dat file | `oxidns export-dat --file ./rules/geosite.dat --kind geosite --selector cn --out-dir ./rules/exported` |
 
@@ -54,7 +54,7 @@ Typical usage:
 ```bash
 oxidns start -c config.yaml
 oxidns start -c config.yaml -l debug
-oxidns start -c /etc/oxidns/config.yaml -d /etc/oxidns
+oxidns start -c /etc/oxidns/config.yaml -d /var/lib/oxidns
 ```
 
 Arguments:
@@ -64,6 +64,8 @@ Arguments:
   - Default: `config.yaml`
 - `-d, --working-dir <PATH>`
   - Change to the specified working directory before startup.
+  - All runtime relative paths use this directory as their base, including logs, SQLite files, rule files, and `api.http.webui.root`.
+  - In the Debian default layout, the config lives at `/etc/oxidns/config.yaml`, while runtime-relative resources live under `/var/lib/oxidns`.
 - `-l, --log-level <LEVEL>`
   - Temporarily override the configured log level.
   - Supported values: `off` `trace` `debug` `info` `warn` `error`
@@ -83,7 +85,7 @@ Typical usage:
 ```bash
 oxidns check -c config.yaml
 oxidns check -c /etc/oxidns/config.yaml
-oxidns check -c config.yaml -d /etc/oxidns
+oxidns check -c /etc/oxidns/config.yaml -d /var/lib/oxidns
 oxidns check -c config.yaml --graph
 ```
 
@@ -95,6 +97,7 @@ Arguments:
 - `-d, --working-dir <PATH>`
   - Change to the specified working directory before validation.
   - Useful when the config relies on relative paths.
+  - Keep it the same as the runtime `-d` value so validation and startup see the same relative paths.
 - `--graph`
   - Print the plugin dependency graph after validation succeeds.
 
@@ -224,14 +227,15 @@ Supported subcommands:
 Installs the service definition without starting it immediately.
 
 ```bash
-sudo oxidns service install -d /etc/oxidns -c /etc/oxidns/config.yaml
+sudo oxidns service install -d /var/lib/oxidns -c /etc/oxidns/config.yaml
 ```
 
 Arguments:
 
 - `-d, --working-dir <PATH>`
-  - Service working directory.
+  - Service working directory, and the base for all runtime relative paths inside the service.
   - Must be an absolute path.
+  - The generated service passes this to OxiDNS through `ExecStart ... -d <PATH>`; if a custom systemd unit also sets `WorkingDirectory=`, keep both values aligned.
 - `-c, --config <PATH>`
   - Configuration path used by the installed service.
 

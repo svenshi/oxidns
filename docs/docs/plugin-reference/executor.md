@@ -1413,6 +1413,7 @@ old-static.example.com static.example.net
 - 进入时抓取入口 request 的结构化快照，并启用 `DnsContext.execution_path`。
 - `next` 返回后立即提交记录；成功时记录当前 response，失败时记录 `error` 和空 response。
 - request / response 不保存 wire 数据，而是把问题区、RR、EDNS 等字段拆成 JSON 文本列。
+- `client_ip` 字段来自 OxiDNS 看到的传输层来源地址；如果前面有 systemd-resolved、dnsmasq、AdGuardHome、dae、clash 等本机转发链路，记录中可能只看到 `127.0.0.1`。
 - 每个 recorder 只使用两张表：
   - `qr_<safe_tag>_<fnv64hex>_v1_records`
   - `qr_<safe_tag>_<fnv64hex>_v1_steps`
@@ -1469,9 +1470,23 @@ old-static.example.com static.example.net
 - `GET /plugins/<tag>/stats/plugins`
   - 返回按 `matcher / executor / builtin` 聚合的命中统计。
   - 支持 `since_ms`、`until_ms`、`kind=matcher|executor|builtin|all` 和 records 的过滤参数。
+- `GET /plugins/<tag>/stats/top_clients` / `stats/top_qnames`
+  - 返回客户端 IP 或 QNAME 排行。
+  - 支持 `limit=<n>`，默认 `20`；后端不再强制 `200` 上限。
+  - 支持 records 的时间范围与过滤参数。
+- `GET /plugins/<tag>/stats/qtype` / `stats/rcode`
+  - 返回 QTYPE 或 RCODE 分布。
+  - 支持 records 的时间范围与过滤参数。
+- `GET /plugins/<tag>/stats/latency`
+  - 返回延迟摘要、直方图和慢查询排行。
+  - 支持 `slow_limit=<n>` 或 `limit=<n>`，默认 `20`；后端不再强制 `200` 上限。
+- `GET /plugins/<tag>/stats/timeseries`
+  - 返回按分钟或小时聚合的查询趋势。
+  - 支持 `bucket=minute|hour` 和 `buckets=<n>`（默认 `60`，最大 `720`）。
 - `GET /plugins/<tag>/stream`
   - 以 SSE 实时推送新写入记录。
   - 支持 `tail=<n>` 回放最近 `n` 条内存 tail。
+  - 客户端应发送 `Accept: text/event-stream`，并容忍 heartbeat、错误事件、空 payload 和短暂断连。
 
 ### 典型用途
 
@@ -1485,6 +1500,7 @@ old-static.example.com static.example.net
 - 如果前置分支在 recorder 之前就短路返回，该请求不会被当前 recorder 记录。
 - 若 `next` 报错而 `server` 后续补发了兜底响应，数据库里仍只记录插件视角下的 `error` 和空 response。
 - 若未启用管理 API，recorder 仍会写库，但不会暴露查询与 SSE 路由。
+- 若需要真实终端 IP，请让客户端直连 OxiDNS，或在 HTTP/DoH 反向代理场景配置可信的 `src_ip_header`。
 
 ---
 

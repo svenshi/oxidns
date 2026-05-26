@@ -478,6 +478,8 @@ plugins:
 * 排查某个域名为什么走了特定分支
 * 给 WebUI 或外部系统提供历史查询与实时查询流
 
+排查 `client_ip` 时要注意：`query_recorder` 记录的是 OxiDNS 收到 DNS 请求时的传输层来源。如果所有记录都是 `127.0.0.1`，通常是 systemd-resolved、dnsmasq、AdGuardHome、dae、clash 等本机转发器先接收了客户端请求再转发给 OxiDNS；请检查客户端 DNS 指向、旁路由/NAT 规则和本机代理链路。HTTP/DoH 反向代理部署可在可信边界内配置 `src_ip_header` 保留真实来源地址。
+
 ## 场景八：DNS 结果驱动网络联动
 
 策略目标：

@@ -23,7 +23,7 @@ sidebar_position: 3
 | 前台启动 | `oxidns start -c config.yaml` |
 | 临时开启调试日志 | `oxidns start -c config.yaml -l debug` |
 | 查看插件依赖图 | `oxidns check -c config.yaml --graph` |
-| 安装系统服务 | `sudo oxidns service install -d /etc/oxidns -c /etc/oxidns/config.yaml` |
+| 安装系统服务 | `sudo oxidns service install -d /var/lib/oxidns -c /etc/oxidns/config.yaml` |
 | 检查新版本 | `oxidns upgrade check` |
 | 从 dat 导出规则文件 | `oxidns export-dat --file ./rules/geosite.dat --kind geosite --selector cn --out-dir ./rules/exported` |
 
@@ -54,7 +54,7 @@ oxidns upgrade --help
 ```bash
 oxidns start -c config.yaml
 oxidns start -c config.yaml -l debug
-oxidns start -c /etc/oxidns/config.yaml -d /etc/oxidns
+oxidns start -c /etc/oxidns/config.yaml -d /var/lib/oxidns
 ```
 
 参数说明：
@@ -64,6 +64,8 @@ oxidns start -c /etc/oxidns/config.yaml -d /etc/oxidns
   - 默认值：`config.yaml`
 - `-d, --working-dir <PATH>`
   - 启动前切换到指定工作目录。
+  - 所有运行期相对路径都以该目录为基准，包括日志、SQLite、规则文件和 `api.http.webui.root`。
+  - Debian 默认布局中，配置放在 `/etc/oxidns/config.yaml`，运行期相对路径资源放在 `/var/lib/oxidns`。
 - `-l, --log-level <LEVEL>`
   - 临时覆盖配置文件中的日志级别。
   - 支持：`off` `trace` `debug` `info` `warn` `error`
@@ -83,7 +85,7 @@ oxidns start -c /etc/oxidns/config.yaml -d /etc/oxidns
 ```bash
 oxidns check -c config.yaml
 oxidns check -c /etc/oxidns/config.yaml
-oxidns check -c config.yaml -d /etc/oxidns
+oxidns check -c /etc/oxidns/config.yaml -d /var/lib/oxidns
 oxidns check -c config.yaml --graph
 ```
 
@@ -95,6 +97,7 @@ oxidns check -c config.yaml --graph
 - `-d, --working-dir <PATH>`
   - 校验前切换到指定工作目录。
   - 适合配置里使用相对路径时配合使用。
+  - 建议与实际启动时的 `-d` 保持一致，避免校验和运行看到不同的相对路径。
 - `--graph`
   - 校验成功后打印插件依赖图。
 
@@ -224,14 +227,15 @@ oxidns export-dat \
 安装系统服务定义，但不会立即启动。
 
 ```bash
-sudo oxidns service install -d /etc/oxidns -c /etc/oxidns/config.yaml
+sudo oxidns service install -d /var/lib/oxidns -c /etc/oxidns/config.yaml
 ```
 
 参数说明：
 
 - `-d, --working-dir <PATH>`
-  - 服务工作目录。
+  - 服务工作目录，也是服务内所有运行期相对路径的基准。
   - 必须为绝对路径。
+  - 生成的服务会通过 `ExecStart ... -d <PATH>` 传给 OxiDNS；自定义 systemd unit 若额外设置 `WorkingDirectory=`，请保持二者一致。
 - `-c, --config <PATH>`
   - 服务启动时使用的配置文件路径。
 

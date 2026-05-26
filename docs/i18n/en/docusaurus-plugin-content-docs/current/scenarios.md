@@ -478,6 +478,8 @@ Good fits:
 * Explaining why one domain reached a specific branch
 * Feeding historical and live query data into the WebUI or external tools
 
+When troubleshooting `client_ip`, remember that `query_recorder` records the transport source seen by OxiDNS. If every row is `127.0.0.1`, a local forwarder such as systemd-resolved, dnsmasq, AdGuardHome, dae, or clash is usually receiving client queries first and forwarding them to OxiDNS. Check client DNS targets, side-router/NAT rules, and local proxy chains. HTTP/DoH reverse-proxy deployments can preserve the real source with a trusted `src_ip_header`.
+
 ## Scenario 8: Drive Network Integration from DNS Results
 
 Policy goals:

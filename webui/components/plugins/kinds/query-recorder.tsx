@@ -187,6 +187,7 @@ const CHART_COLORS = [
   "var(--chart-4)",
   "var(--chart-5)",
 ];
+const TOP_PAGE_SIZE = 20;
 
 // ---------------------------------------------------------------------------
 // 「统计」Tab — original layout: MatcherStatsCard on top, QueryRecordsPanel
@@ -372,7 +373,10 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
     try {
       const response = await fetch(
         apiUrl(`/plugins/${encodeURIComponent(tag)}/stream?tail=20`),
-        { headers: apiHeaders(), signal: controller.signal },
+        {
+          headers: { ...apiHeaders(), Accept: "text/event-stream" },
+          signal: controller.signal,
+        },
       );
       if (!response.ok || !response.body) {
         throw new Error(`流式连接失败：HTTP ${response.status}`);
@@ -383,17 +387,26 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
       while (!controller.signal.aborted) {
         const { done, value } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        buffer += decoder
+          .decode(value, { stream: true })
+          .replace(/\r\n/g, "\n")
+          .replace(/\r/g, "\n");
         const chunks = buffer.split("\n\n");
         buffer = chunks.pop() ?? "";
         for (const chunk of chunks) {
-          const data = chunk
-            .split("\n")
-            .filter((line) => line.startsWith("data:"))
-            .map((line) => line.slice(5).trimStart())
-            .join("\n");
-          if (!data) continue;
-          const record = JSON.parse(data) as QueryRecordDetail;
+          const event = parseSseEvent(chunk);
+          if (event.event === "error") {
+            setError(
+              event.data ? parseSseErrorMessage(event.data) : "实时流返回错误",
+            );
+            continue;
+          }
+          if (!event.data) continue;
+          const record = parseStreamRecord(event.data);
+          if (!record) {
+            setError("实时事件格式无效，已跳过一条记录");
+            continue;
+          }
           if (!recordMatchesFilters(record, filtersRef.current)) continue;
           setRecords((current) =>
             [record, ...current.filter((item) => item.id !== record.id)].slice(
@@ -519,7 +532,9 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
-                  <AlertDialogCancel disabled={clearing}>取消</AlertDialogCancel>
+                  <AlertDialogCancel disabled={clearing}>
+                    取消
+                  </AlertDialogCancel>
                   <AlertDialogAction
                     variant="destructive"
                     disabled={clearing}
@@ -1025,33 +1040,33 @@ function QueryRecorderInsightsPanel({ tag }: { tag: string }) {
       </Card>
 
       <Tabs defaultValue="clients">
-        <TabsList className="flex w-full flex-wrap justify-start gap-1 overflow-x-auto">
-          <TabsTrigger value="clients">
+        <TabsList className="flex w-full flex-nowrap justify-start gap-1 overflow-x-auto">
+          <TabsTrigger value="clients" className="shrink-0">
             <Users className="h-3.5 w-3.5" />
             客户端
           </TabsTrigger>
-          <TabsTrigger value="qnames">
+          <TabsTrigger value="qnames" className="shrink-0">
             <Globe className="h-3.5 w-3.5" />
             域名
           </TabsTrigger>
-          <TabsTrigger value="qtype">
+          <TabsTrigger value="qtype" className="shrink-0">
             <BarChart3 className="h-3.5 w-3.5" />
             QTYPE
           </TabsTrigger>
-          <TabsTrigger value="rcode">
+          <TabsTrigger value="rcode" className="shrink-0">
             <PieChartIcon className="h-3.5 w-3.5" />
             RCODE
           </TabsTrigger>
-          <TabsTrigger value="latency">
+          <TabsTrigger value="latency" className="shrink-0">
             <Timer className="h-3.5 w-3.5" />
             延迟
           </TabsTrigger>
-          <TabsTrigger value="timeseries">
+          <TabsTrigger value="timeseries" className="shrink-0">
             <TrendingUp className="h-3.5 w-3.5" />
             趋势
           </TabsTrigger>
         </TabsList>
-        <TabsContent value="clients">
+        <TabsContent value="clients" className="min-h-[40rem]">
           <TopBucketsCard
             key={`clients-${tag}-${range}-${nonce}`}
             title="客户端 IP 排行"
@@ -1062,7 +1077,7 @@ function QueryRecorderInsightsPanel({ tag }: { tag: string }) {
             keyLabel="客户端 IP"
           />
         </TabsContent>
-        <TabsContent value="qnames">
+        <TabsContent value="qnames" className="min-h-[40rem]">
           <TopBucketsCard
             key={`qnames-${tag}-${range}-${nonce}`}
             title="查询域名排行"
@@ -1073,7 +1088,7 @@ function QueryRecorderInsightsPanel({ tag }: { tag: string }) {
             keyLabel="QNAME"
           />
         </TabsContent>
-        <TabsContent value="qtype">
+        <TabsContent value="qtype" className="min-h-[40rem]">
           <DistributionCard
             key={`qtype-${tag}-${range}-${nonce}`}
             title="QTYPE 分布"
@@ -1085,7 +1100,7 @@ function QueryRecorderInsightsPanel({ tag }: { tag: string }) {
             preferBarChart
           />
         </TabsContent>
-        <TabsContent value="rcode">
+        <TabsContent value="rcode" className="min-h-[40rem]">
           <DistributionCard
             key={`rcode-${tag}-${range}-${nonce}`}
             title="RCODE 分布"
@@ -1097,14 +1112,14 @@ function QueryRecorderInsightsPanel({ tag }: { tag: string }) {
             preferBarChart={false}
           />
         </TabsContent>
-        <TabsContent value="latency">
+        <TabsContent value="latency" className="min-h-[40rem]">
           <LatencyCard
             key={`latency-${tag}-${range}-${nonce}`}
             tag={tag}
             filters={filters}
           />
         </TabsContent>
-        <TabsContent value="timeseries">
+        <TabsContent value="timeseries" className="min-h-[40rem]">
           <TimeseriesCard
             key={`timeseries-${tag}-${range}-${nonce}`}
             tag={tag}
@@ -1167,42 +1182,47 @@ function TopBucketsCard({
   keyLabel: string;
 }) {
   const [data, setData] = useState<QueryRecorderTopResponse | null>(null);
+  const [limit, setLimit] = useState(TOP_PAGE_SIZE);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const load = useCallback(async () => {
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await fetcher(tag, {
-        ...filters,
-        limit: 20,
-        signal: controller.signal,
-      });
-      if (controller.signal.aborted || abortRef.current !== controller) {
-        return;
+  const load = useCallback(
+    async (requestedLimit: number) => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      setLoading(true);
+      setError(null);
+      try {
+        const response = await fetcher(tag, {
+          ...filters,
+          limit: requestedLimit,
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted || abortRef.current !== controller) {
+          return;
+        }
+        setData(response);
+        setLimit(requestedLimit);
+      } catch (err) {
+        if (controller.signal.aborted || abortRef.current !== controller) {
+          return;
+        }
+        setError(err instanceof Error ? err.message : "读取统计失败");
+      } finally {
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+          setLoading(false);
+        }
       }
-      setData(response);
-    } catch (err) {
-      if (controller.signal.aborted || abortRef.current !== controller) {
-        return;
-      }
-      setError(err instanceof Error ? err.message : "读取统计失败");
-    } finally {
-      if (abortRef.current === controller) {
-        abortRef.current = null;
-        setLoading(false);
-      }
-    }
-  }, [tag, filters, fetcher]);
+    },
+    [tag, filters, fetcher],
+  );
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void load();
+      void load(TOP_PAGE_SIZE);
     }, 0);
     return () => {
       window.clearTimeout(timer);
@@ -1219,6 +1239,7 @@ function TopBucketsCard({
       })),
     [data],
   );
+  const hasMoreRows = chartData.length >= limit;
 
   return (
     <Card className="mt-3">
@@ -1241,7 +1262,7 @@ function TopBucketsCard({
           variant="outline"
           size="sm"
           disabled={loading}
-          onClick={() => void load()}
+          onClick={() => void load(limit)}
         >
           <RefreshCw className="h-4 w-4" />
           刷新
@@ -1341,6 +1362,16 @@ function TopBucketsCard({
             </TableBody>
           </Table>
         </div>
+        {hasMoreRows && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={loading}
+            onClick={() => void load(limit + TOP_PAGE_SIZE)}
+          >
+            加载更多
+          </Button>
+        )}
       </CardContent>
     </Card>
   );
@@ -1570,42 +1601,47 @@ function LatencyCard({
   filters: QueryRecordFilters;
 }) {
   const [data, setData] = useState<QueryRecorderLatencySummary | null>(null);
+  const [slowLimit, setSlowLimit] = useState(TOP_PAGE_SIZE);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const load = useCallback(async () => {
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await fetchQueryRecorderLatency(tag, {
-        ...filters,
-        slowLimit: 20,
-        signal: controller.signal,
-      });
-      if (controller.signal.aborted || abortRef.current !== controller) {
-        return;
+  const load = useCallback(
+    async (requestedSlowLimit: number) => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      setLoading(true);
+      setError(null);
+      try {
+        const response = await fetchQueryRecorderLatency(tag, {
+          ...filters,
+          slowLimit: requestedSlowLimit,
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted || abortRef.current !== controller) {
+          return;
+        }
+        setData(response);
+        setSlowLimit(requestedSlowLimit);
+      } catch (err) {
+        if (controller.signal.aborted || abortRef.current !== controller) {
+          return;
+        }
+        setError(err instanceof Error ? err.message : "读取延迟统计失败");
+      } finally {
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+          setLoading(false);
+        }
       }
-      setData(response);
-    } catch (err) {
-      if (controller.signal.aborted || abortRef.current !== controller) {
-        return;
-      }
-      setError(err instanceof Error ? err.message : "读取延迟统计失败");
-    } finally {
-      if (abortRef.current === controller) {
-        abortRef.current = null;
-        setLoading(false);
-      }
-    }
-  }, [tag, filters]);
+    },
+    [tag, filters],
+  );
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void load();
+      void load(TOP_PAGE_SIZE);
     }, 0);
     return () => {
       window.clearTimeout(timer);
@@ -1638,6 +1674,8 @@ function LatencyCard({
       return { label, count: bucket.count, fill };
     });
   }, [data]);
+  const slowTop = data?.slow_top ?? [];
+  const hasMoreSlowRows = slowTop.length >= slowLimit;
 
   return (
     <Card className="mt-3">
@@ -1657,7 +1695,7 @@ function LatencyCard({
           variant="outline"
           size="sm"
           disabled={loading}
-          onClick={() => void load()}
+          onClick={() => void load(slowLimit)}
         >
           <RefreshCw className="h-4 w-4" />
           刷新
@@ -1732,7 +1770,7 @@ function LatencyCard({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {(data?.slow_top ?? []).map((row) => (
+                {slowTop.map((row) => (
                   <TableRow key={row.qname}>
                     <TableCell className="font-mono">{row.qname}</TableCell>
                     <TableCell className="font-mono">{row.count}</TableCell>
@@ -1742,7 +1780,7 @@ function LatencyCard({
                     <TableCell className="font-mono">{row.max_ms} ms</TableCell>
                   </TableRow>
                 ))}
-                {!(data?.slow_top ?? []).length && (
+                {!slowTop.length && (
                   <TableRow>
                     <TableCell
                       colSpan={4}
@@ -1755,6 +1793,17 @@ function LatencyCard({
               </TableBody>
             </Table>
           </div>
+          {hasMoreSlowRows && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-3"
+              disabled={loading}
+              onClick={() => void load(slowLimit + TOP_PAGE_SIZE)}
+            >
+              加载更多
+            </Button>
+          )}
         </div>
       </CardContent>
     </Card>
@@ -2157,6 +2206,70 @@ function parseLocalDateTime(value: string) {
   return Number.isFinite(ms) ? ms : undefined;
 }
 
+type SseEvent = {
+  event: string;
+  data: string;
+};
+
+function parseSseEvent(chunk: string): SseEvent {
+  const data: string[] = [];
+  let event = "message";
+  for (const rawLine of chunk.split("\n")) {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (!line || line.startsWith(":")) continue;
+
+    const separator = line.indexOf(":");
+    const field = separator === -1 ? line : line.slice(0, separator);
+    let value = separator === -1 ? "" : line.slice(separator + 1);
+    if (value.startsWith(" ")) value = value.slice(1);
+
+    if (field === "event") {
+      event = value || "message";
+    } else if (field === "data") {
+      data.push(value);
+    }
+  }
+  return { event, data: data.join("\n") };
+}
+
+function parseSseErrorMessage(data: string) {
+  try {
+    const parsed = JSON.parse(data) as unknown;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      "message" in parsed &&
+      typeof parsed.message === "string"
+    ) {
+      return parsed.message;
+    }
+  } catch {
+    // Fall through to the raw server payload preview.
+  }
+  return `实时流返回错误：${truncateText(data)}`;
+}
+
+function parseStreamRecord(data: string): QueryRecordDetail | null {
+  try {
+    const parsed = JSON.parse(data) as unknown;
+    return isQueryRecordDetail(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isQueryRecordDetail(value: unknown): value is QueryRecordDetail {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<QueryRecordDetail>;
+  return (
+    typeof record.id === "number" &&
+    typeof record.created_at_ms === "number" &&
+    typeof record.client_ip === "string" &&
+    Array.isArray(record.questions_json) &&
+    Array.isArray(record.steps)
+  );
+}
+
 function recordMatchesFilters(
   record: QueryRecordRow | QueryRecordDetail,
   filters: QueryRecordFilters,
@@ -2278,6 +2391,13 @@ function truncateMiddle(value: string, max: number) {
   if (value.length <= max) return value;
   const half = Math.max(2, Math.floor((max - 1) / 2));
   return `${value.slice(0, half)}…${value.slice(value.length - half)}`;
+}
+
+function truncateText(value: string, max = 160) {
+  const singleLine = value.replace(/\s+/g, " ").trim();
+  return singleLine.length > max
+    ? `${singleLine.slice(0, Math.max(0, max - 1))}…`
+    : singleLine;
 }
 
 function formatQuestion(record: QueryRecordRow) {
