@@ -32,11 +32,11 @@ function Write-Info {
 }
 
 function Get-OxiDnsTarget {
-    $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+    $arch = $env:PROCESSOR_ARCHITECTURE
     switch ($arch) {
-        "X64" { return "x86_64-pc-windows-msvc" }
-        "Arm64" { return "aarch64-pc-windows-msvc" }
-        "X86" { return "i686-pc-windows-msvc" }
+        "AMD64" { return "x86_64-pc-windows-msvc" }
+        "ARM64" { return "aarch64-pc-windows-msvc" }
+        "x86"   { return "i686-pc-windows-msvc" }
         default {
             throw "unsupported Windows architecture: $arch. Set OXIDNS_TARGET to override."
         }
@@ -93,7 +93,13 @@ if ([string]::IsNullOrWhiteSpace($StartService)) {
 $serviceInstall = Test-Truthy $InstallService
 $serviceStart = Test-Truthy $StartService
 if ($serviceInstall -and -not (Test-Administrator)) {
-    throw "service installation is the default; rerun from an elevated PowerShell session or set OXIDNS_INSTALL_SERVICE=0 for a user install"
+    if (-not [string]::IsNullOrWhiteSpace($env:OXIDNS_INSTALL_SERVICE)) {
+        throw "service installation requires an elevated PowerShell session; rerun as Administrator or set OXIDNS_INSTALL_SERVICE=0 for a user install"
+    }
+    Write-Info "Note: not running as Administrator; falling back to user install (no Windows service)."
+    Write-Info "To install as a service, rerun from an elevated PowerShell session."
+    $serviceInstall = $false
+    $serviceStart = $false
 }
 if ([string]::IsNullOrWhiteSpace($Target)) {
     $Target = Get-OxiDnsTarget
@@ -207,7 +213,10 @@ try {
         if ($serviceStart) {
             & $exePath service start
             if ($LASTEXITCODE -ne 0) {
-                throw "service start failed"
+                Write-Warning "Service was installed but failed to start automatically."
+                Write-Warning "To start it manually, run from an elevated PowerShell:"
+                Write-Warning "  oxidns.exe service start"
+                Write-Warning "Or check the Windows Event Log for details."
             }
         }
     }

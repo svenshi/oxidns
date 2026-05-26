@@ -15,9 +15,128 @@ use service_manager::{
     RestartPolicy, ServiceInstallCtx, ServiceLabel, ServiceLevel, ServiceManager, ServiceStartCtx,
     ServiceStatus, ServiceStatusCtx, ServiceStopCtx, ServiceUninstallCtx, native_service_manager,
 };
+#[cfg(windows)]
+use windows_service::{
+    define_windows_service,
+    service::{
+        ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState,
+        ServiceStatus as WinServiceStatus, ServiceType,
+    },
+    service_control_handler::{self, ServiceControlHandlerResult},
+    service_dispatcher,
+};
 
 use crate::app::cli::{ServiceCommand, ServiceInstallOptions, ServiceOptions};
 use crate::core::error::{DnsError, Result};
+
+#[cfg(windows)]
+define_windows_service!(ffi_service_main, windows_service_entry);
+
+/// Try to hand control to the Windows SCM dispatcher.
+///
+/// Returns `true` if the process was started by SCM (service loop ran to
+/// completion), `false` if running in foreground mode.  Must be called from
+/// the main thread before any other work.
+#[cfg(windows)]
+pub fn try_dispatch_windows_service() -> Result<bool> {
+    match service_dispatcher::start("oxidns", ffi_service_main) {
+        Ok(()) => Ok(true),
+        // ERROR_FAILED_SERVICE_CONTROLLER_CONNECT (1063): not started by SCM.
+        Err(windows_service::Error::Winapi(e)) if e.raw_os_error() == Some(1063) => Ok(false),
+        Err(e) => Err(DnsError::runtime(format!(
+            "Windows service dispatcher error: {e}"
+        ))),
+    }
+}
+
+#[cfg(windows)]
+fn windows_service_entry(_args: Vec<OsString>) {
+    if let Err(e) = run_windows_service() {
+        eprintln!("OxiDNS service error: {e}");
+    }
+}
+
+#[cfg(windows)]
+fn run_windows_service() -> Result<()> {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+    let ctrl_tx = shutdown_tx.clone();
+
+    let status_handle = service_control_handler::register("oxidns", move |event| match event {
+        ServiceControl::Stop | ServiceControl::Shutdown => {
+            let _ = ctrl_tx.send(());
+            ServiceControlHandlerResult::NoError
+        }
+        ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+        _ => ServiceControlHandlerResult::NotImplemented,
+    })
+    .map_err(|e| DnsError::runtime(format!("Failed to register service control handler: {e}")))?;
+
+    let report = |state: ServiceState, accepted: ServiceControlAccept, hint_secs: u64| {
+        status_handle
+            .set_service_status(WinServiceStatus {
+                service_type: ServiceType::OWN_PROCESS,
+                current_state: state,
+                controls_accepted: accepted,
+                exit_code: ServiceExitCode::Win32(0),
+                checkpoint: 0,
+                wait_hint: Duration::from_secs(hint_secs),
+                process_id: None,
+            })
+            .map_err(|e| DnsError::runtime(format!("SetServiceStatus failed: {e}")))
+    };
+
+    report(
+        ServiceState::StartPending,
+        ServiceControlAccept::empty(),
+        30,
+    )?;
+
+    // Re-parse the binary command line; the service was registered with:
+    //   oxidns.exe start -c <config> -d <dir>
+    let start_opts = match crate::app::cli::parse_cli().command {
+        crate::app::cli::Command::Start(s) => s,
+        _ => {
+            let _ = report(ServiceState::Stopped, ServiceControlAccept::empty(), 0);
+            return Err(DnsError::runtime(
+                "Windows service: binary path must use the 'start' subcommand",
+            ));
+        }
+    };
+
+    let app_tx = shutdown_tx;
+    let app_thread = std::thread::spawn(move || {
+        let result = crate::app::run(start_opts);
+        let _ = app_tx.send(());
+        result
+    });
+
+    report(
+        ServiceState::Running,
+        ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+        0,
+    )?;
+
+    // Block until SCM sends stop or the app exits on its own.
+    let _ = shutdown_rx.recv();
+
+    let _ = report(ServiceState::StopPending, ServiceControlAccept::empty(), 5);
+
+    let app_result = if app_thread.is_finished() {
+        app_thread
+            .join()
+            .unwrap_or_else(|_| Err(DnsError::runtime("app thread panicked")))
+    } else {
+        // App is still running after receiving stop — exit so SCM marks us stopped.
+        let _ = report(ServiceState::Stopped, ServiceControlAccept::empty(), 0);
+        std::process::exit(0);
+    };
+
+    let _ = report(ServiceState::Stopped, ServiceControlAccept::empty(), 0);
+    app_result
+}
 
 const SERVICE_LABEL: &str = "oxidns";
 

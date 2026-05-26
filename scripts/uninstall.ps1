@@ -118,7 +118,8 @@ $exePath = Join-Path $InstallDir "oxidns.exe"
 
 if (Test-ShouldUninstallService $UninstallService) {
     if (Test-Path -LiteralPath $exePath) {
-        & $exePath service stop *> $null
+        # Service may already be stopped (exit code 1062); ignore stop failures.
+        try { & $exePath service stop *> $null } catch { }
         & $exePath service uninstall *> $null
         if ($LASTEXITCODE -eq 0) {
             Write-Info "Removed OxiDNS service"

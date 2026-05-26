@@ -101,6 +101,7 @@ ripset = { package = "oxidns-ripset", version = "0.1.0", path = "crates/ripset" 
 
 [target.'cfg(windows)'.dependencies]
 zip = "8"
+windows-service = "0.6"
 
 
 [features]

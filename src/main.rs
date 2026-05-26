@@ -11,6 +11,11 @@ use oxidns::core::error::Result;
 use oxidns::{app, service, upgrade};
 
 fn main() -> Result<()> {
+    #[cfg(windows)]
+    if service::try_dispatch_windows_service()? {
+        return Ok(());
+    }
+
     match cli::parse_cli().command {
         Command::Start(start) => app::run(start),
         Command::Check(check) => app::check(check),
