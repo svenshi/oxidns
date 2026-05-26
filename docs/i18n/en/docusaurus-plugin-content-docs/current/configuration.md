@@ -46,11 +46,13 @@ After editing a config, validate it before starting:
 oxidns check -c config.yaml
 ```
 
-If the config uses relative paths and the runtime working directory is not the config directory, pass the working directory explicitly:
+If the config uses relative paths and the runtime working directory is not the config directory, pass the working directory explicitly. `-d` is the single base for all runtime relative paths, including logs, SQLite files, rule files, and `api.http.webui.root`; paths do not become relative to `/etc/oxidns` just because the config file lives there:
 
 ```bash
-oxidns check -c config.yaml -d /etc/oxidns
+oxidns check -c /etc/oxidns/config.yaml -d /var/lib/oxidns
 ```
+
+In the Debian default layout, the config file lives at `/etc/oxidns/config.yaml`, while runtime-relative resources live under `/var/lib/oxidns`.
 
 When the plugin composition is still undecided, start from [Common Scenarios](scenarios.md), then return to this page for field details.
 
@@ -216,6 +218,7 @@ Field notes:
   - Use `"*"` to allow any origin, but not for credentialed browser requests.
 - `http.webui.root`
   - Optional WebUI static file directory. When enabled, the WebUI is mounted at `/` and the management API is available under `/api/*`.
+  - Relative paths resolve against `-d/--working-dir`; with the Debian service default `-d /var/lib/oxidns`, `root: "./webui"` means `/var/lib/oxidns/webui`.
   - See [WebUI Deployment](webui.md) for build steps, publish directories, and standalone nginx deployment.
 - `http.webui.index`
   - Optional index file name. Defaults to `index.html`.

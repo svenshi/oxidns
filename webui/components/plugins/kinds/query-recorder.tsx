@@ -373,7 +373,10 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
     try {
       const response = await fetch(
         apiUrl(`/plugins/${encodeURIComponent(tag)}/stream?tail=20`),
-        { headers: apiHeaders(), signal: controller.signal },
+        {
+          headers: { ...apiHeaders(), Accept: "text/event-stream" },
+          signal: controller.signal,
+        },
       );
       if (!response.ok || !response.body) {
         throw new Error(`流式连接失败：HTTP ${response.status}`);
@@ -384,17 +387,26 @@ function QueryRecordsPanel({ tag }: { tag: string }) {
       while (!controller.signal.aborted) {
         const { done, value } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        buffer += decoder
+          .decode(value, { stream: true })
+          .replace(/\r\n/g, "\n")
+          .replace(/\r/g, "\n");
         const chunks = buffer.split("\n\n");
         buffer = chunks.pop() ?? "";
         for (const chunk of chunks) {
-          const data = chunk
-            .split("\n")
-            .filter((line) => line.startsWith("data:"))
-            .map((line) => line.slice(5).trimStart())
-            .join("\n");
-          if (!data) continue;
-          const record = JSON.parse(data) as QueryRecordDetail;
+          const event = parseSseEvent(chunk);
+          if (event.event === "error") {
+            setError(
+              event.data ? parseSseErrorMessage(event.data) : "实时流返回错误",
+            );
+            continue;
+          }
+          if (!event.data) continue;
+          const record = parseStreamRecord(event.data);
+          if (!record) {
+            setError("实时事件格式无效，已跳过一条记录");
+            continue;
+          }
           if (!recordMatchesFilters(record, filtersRef.current)) continue;
           setRecords((current) =>
             [record, ...current.filter((item) => item.id !== record.id)].slice(
@@ -2194,6 +2206,70 @@ function parseLocalDateTime(value: string) {
   return Number.isFinite(ms) ? ms : undefined;
 }
 
+type SseEvent = {
+  event: string;
+  data: string;
+};
+
+function parseSseEvent(chunk: string): SseEvent {
+  const data: string[] = [];
+  let event = "message";
+  for (const rawLine of chunk.split("\n")) {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (!line || line.startsWith(":")) continue;
+
+    const separator = line.indexOf(":");
+    const field = separator === -1 ? line : line.slice(0, separator);
+    let value = separator === -1 ? "" : line.slice(separator + 1);
+    if (value.startsWith(" ")) value = value.slice(1);
+
+    if (field === "event") {
+      event = value || "message";
+    } else if (field === "data") {
+      data.push(value);
+    }
+  }
+  return { event, data: data.join("\n") };
+}
+
+function parseSseErrorMessage(data: string) {
+  try {
+    const parsed = JSON.parse(data) as unknown;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      "message" in parsed &&
+      typeof parsed.message === "string"
+    ) {
+      return parsed.message;
+    }
+  } catch {
+    // Fall through to the raw server payload preview.
+  }
+  return `实时流返回错误：${truncateText(data)}`;
+}
+
+function parseStreamRecord(data: string): QueryRecordDetail | null {
+  try {
+    const parsed = JSON.parse(data) as unknown;
+    return isQueryRecordDetail(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isQueryRecordDetail(value: unknown): value is QueryRecordDetail {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<QueryRecordDetail>;
+  return (
+    typeof record.id === "number" &&
+    typeof record.created_at_ms === "number" &&
+    typeof record.client_ip === "string" &&
+    Array.isArray(record.questions_json) &&
+    Array.isArray(record.steps)
+  );
+}
+
 function recordMatchesFilters(
   record: QueryRecordRow | QueryRecordDetail,
   filters: QueryRecordFilters,
@@ -2315,6 +2391,13 @@ function truncateMiddle(value: string, max: number) {
   if (value.length <= max) return value;
   const half = Math.max(2, Math.floor((max - 1) / 2));
   return `${value.slice(0, half)}…${value.slice(value.length - half)}`;
+}
+
+function truncateText(value: string, max = 160) {
+  const singleLine = value.replace(/\s+/g, " ").trim();
+  return singleLine.length > max
+    ? `${singleLine.slice(0, Math.max(0, max - 1))}…`
+    : singleLine;
 }
 
 function formatQuestion(record: QueryRecordRow) {

@@ -23,6 +23,8 @@ webui/
 
 When OxiDNS runs from the extracted release directory, the default `webui.root: "./webui"` config works directly. Docker images also place the same WebUI static files under `/etc/oxidns/webui`.
 
+Debian packages install the service with `-c /etc/oxidns/config.yaml -d /var/lib/oxidns`. Therefore the default `webui.root: "./webui"` means `/var/lib/oxidns/webui`, which the post-install step links to `/usr/share/oxidns/webui`.
+
 Manual WebUI builds are only needed when building from source, developing the WebUI, or publishing static files separately through nginx or caddy.
 
 ## Build The WebUI Manually
@@ -73,6 +75,7 @@ Field notes:
 
 - `api.http.webui.root`
   - WebUI static file directory. This requires the expanded `api.http` form.
+  - Relative paths resolve against OxiDNS `-d/--working-dir`, not against the configuration file directory.
   - The shorthand `api.http: "ip:port"` only configures the listen address and cannot mount WebUI files.
 - `api.http.webui.index`
   - Index file name. Defaults to `index.html`.

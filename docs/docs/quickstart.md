@@ -279,13 +279,15 @@ sudo dpkg -i oxidns_*_arm64.deb
 
 - 二进制：`/usr/bin/oxidns`
 - 配置：`/etc/oxidns/config.yaml`
+- 运行期相对路径基准：`/var/lib/oxidns`
+- WebUI：`/var/lib/oxidns/webui` 软链接到 `/usr/share/oxidns/webui`
 
-项目也包含 systemd 打包配置，因此在 Debian 系发行版上适合直接作为系统服务部署。
+项目也包含 systemd 打包配置，因此在 Debian 系发行版上适合直接作为系统服务部署。默认服务通过 `ExecStart ... -d /var/lib/oxidns` 明确指定运行期相对路径基准。
 
 默认配置被修改后，建议先校验一次：
 
 ```bash
-oxidns check -c /etc/oxidns/config.yaml
+oxidns check -c /etc/oxidns/config.yaml -d /var/lib/oxidns
 ```
 
 验证服务状态：
@@ -332,7 +334,7 @@ docker run --rm \
 镜像默认启动命令等价于：
 
 ```bash
-oxidns start -c /etc/oxidns/config.yaml
+oxidns start -c /etc/oxidns/config.yaml -d /etc/oxidns
 ```
 
 镜像内默认暴露：

@@ -115,7 +115,7 @@ api:
       index: "index.html"
 ```
 
-After enabling it, open `http://server:9199/` for the WebUI. The WebUI uses same-origin `/api` requests to reach the backend. Static files are not protected by Basic Auth, while `/api/*` keeps the management API authentication and CORS behavior. See [WebUI Deployment](webui.md) for the full configuration, build steps, and standalone nginx example.
+After enabling it, open `http://server:9199/` for the WebUI. The WebUI uses same-origin `/api` requests to reach the backend. Static files are not protected by Basic Auth, while `/api/*` keeps the management API authentication and CORS behavior. If `webui.root` is relative, it resolves against OxiDNS `-d/--working-dir`, not the configuration file directory. See [WebUI Deployment](webui.md) for the full configuration, build steps, and standalone nginx example.
 
 ### CORS / WebUI Cross-Origin Access
 
@@ -446,6 +446,8 @@ Query parameters:
 * `status=all|error|has_response|no_response`
   * Filter by recorder row status.
 
+`client_ip` is the transport peer observed by the DNS server. If record lists or `/stats/top_clients` show only `127.0.0.1`, the queries are usually passing through a local forwarder first, such as systemd-resolved, dnsmasq, AdGuardHome, dae, or clash. Check the deployment chain, point clients directly at OxiDNS, or configure a trusted `src_ip_header` for HTTP/DoH reverse-proxy deployments.
+
 Responses:
 
 * `200 OK`
@@ -612,6 +614,7 @@ Notes:
 
 * `event: record` uses the full `RecordDetail` JSON as `data`.
 * Heartbeat comment frames are sent periodically to keep the connection alive.
+* Clients should send `Accept: text/event-stream` and tolerate heartbeat frames, error events, empty payloads, and brief reconnects.
 
 ## Prometheus Metrics
 

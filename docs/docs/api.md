@@ -115,7 +115,7 @@ api:
       index: "index.html"
 ```
 
-启用后，访问 `http://服务器:9199/` 加载 WebUI，WebUI 使用同源 `/api` 访问后端。静态文件不受 Basic Auth 保护，但 `/api/*` 仍按管理 API 的认证与 CORS 规则处理。完整配置、构建步骤和 nginx 独立部署示例见《[WebUI 部署](webui.md)》。
+启用后，访问 `http://服务器:9199/` 加载 WebUI，WebUI 使用同源 `/api` 访问后端。静态文件不受 Basic Auth 保护，但 `/api/*` 仍按管理 API 的认证与 CORS 规则处理。若 `webui.root` 使用相对路径，它以 OxiDNS 的 `-d/--working-dir` 为基准，而不是配置文件所在目录。完整配置、构建步骤和 nginx 独立部署示例见《[WebUI 部署](webui.md)》。
 
 ### CORS / WebUI 跨域
 
@@ -446,6 +446,8 @@ GET /api/plugins/reverse_lookup_main?ip=8.8.8.8
 * `status=all|error|has_response|no_response`
   * 按记录状态过滤。
 
+`client_ip` 是 DNS 传输层看到的对端地址。若记录列表或 `/stats/top_clients` 全部显示 `127.0.0.1`，通常说明请求先经过了本机转发器，例如 systemd-resolved、dnsmasq、AdGuardHome、dae 或 clash；请检查部署链路，让客户端直接访问 OxiDNS，或在 HTTP/DoH 反向代理场景配置可信的 `src_ip_header`。
+
 返回：
 
 * `200 OK`
@@ -612,6 +614,7 @@ GET /api/plugins/reverse_lookup_main?ip=8.8.8.8
 
 * `event: record` 的 `data` 为完整 `RecordDetail` JSON。
 * 会定期发送 heartbeat 注释帧以保持长连接。
+* 客户端应使用 `Accept: text/event-stream`，并能容忍 heartbeat、错误事件、空 payload 和临时断连。
 
 ## Prometheus 指标
 

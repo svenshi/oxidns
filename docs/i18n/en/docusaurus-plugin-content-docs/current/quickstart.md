@@ -279,13 +279,15 @@ Default installed paths:
 
 - Binary: `/usr/bin/oxidns`
 - Config: `/etc/oxidns/config.yaml`
+- Runtime-relative path base: `/var/lib/oxidns`
+- WebUI: `/var/lib/oxidns/webui` symlinked to `/usr/share/oxidns/webui`
 
-The project also ships systemd packaging metadata, so Debian-family systems are a good fit for service-based deployment.
+The project also ships systemd packaging metadata, so Debian-family systems are a good fit for service-based deployment. The default service explicitly passes `ExecStart ... -d /var/lib/oxidns` as the runtime-relative path base.
 
 After changing the default config, validate it before starting the service:
 
 ```bash
-oxidns check -c /etc/oxidns/config.yaml
+oxidns check -c /etc/oxidns/config.yaml -d /var/lib/oxidns
 ```
 
 Verify service status:
@@ -332,7 +334,7 @@ When the default-branch image is published, the `latest` tag is also available.
 The image entrypoint effectively runs:
 
 ```bash
-oxidns start -c /etc/oxidns/config.yaml
+oxidns start -c /etc/oxidns/config.yaml -d /etc/oxidns
 ```
 
 The container exposes:

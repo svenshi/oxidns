@@ -14,7 +14,9 @@ api:
     #   type: basic
     #   username: admin
     #   password: secret
-    # Optional static WebUI directory. API routes are served under /api/*.
+    # Optional static WebUI directory. Relative paths resolve from -d/--working-dir.
+    # Debian packages use -d /var/lib/oxidns, so ./webui means /var/lib/oxidns/webui.
+    # API routes are served under /api/*.
     webui:
       root: "./webui"
 

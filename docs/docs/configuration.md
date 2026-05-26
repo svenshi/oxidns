@@ -46,11 +46,13 @@ plugins:
 oxidns check -c config.yaml
 ```
 
-如果配置中使用了相对路径，并且实际工作目录不是配置文件所在目录，可以配合 `-d` 指定工作目录：
+如果配置中使用了相对路径，并且实际工作目录不是配置文件所在目录，可以配合 `-d` 指定工作目录。`-d` 是日志、SQLite、规则文件、`api.http.webui.root` 等所有运行期相对路径的统一基准，不会因为配置文件位于 `/etc/oxidns` 而自动改到配置目录：
 
 ```bash
-oxidns check -c config.yaml -d /etc/oxidns
+oxidns check -c /etc/oxidns/config.yaml -d /var/lib/oxidns
 ```
+
+Debian 默认布局中，配置文件放在 `/etc/oxidns/config.yaml`，运行期相对路径资源放在 `/var/lib/oxidns`。
 
 尚未确定插件组合方式时，建议先阅读《[常见策略场景](scenarios.md)》，再回到本页查询字段含义。
 
@@ -217,6 +219,7 @@ api:
   - 使用 `"*"` 可允许任意 origin，但不能与浏览器凭据跨域一起使用。
 - `http.webui.root`
   - 可选的 WebUI 静态文件目录。启用后 WebUI 挂载在 `/`，管理 API 位于 `/api/*`。
+  - 相对路径以 `-d/--working-dir` 为基准；例如 Debian service 默认 `-d /var/lib/oxidns`，因此 `root: "./webui"` 表示 `/var/lib/oxidns/webui`。
   - WebUI 构建、发布目录和 nginx 独立部署方式见《[WebUI 部署](webui.md)》。
 - `http.webui.index`
   - 可选首页文件名，默认 `index.html`。
