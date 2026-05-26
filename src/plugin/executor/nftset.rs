@@ -29,7 +29,7 @@ use std::thread;
 use ahash::AHashSet;
 use async_trait::async_trait;
 #[cfg(target_os = "linux")]
-use ripset::{IpCidr, nftset_add};
+use ripset::{IpCidr, IpSetError, nftset_add};
 use serde::Deserialize;
 use serde_yaml_ng::Value;
 #[cfg(target_os = "linux")]
@@ -492,51 +492,15 @@ fn spawn_nftset_writer(
                 if let Some(set) = ipv4.as_ref()
                     && !batch.ipv4_prefixes.is_empty()
                 {
-                    match write_nftset_prefixes(set, &batch.ipv4_prefixes) {
-                        Ok(()) => {
-                            metrics
-                                .write_total
-                                .fetch_add(batch.ipv4_prefixes.len() as u64, Ordering::Relaxed);
-                        }
-                        Err(e) => {
-                            metrics.write_error_total.fetch_add(1, Ordering::Relaxed);
-                            warn!(
-                                plugin = %thread_tag,
-                                err = %e,
-                                family = %set.table_family,
-                                table = %set.table_name,
-                                set = %set.set_name,
-                                "nftset netlink add element failed"
-                            );
-                            enabled.store(false, Ordering::Relaxed);
-                            break;
-                        }
-                    }
+                    let outcome = write_nftset_prefixes(set, &batch.ipv4_prefixes);
+                    record_outcome(&thread_tag, set, &outcome, &metrics);
                 }
 
                 if let Some(set) = ipv6.as_ref()
                     && !batch.ipv6_prefixes.is_empty()
                 {
-                    match write_nftset_prefixes(set, &batch.ipv6_prefixes) {
-                        Ok(()) => {
-                            metrics
-                                .write_total
-                                .fetch_add(batch.ipv6_prefixes.len() as u64, Ordering::Relaxed);
-                        }
-                        Err(e) => {
-                            metrics.write_error_total.fetch_add(1, Ordering::Relaxed);
-                            warn!(
-                                plugin = %thread_tag,
-                                err = %e,
-                                family = %set.table_family,
-                                table = %set.table_name,
-                                set = %set.set_name,
-                                "nftset netlink add element failed"
-                            );
-                            enabled.store(false, Ordering::Relaxed);
-                            break;
-                        }
-                    }
+                    let outcome = write_nftset_prefixes(set, &batch.ipv6_prefixes);
+                    record_outcome(&thread_tag, set, &outcome, &metrics);
                 }
             }
         })
@@ -545,25 +509,91 @@ fn spawn_nftset_writer(
 }
 
 #[cfg(target_os = "linux")]
-fn write_nftset_prefixes(set: &ResolvedSet, prefixes: &[IpPrefix]) -> Result<()> {
+#[derive(Default, Debug)]
+struct WriteOutcome {
+    ok: u64,
+    skipped_exists: u64,
+    /// Failed (prefix-as-string, rendered error). Bounded to avoid unbounded
+    /// memory growth on persistent backend failures.
+    failed: Vec<(String, String)>,
+    failed_total: u64,
+}
+
+#[cfg(target_os = "linux")]
+const NFTSET_FAILURE_SAMPLE_CAP: usize = 4;
+
+#[cfg(target_os = "linux")]
+fn write_nftset_prefixes(set: &ResolvedSet, prefixes: &[IpPrefix]) -> WriteOutcome {
+    let mut outcome = WriteOutcome::default();
     for prefix in prefixes {
-        let cidr = IpCidr::new(prefix.addr, prefix.mask).map_err(|e| {
-            DnsError::plugin(format!("invalid nftset prefix '{}': {}", prefix.addr, e))
-        })?;
-        nftset_add(
+        let cidr = match IpCidr::new(prefix.addr, prefix.mask) {
+            Ok(c) => c,
+            Err(e) => {
+                outcome.failed_total += 1;
+                if outcome.failed.len() < NFTSET_FAILURE_SAMPLE_CAP {
+                    outcome
+                        .failed
+                        .push((prefix.addr.to_string(), format!("invalid prefix: {e}")));
+                }
+                continue;
+            }
+        };
+
+        match nftset_add(
             set.table_family.as_str(),
             set.table_name.as_str(),
             set.set_name.as_str(),
             cidr,
-        )
-        .map_err(|e| {
-            DnsError::plugin(format!(
-                "nft add element failed for {}/{}/{} and prefix '{}': {}",
-                set.table_family, set.table_name, set.set_name, cidr, e
-            ))
-        })?;
+        ) {
+            Ok(()) => outcome.ok += 1,
+            // EEXIST / range overlap is expected when the DNS path re-resolves
+            // the same answer (or when a /32 is already covered by an existing
+            // CIDR). Treat it as a non-error skip so we don't tear the plugin
+            // down on entirely normal traffic.
+            Err(IpSetError::ElementExists) => outcome.skipped_exists += 1,
+            Err(e) => {
+                outcome.failed_total += 1;
+                if outcome.failed.len() < NFTSET_FAILURE_SAMPLE_CAP {
+                    outcome.failed.push((cidr.to_string(), e.to_string()));
+                }
+            }
+        }
     }
-    Ok(())
+    outcome
+}
+
+#[cfg(target_os = "linux")]
+fn record_outcome(
+    plugin_tag: &str,
+    set: &ResolvedSet,
+    outcome: &WriteOutcome,
+    metrics: &NftSetMetrics,
+) {
+    if outcome.ok > 0 {
+        metrics.write_total.fetch_add(outcome.ok, Ordering::Relaxed);
+    }
+    if outcome.failed_total > 0 {
+        metrics
+            .write_error_total
+            .fetch_add(outcome.failed_total, Ordering::Relaxed);
+        let sample = outcome
+            .failed
+            .iter()
+            .map(|(p, e)| format!("{p}: {e}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        warn!(
+            plugin = %plugin_tag,
+            family = %set.table_family,
+            table = %set.table_name,
+            set = %set.set_name,
+            ok = outcome.ok,
+            skipped_exists = outcome.skipped_exists,
+            failed = outcome.failed_total,
+            sample = %sample,
+            "nftset batch had write failures"
+        );
+    }
 }
 
 #[cfg(test)]

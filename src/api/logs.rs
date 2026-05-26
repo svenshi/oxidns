@@ -173,7 +173,7 @@ where
         let level = metadata.level().to_string();
         let target = metadata.target().to_string();
         let elapsed_ms = AppClock::elapsed_millis();
-        let timestamp = format!("{}", Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z"));
+        let timestamp = format!("{}", Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%.3f%:z"));
 
         let mut visitor = FieldCollector::default();
         event.record(&mut visitor);

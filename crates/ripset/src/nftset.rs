@@ -557,7 +557,12 @@ fn nftset_get_flags(family: &str, table: &str, setname: &str) -> Result<u32> {
         }
 
         if attr_type == NFTA_SET_FLAGS && attr_len >= 8 {
-            let flags = u32::from_ne_bytes([
+            // nftables u32 attributes are big-endian on the wire (put_attr_u32_nft
+            // writes via put_u32_be without NLA_F_NET_BYTEORDER), so receivers
+            // must decode as BE. Decoding as native byte order mistakenly
+            // returned 0x04000000 for `flags interval` on little-endian hosts,
+            // which made `is_interval` always false and broke CIDR adds.
+            let flags = u32::from_be_bytes([
                 recv_buf[offset + 4],
                 recv_buf[offset + 5],
                 recv_buf[offset + 6],
@@ -1276,6 +1281,32 @@ mod tests {
         let v6: IpAddr = "2001:db8::1".parse().unwrap();
         let v6_end = calculate_interval_end(&v6);
         assert_eq!(v6_end.unwrap().to_string(), "2001:db8::2");
+    }
+
+    /// Regression for the byte-order bug that surfaced in issue #122:
+    /// `put_attr_u32_nft` writes nftables u32 attributes in big-endian (without
+    /// the NLA_F_NET_BYTEORDER flag), so the receive path must decode as BE.
+    /// A previous version decoded `NFTA_SET_FLAGS` with `from_ne_bytes`, which
+    /// produced `0x04000000` for `flags interval` on little-endian hosts and
+    /// caused legitimate CIDR adds to be rejected as `UnsupportedEntry`.
+    #[test]
+    fn test_nfta_set_flags_roundtrip_is_big_endian() {
+        let mut buf = MsgBuffer::new(64);
+        buf.put_attr_u32_nft(NFTA_SET_FLAGS, NFT_SET_INTERVAL);
+        let bytes = buf.as_slice();
+
+        // Layout: [u16 len][u16 attr_type][u32 BE value][pad…]
+        let attr_len = u16::from_ne_bytes([bytes[0], bytes[1]]) as usize;
+        let attr_type = u16::from_ne_bytes([bytes[2], bytes[3]]) & !NLA_F_NESTED;
+        assert!(attr_len >= 8);
+        assert_eq!(attr_type, NFTA_SET_FLAGS);
+
+        let decoded = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        assert_eq!(decoded, NFT_SET_INTERVAL, "BE decode must recover flags");
+        assert!(
+            decoded & NFT_SET_INTERVAL != 0,
+            "interval bit must be detectable; ne_bytes would have produced 0x04000000 here",
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Pause, Play, Trash2, WifiOff } from "lucide-react";
+import { Pause, Play, Trash2, WifiOff, WrapText } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -59,17 +59,44 @@ function LevelBadge({ level }: { level: string }) {
   );
 }
 
-function LogLine({ entry }: { entry: LogEntry }) {
+// Render the backend's ISO-8601 timestamp as `YYYY-MM-DD HH:MM:SS.mmm`,
+// stripping the timezone offset. Slicing avoids JS Date timezone conversion
+// surprises — the backend already formats in the server's local TZ.
+function formatLogTime(iso: string): string {
+  const tIdx = iso.indexOf("T");
+  if (tIdx < 0) return iso;
+  const date = iso.slice(0, tIdx);
+  const rest = iso.slice(tIdx + 1);
+  const tzMatch = rest.match(/[Z+-]/);
+  const time =
+    tzMatch && tzMatch.index !== undefined
+      ? rest.slice(0, tzMatch.index)
+      : rest;
+  return `${date} ${time}`;
+}
+
+function LogLine({ entry, wrap }: { entry: LogEntry; wrap: boolean }) {
   const colors = LEVEL_COLORS[entry.level] ?? LEVEL_COLORS.INFO;
   const elapsed = (entry.elapsed_ms / 1000).toFixed(3);
+  const wallClock = formatLogTime(entry.timestamp);
+  // When wrap is on: row fills the viewport width, message wraps inside the
+  // remaining flex space. When off: row grows to its content width and the
+  // viewport scrolls horizontally — preserves the prior dense layout.
+  const rowClass = wrap
+    ? "flex items-baseline gap-2 rounded px-1 py-[1px] hover:bg-white/5"
+    : "flex min-w-full w-max items-baseline gap-2 rounded px-1 py-[1px] whitespace-nowrap hover:bg-white/5";
+  const messageClass = wrap
+    ? `${colors.text} flex-1 min-w-0 whitespace-pre-wrap break-all`
+    : `${colors.text} shrink-0`;
   return (
-    <div className="flex min-w-full w-max items-baseline gap-2 rounded px-1 py-[1px] whitespace-nowrap hover:bg-white/5">
+    <div className={rowClass}>
+      <span className="shrink-0 text-zinc-500 tabular-nums">{wallClock}</span>
       <span className="shrink-0 text-zinc-600 tabular-nums">T+{elapsed}</span>
       <LevelBadge level={entry.level} />
       <span className="shrink-0 max-w-[28ch] truncate text-zinc-500">
         {entry.target}
       </span>
-      <span className={`${colors.text} shrink-0`}>{entry.message}</span>
+      <span className={messageClass}>{entry.message}</span>
     </div>
   );
 }
@@ -81,6 +108,7 @@ export function LogViewer() {
   const [paused, setPaused] = useState(false);
   const [connected, setConnected] = useState(false);
   const [backlog, setBacklog] = useState(0);
+  const [wrap, setWrap] = useState(true);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const pausedRef = useRef(false);
@@ -237,6 +265,18 @@ export function LogViewer() {
           )}
         </span>
 
+        {/* Wrap toggle */}
+        <Button
+          variant={wrap ? "default" : "outline"}
+          size="sm"
+          className="h-7 px-2 text-xs"
+          onClick={() => setWrap((w) => !w)}
+          title={wrap ? "关闭自动换行" : "开启自动换行"}
+        >
+          <WrapText className="size-3 mr-1" />
+          自动换行
+        </Button>
+
         {/* Clear */}
         <Button
           variant="ghost"
@@ -283,6 +323,7 @@ export function LogViewer() {
             <LogLine
               key={`${entry.id}-${entry.elapsed_ms}-${index}`}
               entry={entry}
+              wrap={wrap}
             />
           ))
         )}

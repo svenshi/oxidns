@@ -3930,6 +3930,101 @@ plugins:
     Ok(())
 }
 
+/// Regression for issue #122: with mask=32, every DNS answer becomes a /32
+/// CIDR, which forces `nftset_operate` down the interval-set path. A previous
+/// byte-order bug in `nftset_get_flags` made `is_interval` always false on
+/// little-endian hosts, so the executor returned `UnsupportedEntry` for every
+/// add. This test also re-queries the same name to confirm that EEXIST from
+/// the kernel is treated as a no-op and does not disable the plugin.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn test_linux_nftset_executor_handles_slash32_and_repeated_adds() -> Result<()> {
+    if !should_run_linux_system_plugin_tests("nft", "--version") {
+        return Ok(());
+    }
+
+    let table_name = unique_system_object_name("oxidns_test_nft_122");
+    let set_name = "oxidns_test_v4_122".to_string();
+    let _cleanup = CommandCleanup::new(vec![(
+        "nft".to_string(),
+        vec![
+            "delete".to_string(),
+            "table".to_string(),
+            "ip".to_string(),
+            table_name.clone(),
+        ],
+    )]);
+    run_command("nft", &["add", "table", "ip", &table_name])?;
+    run_command(
+        "nft",
+        &[
+            "add",
+            "set",
+            "ip",
+            &table_name,
+            &set_name,
+            "{ type ipv4_addr; flags interval; }",
+        ],
+    )?;
+
+    let listen = reserve_local_udp_addr()?;
+    let yaml = format!(
+        r#"
+log:
+  level: info
+plugins:
+  - tag: hosts
+    type: hosts
+    args:
+      entries:
+        - "full:example.test 192.0.2.10"
+  - tag: nftset_main
+    type: nftset
+    args:
+      ipv4:
+        table_family: ip
+        table_name: "{table_name}"
+        set_name: "{set_name}"
+        mask: 32
+  - tag: seq
+    type: sequence
+    args:
+      - exec: $hosts
+      - exec: $nftset_main
+  - tag: udp
+    type: udp_server
+    args:
+      entry: seq
+      listen: "{listen}"
+"#
+    );
+
+    let config = parse_config(&yaml)?;
+    let registry = plugin::init(config).await?;
+
+    // First query forces a fresh interval add through `nftset_get_flags`. With
+    // the byte-order bug this returned `UnsupportedEntry` and nothing reached
+    // the kernel.
+    let first = exchange_udp_query(listen, "example.test.").await?;
+    assert_eq!(first.rcode(), Rcode::NoError);
+    let kernel_result = wait_for_command_output_contains(
+        "nft",
+        &["list", "table", "ip", &table_name],
+        "192.0.2.10",
+    )
+    .await;
+
+    // Second query: kernel will respond EEXIST for the same /32. The executor
+    // must treat it as a skip and stay operational; previously this disabled
+    // the plugin permanently.
+    let second = exchange_udp_query(listen, "example.test.").await?;
+    assert_eq!(second.rcode(), Rcode::NoError);
+
+    registry.destroy().await;
+    kernel_result?;
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn test_linux_nftset_executor_writes_masked_prefix_to_kernel_set() -> Result<()> {
