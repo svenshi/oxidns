@@ -316,7 +316,53 @@ export const pluginFieldDocs = {
       "- 类型：`bool`；必填：否；默认值：`true`\n- 作用：控制插件退出时是否清理由其管理的条目。启用后，插件在正常关闭阶段会删除自身写入并可识别归属的 RouterOS 地址项。\n- 影响：关闭该选项后，已写入条目会继续保留在 RouterOS 中，适合要求策略状态跨进程重启保留的场景。",
   },
   upgrade: {
-    args: "- `force`\n    - 类型：`bool`\n    - 默认值：`false`\n    - 即使目标 release 不比当前版本更新，也继续下载、校验并替换。\n- `cleanup`\n    - 类型：`bool`\n    - 默认值：`true`\n    - 升级成功后清理 `cache_dir` 和 `backup_dir`。\n- `repository`\n    - GitHub 仓库，默认 `svenshi/oxidns`。\n- `asset`\n    - Release asset 名称；`auto` 会按当前平台选择 archive。\n- `github_token`\n    - GitHub 个人访问令牌，用于提高 API 速率限制或访问私有仓库。\n- `cache_dir` / `backup_dir`\n    - 下载缓存目录和替换前备份目录。\n- `no_restart`\n    - 类型：`bool`\n    - 默认值：`false`\n    - 设为 `true` 时，升级成功后不触发自动重启。\n- `timeout`\n    - 限制升级过程的总等待时间。\n- `socks5`\n    - 升级下载时使用的 SOCKS5 代理。\n- `insecure_skip_verify`\n    - 升级下载时跳过 HTTPS 证书校验。",
+    force:
+      "- 类型：`bool`；必填：否；默认值：`false`\n- 作用：即使目标 release 不比当前版本更新，也继续下载、校验并替换。",
+    cleanup:
+      "- 类型：`bool`；必填：否；默认值：`true`\n- 作用：升级成功后清理 `cache_dir` 和 `backup_dir`。",
+    repository:
+      "- 类型：`string`；必填：否；默认值：`svenshi/oxidns`\n- 作用：GitHub 仓库。",
+    asset:
+      "- 类型：`string`；必填：否；默认值：`auto`\n- 作用：Release asset 名称；`auto` 会按当前平台选择 archive。",
+    github_token:
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：GitHub 个人访问令牌，用于提高 API 速率限制或访问私有仓库。\n- 说明：会作为 GitHub API 请求的 Bearer token 使用。",
+    cache_dir: "- 类型：`path`；必填：否；默认值：无\n- 作用：下载缓存目录。",
+    backup_dir:
+      "- 类型：`path`；必填：否；默认值：无\n- 作用：替换前备份目录。",
+    webui_dir:
+      "- 类型：`path`；必填：否；默认值：`./webui`\n- 作用：升级时安装 WebUI 静态资源的目录，应与 `api.http.webui.root` 一致。",
+    skip_webui:
+      "- 类型：`bool`；必填：否；默认值：`false`\n- 作用：设为 `true` 时只替换二进制文件，跳过 WebUI 目录升级。",
+    no_restart:
+      "- 类型：`bool`；必填：否；默认值：`false`\n- 作用：设为 `true` 时，升级成功后不触发自动重启。",
+    timeout:
+      "- 类型：`duration`；必填：否；默认值：`30s`\n- 作用：限制升级过程的总等待时间。",
+    socks5:
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：升级下载时使用的 SOCKS5 代理。",
+    insecure_skip_verify:
+      "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：升级下载时跳过 HTTPS 证书校验。",
+  },
+  download: {
+    downloads:
+      "- 类型：`array`；必填：是；默认值：无\n- 作用：下载一个或多个 `http` / `https` 文件到本地目录，并在新内容完整写入后覆盖目标文件。\n- 运行影响：\n  - 下载项按声明顺序串行执行。\n  - 单个下载失败只会写 warning 日志，不会阻止后续项继续下载。\n  - 目标目录不存在时会自动创建。",
+    "downloads[].url":
+      "- 类型：`string`；必填：是；默认值：无\n- 作用：下载项的 `http` / `https` URL。",
+    "downloads[].dir":
+      "- 类型：`path`；必填：是；默认值：无\n- 作用：下载项的目标目录。",
+    "downloads[].filename":
+      "- 类型：`string`；必填：否；默认值：从 URL 路径推导\n- 作用：下载项的目标文件名。",
+    timeout:
+      "- 类型：`duration`；必填：否；默认值：`30s`\n- 作用：下载超时时间。",
+    socks5:
+      '- 类型：`string`；必填：否；默认值：无\n- 作用：所有下载连接都会通过该 SOCKS5 代理发起。\n- 支持格式：`host:port`、`username:password@host:port`，IPv6 需写成 `"[::1]:1080"`。',
+    startup_if_missing:
+      "- 类型：`boolean`；必填：否；默认值：`true`\n- 作用：启动时检查目标文件，缺失项会在其它插件初始化前自动下载。\n- 说明：只会补齐缺失文件，不会在每次启动时强制覆盖已有文件。",
+  },
+  reload_provider: {
+    args: '- 类型：`array[string]`；必填：是；默认值：无\n- 作用：按 `args` 中声明顺序逐个执行 targeted provider reload。\n- 支持元素：provider 引用，例如 `"$geoip_cn"`。\n- 运行影响：只刷新 provider 内部数据，不修改 tag、依赖关系或其它插件配置。',
+  },
+  reload: {
+    args: "无独立配置字段。执行时会触发一次与管理 API `POST /reload` 相同的应用级全量 reload。",
   },
   cron: {
     jobs: "- 类型：`array`；必填：是；默认值：无\n- 作用：定义一个或多个后台任务。\n- 运行影响：\n  - 数组不能为空。\n  - 每个任务独立维护自己的调度状态和重叠保护。",
@@ -404,6 +450,12 @@ export const pluginFieldDocs = {
     file: "- 类型：`string`；必填：是\n- 作用：指定 `geosite.dat` 文件路径。",
     selectors:
       "- 类型：`array`；必填：否；默认值：空数组\n- 作用：按 code 提取部分规则，也支持 `code@attribute` 语法按 attribute 进一步过滤。\n- 行为：\n  - 大小写不敏感精确匹配。\n  - 多个 selector 取并集。\n  - 未设置或空数组时，加载整个 dat 文件的全部规则并集。\n  - 例如 `category-games@cn` 表示只提取 `category-games` 中带 `cn` attribute 的规则。",
+  },
+  adguard_rule: {
+    rules:
+      "- 类型：`array`；必填：否；默认值：空数组\n- 作用：提供内联 AdGuard Home DNS 规则子集。\n- 支持内容：基础域名规则、`@@`、`important`、`badfilter`、`denyallow`、请求侧 `dnstype`。",
+    files:
+      "- 类型：`array`；必填：否；默认值：空数组\n- 作用：从外部规则文件加载 AdGuard Home DNS 规则子集。\n- 运行影响：文件内容会在初始化或 `reload_provider` 时重新读取。",
   },
   ip_set: {
     ips: "- 类型：`array`；必填：否；默认值：空数组\n- 作用：定义内联 IP 或 CIDR 规则列表。\n- 支持内容：\n  - 单个 IPv4 地址\n  - 单个 IPv6 地址\n  - IPv4 CIDR\n  - IPv6 CIDR\n- 运行影响：\n  - 规则会在初始化阶段编译为地址匹配结构。",
