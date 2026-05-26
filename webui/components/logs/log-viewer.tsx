@@ -59,11 +59,27 @@ function LevelBadge({ level }: { level: string }) {
   );
 }
 
+// Extract the local wall-clock portion (HH:MM:SS.mmm) from the backend's
+// ISO-8601 timestamp. Slicing avoids timezone conversion surprises — the
+// backend already formats in the server's local TZ.
+function formatLogTime(iso: string): string {
+  const tIdx = iso.indexOf("T");
+  if (tIdx < 0) return iso;
+  const rest = iso.slice(tIdx + 1);
+  // Drop the trailing timezone offset (`+08:00` / `Z`) if present.
+  const tzMatch = rest.match(/[Z+-]/);
+  return tzMatch && tzMatch.index !== undefined
+    ? rest.slice(0, tzMatch.index)
+    : rest;
+}
+
 function LogLine({ entry }: { entry: LogEntry }) {
   const colors = LEVEL_COLORS[entry.level] ?? LEVEL_COLORS.INFO;
   const elapsed = (entry.elapsed_ms / 1000).toFixed(3);
+  const wallClock = formatLogTime(entry.timestamp);
   return (
     <div className="flex min-w-full w-max items-baseline gap-2 rounded px-1 py-[1px] whitespace-nowrap hover:bg-white/5">
+      <span className="shrink-0 text-zinc-500 tabular-nums">{wallClock}</span>
       <span className="shrink-0 text-zinc-600 tabular-nums">T+{elapsed}</span>
       <LevelBadge level={entry.level} />
       <span className="shrink-0 max-w-[28ch] truncate text-zinc-500">
