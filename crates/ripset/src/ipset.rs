@@ -31,6 +31,11 @@ const IPSET_ATTR_TYPENAME: u16 = 3;
 const IPSET_ATTR_REVISION: u16 = 4;
 const IPSET_ATTR_FAMILY: u16 = 5;
 const IPSET_ATTR_DATA: u16 = 7;
+/// `IPSET_ATTR_LINENO` is the outer-level attribute libipset emits
+/// during `ipset restore` to report the input line number on error.
+/// Not used for single-command paths, but kept here for completeness
+/// and to anchor the constant value against the kernel UAPI in tests.
+#[allow(dead_code)]
 const IPSET_ATTR_LINENO: u16 = 9;
 
 // ipset CADT attributes (inside IPSET_ATTR_DATA)
@@ -117,10 +122,12 @@ fn ipset_operate(setname: &str, entry: &IpEntry, cmd: u8) -> Result<()> {
         buf.put_attr_u32_be(IPSET_ATTR_TIMEOUT, timeout);
     }
 
-    // IPSET_ATTR_LINENO (required for some operations)
-    buf.put_attr_u32(IPSET_ATTR_LINENO, 0);
-
     buf.end_nested(data_offset);
+
+    // libipset emits IPSET_ATTR_LINENO at the *outer* command level (not
+    // inside IPSET_ATTR_DATA), and only when `session->lineno != 0` —
+    // it's exclusively for `ipset restore` error reporting. Skipping it
+    // entirely matches libipset's single-command path.
 
     // Finalize message length
     buf.finalize_nlmsg();
@@ -291,14 +298,19 @@ pub fn ipset_create(setname: &str, options: &IpSetCreateOptions) -> Result<()> {
     // Data attributes (nested)
     let data_offset = buf.start_nested(IPSET_ATTR_DATA);
 
+    // ipset wire format: every u32 CADT attribute is big-endian with
+    // NLA_F_NET_BYTEORDER set on the type. Verified against libipset
+    // lib/session.c `rawdata2attr()`, which OR-flags `NLA_F_NET_BYTEORDER`
+    // and calls `htonl` for MNL_TYPE_U32. A previous `put_attr_u32`
+    // (native LE) would have flipped the bytes on x86_64 and made the
+    // kernel see e.g. hashsize=2048 as 0x00080000 = 524288.
     if let Some(hashsize) = options.hashsize {
-        buf.put_attr_u32(IPSET_ATTR_HASHSIZE, hashsize);
+        buf.put_attr_u32_be(IPSET_ATTR_HASHSIZE, hashsize);
     }
     if let Some(maxelem) = options.maxelem {
-        buf.put_attr_u32(IPSET_ATTR_MAXELEM, maxelem);
+        buf.put_attr_u32_be(IPSET_ATTR_MAXELEM, maxelem);
     }
     if let Some(timeout) = options.timeout {
-        // Timeout must be in network byte order with NLA_F_NET_BYTEORDER flag
         buf.put_attr_u32_be(IPSET_ATTR_TIMEOUT, timeout);
     }
 
@@ -711,12 +723,143 @@ mod tests {
     use std::net::IpAddr;
 
     use super::*;
+    use crate::test_util::{find_attr, walk_attrs};
 
     #[test]
     fn test_ipset_msg_type() {
         assert_eq!(ipset_msg_type(IPSET_CMD_ADD), (6 << 8) | 9);
         assert_eq!(ipset_msg_type(IPSET_CMD_DEL), (6 << 8) | 10);
         assert_eq!(ipset_msg_type(IPSET_CMD_TEST), (6 << 8) | 11);
+    }
+
+    /// Pin numeric command constants against the kernel UAPI header.
+    /// Catches accidental renumbering during refactors.
+    #[test]
+    fn test_ipset_command_constants_match_kernel_uapi() {
+        // From include/uapi/linux/netfilter/ipset/ip_set.h: ipset_cmd enum.
+        assert_eq!(IPSET_CMD_CREATE, 2);
+        assert_eq!(IPSET_CMD_DESTROY, 3);
+        assert_eq!(IPSET_CMD_FLUSH, 4);
+        assert_eq!(IPSET_CMD_LIST, 7);
+        assert_eq!(IPSET_CMD_ADD, 9);
+        assert_eq!(IPSET_CMD_DEL, 10);
+        assert_eq!(IPSET_CMD_TEST, 11);
+    }
+
+    /// Pin attribute constants against the kernel UAPI header.
+    #[test]
+    fn test_ipset_attribute_constants_match_kernel_uapi() {
+        // Command-level
+        assert_eq!(IPSET_ATTR_PROTOCOL, 1);
+        assert_eq!(IPSET_ATTR_SETNAME, 2);
+        assert_eq!(IPSET_ATTR_TYPENAME, 3);
+        assert_eq!(IPSET_ATTR_REVISION, 4);
+        assert_eq!(IPSET_ATTR_FAMILY, 5);
+        assert_eq!(IPSET_ATTR_DATA, 7);
+        assert_eq!(IPSET_ATTR_ADT, 8);
+        assert_eq!(IPSET_ATTR_LINENO, 9);
+        // CADT
+        assert_eq!(IPSET_ATTR_IP, 1);
+        assert_eq!(IPSET_ATTR_CIDR, 3);
+        assert_eq!(IPSET_ATTR_TIMEOUT, 6);
+        assert_eq!(IPSET_ATTR_HASHSIZE, 18);
+        assert_eq!(IPSET_ATTR_MAXELEM, 19);
+        // IPADDR
+        assert_eq!(IPSET_ATTR_IPADDR_IPV4, 1);
+        assert_eq!(IPSET_ATTR_IPADDR_IPV6, 2);
+        // Protocol version
+        assert_eq!(IPSET_PROTOCOL, 7);
+        assert_eq!(IPSET_MAXNAMELEN, 32);
+    }
+
+    /// libipset `lib/session.c rawdata2attr()` sets `NLA_F_NET_BYTEORDER`
+    /// and runs `htonl` for every U32 CADT attribute. Regression: a
+    /// previous version used `put_attr_u32` (native LE), which would
+    /// have made the kernel see e.g. hashsize=2048 as 0x00080000.
+    #[test]
+    fn test_create_hashsize_maxelem_are_big_endian_with_net_byteorder() {
+        // Build a CREATE buffer in isolation by reusing the same encoder
+        // call sites. We can't easily invoke `ipset_create` (it would
+        // open a netlink socket), but the same `put_attr_u32_be` helper
+        // is used; verify it via direct MsgBuffer use.
+        let mut buf = MsgBuffer::new(64);
+        buf.put_attr_u32_be(IPSET_ATTR_HASHSIZE, 2048);
+        buf.put_attr_u32_be(IPSET_ATTR_MAXELEM, 131_072);
+
+        let attrs = walk_attrs(buf.as_slice());
+        let hs = find_attr(&attrs, IPSET_ATTR_HASHSIZE).expect("hashsize present");
+        assert!(hs.net_byteorder, "HASHSIZE must carry NLA_F_NET_BYTEORDER");
+        // 2048 == 0x800: BE bytes are [0x00, 0x00, 0x08, 0x00].
+        assert_eq!(hs.payload, &[0x00, 0x00, 0x08, 0x00]);
+
+        let me = find_attr(&attrs, IPSET_ATTR_MAXELEM).expect("maxelem present");
+        assert!(me.net_byteorder, "MAXELEM must carry NLA_F_NET_BYTEORDER");
+        // 131072 == 0x20000: BE bytes are [0x00, 0x02, 0x00, 0x00].
+        assert_eq!(me.payload, &[0x00, 0x02, 0x00, 0x00]);
+    }
+
+    /// IPSET_ATTR_TIMEOUT in IPSET_ATTR_DATA: same BE + NLA_F_NET_BYTEORDER
+    /// convention as the create-side attributes.
+    #[test]
+    fn test_data_timeout_is_big_endian_with_net_byteorder() {
+        let mut buf = MsgBuffer::new(64);
+        buf.put_attr_u32_be(IPSET_ATTR_TIMEOUT, 300);
+
+        let attrs = walk_attrs(buf.as_slice());
+        let t = find_attr(&attrs, IPSET_ATTR_TIMEOUT).unwrap();
+        assert!(t.net_byteorder);
+        // 300 == 0x12C: BE bytes are [0x00, 0x00, 0x01, 0x2C].
+        assert_eq!(t.payload, &[0x00, 0x00, 0x01, 0x2C]);
+    }
+
+    /// The IPv4 address attribute nested under IPSET_ATTR_IP must carry
+    /// NLA_F_NET_BYTEORDER (kernel reads it as a network-order field).
+    /// libipset session.c line ~1193 sets the same flag.
+    #[test]
+    fn test_ipv4_addr_attribute_has_net_byteorder_flag() {
+        let mut buf = MsgBuffer::new(64);
+        // Manually emit the same shape ipset_operate uses for IPv4.
+        let ip_offset = buf.start_nested(IPSET_ATTR_IP);
+        let octets = [1u8, 2, 3, 4];
+        let len = NlAttr::SIZE + 4;
+        buf.put_u16(len as u16);
+        buf.put_u16(IPSET_ATTR_IPADDR_IPV4 | crate::netlink::NLA_F_NET_BYTEORDER);
+        buf.put_bytes(&octets);
+        buf.align();
+        buf.end_nested(ip_offset);
+
+        let attrs = walk_attrs(buf.as_slice());
+        assert_eq!(attrs.len(), 1);
+        let ip = &attrs[0];
+        assert_eq!(ip.attr_type, IPSET_ATTR_IP);
+        assert!(ip.nested);
+
+        let inner = walk_attrs(ip.payload);
+        assert_eq!(inner.len(), 1);
+        let v4 = &inner[0];
+        assert_eq!(v4.attr_type, IPSET_ATTR_IPADDR_IPV4);
+        assert!(
+            v4.net_byteorder,
+            "IPADDR_IPV4 nested attribute must carry NLA_F_NET_BYTEORDER",
+        );
+        assert_eq!(v4.payload, &[1u8, 2, 3, 4]);
+    }
+
+    /// IPSET_ATTR_CIDR is a u8 (no byte-order question), used by hash:net
+    /// adds. Verify the attribute is emitted with the correct type and
+    /// 1-byte payload.
+    #[test]
+    fn test_cidr_attribute_is_u8() {
+        let mut buf = MsgBuffer::new(64);
+        buf.put_attr_u8(IPSET_ATTR_CIDR, 24);
+
+        let attrs = walk_attrs(buf.as_slice());
+        let cidr = find_attr(&attrs, IPSET_ATTR_CIDR).unwrap();
+        assert!(
+            !cidr.net_byteorder,
+            "u8 attrs don't carry NLA_F_NET_BYTEORDER"
+        );
+        assert_eq!(cidr.payload, &[24u8]);
     }
 
     #[test]

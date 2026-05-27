@@ -251,7 +251,7 @@ fn nftset_bulk_add_500_unique_ips() {
     ]);
 
     for i in 0..500u32 {
-        let addr = IpAddr::V4((std::net::Ipv4Addr::from(0x0A_00_00_00u32 + i)).into());
+        let addr = IpAddr::V4(std::net::Ipv4Addr::from(0x0A_00_00_00u32 + i));
         let cidr = IpCidr::new(addr, 32).unwrap();
         nftset_add("ip", &table, "s", cidr).expect("bulk add must not fail");
     }
@@ -453,4 +453,310 @@ fn ipset_create_via_library() {
 
     let entries = ipset_list(&name).expect("list");
     assert!(!entries.is_empty());
+}
+
+/// Regression: previous `ipset_create` used `put_attr_u32` (native LE)
+/// for IPSET_ATTR_HASHSIZE / IPSET_ATTR_MAXELEM, but libipset and the
+/// kernel expect BE + NLA_F_NET_BYTEORDER. Pass explicit non-default
+/// values and assert that `ipset list` reports them back correctly.
+/// With the byte-order bug, hashsize=2048 would have been seen as
+/// 0x00080000 = 524288 by the kernel.
+#[test]
+#[ignore]
+fn ipset_create_with_hashsize_maxelem_round_trips() {
+    use ripset::{IpSetCreateOptions, IpSetFamily, IpSetType};
+    ensure_ipset_available();
+    let name = unique_name("oxi_ips_hs");
+    let _g = IpsetCleanup::new(&name);
+
+    let opts = IpSetCreateOptions {
+        set_type: IpSetType::HashIp,
+        family: IpSetFamily::Inet,
+        hashsize: Some(2048),
+        maxelem: Some(131_072),
+        timeout: None,
+    };
+    ipset_create(&name, &opts).expect("create with non-default hashsize/maxelem");
+
+    let header = run_ipset(&["list", &name]);
+    // `ipset list` reports the actual values the kernel stored. With
+    // the byte-order bug, hashsize would have been 0x00080000 = 524288.
+    // Output format (ipset 7.17): "Header: family inet hashsize 2048 maxelem
+    // 131072".
+    assert!(
+        header.contains("hashsize 2048"),
+        "expected literal `hashsize 2048` in:\n{header}"
+    );
+    assert!(
+        header.contains("maxelem 131072"),
+        "expected literal `maxelem 131072` in:\n{header}"
+    );
+}
+
+/// `ipset_create` with a per-set timeout (TIMEOUT flag set on the
+/// set), then add an element and confirm the per-set timeout is
+/// honored. This exercises the TIMEOUT u32 BE + NLA_F_NET_BYTEORDER
+/// path on the create side.
+#[test]
+#[ignore]
+fn ipset_create_with_timeout_round_trips() {
+    use ripset::{IpSetCreateOptions, IpSetFamily, IpSetType};
+    ensure_ipset_available();
+    let name = unique_name("oxi_ips_to");
+    let _g = IpsetCleanup::new(&name);
+
+    let opts = IpSetCreateOptions {
+        set_type: IpSetType::HashIp,
+        family: IpSetFamily::Inet,
+        hashsize: None,
+        maxelem: None,
+        timeout: Some(300),
+    };
+    ipset_create(&name, &opts).expect("create with timeout");
+
+    let header = run_ipset(&["list", &name]);
+    assert!(
+        header.contains("timeout 300"),
+        "expected timeout 300 in:\n{header}"
+    );
+}
+
+/// Per-element timeout (passed via IpEntry::with_timeout) on a set
+/// that supports timeouts. Verifies the inner-DATA TIMEOUT attribute
+/// path.
+#[test]
+#[ignore]
+fn ipset_add_with_per_element_timeout() {
+    use ripset::{IpEntry, IpSetCreateOptions, IpSetFamily, IpSetType};
+    ensure_ipset_available();
+    let name = unique_name("oxi_ips_eto");
+    let _g = IpsetCleanup::new(&name);
+
+    // The set itself needs the timeout extension enabled.
+    let opts = IpSetCreateOptions {
+        set_type: IpSetType::HashIp,
+        family: IpSetFamily::Inet,
+        hashsize: None,
+        maxelem: None,
+        timeout: Some(3600),
+    };
+    ipset_create(&name, &opts).unwrap();
+
+    let addr: IpAddr = "9.9.9.9".parse().unwrap();
+    let entry = IpEntry::with_timeout(addr, 60);
+    ipset_add(&name, entry).unwrap();
+
+    let listing = run_ipset(&["list", &name]);
+    assert!(listing.contains("9.9.9.9"));
+    assert!(
+        listing.contains("timeout"),
+        "per-element timeout must be visible in listing:\n{listing}"
+    );
+}
+
+/// `ipset_destroy` via the library: create, add, destroy, then assert
+/// the set is gone by listing all sets and checking absence.
+#[test]
+#[ignore]
+fn ipset_destroy_removes_set() {
+    use ripset::{IpSetCreateOptions, IpSetFamily, IpSetType, ipset_destroy};
+    ensure_ipset_available();
+    let name = unique_name("oxi_ips_dst");
+    let _g = IpsetCleanup::new(&name);
+
+    let opts = IpSetCreateOptions {
+        set_type: IpSetType::HashIp,
+        family: IpSetFamily::Inet,
+        hashsize: None,
+        maxelem: None,
+        timeout: None,
+    };
+    ipset_create(&name, &opts).unwrap();
+    ipset_destroy(&name).expect("destroy");
+
+    // Listing should now NOT include the set (cli returns non-zero on
+    // missing set — use the names listing instead).
+    let names = std::process::Command::new("ipset")
+        .args(["list", "-n"])
+        .output()
+        .expect("spawn ipset");
+    let stdout = String::from_utf8_lossy(&names.stdout);
+    assert!(
+        !stdout.lines().any(|l| l.trim() == name),
+        "expected '{name}' to be absent from `ipset list -n` after destroy:\n{stdout}"
+    );
+}
+
+/// `ipset_flush` empties the set without deleting it: add → flush →
+/// list shows the set still exists but with 0 elements.
+#[test]
+#[ignore]
+fn ipset_flush_empties_set() {
+    use ripset::{IpSetCreateOptions, IpSetFamily, IpSetType, ipset_flush};
+    ensure_ipset_available();
+    let name = unique_name("oxi_ips_flu");
+    let _g = IpsetCleanup::new(&name);
+
+    let opts = IpSetCreateOptions {
+        set_type: IpSetType::HashIp,
+        family: IpSetFamily::Inet,
+        hashsize: None,
+        maxelem: None,
+        timeout: None,
+    };
+    ipset_create(&name, &opts).unwrap();
+    for octet in 0..5u8 {
+        let addr: IpAddr = format!("10.0.0.{octet}").parse().unwrap();
+        ipset_add(&name, addr).unwrap();
+    }
+
+    ipset_flush(&name).expect("flush");
+
+    let listing = run_ipset(&["list", &name]);
+    // The set still exists, but its Number of entries should be 0.
+    assert!(
+        listing.contains("Number of entries: 0"),
+        "expected empty set after flush:\n{listing}"
+    );
+}
+
+/// `ipset_list` should return entries equal in count and contents to
+/// what was added. Tightens the existing `ipset_create_via_library`
+/// test which only checked non-empty.
+#[test]
+#[ignore]
+fn ipset_list_returns_added_entries() {
+    use ripset::{IpSetCreateOptions, IpSetFamily, IpSetType};
+    ensure_ipset_available();
+    let name = unique_name("oxi_ips_lis");
+    let _g = IpsetCleanup::new(&name);
+
+    let opts = IpSetCreateOptions {
+        set_type: IpSetType::HashIp,
+        family: IpSetFamily::Inet,
+        hashsize: None,
+        maxelem: None,
+        timeout: None,
+    };
+    ipset_create(&name, &opts).unwrap();
+    let added = ["1.1.1.1", "2.2.2.2", "3.3.3.3"];
+    for ip in added {
+        let addr: IpAddr = ip.parse().unwrap();
+        ipset_add(&name, addr).unwrap();
+    }
+
+    let entries = ipset_list(&name).expect("list");
+    assert_eq!(entries.len(), 3);
+    let rendered: Vec<String> = entries.iter().map(|e| e.to_string()).collect();
+    for ip in added {
+        assert!(
+            rendered.iter().any(|r| r.contains(ip)),
+            "missing {ip} in rendered entries: {rendered:?}"
+        );
+    }
+}
+
+/// IPv6 family + hash:net combination (OxiDNS uses this if both
+/// `ipv4_addr` and `ipv6_addr` sets are configured).
+#[test]
+#[ignore]
+fn ipset_add_cidr_to_hash_net_ipv6() {
+    use ripset::{IpSetCreateOptions, IpSetFamily, IpSetType};
+    ensure_ipset_available();
+    let name = unique_name("oxi_ips_n6");
+    let _g = IpsetCleanup::new(&name);
+
+    let opts = IpSetCreateOptions {
+        set_type: IpSetType::HashNet,
+        family: IpSetFamily::Inet6,
+        hashsize: None,
+        maxelem: None,
+        timeout: None,
+    };
+    ipset_create(&name, &opts).unwrap();
+
+    let cidr = IpCidr::new("2001:db8::".parse().unwrap(), 64).unwrap();
+    ipset_add(&name, cidr).unwrap();
+
+    let listing = run_ipset(&["list", &name]);
+    assert!(
+        listing.contains("2001:db8::/64"),
+        "expected 2001:db8::/64 in listing:\n{listing}"
+    );
+}
+
+/// Bulk-add path mirroring the nftset equivalent: 500 unique v4
+/// addresses should all land without error, and the set's "Number of
+/// entries" must report 500.
+#[test]
+#[ignore]
+fn ipset_bulk_add_500_unique_ips() {
+    use ripset::{IpSetCreateOptions, IpSetFamily, IpSetType};
+    ensure_ipset_available();
+    let name = unique_name("oxi_ips_blk");
+    let _g = IpsetCleanup::new(&name);
+
+    let opts = IpSetCreateOptions {
+        set_type: IpSetType::HashIp,
+        family: IpSetFamily::Inet,
+        hashsize: None,
+        maxelem: None,
+        timeout: None,
+    };
+    ipset_create(&name, &opts).unwrap();
+
+    for i in 0..500u32 {
+        let addr = IpAddr::V4(std::net::Ipv4Addr::from(0x0A_00_00_00u32 + i));
+        ipset_add(&name, addr).expect("bulk add must succeed");
+    }
+
+    let listing = run_ipset(&["list", &name]);
+    assert!(listing.contains("Number of entries: 500"));
+}
+
+/// `ipset del` of a non-existent element on hash:* sets: kernel
+/// semantics for hash:ip don't return an error here — they treat
+/// del-missing as a silent no-op (verified against `ipset` cli, which
+/// also exits 0). Pin this behaviour so future error-mapping changes
+/// don't accidentally start surfacing it as a hard error.
+#[test]
+#[ignore]
+fn ipset_del_missing_element_on_hash_ip_is_silent_ok() {
+    use ripset::{IpSetCreateOptions, IpSetFamily, IpSetType};
+    ensure_ipset_available();
+    let name = unique_name("oxi_ips_dlm");
+    let _g = IpsetCleanup::new(&name);
+
+    let opts = IpSetCreateOptions {
+        set_type: IpSetType::HashIp,
+        family: IpSetFamily::Inet,
+        hashsize: None,
+        maxelem: None,
+        timeout: None,
+    };
+    ipset_create(&name, &opts).unwrap();
+
+    let addr: IpAddr = "10.0.0.99".parse().unwrap();
+    // hash:* kernel modules accept del-missing silently (returns OK).
+    // Either Ok(()) or ElementNotFound is acceptable — both let callers
+    // continue. NetlinkError would be a regression.
+    match ipset_del(&name, addr) {
+        Ok(()) | Err(IpSetError::ElementNotFound) => {}
+        other => panic!("unexpected error on del-of-missing: {other:?}"),
+    }
+}
+
+/// `ipset_add` to a set that doesn't exist must surface as
+/// `SetNotFound`, not a generic NetlinkError.
+#[test]
+#[ignore]
+fn ipset_add_to_missing_set_returns_set_not_found() {
+    ensure_ipset_available();
+    let name = unique_name("oxi_ips_nx");
+    // No create call — set should not exist.
+    let addr: IpAddr = "10.0.0.1".parse().unwrap();
+    match ipset_add(&name, addr) {
+        Err(IpSetError::SetNotFound(_)) => {}
+        other => panic!("expected SetNotFound, got {other:?}"),
+    }
 }
