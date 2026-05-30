@@ -136,7 +136,9 @@ pub(crate) fn parse_ip_prefix_matcher(
             .add_rule(v)
             .map_err(|e| DnsError::plugin(format!("invalid {} rule '{}': {}", field, v, e)))?;
     }
-    matcher.finalize();
+    // Inline matchers never mutate after construction, so compact away the
+    // source ranges and keep only the compiled query structures.
+    matcher.finalize_compact();
     Ok(matcher)
 }
 

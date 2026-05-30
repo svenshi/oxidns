@@ -311,6 +311,42 @@ impl IpPrefixMatcher {
         Ok(())
     }
 
+    /// Append an already-decoded IPv4 network without going through textual
+    /// parsing.
+    ///
+    /// Lets binary rule sources (e.g. geoip dat CIDRs) feed raw address bits
+    /// and a prefix length directly, skipping a `format!` + re-parse round
+    /// trip. Host bits below `prefix_len` are masked off.
+    pub fn add_v4_network(&mut self, addr: u32, prefix_len: u8) -> Result<(), String> {
+        if prefix_len > 32 {
+            return Err(format!(
+                "ipv4 prefix out of range: {} (expected 0..=32)",
+                prefix_len
+            ));
+        }
+        let network = mask_v4_bits(addr, prefix_len);
+        self.v4_rules
+            .push(Ipv4Range::from_network(network, prefix_len));
+        self.v4 = None;
+        Ok(())
+    }
+
+    /// Append an already-decoded IPv6 network without going through textual
+    /// parsing. Host bits below `prefix_len` are masked off.
+    pub fn add_v6_network(&mut self, addr: u128, prefix_len: u8) -> Result<(), String> {
+        if prefix_len > 128 {
+            return Err(format!(
+                "ipv6 prefix out of range: {} (expected 0..=128)",
+                prefix_len
+            ));
+        }
+        let network = mask_v6_bits(addr, prefix_len);
+        self.v6_rules
+            .push(Ipv6Range::from_network(network, prefix_len));
+        self.v6 = None;
+        Ok(())
+    }
+
     /// Merge and compile all pending IPv4/IPv6 rules.
     pub fn finalize(&mut self) {
         self.v4 = compile_v4_matcher(&mut self.v4_rules);
@@ -318,14 +354,16 @@ impl IpPrefixMatcher {
     }
 
     /// Compile and drop the source ranges once the matcher becomes immutable.
+    ///
+    /// Unlike [`finalize`](Self::finalize), this consumes the source ranges:
+    /// the compiled matchers own all query structures, so retaining the inputs
+    /// would only duplicate memory. The IPv6 ranges are moved straight into the
+    /// compiled matcher to avoid holding the source and the compiled copy at
+    /// the same time.
     pub fn finalize_compact(&mut self) {
-        self.finalize();
-        // Compiled matchers own the compact query structures, so we can drop
-        // the source ranges after initialization to reduce steady-state memory.
-        self.v4_rules.clear();
-        self.v6_rules.clear();
-        self.v4_rules.shrink_to_fit();
-        self.v6_rules.shrink_to_fit();
+        self.v4 = compile_v4_matcher(&mut self.v4_rules);
+        self.v6 = compile_v6_matcher_owned(std::mem::take(&mut self.v6_rules));
+        self.v4_rules = Vec::new();
     }
 
     #[inline(always)]
@@ -498,7 +536,8 @@ fn compile_v4_matcher(ranges: &mut Vec<Ipv4Range>) -> Option<V4Matcher> {
     })
 }
 
-/// Compile merged IPv6 ranges into a sorted boxed slice.
+/// Compile merged IPv6 ranges into a sorted boxed slice, retaining the source
+/// `Vec` so callers can keep mutating it after `finalize()`.
 fn compile_v6_matcher(ranges: &mut Vec<Ipv6Range>) -> Option<V6Matcher> {
     if ranges.is_empty() {
         return None;
@@ -509,6 +548,24 @@ fn compile_v6_matcher(ranges: &mut Vec<Ipv6Range>) -> Option<V6Matcher> {
     let ranges = ranges.clone().into_boxed_slice();
 
     Some(V6Matcher { ranges, rule_count })
+}
+
+/// Compile merged IPv6 ranges by consuming the source `Vec`.
+///
+/// Used by `finalize_compact`, which discards the source ranges anyway, so the
+/// merged buffer is moved into the compiled matcher instead of being cloned.
+fn compile_v6_matcher_owned(mut ranges: Vec<Ipv6Range>) -> Option<V6Matcher> {
+    if ranges.is_empty() {
+        return None;
+    }
+
+    merge_v6_ranges(&mut ranges);
+    let rule_count = ranges.len();
+
+    Some(V6Matcher {
+        ranges: ranges.into_boxed_slice(),
+        rule_count,
+    })
 }
 
 #[inline]
@@ -872,5 +929,88 @@ mod tests {
 
         assert!(matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 1, 1, 1))));
         assert!(matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
+    }
+
+    #[test]
+    fn test_full_ipv4_space_rule() {
+        let mut matcher = IpPrefixMatcher::default();
+        matcher.add_rule("0.0.0.0/0").unwrap();
+        matcher.finalize();
+
+        assert_eq!(matcher.v4_rule_count(), 1);
+        assert!(matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))));
+        assert!(matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255))));
+    }
+
+    #[test]
+    fn test_same_page_multiple_ranges_and_spanning_interplay() {
+        // A single page (0x0a00) covered by two separate source ranges (a
+        // standalone /26 and a later /24), plus an isolated page and a range
+        // spanning into an adjacent page, exercising per-page interval merging.
+        let mut matcher = IpPrefixMatcher::default();
+        matcher.add_rule("8.8.8.0/24").unwrap(); // page 0x0808, isolated
+        matcher.add_rule("10.0.0.0/26").unwrap(); // page 0x0a00, low 0..63
+        matcher.add_rule("10.0.255.0/24").unwrap(); // page 0x0a00, low 0xff00..max
+        matcher.add_rule("10.1.0.0/16").unwrap(); // page 0x0a01, merges with the /24
+        matcher.finalize();
+
+        assert!(matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 100))));
+        assert!(!matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 9, 1))));
+        assert!(matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 10))));
+        assert!(!matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 64))));
+        assert!(matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 255, 1))));
+        assert!(!matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 128, 1))));
+        assert!(matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 1, 100, 1))));
+        assert!(matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 1, 255, 254))));
+        assert!(!matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 2, 0, 1))));
+    }
+
+    #[test]
+    fn test_add_v4_network_matches_textual_rule() {
+        let mut bytes = IpPrefixMatcher::default();
+        bytes
+            .add_v4_network(u32::from(Ipv4Addr::new(192, 168, 1, 0)), 24)
+            .unwrap();
+        bytes.finalize();
+
+        let mut text = IpPrefixMatcher::default();
+        text.add_rule("192.168.1.0/24").unwrap();
+        text.finalize();
+
+        for host in [0u8, 1, 200, 255] {
+            let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, host));
+            assert_eq!(bytes.contains_ip(ip), text.contains_ip(ip));
+            assert!(bytes.contains_ip(ip));
+        }
+        assert!(!bytes.contains_ip(IpAddr::V4(Ipv4Addr::new(192, 168, 2, 1))));
+        assert!(bytes.add_v4_network(0, 33).is_err());
+    }
+
+    #[test]
+    fn test_add_v6_network_matches_textual_rule() {
+        let net: Ipv6Addr = "2001:db8::".parse().unwrap();
+        let mut bytes = IpPrefixMatcher::default();
+        bytes
+            .add_v6_network(u128::from_be_bytes(net.octets()), 32)
+            .unwrap();
+        bytes.finalize_compact();
+
+        assert!(bytes.contains_ip(IpAddr::V6("2001:db8:abcd::1".parse().unwrap())));
+        assert!(!bytes.contains_ip(IpAddr::V6("2001:db9::1".parse().unwrap())));
+        assert!(bytes.add_v6_network(0, 129).is_err());
+    }
+
+    #[test]
+    fn test_finalize_compact_drops_source_ranges() {
+        let mut matcher = IpPrefixMatcher::default();
+        matcher.add_rule("10.0.0.0/8").unwrap();
+        matcher.add_rule("2001:db8::/32").unwrap();
+        matcher.finalize_compact();
+
+        assert!(matcher.v4_rules.is_empty());
+        assert!(matcher.v6_rules.is_empty());
+        assert!(matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3))));
+        assert!(matcher.contains_ip(IpAddr::V6("2001:db8::1".parse().unwrap())));
     }
 }

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use ahash::AHashSet;
 use tracing::info;
 
 use super::model::{AdGuardRuleConfig, BuildStats, CompiledRule, CompiledRuleSet, ParsedRule};
@@ -52,7 +53,7 @@ pub(super) fn build_rule_buckets(
         .iter()
         .filter(|rule| rule.badfilter)
         .map(rule_cache_key)
-        .collect::<Vec<_>>();
+        .collect::<AHashSet<_>>();
 
     let mut important_exceptions = CompiledRuleSet::default();
     let mut important_blocks = CompiledRuleSet::default();
@@ -63,10 +64,7 @@ pub(super) fn build_rule_buckets(
         if rule.badfilter {
             continue;
         }
-        if badfilter_keys
-            .iter()
-            .any(|key| key == &rule_cache_key(&rule))
-        {
+        if badfilter_keys.contains(&rule_cache_key(&rule)) {
             info!(
                 source = %rule.source,
                 "adguard_rule skipped rule disabled by badfilter"

@@ -20,7 +20,7 @@ use crate::core::error::{DnsError, Result as DnsResult};
 use crate::core::rule_matcher::IpPrefixMatcher;
 use crate::plugin::provider::Provider;
 use crate::plugin::provider::v2ray_dat::{
-    GeoIp, GeoIpList, cidr_to_rule, geoip_code, normalized_selectors,
+    Cidr, GeoIp, GeoIpList, geoip_code, normalized_selectors,
 };
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;
@@ -74,16 +74,9 @@ impl GeoIpProvider {
             .filter(|entry| matches_selector(entry, &requested_selectors))
         {
             matched_entries += 1;
+            let code = geoip_code(entry);
             for cidr in &entry.cidr {
-                let rule = cidr_to_rule(cidr).ok_or_else(|| {
-                    DnsError::plugin(format!(
-                        "plugin '{}' invalid CIDR bytes in geoip code '{}'",
-                        self.tag,
-                        geoip_code(entry)
-                    ))
-                })?;
-                let source = format!("geoip code '{}'", geoip_code(entry));
-                add_ip_rule(&mut matcher, &rule, &source)?;
+                add_geoip_cidr(&mut matcher, cidr, &self.tag, code)?;
             }
         }
 
@@ -203,11 +196,46 @@ impl PluginFactory for GeoIpFactory {
     }
 }
 
-fn add_ip_rule(matcher: &mut IpPrefixMatcher, rule: &str, source: &str) -> DnsResult<()> {
-    matcher.add_rule(rule).map_err(|e| {
-        DnsError::plugin(format!("invalid ip/cidr '{}' in {}: {}", rule, source, e))
+/// Feed one geoip CIDR entry into the matcher straight from its decoded bytes,
+/// skipping the textual `format!` + re-parse round trip used for file rules.
+fn add_geoip_cidr(
+    matcher: &mut IpPrefixMatcher,
+    cidr: &Cidr,
+    tag: &str,
+    code: &str,
+) -> DnsResult<()> {
+    let prefix = u8::try_from(cidr.prefix).map_err(|_| {
+        DnsError::plugin(format!(
+            "plugin '{}' invalid CIDR prefix {} in geoip code '{}'",
+            tag, cidr.prefix, code
+        ))
     })?;
-    Ok(())
+
+    let result = match cidr.ip.len() {
+        4 => {
+            let mut octets = [0u8; 4];
+            octets.copy_from_slice(&cidr.ip);
+            matcher.add_v4_network(u32::from_be_bytes(octets), prefix)
+        }
+        16 => {
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(&cidr.ip);
+            matcher.add_v6_network(u128::from_be_bytes(octets), prefix)
+        }
+        _ => {
+            return Err(DnsError::plugin(format!(
+                "plugin '{}' invalid CIDR bytes in geoip code '{}'",
+                tag, code
+            )));
+        }
+    };
+
+    result.map_err(|e| {
+        DnsError::plugin(format!(
+            "plugin '{}' invalid CIDR in geoip code '{}': {}",
+            tag, code, e
+        ))
+    })
 }
 
 fn matches_selector(entry: &GeoIp, requested_selectors: &[String]) -> bool {
