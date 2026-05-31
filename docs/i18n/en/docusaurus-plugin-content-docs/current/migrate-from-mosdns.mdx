@@ -13,6 +13,24 @@ Most mosdns v5 configuration files can be **copied and used directly**. If error
 
 OxiDNS and mosdns v5 share almost the same plugin model and configuration structure: the `plugins` array, `sequence` orchestration, `jump` / `goto` / `accept` / `return` / `reject` control flow, and plugins such as `forward` / `cache` / `hosts` / `domain_set` / `ip_set` / `geosite` / `geoip` / `ipset` / `fallback` — including their field names — are all highly compatible.
 
+## Syntax Differences to Check During Migration
+
+### `env` matcher
+
+In OxiDNS, every item in the `env` matcher's `args` array is an independent environment expression.
+
+```yaml
+- tag: env_profile_prod
+  type: env
+  args:
+    - "PROFILE=prod"
+    - "FEATURE_X"
+```
+
+Use `KEY=VALUE` for exact matches; `KEY:VALUE` is also accepted as a rule-expression-style alias. `KEY`, `KEY:`, and `KEY=` only check that the variable exists.
+
+Be careful with two bare items: `["PROFILE", "prod"]` checks that both `PROFILE` and `prod` exist. It does not mean `PROFILE == prod`. If a migrated config used that two-token value form, rewrite it as `"PROFILE=prod"` or `"PROFILE:prod"`.
+
 ## Feature Overview
 
 Once migration is complete, the following capabilities are available to enable on demand.

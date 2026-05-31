@@ -13,6 +13,24 @@ import Admonition from '@theme/Admonition';
 
 OxiDNS 与 mosdns v5 共享几乎相同的插件模型和配置结构：`plugins` 数组、`sequence` 编排、`jump` / `goto` / `accept` / `return` / `reject` 控制流，以及 `forward` / `cache` / `hosts` / `domain_set` / `ip_set` / `geosite` / `geoip` / `ipset` / `fallback` 等插件及其字段名，均高度兼容。
 
+## 迁移时需要留意的语法差异
+
+### `env` matcher
+
+OxiDNS 的 `env` matcher 中，`args` 的每个元素都是一个独立的环境变量表达式。
+
+```yaml
+- tag: env_profile_prod
+  type: env
+  args:
+    - "PROFILE=prod"
+    - "FEATURE_X"
+```
+
+等值匹配推荐写成 `KEY=VALUE`，也可以写成 `KEY:VALUE`。只写 `KEY`、`KEY:` 或 `KEY=` 时表示检查环境变量存在。
+
+需要特别注意：`["PROFILE", "prod"]` 表示同时检查 `PROFILE` 和 `prod` 两个环境变量存在，不表示 `PROFILE == prod`。如果迁移前的配置使用过这种两段式写法，请改成 `"PROFILE=prod"` 或 `"PROFILE:prod"`。
+
 ## 新增能力速览
 
 迁移完成后，以下能力可以按需启用。

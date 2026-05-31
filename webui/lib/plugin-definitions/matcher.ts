@@ -271,13 +271,13 @@ export const matcherPluginDefinitions: PluginKindDefinition[] = [
       stringArrayField(
         "args",
         "环境变量条件",
-        "PROFILE:prod\nFEATURE_X",
+        "PROFILE=prod\nFEATURE_X",
         true,
         "定义需要同时满足的环境变量条件。",
       ),
     ],
     quickSetup: {
-      paramPlaceholder: "PROFILE:prod FEATURE_X",
+      paramPlaceholder: "PROFILE=prod FEATURE_X",
     },
   },
   {

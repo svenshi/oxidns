@@ -59,22 +59,11 @@ fn parse_env_args(args: Vec<String>) -> DnsResult<Vec<EnvCondition>> {
         return Err(DnsError::plugin("env condition cannot be empty"));
     }
 
-    if args.len() == 2 && !has_explicit_value_separator(&args[0]) {
-        return Ok(vec![EnvCondition::new(
-            args[0].clone(),
-            Some(args[1].clone()),
-        )?]);
-    }
-
     let mut conditions = Vec::with_capacity(args.len());
     for arg in args {
         conditions.push(parse_env_condition(&arg)?);
     }
     Ok(conditions)
-}
-
-fn has_explicit_value_separator(raw: &str) -> bool {
-    raw.contains(':') || raw.contains('=')
 }
 
 fn parse_env_condition(raw: &str) -> DnsResult<EnvCondition> {
@@ -238,23 +227,23 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_env_args_keeps_legacy_two_token_value_form() {
+    fn test_parse_env_args_treats_two_bare_items_as_presence_checks() {
         let conditions = parse_env_args(vec!["KEY".to_string(), "VALUE".to_string()])
             .expect("parse should succeed");
 
-        assert_eq!(conditions.len(), 1);
-        assert_condition(&conditions[0], "KEY", Some("VALUE"));
+        assert_eq!(conditions.len(), 2);
+        assert_condition(&conditions[0], "KEY", None);
+        assert_condition(&conditions[1], "VALUE", None);
     }
 
     #[test]
-    fn test_parse_env_args_keeps_legacy_separator_values() {
-        for value in ["/usr/bin:/bin", "postgres://user:pass@localhost/db", "a=b"] {
-            let conditions = parse_env_args(vec!["KEY".to_string(), value.to_string()])
-                .expect("parse should succeed");
+    fn test_parse_env_args_honors_explicit_second_condition() {
+        let conditions = parse_env_args(vec!["FEATURE_X".to_string(), "PROFILE:prod".to_string()])
+            .expect("parse should succeed");
 
-            assert_eq!(conditions.len(), 1);
-            assert_condition(&conditions[0], "KEY", Some(value));
-        }
+        assert_eq!(conditions.len(), 2);
+        assert_condition(&conditions[0], "FEATURE_X", None);
+        assert_condition(&conditions[1], "PROFILE", Some("prod"));
     }
 
     #[test]
