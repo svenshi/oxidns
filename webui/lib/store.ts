@@ -135,6 +135,7 @@ interface AppState {
   clearConfigHistory: () => void;
   togglePluginPin: (id: string) => void;
   togglePluginEnabled: (id: string) => void;
+  reorderPlugins: (orderedVisibleIds: string[]) => Promise<void>;
   updatePluginConfig: (id: string, config: Record<string, unknown>) => void;
   previewPluginDelete: (id: string) => Promise<PluginDeletePreview>;
   confirmDeletePlugin: (id: string) => Promise<void>;
@@ -552,6 +553,39 @@ export const useAppStore = create<AppState>((set, get) => ({
       const plugins: PluginInstance[] = state.plugins.map((p) => p);
       return { plugins };
     }),
+
+  // Reorder plugins in the config file to match a drag-and-drop arrangement.
+  // `orderedVisibleIds` is the new order of the *currently visible* cards
+  // (a single type tab, or all of them). Plugins outside that visible subset
+  // keep their absolute positions; only the slots the visible plugins occupy
+  // are refilled in the new order, so reordering within one type tab never
+  // disturbs the relative position of other types. The change is staged into
+  // the editor buffer and persisted to disk (mirroring add/edit/delete), then
+  // surfaced as an "应用更改" pill for the operator to hot-reload.
+  reorderPlugins: async (orderedVisibleIds) => {
+    const state = get();
+    if (state.configError) return;
+
+    const visible = new Set(orderedVisibleIds);
+    const byId = new Map(state.plugins.map((p) => [p.id, p] as const));
+    const queue = orderedVisibleIds
+      .map((id) => byId.get(id))
+      .filter((p): p is PluginInstance => Boolean(p));
+    if (queue.length === 0) return;
+
+    let next = 0;
+    const reordered = state.plugins.map((p) =>
+      visible.has(p.id) ? queue[next++] : p,
+    );
+    const unchanged = reordered.every((p, i) => p.id === state.plugins[i].id);
+    if (unchanged) return;
+
+    // No tags are passed as changed: every plugin reuses its original YAML
+    // node verbatim (comments/blank lines preserved) — only the node order
+    // changes.
+    set(syncPluginsToConfig(state, () => reordered, []));
+    if (!get().isOfflineMode) await get().saveConfig();
+  },
 
   updatePluginConfig: (id, config) =>
     set((state) => {

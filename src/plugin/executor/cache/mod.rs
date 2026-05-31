@@ -56,12 +56,20 @@ const DEFAULT_MAX_NEGATIVE_TTL: u32 = 300;
 const LAST_ACCESS_TOUCH_INTERVAL_MS: u64 = 1000;
 
 // Cleanup tuning.
+const MAX_INITIAL_CACHE_CAPACITY: usize = 16_384;
+const INLINE_MAINTENANCE_INTERVAL_MS: u64 = 1000;
+const INLINE_EXPIRED_SWEEP_BATCH: usize = 512;
+const INLINE_EVICTION_SAMPLE_SIZE: usize = 512;
+const INLINE_EVICTION_MAX_BATCH: usize = 512;
 const EVICT_HIGH_WATERMARK_PERCENT: usize = 95;
 const EVICT_LOW_WATERMARK_PERCENT: usize = 85;
 const EXPIRED_SWEEP_BATCH: usize = 2048;
 const EXPIRED_SWEEP_ROUNDS: usize = 4;
+const EXPIRED_SWEEP_MIN_LIMIT: usize = EXPIRED_SWEEP_BATCH * EXPIRED_SWEEP_ROUNDS;
+const EXPIRED_SWEEP_MAX_LIMIT: usize = 65_536;
 const EVICTION_SAMPLE_SIZE: usize = 4096;
-const EVICTION_MAX_BATCH: usize = 2048;
+const FULL_TRIM_CACHE_SIZE_LIMIT: usize = 100_000;
+const LARGE_CACHE_EVICTION_MAX_BATCH: usize = 65_536;
 const DEFAULT_LAZY_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[allow(dead_code)]
@@ -344,13 +352,35 @@ pub struct Cache {
 
     /// Deduplicates background refreshes for stale lazy cache hits.
     lazy_refresh_inflight: Arc<Mutex<AHashSet<CacheKey>>>,
+
+    /// Next timestamp when an inline write-side maintenance pass may run.
+    next_inline_maintenance_ms: AtomicU64,
 }
 
 impl Cache {
-    fn spawn_load_task(&self, cache_map: CacheMap, dump_path: String, ecs_in_key: bool) {
+    fn spawn_load_task(
+        &self,
+        cache_map: CacheMap,
+        dump_path: String,
+        ecs_in_key: bool,
+        cache_size: usize,
+    ) {
         tokio::spawn(async move {
             if let Err(e) = load_cache_from_file(&cache_map, &dump_path, ecs_in_key).await {
                 warn!("Failed to load cache from {}: {}", dump_path, e);
+                return;
+            }
+
+            let stats =
+                Cache::prune_cache_after_load(&cache_map, cache_size, AppClock::elapsed_millis());
+            if stats.total_removed() > 0 {
+                debug!(
+                    expired_removed = stats.expired_removed,
+                    evicted = stats.evicted,
+                    before = stats.before_len,
+                    after = stats.after_len,
+                    "Pruned cache after loading dump"
+                );
             }
         });
     }
@@ -394,65 +424,223 @@ impl Cache {
             move || {
                 let cache_map = cache_map.clone();
                 async move {
-                    let now = AppClock::elapsed_millis();
-                    let mut expired_removed = 0usize;
-                    for _ in 0..EXPIRED_SWEEP_ROUNDS {
-                        let removed = cache_map.remove_expired_batch(now, EXPIRED_SWEEP_BATCH);
-                        if removed == 0 {
-                            break;
-                        }
-                        expired_removed += removed;
+                    let stats = Cache::prune_cache_periodic(
+                        &cache_map,
+                        cache_size,
+                        AppClock::elapsed_millis(),
+                    );
+                    if stats.expired_removed > 0 {
+                        debug!("Cleaned {} expired cache entries", stats.expired_removed);
                     }
-
-                    if expired_removed > 0 {
-                        debug!("Cleaned {} expired cache entries", expired_removed);
-                    }
-
-                    let current_size = cache_map.len();
-                    let high_watermark = cache_size
-                        .saturating_mul(EVICT_HIGH_WATERMARK_PERCENT)
-                        .saturating_div(100)
-                        .max(1);
-                    if current_size <= high_watermark {
-                        return;
-                    }
-
-                    let low_watermark = cache_size
-                        .saturating_mul(EVICT_LOW_WATERMARK_PERCENT)
-                        .saturating_div(100)
-                        .max(1);
-                    let target_size = low_watermark.min(current_size);
-                    let mut evict_target = current_size.saturating_sub(target_size);
-                    evict_target = evict_target.min(EVICTION_MAX_BATCH);
-
-                    let sample_cap = current_size.min(EVICTION_SAMPLE_SIZE);
-                    let mut sample = cache_map.sample_last_access(sample_cap);
-
-                    if sample.is_empty() || evict_target == 0 {
-                        return;
-                    }
-
-                    // Approximate LRU: sort sampled keys by last-access and evict oldest subset.
-                    sample.sort_unstable_by_key(|(_, last)| *last);
-
-                    let mut evicted = 0usize;
-                    for (key, _) in sample.into_iter().take(evict_target) {
-                        if cache_map.remove(&key) {
-                            evicted += 1;
-                        }
-                    }
-
-                    if evicted > 0 {
+                    if stats.evicted > 0 {
                         warn!(
                             "LRU eviction: removed {} items, cache size {} -> {}",
-                            evicted,
-                            current_size,
-                            cache_map.len()
+                            stats.evicted, stats.before_len, stats.after_len
                         );
                     }
                 }
             },
         )
+    }
+
+    #[inline]
+    fn initial_cache_capacity(cache_size: usize) -> usize {
+        cache_size.clamp(1, MAX_INITIAL_CACHE_CAPACITY)
+    }
+
+    #[inline]
+    fn periodic_expired_sweep_limit(cache_size: usize) -> usize {
+        cache_size.clamp(EXPIRED_SWEEP_MIN_LIMIT, EXPIRED_SWEEP_MAX_LIMIT)
+    }
+
+    #[inline]
+    fn periodic_eviction_limit(cache_size: usize, evict_target: usize) -> usize {
+        if cache_size <= FULL_TRIM_CACHE_SIZE_LIMIT {
+            evict_target
+        } else {
+            evict_target.min(LARGE_CACHE_EVICTION_MAX_BATCH)
+        }
+    }
+
+    fn remove_expired_with_limit(
+        cache_map: &CacheMap,
+        now: u64,
+        limit: usize,
+        batch: usize,
+    ) -> usize {
+        if limit == 0 || batch == 0 {
+            return 0;
+        }
+
+        let mut removed_total = 0usize;
+        while removed_total < limit {
+            let current_batch = (limit - removed_total).min(batch);
+            let removed = cache_map.remove_expired_batch(now, current_batch);
+            removed_total += removed;
+            if removed < current_batch {
+                break;
+            }
+        }
+        removed_total
+    }
+
+    fn evict_lru_sampled(cache_map: &CacheMap, evict_target: usize, sample_size: usize) -> usize {
+        if evict_target == 0 || sample_size == 0 {
+            return 0;
+        }
+
+        let mut evicted_total = 0usize;
+        while evicted_total < evict_target {
+            let mut sample = cache_map.sample_last_access(sample_size);
+            if sample.is_empty() {
+                break;
+            }
+
+            // Approximate LRU: sort sampled keys by last-access and evict oldest subset.
+            sample.sort_unstable_by_key(|(_, last)| *last);
+            let wanted = (evict_target - evicted_total).min(sample.len());
+            let mut evicted_batch = 0usize;
+            for (key, _) in sample.into_iter().take(wanted) {
+                if cache_map.remove(&key) {
+                    evicted_batch += 1;
+                }
+            }
+
+            if evicted_batch == 0 {
+                break;
+            }
+            evicted_total += evicted_batch;
+        }
+        evicted_total
+    }
+
+    fn prune_cache_periodic(cache_map: &CacheMap, cache_size: usize, now: u64) -> CachePruneStats {
+        let before_len = cache_map.len();
+        let expired_removed = Self::remove_expired_with_limit(
+            cache_map,
+            now,
+            Self::periodic_expired_sweep_limit(cache_size),
+            EXPIRED_SWEEP_BATCH,
+        );
+
+        let current_size = cache_map.len();
+        let high_watermark = cache_size
+            .saturating_mul(EVICT_HIGH_WATERMARK_PERCENT)
+            .saturating_div(100)
+            .max(1);
+
+        let evicted = if current_size > high_watermark {
+            let low_watermark = cache_size
+                .saturating_mul(EVICT_LOW_WATERMARK_PERCENT)
+                .saturating_div(100)
+                .max(1);
+            let target_size = low_watermark.min(current_size);
+            let evict_target = current_size.saturating_sub(target_size);
+            Self::evict_lru_sampled(
+                cache_map,
+                Self::periodic_eviction_limit(cache_size, evict_target),
+                EVICTION_SAMPLE_SIZE,
+            )
+        } else {
+            0
+        };
+
+        CachePruneStats {
+            before_len,
+            after_len: cache_map.len(),
+            expired_removed,
+            evicted,
+        }
+    }
+
+    fn prune_cache_after_load(
+        cache_map: &CacheMap,
+        cache_size: usize,
+        now: u64,
+    ) -> CachePruneStats {
+        let before_len = cache_map.len();
+        let expired_removed =
+            Self::remove_expired_with_limit(cache_map, now, before_len, EXPIRED_SWEEP_BATCH);
+
+        let current_size = cache_map.len();
+        let evicted = if current_size > cache_size {
+            Self::evict_lru_sampled(
+                cache_map,
+                current_size.saturating_sub(cache_size),
+                EVICTION_SAMPLE_SIZE,
+            )
+        } else {
+            0
+        };
+
+        CachePruneStats {
+            before_len,
+            after_len: cache_map.len(),
+            expired_removed,
+            evicted,
+        }
+    }
+
+    fn prune_cache_after_insert(
+        cache_map: &CacheMap,
+        cache_size: usize,
+        now: u64,
+    ) -> CachePruneStats {
+        let before_len = cache_map.len();
+        let expired_removed = Self::remove_expired_with_limit(
+            cache_map,
+            now,
+            INLINE_EXPIRED_SWEEP_BATCH,
+            INLINE_EXPIRED_SWEEP_BATCH,
+        );
+
+        let current_size = cache_map.len();
+        let evicted = if current_size > cache_size {
+            let evict_target = current_size
+                .saturating_sub(cache_size)
+                .min(INLINE_EVICTION_MAX_BATCH);
+            Self::evict_lru_sampled(cache_map, evict_target, INLINE_EVICTION_SAMPLE_SIZE)
+        } else {
+            0
+        };
+
+        CachePruneStats {
+            before_len,
+            after_len: cache_map.len(),
+            expired_removed,
+            evicted,
+        }
+    }
+
+    fn maybe_prune_after_insert(&self, cache_map: &CacheMap, now: u64) {
+        if cache_map.len() <= self.cache_size {
+            return;
+        }
+
+        let next_due = self.next_inline_maintenance_ms.load(Ordering::Relaxed);
+        if now < next_due {
+            return;
+        }
+
+        let new_next_due = now.saturating_add(INLINE_MAINTENANCE_INTERVAL_MS);
+        if self
+            .next_inline_maintenance_ms
+            .compare_exchange(next_due, new_next_due, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+
+        let stats = Self::prune_cache_after_insert(cache_map, self.cache_size, now);
+        if stats.total_removed() > 0 {
+            debug!(
+                expired_removed = stats.expired_removed,
+                evicted = stats.evicted,
+                before = stats.before_len,
+                after = stats.after_len,
+                "Pruned cache after insert"
+            );
+        }
     }
 
     #[inline]
@@ -697,6 +885,7 @@ impl Cache {
         cache_map.insert_or_update(key, Arc::new(item), now, expire_time);
         self.updated_keys.fetch_add(1, Ordering::Relaxed);
         self.metrics.insert_total.fetch_add(1, Ordering::Relaxed);
+        self.maybe_prune_after_insert(cache_map, now);
     }
 
     fn try_start_lazy_refresh(
@@ -817,16 +1006,27 @@ impl Plugin for Cache {
     }
 
     async fn init(&mut self, _context: &crate::plugin::PluginInitContext<'_>) -> Result<()> {
-        let cache_map = CacheMap::with_capacity(self.cache_size);
+        let cache_map = CacheMap::with_capacity(Self::initial_cache_capacity(self.cache_size));
 
         let _ = self.cache_map.set(cache_map.clone());
         self.metrics.set_cache_map(cache_map.clone());
+      
         #[cfg(feature = "api")]
-        api::register(&self.tag, cache_map.clone(), self.ecs_in_key)?;
+        api::register(
+            &self.tag,
+            cache_map.clone(),
+            self.ecs_in_key,
+            self.cache_size,
+        )?;
         register_metric_source(self.metrics.clone())?;
 
         if let Some(dump_file) = &self.config.dump_file {
-            self.spawn_load_task(cache_map.clone(), dump_file.clone(), self.ecs_in_key);
+            self.spawn_load_task(
+                cache_map.clone(),
+                dump_file.clone(),
+                self.ecs_in_key,
+                self.cache_size,
+            );
             let dump_interval = self.config.dump_interval.unwrap_or(DEFAULT_DUMP_INTERVAL);
             let task_id = self.spawn_dump_task(
                 cache_map.clone(),
@@ -1109,7 +1309,23 @@ impl CacheFactory {
             dump_task_id: Mutex::new(None),
             cleanup_task_id: Mutex::new(None),
             lazy_refresh_inflight: Arc::new(Mutex::new(AHashSet::new())),
+            next_inline_maintenance_ms: AtomicU64::new(0),
         })))
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct CachePruneStats {
+    before_len: usize,
+    after_len: usize,
+    expired_removed: usize,
+    evicted: usize,
+}
+
+impl CachePruneStats {
+    #[inline]
+    fn total_removed(self) -> usize {
+        self.expired_removed + self.evicted
     }
 }
 
@@ -1195,6 +1411,7 @@ mod tests {
             dump_task_id: Mutex::new(None),
             cleanup_task_id: Mutex::new(None),
             lazy_refresh_inflight: Arc::new(Mutex::new(AHashSet::new())),
+            next_inline_maintenance_ms: AtomicU64::new(0),
         }
     }
 
@@ -1219,6 +1436,16 @@ mod tests {
         assert_eq!(cfg.short_circuit, Some(true));
     }
 
+    #[test]
+    fn initial_cache_capacity_is_bounded_for_large_limits() {
+        assert_eq!(Cache::initial_cache_capacity(0), 1);
+        assert_eq!(Cache::initial_cache_capacity(1024), 1024);
+        assert_eq!(
+            Cache::initial_cache_capacity(MAX_INITIAL_CACHE_CAPACITY * 10),
+            MAX_INITIAL_CACHE_CAPACITY
+        );
+    }
+
     fn make_context(request: Message) -> DnsContext {
         DnsContext::new("127.0.0.1:5300".parse::<SocketAddr>().unwrap(), request)
     }
@@ -1237,6 +1464,91 @@ mod tests {
         request.set_edns(edns);
 
         request
+    }
+
+    fn cache_key_for_domain(domain: impl Into<String>) -> CacheKey {
+        CacheKey {
+            domain: domain.into(),
+            record_type: RecordType::A,
+            dns_class: DNSClass::IN,
+            do_bit: false,
+            cd_bit: false,
+            ecs_scope: None,
+        }
+    }
+
+    fn insert_test_cache_entry(cache_map: &CacheMap, domain: String, expire_at: u64, last: u64) {
+        cache_map.insert_or_update_with_meta(
+            cache_key_for_domain(domain),
+            Arc::new(CacheItem::new(Message::new(), 60, expire_at)),
+            last,
+            expire_at,
+            last,
+        );
+    }
+
+    #[test]
+    fn periodic_prune_removes_large_expired_backlog() {
+        let cache_map = CacheMap::with_capacity(16);
+        let now = 10_000u64;
+        let expired_count = EXPIRED_SWEEP_MIN_LIMIT + 512;
+        for idx in 0..expired_count {
+            insert_test_cache_entry(
+                &cache_map,
+                format!("expired-{idx}.example"),
+                now.saturating_sub(1),
+                idx as u64,
+            );
+        }
+
+        let stats = Cache::prune_cache_periodic(&cache_map, expired_count, now);
+
+        assert_eq!(stats.expired_removed, expired_count);
+        assert_eq!(stats.evicted, 0);
+        assert!(cache_map.is_empty());
+    }
+
+    #[test]
+    fn periodic_prune_trims_small_cache_to_low_watermark() {
+        let cache_map = CacheMap::with_capacity(4);
+        let now = 10_000u64;
+        for idx in 0..32 {
+            insert_test_cache_entry(
+                &cache_map,
+                format!("live-{idx}.example"),
+                now.saturating_add(60_000),
+                idx as u64,
+            );
+        }
+
+        let stats = Cache::prune_cache_periodic(&cache_map, 8, now);
+
+        assert_eq!(stats.expired_removed, 0);
+        assert_eq!(stats.evicted, 26);
+        assert_eq!(cache_map.len(), 6);
+    }
+
+    #[test]
+    fn load_prune_trims_large_cache_to_configured_limit() {
+        let cache_size = FULL_TRIM_CACHE_SIZE_LIMIT + 1;
+        let excess = LARGE_CACHE_EVICTION_MAX_BATCH + 17;
+        let live_count = cache_size + excess;
+        let cache_map = CacheMap::with_capacity(Cache::initial_cache_capacity(cache_size));
+        let now = 10_000u64;
+        for idx in 0..live_count {
+            insert_test_cache_entry(
+                &cache_map,
+                format!("live-{idx}.example"),
+                now.saturating_add(60_000),
+                idx as u64,
+            );
+        }
+
+        let stats = Cache::prune_cache_after_load(&cache_map, cache_size, now);
+
+        assert_eq!(stats.expired_removed, 0);
+        assert_eq!(stats.evicted, excess);
+        assert_eq!(cache_map.len(), cache_size);
     }
 
     fn add_ecs(request: &mut Message, subnet: &str) {

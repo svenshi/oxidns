@@ -3,7 +3,7 @@
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { AppHeader } from "@/components/shell/app-header";
-import { PluginCard } from "@/components/plugins/plugin-card";
+import { SortablePluginGrid } from "@/components/plugins/sortable-plugin-grid";
 import { CreatePluginDialog } from "@/components/plugins/create-plugin-dialog";
 import { PluginDeleteButton } from "@/components/plugins/plugin-delete-button";
 import { useAppStore } from "@/lib/store";
@@ -59,7 +59,8 @@ function PluginsPageContent() {
 
   const plugins = useAppStore((s) => s.plugins);
   const dependencyGraph = useAppStore((s) => s.dependencyGraph);
-  const { setSelectedPlugin, setDetailOpen, togglePluginPin } = useAppStore();
+  const { setSelectedPlugin, setDetailOpen, togglePluginPin, reorderPlugins } =
+    useAppStore();
 
   const filteredPlugins = plugins.filter((p) => {
     const definition = getPluginCatalogItem(p.pluginKind);
@@ -173,11 +174,11 @@ function PluginsPageContent() {
           <div className="oxidns-dialog-scrollbar min-h-0 flex-1 overflow-auto">
             <TabsContent value={activeTab} className="m-0 p-6">
               {viewMode === "grid" ? (
-                <div className="grid items-stretch gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {filteredPlugins.map((plugin) => (
-                    <PluginCard key={plugin.id} plugin={plugin} />
-                  ))}
-                </div>
+                <SortablePluginGrid
+                  plugins={filteredPlugins}
+                  onReorder={(ids) => void reorderPlugins(ids)}
+                  disabled={search.trim() !== ""}
+                />
               ) : viewMode === "table" ? (
                 <div className="border rounded-lg overflow-hidden">
                   <Table>
