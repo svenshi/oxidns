@@ -18,18 +18,16 @@
 
 use std::any::Any;
 use std::net::IpAddr;
+#[cfg(not(feature = "api"))]
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bytes::Bytes;
-use http::{Request, StatusCode};
-use serde::Serialize;
 
-use crate::api::{ApiHandler, json_error, json_ok};
 use crate::core::error::{DnsError, Result as DnsResult};
-use crate::plugin::{self, Plugin};
+#[cfg(not(feature = "api"))]
+use crate::plugin;
+use crate::plugin::Plugin;
 use crate::proto::{Name, Question};
-use crate::register_plugin_api;
 
 #[cfg(feature = "provider-adguard-rule")]
 pub mod adguard_rule;
@@ -86,56 +84,83 @@ pub trait Provider: Plugin {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct ProviderReloadResponse {
-    ok: bool,
-    action: &'static str,
-    provider: String,
-    status: &'static str,
-}
+#[cfg(feature = "api")]
+mod api_routes {
+    use std::sync::Arc;
 
-#[derive(Debug)]
-struct ProviderReloadHandler {
-    tag: String,
-}
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use http::{Request, StatusCode};
+    use serde::Serialize;
 
-#[async_trait]
-impl ApiHandler for ProviderReloadHandler {
-    async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
-        match plugin::reload_provider(&self.tag).await {
-            Ok(()) => json_ok(
-                StatusCode::OK,
-                &ProviderReloadResponse {
-                    ok: true,
-                    action: "reload_provider",
-                    provider: self.tag.clone(),
-                    status: "reloaded",
-                },
-            ),
-            Err(err) => json_error(
-                StatusCode::BAD_REQUEST,
-                "provider_reload_failed",
-                err.to_string(),
-            ),
+    use crate::api::{ApiHandler, json_error, json_ok};
+    use crate::core::error::Result as DnsResult;
+    use crate::plugin::{self, PluginRegistry};
+    use crate::register_plugin_api;
+
+    #[derive(Debug, Serialize)]
+    struct ProviderReloadResponse {
+        ok: bool,
+        action: &'static str,
+        provider: String,
+        status: &'static str,
+    }
+
+    #[derive(Debug)]
+    struct ProviderReloadHandler {
+        tag: String,
+    }
+
+    #[async_trait]
+    impl ApiHandler for ProviderReloadHandler {
+        async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
+            match plugin::reload_provider(&self.tag).await {
+                Ok(()) => json_ok(
+                    StatusCode::OK,
+                    &ProviderReloadResponse {
+                        ok: true,
+                        action: "reload_provider",
+                        provider: self.tag.clone(),
+                        status: "reloaded",
+                    },
+                ),
+                Err(err) => json_error(
+                    StatusCode::BAD_REQUEST,
+                    "provider_reload_failed",
+                    err.to_string(),
+                ),
+            }
         }
+    }
+
+    pub(crate) fn register_reload_api_route(
+        _registry: Arc<PluginRegistry>,
+        tag: &str,
+    ) -> DnsResult<()> {
+        register_plugin_api!(
+            tag,
+            POST "/reload" => ProviderReloadHandler {
+                tag: tag.to_string(),
+            },
+        )
     }
 }
 
+#[cfg(feature = "api")]
+pub(crate) use api_routes::register_reload_api_route;
+
+#[cfg(not(feature = "api"))]
 pub(crate) fn register_reload_api_route(
     _registry: Arc<plugin::PluginRegistry>,
-    tag: &str,
+    _tag: &str,
 ) -> DnsResult<()> {
-    register_plugin_api!(
-        tag,
-        POST "/reload" => ProviderReloadHandler {
-            tag: tag.to_string(),
-        },
-    )
+    Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "api"))]
 mod tests {
     use std::net::{SocketAddr, TcpListener as StdTcpListener};
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;

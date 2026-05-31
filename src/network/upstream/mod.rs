@@ -40,6 +40,7 @@ use std::time::Duration;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use serde::Deserialize;
+#[cfg(feature = "_http-client")]
 use tokio::net::TcpStream;
 use tracing::{debug, info, warn};
 use url::Url;
@@ -47,6 +48,7 @@ use url::Url;
 use crate::core::error::{DnsError, Result};
 use crate::core::system_utils::deserialize_duration_option;
 use crate::network::upstream::bootstrap::Bootstrap;
+#[cfg(feature = "upstream-doh")]
 use crate::network::upstream::pool::conn_h2::{H2Connection, H2ConnectionBuilder};
 #[cfg(feature = "upstream-doh3")]
 use crate::network::upstream::pool::conn_h3::{H3Connection, H3ConnectionBuilder};
@@ -734,11 +736,8 @@ impl UpstreamBuilder {
                         fallback_pool,
                     })
                 }
-                ConnectionType::TCP | ConnectionType::DoT => {
-                    debug!(
-                        "Creating {:?} upstream for {}",
-                        connection_info.connection_type, connection_info.raw_addr
-                    );
+                ConnectionType::TCP => {
+                    debug!("Creating TCP upstream for {}", connection_info.raw_addr);
                     if connection_info.enable_pipeline.unwrap_or(false) {
                         let builder = TcpConnectionBuilder::new(
                             &connection_info,
@@ -753,6 +752,30 @@ impl UpstreamBuilder {
                         create_reuse_pool(0, connection_info, Box::new(builder))
                     }
                 }
+                #[cfg(feature = "upstream-dot")]
+                ConnectionType::DoT => {
+                    debug!("Creating DoT upstream for {}", connection_info.raw_addr);
+                    if connection_info.enable_pipeline.unwrap_or(false) {
+                        let builder = TcpConnectionBuilder::new(
+                            &connection_info,
+                            pipeline_request_map_capacity(),
+                        );
+                        create_pipeline_pool(0, connection_info, Box::new(builder))
+                    } else {
+                        let builder = TcpConnectionBuilder::new(
+                            &connection_info,
+                            reuse_request_map_capacity(),
+                        );
+                        create_reuse_pool(0, connection_info, Box::new(builder))
+                    }
+                }
+                #[cfg(not(feature = "upstream-dot"))]
+                ConnectionType::DoT => {
+                    return Err(DnsError::plugin(
+                        "upstream DoT is not compiled into this build; \
+                         rebuild with --features upstream-dot",
+                    ));
+                }
                 #[cfg(feature = "upstream-doq")]
                 ConnectionType::DoQ => {
                     debug!("Creating QUIC upstream for {}", connection_info.raw_addr);
@@ -766,6 +789,7 @@ impl UpstreamBuilder {
                          rebuild with --features upstream-doq",
                     ));
                 }
+                #[cfg(feature = "upstream-doh")]
                 ConnectionType::DoH => {
                     debug!(
                         "Creating DoH upstream for {} (HTTP/{})",
@@ -794,6 +818,13 @@ impl UpstreamBuilder {
                         create_pipeline_pool(0, connection_info, Box::new(builder))
                     }
                 }
+                #[cfg(not(feature = "upstream-doh"))]
+                ConnectionType::DoH => {
+                    return Err(DnsError::plugin(
+                        "upstream DoH is not compiled into this build; \
+                         rebuild with --features upstream-doh",
+                    ));
+                }
             };
             Ok(upstream)
         } else {
@@ -804,10 +835,23 @@ impl UpstreamBuilder {
                         BootstrapUpstream::new(connection_info);
                     Box::new(upstream)
                 }
-                ConnectionType::TCP | ConnectionType::DoT => {
+                ConnectionType::TCP => {
                     let upstream: BootstrapUpstream<TcpConnection> =
                         BootstrapUpstream::new(connection_info);
                     Box::new(upstream)
+                }
+                #[cfg(feature = "upstream-dot")]
+                ConnectionType::DoT => {
+                    let upstream: BootstrapUpstream<TcpConnection> =
+                        BootstrapUpstream::new(connection_info);
+                    Box::new(upstream)
+                }
+                #[cfg(not(feature = "upstream-dot"))]
+                ConnectionType::DoT => {
+                    return Err(DnsError::plugin(
+                        "upstream DoT is not compiled into this build; \
+                         rebuild with --features upstream-dot",
+                    ));
                 }
                 #[cfg(feature = "upstream-doq")]
                 ConnectionType::DoQ => {
@@ -822,6 +866,7 @@ impl UpstreamBuilder {
                          rebuild with --features upstream-doq",
                     ));
                 }
+                #[cfg(feature = "upstream-doh")]
                 ConnectionType::DoH => {
                     if connection_info.enable_http3 {
                         #[cfg(feature = "upstream-doh3")]
@@ -842,6 +887,13 @@ impl UpstreamBuilder {
                             BootstrapUpstream::new(connection_info);
                         Box::new(upstream)
                     }
+                }
+                #[cfg(not(feature = "upstream-doh"))]
+                ConnectionType::DoH => {
+                    return Err(DnsError::plugin(
+                        "upstream DoH is not compiled into this build; \
+                         rebuild with --features upstream-doh",
+                    ));
                 }
             };
             Ok(upstream)
@@ -1029,7 +1081,7 @@ impl ConnectionBuilderFactory {
                     >(src)
                 }
             }
-            ConnectionType::TCP | ConnectionType::DoT => {
+            ConnectionType::TCP => {
                 let src: Box<dyn ConnectionBuilder<TcpConnection>> =
                     Box::new(TcpConnectionBuilder::new(&info, request_map_capacity));
                 unsafe {
@@ -1038,6 +1090,21 @@ impl ConnectionBuilderFactory {
                         Box<dyn ConnectionBuilder<C>>,
                     >(src)
                 }
+            }
+            #[cfg(feature = "upstream-dot")]
+            ConnectionType::DoT => {
+                let src: Box<dyn ConnectionBuilder<TcpConnection>> =
+                    Box::new(TcpConnectionBuilder::new(&info, request_map_capacity));
+                unsafe {
+                    std::mem::transmute::<
+                        Box<dyn ConnectionBuilder<TcpConnection>>,
+                        Box<dyn ConnectionBuilder<C>>,
+                    >(src)
+                }
+            }
+            #[cfg(not(feature = "upstream-dot"))]
+            ConnectionType::DoT => {
+                unreachable!("upstream DoT branch reached but feature `upstream-dot` is disabled")
             }
             #[cfg(feature = "upstream-doq")]
             ConnectionType::DoQ => {
@@ -1057,6 +1124,7 @@ impl ConnectionBuilderFactory {
                 // builder is never constructed.
                 unreachable!("upstream DoQ branch reached but feature `upstream-doq` is disabled")
             }
+            #[cfg(feature = "upstream-doh")]
             ConnectionType::DoH => {
                 if info.enable_http3 {
                     #[cfg(feature = "upstream-doh3")]
@@ -1086,6 +1154,10 @@ impl ConnectionBuilderFactory {
                         >(src)
                     }
                 }
+            }
+            #[cfg(not(feature = "upstream-doh"))]
+            ConnectionType::DoH => {
+                unreachable!("upstream DoH branch reached but feature `upstream-doh` is disabled")
             }
         }
     }
@@ -1396,6 +1468,7 @@ pub(crate) fn parse_socks5_opt(socks5_str: &str) -> Option<Socks5Opt> {
     parse_socks5_opt_with_resolver(socks5_str, try_lookup_server_name)
 }
 
+#[cfg(feature = "_http-client")]
 pub(crate) async fn connect_tcp_stream(
     remote_ip: Option<IpAddr>,
     server_name: String,

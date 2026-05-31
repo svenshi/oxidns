@@ -49,6 +49,7 @@ pub mod hosts;
 pub mod http_request;
 #[cfg(feature = "plugin-ipset")]
 pub mod ipset;
+#[cfg(feature = "metrics")]
 pub mod metrics_collector;
 #[cfg(feature = "plugin-ipset")]
 pub mod nftset;

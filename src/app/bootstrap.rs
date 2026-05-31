@@ -5,14 +5,16 @@
 
 use std::sync::Arc;
 
-use crate::api::control::AppController;
+#[cfg(feature = "api")]
 use crate::api::{self, ApiHub, clear_global_api, install_global_api};
 use crate::config::types::Config;
+use crate::core::app_controller::AppController;
 use crate::core::error::Result;
 use crate::plugin;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct AppAssembly {
+    #[cfg(feature = "api")]
     pub api_hub: Option<Arc<ApiHub>>,
 }
 
@@ -20,7 +22,9 @@ pub async fn assemble(
     config: &Config,
     controller: Option<Arc<AppController>>,
 ) -> Result<AppAssembly> {
+    #[cfg(feature = "api")]
     let api_hub = ApiHub::from_config(&config.api)?;
+    #[cfg(feature = "api")]
     if let Some(api_hub) = &api_hub {
         install_global_api(api_hub.clone());
         api::register_builtin_routes()?;
@@ -30,6 +34,8 @@ pub async fn assemble(
     } else {
         clear_global_api();
     }
+    #[cfg(not(feature = "api"))]
+    let _ = &config.api;
 
     if let Some(controller) = &controller {
         plugin::set_app_controller(controller.clone());
@@ -40,12 +46,14 @@ pub async fn assemble(
     let runtime = match plugin::init(config.clone()).await {
         Ok(runtime) => runtime,
         Err(err) => {
+            #[cfg(feature = "api")]
             clear_global_api();
             plugin::clear_app_controller();
             return Err(err);
         }
     };
 
+    #[cfg(feature = "api")]
     if let Some(api_hub) = &api_hub {
         api_hub.mark_plugins_initialized(runtime.plugin_count(), runtime.server_plugin_count());
         if let Err(err) = api_hub.start().await {
@@ -55,20 +63,32 @@ pub async fn assemble(
             return Err(err);
         }
     }
+    #[cfg(not(feature = "api"))]
+    {
+        let _ = runtime;
+    }
 
-    Ok(AppAssembly { api_hub })
+    Ok(AppAssembly {
+        #[cfg(feature = "api")]
+        api_hub,
+    })
 }
 
 pub async fn stop(assembly: &AppAssembly) {
-    clear_global_api();
-    if let Some(api_hub) = &assembly.api_hub {
-        api_hub.stop().await;
+    #[cfg(feature = "api")]
+    {
+        clear_global_api();
+        if let Some(api_hub) = &assembly.api_hub {
+            api_hub.stop().await;
+        }
     }
+    #[cfg(not(feature = "api"))]
+    let _ = assembly;
     plugin::destroy_runtime().await;
     plugin::clear_app_controller();
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "api"))]
 mod tests {
     use super::*;
     use crate::api::{

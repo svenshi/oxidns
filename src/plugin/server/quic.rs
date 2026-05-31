@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use quinn::{Endpoint, EndpointConfig, IdleTimeout, TransportConfig};
 use rustls::ServerConfig;
 use serde::Deserialize;
 use tokio::sync::{oneshot, watch};
@@ -31,9 +30,9 @@ use crate::network::transport::quic_transport::{
     QuicTransport, QuicTransportReader, QuicTransportWriter,
 };
 use crate::plugin::dependency::DependencySpec;
-use crate::plugin::server::http::DEFAULT_SERVER_IDLE_TIMEOUT;
 use crate::plugin::server::{
-    ConnectionGuard, RequestHandle, RequestMeta, Server, ServerMetrics, udp,
+    ConnectionGuard, DEFAULT_SERVER_IDLE_TIMEOUT, RequestHandle, RequestMeta, Server,
+    ServerMetrics, quic_endpoint,
 };
 use crate::plugin::{Plugin, PluginFactory};
 use crate::plugin_factory;
@@ -188,7 +187,7 @@ async fn run_server(
     startup_tx: Option<oneshot::Sender<std::result::Result<(), String>>>,
 ) {
     let mut startup_tx = startup_tx;
-    let endpoint = match build_quic_endpoint(addr, server_config, idle_timeout) {
+    let endpoint = match quic_endpoint::build_quic_endpoint(addr, server_config, idle_timeout) {
         Ok(s) => s,
         Err(e) => {
             if let Some(tx) = startup_tx.take() {
@@ -338,29 +337,6 @@ fn extract_tls_server_name(connection: &quinn::Connection) -> Option<String> {
         .and_then(|data| data.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
         .and_then(|data| data.server_name)
         .map(|name| name.to_ascii_lowercase())
-}
-
-pub fn build_quic_endpoint(
-    addr: SocketAddr,
-    server_config: ServerConfig,
-    timeout: Duration,
-) -> Result<Endpoint> {
-    let socket = udp::build_udp_socket(addr)?;
-
-    let quic_crypto = quinn::crypto::rustls::QuicServerConfig::try_from(Arc::new(server_config))?;
-    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_crypto));
-
-    let mut config = TransportConfig::default();
-    let timeout = IdleTimeout::try_from(timeout)?;
-    config.max_idle_timeout(Some(timeout));
-    server_config.transport = Arc::new(config);
-
-    Ok(Endpoint::new(
-        EndpointConfig::default(),
-        Some(server_config),
-        socket,
-        Arc::new(quinn::TokioRuntime),
-    )?)
 }
 
 /// Factory for creating QUIC server plugin instances

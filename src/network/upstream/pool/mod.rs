@@ -48,6 +48,7 @@ use crate::proto::Message;
 
 mod request_map;
 
+#[cfg(feature = "upstream-doh")]
 pub(crate) mod conn_h2;
 #[cfg(feature = "upstream-doh3")]
 pub(crate) mod conn_h3;

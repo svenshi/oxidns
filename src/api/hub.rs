@@ -14,6 +14,7 @@ use crate::api::ApiHandler;
 use crate::api::health::HealthState;
 use crate::api::route::{PrefixRoute, RouteKey, build_plugin_route_path, normalize_route_path};
 use crate::api::server::{ApiServerContext, build_tls_acceptor, run_api_server};
+#[cfg(feature = "webui")]
 use crate::api::static_files::StaticFileServer;
 use crate::config::types::{ApiConfig, ResolvedApiHttpConfig};
 use crate::core::error::{DnsError, Result};
@@ -409,6 +410,7 @@ impl ApiHub {
         let tls_acceptor = build_tls_acceptor(&self.config)?;
         let auth = self.config.auth.clone();
         let cors = self.config.cors.clone();
+        #[cfg(feature = "webui")]
         let webui = self
             .config
             .webui
@@ -416,6 +418,13 @@ impl ApiHub {
             .map(StaticFileServer::from_config)
             .transpose()?
             .map(Arc::new);
+        #[cfg(not(feature = "webui"))]
+        if self.config.webui.is_some() {
+            return Err(DnsError::config(
+                "api.http.webui is set but this build was compiled without the `webui` feature; \
+                 rebuild with --features webui",
+            ));
+        }
         let health = self.health.clone();
         let mut shutdown_rx = self.shutdown_tx.subscribe();
         let (startup_tx, startup_rx) = oneshot::channel();
@@ -428,6 +437,7 @@ impl ApiHub {
                     tls_acceptor,
                     auth,
                     cors,
+                    #[cfg(feature = "webui")]
                     webui,
                     health,
                 },

@@ -12,8 +12,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use super::{
     PluginRegistry, PluginRuntime, lock_mutex, read_rwlock, try_global_catalog, write_rwlock,
 };
-use crate::api::control::{AppController, ControlRequestError};
 use crate::config::types::Config;
+use crate::core::app_controller::{AppController, ControlRequestError};
 use crate::core::error::{DnsError, Result};
 
 #[cfg(debug_assertions)]

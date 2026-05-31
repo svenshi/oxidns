@@ -35,6 +35,7 @@ use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::proto::{Message, Rcode};
 use crate::{continue_next, plugin_factory};
 
+#[cfg(feature = "api")]
 mod api;
 mod key;
 mod persistence;
@@ -820,6 +821,7 @@ impl Plugin for Cache {
 
         let _ = self.cache_map.set(cache_map.clone());
         self.metrics.set_cache_map(cache_map.clone());
+        #[cfg(feature = "api")]
         api::register(&self.tag, cache_map.clone(), self.ecs_in_key)?;
         register_metric_source(self.metrics.clone())?;
 

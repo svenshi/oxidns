@@ -37,12 +37,12 @@ static ORIGINAL_EXE: OnceLock<PathBuf> = OnceLock::new();
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info};
 
-use crate::api::control::{AppController, ControlCommand};
 use crate::app::bootstrap::AppAssembly;
 use crate::app::cli::{CheckOptions, StartOptions};
 use crate::config::ConfigValidationSummary;
 use crate::config::types::Config;
 use crate::core::app_clock::AppClock;
+use crate::core::app_controller::{AppController, ControlCommand};
 use crate::core::error::{DnsError, Result};
 use crate::{config, core};
 
@@ -577,7 +577,7 @@ async fn run_async_main(options: StartOptions, config: Config) -> Result<Shutdow
         match bootstrap::assemble(&current_config, Some(app_controller.clone())).await {
             Ok(assembly) => {
                 app_controller.set_running_config_version(
-                    crate::api::control::config_file_version(app_controller.config_path()),
+                    crate::core::app_controller::config_file_version(app_controller.config_path()),
                 );
                 info!("OxiDNS server started successfully");
                 assembly
@@ -652,7 +652,7 @@ async fn handle_reload_command(
     current_config: &mut Config,
     controller: std::sync::Arc<AppController>,
 ) -> Result<()> {
-    controller.mark_reload_started(crate::api::control::config_file_version(
+    controller.mark_reload_started(crate::core::app_controller::config_file_version(
         controller.config_path(),
     ));
 

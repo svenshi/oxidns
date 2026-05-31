@@ -23,6 +23,7 @@ use serde::Deserialize;
 use socket2::{Socket, TcpKeepalive};
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
+#[cfg(feature = "server-dot")]
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -33,12 +34,13 @@ use crate::core::error::{DnsError, Result};
 use crate::core::metrics::{register_metric_source, unregister_metric_source};
 use crate::core::system_utils::deserialize_duration_option;
 use crate::network::listen;
+#[cfg(feature = "server-dot")]
 use crate::network::tls_config::load_tls_config;
 use crate::network::transport::tcp_transport::TcpTransport;
 use crate::plugin::dependency::DependencySpec;
-use crate::plugin::server::http::DEFAULT_SERVER_IDLE_TIMEOUT;
 use crate::plugin::server::{
-    ConnectionGuard, RequestHandle, RequestMeta, Server, ServerMetrics, parse_listen_addr,
+    ConnectionGuard, DEFAULT_SERVER_IDLE_TIMEOUT, RequestHandle, RequestMeta, Server,
+    ServerMetrics, parse_listen_addr,
 };
 use crate::plugin::{Plugin, PluginFactory};
 use crate::plugin_factory;
@@ -68,6 +70,9 @@ pub struct TcpServerConfig {
     /// - When both `cert` and `key` are provided, TLS will be enabled (DoT on
     ///   port 853).
     /// - When either is missing, server runs in plain TCP mode.
+    /// - When the binary was built without `--features server-dot`, setting
+    ///   either field is a hard error so users notice they need a TLS-capable
+    ///   build.
     cert: Option<String>,
 
     /// Path to TLS private key file (PEM format, optional).
@@ -90,6 +95,7 @@ pub struct TcpServer {
     listen: SocketAddr,
     request_handle: Arc<RequestHandle>,
     metrics: Arc<ServerMetrics>,
+    #[cfg(feature = "server-dot")]
     tls_acceptor: Option<Arc<TlsAcceptor>>,
     idle_timeout: Option<Duration>,
     shutdown_tx: watch::Sender<bool>,
@@ -98,12 +104,11 @@ pub struct TcpServer {
 
 impl std::fmt::Debug for TcpServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TcpServer")
-            .field("tag", &self.tag)
-            .field("listen", &self.listen)
-            .field("has_tls", &self.tls_acceptor.is_some())
-            .field("idle_timeout", &self.idle_timeout)
-            .finish()
+        let mut d = f.debug_struct("TcpServer");
+        d.field("tag", &self.tag).field("listen", &self.listen);
+        #[cfg(feature = "server-dot")]
+        d.field("has_tls", &self.tls_acceptor.is_some());
+        d.field("idle_timeout", &self.idle_timeout).finish()
     }
 }
 
@@ -126,12 +131,14 @@ impl TcpServer {
 
         let addr = self.listen;
         let handler = self.request_handle.clone();
+        #[cfg(feature = "server-dot")]
         let tls_acceptor = self.tls_acceptor.clone();
         let idle_timeout = self.idle_timeout.unwrap_or(DEFAULT_SERVER_IDLE_TIMEOUT);
         let shutdown_rx = self.shutdown_tx.subscribe();
         *task_slot = Some(tokio::spawn(run_server(
             addr,
             handler,
+            #[cfg(feature = "server-dot")]
             tls_acceptor,
             idle_timeout,
             shutdown_rx,
@@ -177,7 +184,10 @@ impl Plugin for TcpServer {
 
 impl Server for TcpServer {
     fn run(&self) {
+        #[cfg(feature = "server-dot")]
         let tls_mode = self.tls_acceptor.is_some();
+        #[cfg(not(feature = "server-dot"))]
+        let tls_mode = false;
 
         debug!(listen = %self.listen, tls = tls_mode, "Spawning TCP server task");
         if let Err(e) = self.spawn_server_task(None) {
@@ -196,7 +206,7 @@ impl Server for TcpServer {
 async fn run_server(
     addr: SocketAddr,
     handler: Arc<RequestHandle>,
-    tls_acceptor: Option<Arc<TlsAcceptor>>,
+    #[cfg(feature = "server-dot")] tls_acceptor: Option<Arc<TlsAcceptor>>,
     idle_timeout: Duration,
     mut shutdown_rx: watch::Receiver<bool>,
     startup_tx: Option<oneshot::Sender<std::result::Result<(), String>>>,
@@ -216,10 +226,14 @@ async fn run_server(
     if let Some(tx) = startup_tx.take() {
         let _ = tx.send(Ok(()));
     }
+    #[cfg(feature = "server-dot")]
+    let tls_mode = tls_acceptor.is_some();
+    #[cfg(not(feature = "server-dot"))]
+    let tls_mode = false;
     info!(
         listen = %addr,
         idle_timeout_secs = idle_timeout.as_secs(),
-        tls = %tls_acceptor.is_some(),
+        tls = %tls_mode,
         "TCP server bound successfully"
     );
 
@@ -239,6 +253,7 @@ async fn run_server(
                 match accept_result {
                     Ok((stream, src)) => {
                         let handler = handler.clone();
+                        #[cfg(feature = "server-dot")]
                         let tls_acceptor = tls_acceptor.clone();
                         let task_shutdown = shutdown_token.clone();
                         let active_connections = active_connections.clone();
@@ -251,25 +266,34 @@ async fn run_server(
                             tokio::select! {
                                 _ = task_shutdown.cancelled() => {}
                                 _ = async move {
-                                    // Handle TLS handshake if TLS is enabled
-                                    if let Some(acceptor) = tls_acceptor {
-                                        match acceptor.accept(stream).await {
-                                            Ok(tls_stream) => {
-                                                let server_name = tls_stream
-                                                    .get_ref()
-                                                    .1
-                                                    .server_name()
-                                                    .map(Arc::from);
-                                                debug!("TLS handshake completed for client {}", src);
-                                                handle_dns_stream(tls_stream, src, handler, server_name)
-                                                    .await;
+                                    #[cfg(feature = "server-dot")]
+                                    {
+                                        // Handle TLS handshake if TLS is enabled
+                                        if let Some(acceptor) = tls_acceptor {
+                                            match acceptor.accept(stream).await {
+                                                Ok(tls_stream) => {
+                                                    let server_name = tls_stream
+                                                        .get_ref()
+                                                        .1
+                                                        .server_name()
+                                                        .map(Arc::from);
+                                                    debug!("TLS handshake completed for client {}", src);
+                                                    handle_dns_stream(tls_stream, src, handler, server_name)
+                                                        .await;
+                                                }
+                                                Err(e) => {
+                                                    warn!("TLS handshake failed for {}: {}", src, e);
+                                                }
                                             }
-                                            Err(e) => {
-                                                warn!("TLS handshake failed for {}: {}", src, e);
-                                            }
+                                        } else {
+                                            // Plain TCP connection
+                                            debug!("TCP server connected to client {}", src);
+                                            handle_dns_stream(stream, src, handler, None).await;
                                         }
-                                    } else {
-                                        // Plain TCP connection
+                                    }
+                                    #[cfg(not(feature = "server-dot"))]
+                                    {
+                                        // Plain TCP connection only (DoT requires --features server-dot).
                                         debug!("TCP server connected to client {}", src);
                                         handle_dns_stream(stream, src, handler, None).await;
                                     }
@@ -411,6 +435,7 @@ impl PluginFactory for TcpServerFactory {
         let entry_executor = init_context.executor("args.entry", &tcp_config.entry)?;
 
         // Load TLS configuration if cert and key are provided
+        #[cfg(feature = "server-dot")]
         let tls_acceptor = match load_tls_config(&tcp_config.cert, &tcp_config.key) {
             None => None,
             Some(res) => {
@@ -419,8 +444,18 @@ impl PluginFactory for TcpServerFactory {
                 Some(Arc::new(TlsAcceptor::from(Arc::new(config))))
             }
         };
+        #[cfg(not(feature = "server-dot"))]
+        if tcp_config.cert.is_some() || tcp_config.key.is_some() {
+            return Err(DnsError::plugin(
+                "DoT is not compiled into this build; rebuild with --features server-dot \
+                 (or remove `cert`/`key` from the tcp_server config to use plain TCP)",
+            ));
+        }
 
+        #[cfg(feature = "server-dot")]
         let protocol = if tls_acceptor.is_some() { "dot" } else { "tcp" };
+        #[cfg(not(feature = "server-dot"))]
+        let protocol = "tcp";
         let metrics = Arc::new(ServerMetrics::new(plugin_config.tag.clone(), protocol));
 
         Ok(crate::plugin::UninitializedPlugin::Server(Box::new(
@@ -432,6 +467,7 @@ impl PluginFactory for TcpServerFactory {
                     metrics: Some(metrics.clone()),
                 }),
                 metrics,
+                #[cfg(feature = "server-dot")]
                 tls_acceptor,
                 idle_timeout: tcp_config.idle_timeout,
                 shutdown_tx: watch::channel(false).0,

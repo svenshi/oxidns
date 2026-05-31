@@ -12,30 +12,51 @@
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::Arc;
+#[cfg(any(
+    feature = "_tls-client",
+    feature = "upstream-doq",
+    feature = "upstream-doh3"
+))]
 use std::time::Duration;
 
+#[cfg(feature = "_http-client")]
 use base64::Engine;
+#[cfg(feature = "_http-client")]
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
+#[cfg(feature = "_http-client")]
 use bytes::BytesMut;
 use fast_socks5::client::Socks5Stream;
+#[cfg(feature = "_http-client")]
 use http::header::CONTENT_LENGTH;
+#[cfg(feature = "_http-client")]
 use http::{HeaderValue, Method, Request, Response, Version, header};
 #[cfg(any(feature = "upstream-doq", feature = "upstream-doh3"))]
 use quinn::crypto::rustls::QuicClientConfig;
 #[cfg(any(feature = "upstream-doq", feature = "upstream-doh3"))]
 use quinn::{ClientConfig, Endpoint, EndpointConfig, TokioRuntime};
+#[cfg(feature = "_tls-client")]
 use rustls::pki_types::ServerName;
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::TcpStream;
+#[cfg(any(
+    feature = "_tls-client",
+    feature = "upstream-doq",
+    feature = "upstream-doh3"
+))]
 use tokio::time::timeout;
+#[cfg(feature = "_tls-client")]
 use tokio_rustls::TlsConnector;
+#[cfg(feature = "_tls-client")]
 use tokio_rustls::client::TlsStream;
 use tracing::info;
 
 use crate::core::error::{DnsError, Result};
+#[cfg(feature = "_tls-client")]
 use crate::network::tls_config::{insecure_client_config, secure_client_config};
+use crate::network::upstream::Socks5Opt;
 use crate::network::upstream::pool::Connection;
-use crate::network::upstream::{ConnectionInfo, ConnectionType, Socks5Opt};
+#[cfg(feature = "_http-client")]
+use crate::network::upstream::{ConnectionInfo, ConnectionType};
 
 /// Establish TLS connection over an existing TCP stream
 ///
@@ -56,6 +77,7 @@ use crate::network::upstream::{ConnectionInfo, ConnectionType, Socks5Opt};
 /// Setting `skip_cert` to true disables certificate validation and makes the
 /// connection vulnerable to man-in-the-middle attacks. Only use this for
 /// testing!
+#[cfg(feature = "_tls-client")]
 #[inline]
 pub(crate) async fn connect_tls(
     tcp_stream: TcpStream,
@@ -161,6 +183,7 @@ pub fn close_conns<C: Connection>(conns: &Vec<Arc<C>>) {
 }
 
 /// Content type header for DNS-over-HTTPS (RFC 8484 Section 6)
+#[cfg(feature = "_http-client")]
 const DNS_HEADER_VALUE: HeaderValue = HeaderValue::from_static("application/dns-message");
 
 /// Build a DoH GET request with base64url-encoded DNS query
@@ -179,6 +202,7 @@ const DNS_HEADER_VALUE: HeaderValue = HeaderValue::from_static("application/dns-
 ///
 /// # Example URI
 /// `https://dns.example.com/dns-query?dns=AAABAAABAAAAAAAAA3d3dwdleGFtcGxlA2NvbQAAAQAB`
+#[cfg(feature = "_http-client")]
 #[inline]
 pub fn build_dns_get_request(mut uri: String, buf: &[u8], version: Version) -> Request<()> {
     // Encode DNS message using base64url without padding (RFC 4648 Section 5)
@@ -209,6 +233,7 @@ pub fn build_dns_get_request(mut uri: String, buf: &[u8], version: Version) -> R
 /// - Multiple buffer reallocations during body reception
 /// - Memory copies when buffer grows
 /// - Potential performance hiccups from allocator
+#[cfg(feature = "_http-client")]
 #[inline]
 pub fn get_cap_buf_with_context_len<T>(response: &mut Response<T>) -> BytesMut {
     let capacity = response
@@ -241,6 +266,7 @@ pub fn get_cap_buf_with_context_len<T>(response: &mut Response<T>) -> BytesMut {
 /// # Performance
 /// Pre-reserves 512 bytes to accommodate the base64-encoded DNS query without
 /// reallocation
+#[cfg(feature = "_http-client")]
 pub fn build_doh_request_uri(connection_info: &ConnectionInfo) -> String {
     let mut uri = if connection_info.port != ConnectionType::DoH.default_port() {
         // Include port in URI for non-standard ports
@@ -652,6 +678,7 @@ mod tests {
         assert_eq!(second.close_calls(), 1);
     }
 
+    #[cfg(feature = "_http-client")]
     #[test]
     fn test_build_dns_get_request_sets_uri_method_and_headers() {
         let request = build_dns_get_request(
@@ -669,6 +696,7 @@ mod tests {
         assert_eq!(request.headers()[header::CONTENT_TYPE], DNS_HEADER_VALUE);
     }
 
+    #[cfg(feature = "_http-client")]
     #[test]
     fn test_get_cap_buf_with_context_len_uses_content_length_header() {
         let mut response = Response::builder()
@@ -681,6 +709,7 @@ mod tests {
         assert_eq!(buf.capacity(), 128);
     }
 
+    #[cfg(feature = "_http-client")]
     #[test]
     fn test_get_cap_buf_with_context_len_uses_default_capacity_without_header() {
         let mut response = Response::builder().body(()).expect("response should build");
@@ -690,6 +719,7 @@ mod tests {
         assert_eq!(buf.capacity(), 4096);
     }
 
+    #[cfg(feature = "_http-client")]
     #[test]
     fn test_build_doh_request_uri_omits_default_https_port() {
         let mut connection_info = ConnectionInfo::with_addr("https://dns.example.test/dns-query")
@@ -701,6 +731,7 @@ mod tests {
         assert_eq!(uri, "https://dns.example.test/dns-query?dns=");
     }
 
+    #[cfg(feature = "_http-client")]
     #[test]
     fn test_build_doh_request_uri_includes_custom_port() {
         let mut connection_info = ConnectionInfo::with_addr("https://dns.example.test/dns-query")

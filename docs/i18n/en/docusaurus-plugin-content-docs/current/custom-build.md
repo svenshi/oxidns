@@ -18,9 +18,14 @@ on the command line, to produce a binary tailored to your scenario.
 
 | Bundle | Use case | Roughly contains |
 |---|---|---|
-| `minimal` | Embedded / container / experimentation | UDP + TCP listeners, UDP + TCP upstreams, basic executors (sequence / forward / cache / fallback / hosts / redirect / arbitrary / dual_selector / ecs_handler / ttl / drop_resp / black_hole / debug_print / reload), all matchers, `domain_set` + `ip_set` providers |
-| `standard` | Home router / mid-range | minimal + DoQ ingress & upstream + `provider-protobuf` (geoip / geosite / v2ray_dat) + adguard_rule + cron + script + download + http_request + reverse_lookup |
-| `full` (default) | Everything | standard + DoH3 ingress & upstream + MikroTik integration + query_recorder + ipset / nftset + the `upgrade` subcommand |
+| `minimal` | Embedded / container / experimentation | UDP + TCP listeners, UDP + TCP upstreams, basic executors (sequence / forward / cache / fallback / hosts / redirect / arbitrary / dual_selector / ecs_handler / ttl / drop_resp / black_hole / debug_print / reload), all matchers, `domain_set` + `ip_set` providers. **No** hyper / rustls / quinn — smallest binary |
+| `standard` | Home router / mid-range | minimal + management API + metrics + DoT/DoH/DoQ ingress & upstream + `provider-protobuf` (geoip / geosite / v2ray_dat) + adguard_rule + cron + script + download + http_request + reverse_lookup |
+| `full` (default) | Everything | standard + WebUI + DoH3 ingress & upstream + MikroTik integration + query_recorder + ipset / nftset + the `upgrade` subcommand |
+
+> Measured release binary sizes (macOS arm64, for reference): `minimal`
+> ≈ 8.9 MB, `standard` ≈ 17 MB, `full` ≈ 21 MB. `minimal` excludes hyper /
+> rustls / quinn / h2 / h3 / sqlite entirely, landing at roughly **40%** of
+> the `full` size.
 
 ## Granular toggles
 
@@ -28,26 +33,41 @@ Each feature below is independently switchable. The bundle features are
 just collections of these — you can also pick individual toggles and skip
 the presets entirely.
 
-### Protocols
+### Inbound / outbound protocols
 
 | Feature | Effect |
 |---|---|
+| `server-dot` | Enable DoT (TLS over TCP) inbound server, requires the rustls server stack |
+| `server-doh` | Enable DoH (HTTP/2 over TLS) inbound server, requires hyper server + rustls |
 | `server-doq` | Enable DoQ (QUIC) inbound server, requires `quinn` |
-| `server-doh3` | Enable HTTP/3 leg of the DoH server, requires `h3` / `h3-quinn` / `quinn` |
+| `server-doh3` | Enable the HTTP/3 leg of the DoH server (needs `server-doh`), adds `h3` / `h3-quinn` / `quinn` |
+| `upstream-dot` | Enable DoT upstreams (`tls://` scheme), requires the rustls client stack |
+| `upstream-doh` | Enable DoH (HTTP/2) upstreams (`https://` scheme), requires hyper-rustls + `h2` |
 | `upstream-doq` | Enable DoQ upstreams (`quic://` / `doq://` schemes) |
-| `upstream-doh3` | Enable HTTP/3 DoH upstreams (`h3://` scheme or `enable_http3: true`) |
+| `upstream-doh3` | Enable HTTP/3 DoH upstreams (`h3://` scheme or `enable_http3: true`, needs `upstream-doh`) |
 
-> When `upstream-doq` is off, configs that still reference `quic://...`
-> fail at startup with `upstream DoQ is not compiled into this build;
-> rebuild with --features upstream-doq` instead of crashing.
+> When a protocol is off, configs that still reference its scheme/fields
+> fail at startup with a clear message, e.g. `upstream DoT is not compiled
+> into this build; rebuild with --features upstream-dot`, instead of
+> crashing. With `server-dot` off, putting `cert` / `key` on a
+> `tcp_server` yields `DoT is not compiled into this build; rebuild with
+> --features server-dot`.
 
-### Management plane / protocols (Phase 1B)
+### Management plane
 
-`api`, `webui`, `metrics`, `server-dot`, `server-doh`, `upstream-dot`, and
-`upstream-doh` require lifting `AppController` / `LogBuffer` out of
-`src/api/` into `src/core/` first; they will open up in a follow-up
-release. For now those capabilities stay **always-on and not yet
-strippable**.
+| Feature | Effect | Dependency |
+|---|---|---|
+| `api` | Management / health / control / logs / config HTTP API, plus each plugin's `/plugins/<tag>/...` endpoints | hyper server + rustls server (for HTTPS) |
+| `webui` | Serve the WebUI static assets from the API hub (requires `api`) | — |
+| `metrics` | `/metrics` Prometheus endpoint + the `metrics_collector` executor (requires `api`) | — |
+
+> With `api` off, the whole `src/api/` module is dropped and the hyper /
+> rustls server stack goes with it — this is the main reason `minimal`
+> shrinks so much. The in-process `MetricSource` counters always stay in
+> core, so turning off `metrics` only removes the HTTP surface and never
+> touches the hot path. `AppController` / `LogBuffer` now live in
+> `src/core/`, so the core runtime (reload, shutdown, the log ring buffer)
+> still works in a `minimal` build that has no `api`.
 
 ### Optional plugins
 
@@ -74,11 +94,14 @@ cargo build --release
 # Smallest build: bare forwarder only
 cargo build --release --no-default-features --features minimal
 
-# Home-router build (DoQ + common geo/adguard providers + popular executors)
+# Home-router build (API + DoT/DoH/DoQ + common geo/adguard providers + executors)
 cargo build --release --no-default-features --features standard
 
 # Minimal plus only the MikroTik integration
 cargo build --release --no-default-features --features "minimal,plugin-mikrotik"
+
+# Bare forwarder plus the management API, nothing heavy
+cargo build --release --no-default-features --features "minimal,api"
 ```
 
 ## Verifying the feature matrix

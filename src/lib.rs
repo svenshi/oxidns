@@ -23,7 +23,9 @@
 //! - [`proto`]: owned DNS protocol model and wire codec.
 //! - [`service`]: operating-system service install/start/stop/restart helpers.
 
+#[cfg(feature = "api")]
 pub mod api;
+mod api_macros;
 pub mod app;
 pub mod config;
 pub mod core;

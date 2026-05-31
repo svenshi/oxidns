@@ -41,7 +41,7 @@ mod http2_server;
 mod http3_server;
 mod http_dispatcher;
 
-pub(crate) const DEFAULT_SERVER_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) use super::DEFAULT_SERVER_IDLE_TIMEOUT;
 
 /// HTTP server configuration
 #[derive(Deserialize)]

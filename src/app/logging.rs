@@ -18,9 +18,9 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
-use crate::api::logs::{LogBuffer, LogLayer, install_global_log_buffer};
 use crate::config::types::{LogConfig, LogRotation};
 use crate::core::app_clock::AppClock;
+use crate::core::log_buffer::{LogBuffer, LogLayer, install_global_log_buffer};
 
 /// Initialize the logging system with console and optional file output.
 pub fn start_logging(log: LogConfig) -> WorkerGuard {
