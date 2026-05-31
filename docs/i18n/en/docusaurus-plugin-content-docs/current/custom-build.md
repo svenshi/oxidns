@@ -19,13 +19,11 @@ on the command line, to produce a binary tailored to your scenario.
 | Bundle | Use case | Roughly contains |
 |---|---|---|
 | `minimal` | Embedded / container / experimentation | UDP + TCP listeners, UDP + TCP upstreams, basic executors (sequence / forward / cache / fallback / hosts / redirect / arbitrary / dual_selector / ecs_handler / ttl / drop_resp / black_hole / debug_print / reload), all matchers, `domain_set` + `ip_set` providers. **No** hyper / rustls / quinn — smallest binary |
-| `standard` | Home router / mid-range | minimal + management API + metrics + DoT/DoH/DoQ ingress & upstream + `provider-protobuf` (geoip / geosite / v2ray_dat) + adguard_rule + cron + script + download + http_request + reverse_lookup |
-| `full` (default) | Everything | standard + WebUI + DoH3 ingress & upstream + MikroTik integration + query_recorder + ipset / nftset + the `upgrade` subcommand |
+| `standard` | Home router / mid-range | minimal + management API + WebUI + metrics + DoT/DoH/DoQ ingress & upstream + `provider-protobuf` (geoip / geosite / v2ray_dat) + adguard_rule + cron + script + download + http_request + reverse_lookup + query_recorder + the `upgrade` subcommand |
+| `full` (default) | Everything | standard + DoH3 ingress & upstream + MikroTik integration + ipset / nftset |
 
-> Measured release binary sizes (macOS arm64, for reference): `minimal`
-> ≈ 8.9 MB, `standard` ≈ 17 MB, `full` ≈ 21 MB. `minimal` excludes hyper /
-> rustls / quinn / h2 / h3 / sqlite entirely, landing at roughly **40%** of
-> the `full` size.
+> Release binary sizes vary by feature composition. `minimal` excludes hyper /
+> rustls / quinn / h2 / h3 / sqlite entirely and remains the smallest bundle.
 
 ## Granular toggles
 
@@ -104,6 +102,12 @@ cargo build --release --no-default-features --features "minimal,plugin-mikrotik"
 cargo build --release --no-default-features --features "minimal,api"
 ```
 
+Official release archives remain `full` by default. Linux x86_64 / ARM64 musl
+also get `minimal` / `standard` slim archives named like
+`oxidns-standard-x86_64-unknown-linux-musl.tar.gz`. The `minimal` archive only
+contains the binary, default config, and license; the `standard` archive also
+includes WebUI static files, query_recorder, and the `upgrade` subcommand.
+
 ## Verifying the feature matrix
 
 The repo ships `just` recipes that exercise all three bundles plus the
@@ -141,5 +145,6 @@ mid-run crash.
    `Cargo.toml` so that `cargo build` and `cargo install` both produce the
    tailored binary out of the box.
 2. If you want automatic updates against your own fork, override the
-   defaults of the `upgrade` subcommand (`--repository`, `--asset`) so
-   `oxidns upgrade` looks at your release feed.
+   defaults of the `upgrade` subcommand (`--repository`, `--asset` /
+   `--bundle`) so `oxidns upgrade` looks at your release feed. Custom builds
+   should not rely on `bundle: auto`; set `asset` explicitly.

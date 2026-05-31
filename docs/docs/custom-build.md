@@ -17,12 +17,11 @@ fork 仓库后修改 `Cargo.toml` 的 `default = [...]`,或在编译时用 `--fe
 | Bundle | 适用场景 | 大致内容 |
 |---|---|---|
 | `minimal` | 嵌入式 / 容器 / 学习 | UDP + TCP 监听,UDP + TCP upstream,sequence / forward / cache / fallback / hosts / redirect / arbitrary / dual_selector / ecs_handler / ttl / drop_resp / black_hole / debug_print / reload 等基础执行器,全部 matcher,`domain_set` + `ip_set` provider。**不含** hyper / rustls / quinn,二进制最小 |
-| `standard` | 家用路由器 / 中等规模 | minimal + 管理 API + metrics + DoT/DoH/DoQ 上下行 + provider-protobuf(geoip/geosite/v2ray_dat) + adguard_rule + cron + script + download + http_request + reverse_lookup |
-| `full`(默认) | 全功能 | standard + WebUI + DoH3 上下行 + MikroTik 集成 + query_recorder + ipset / nftset + upgrade 子命令 |
+| `standard` | 家用路由器 / 中等规模 | minimal + 管理 API + WebUI + metrics + DoT/DoH/DoQ 上下行 + provider-protobuf(geoip/geosite/v2ray_dat) + adguard_rule + cron + script + download + http_request + reverse_lookup + query_recorder + upgrade 子命令 |
+| `full`(默认) | 全功能 | standard + DoH3 上下行 + MikroTik 集成 + ipset / nftset |
 
-> 实测 release 二进制体积(macOS arm64,仅供参考):`minimal` ≈ 8.9 MB,
-> `standard` ≈ 17 MB,`full` ≈ 21 MB。`minimal` 把 hyper / rustls / quinn /
-> h2 / h3 / sqlite 全部排除,体积约为 `full` 的 **40%**。
+> 实测 release 二进制体积会随 feature 组合变化。`minimal` 把 hyper /
+> rustls / quinn / h2 / h3 / sqlite 全部排除,仍是体积最小的组合。
 
 ## 颗粒度开关
 
@@ -97,6 +96,12 @@ cargo build --release --no-default-features --features "minimal,plugin-mikrotik"
 cargo build --release --no-default-features --features "minimal,api"
 ```
 
+官方 release 默认产物仍是 `full`。Linux x86_64 / ARM64 musl 额外提供
+`minimal` / `standard` 精简压缩包,名称形如
+`oxidns-standard-x86_64-unknown-linux-musl.tar.gz`。`minimal` 包只包含
+二进制、默认配置和许可证；`standard` 包额外包含 WebUI 静态文件,并内置
+`query_recorder` 与 `upgrade` 子命令。
+
 ## 验证编译矩阵
 
 仓库自带 `just` 配方,一次跑完三种组合的 clippy + 默认 feature 的 test:
@@ -130,5 +135,6 @@ Error: Plugin("Unknown plugin type: query_recorder")
 1. 在 `Cargo.toml` 顶部修改 `default = ["standard"]`(或自定义组合),让
    `cargo build`、`cargo install` 都走你需要的版本。
 2. 如果有自动更新需求,把发布资产名/仓库地址写进 `upgrade` 子命令的
-   CLI 默认值(`--repository`、`--asset`),用户在你的 fork 上跑
-   `oxidns upgrade` 就会自动指向你的发布仓库。
+   CLI 默认值(`--repository`、`--asset` / `--bundle`),用户在你的 fork 上跑
+   `oxidns upgrade` 就会自动指向你的发布仓库。custom 构建不应依赖
+   `bundle: auto`,建议显式设置 `asset`。

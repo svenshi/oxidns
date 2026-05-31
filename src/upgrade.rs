@@ -34,11 +34,45 @@ const DEFAULT_WEBUI_DIR: &str = "./webui";
 const EXIT_RESTART_REQUIRED: i32 = 75;
 const GITHUB_USER_AGENT: &str = "OxiDNS";
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum UpgradeBundle {
+    #[default]
+    Auto,
+    Full,
+    Minimal,
+    Standard,
+}
+
+impl UpgradeBundle {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Full => "full",
+            Self::Minimal => "minimal",
+            Self::Standard => "standard",
+        }
+    }
+
+    pub fn from_user_value(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "full" => Ok(Self::Full),
+            "minimal" => Ok(Self::Minimal),
+            "standard" => Ok(Self::Standard),
+            other => Err(DnsError::runtime(format!(
+                "invalid upgrade bundle '{other}', expected auto, full, minimal, or standard"
+            ))),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UpgradeConfig {
     pub target: String,
     pub repository: String,
     pub asset: String,
+    pub bundle: UpgradeBundle,
     pub cache_dir: PathBuf,
     pub backup_dir: PathBuf,
     pub webui_dir: PathBuf,
@@ -59,6 +93,7 @@ impl Default for UpgradeConfig {
             target: DEFAULT_TARGET.to_string(),
             repository: DEFAULT_REPOSITORY.to_string(),
             asset: "auto".to_string(),
+            bundle: UpgradeBundle::Auto,
             cache_dir: PathBuf::from(DEFAULT_CACHE_DIR),
             backup_dir: PathBuf::from(DEFAULT_BACKUP_DIR),
             webui_dir: PathBuf::from(DEFAULT_WEBUI_DIR),
@@ -81,6 +116,7 @@ impl UpgradeConfig {
             target: options.target.clone(),
             repository: options.repository.clone(),
             asset: options.asset.clone(),
+            bundle: options.bundle,
             cache_dir: options.cache_dir.clone(),
             backup_dir: options.backup_dir.clone(),
             webui_dir: options.webui_dir.clone(),
@@ -243,6 +279,7 @@ fn print_cli_plan(action: &str, config: &UpgradeConfig) {
     println!("Repository: {}", config.repository);
     println!("Target: {}", config.target);
     println!("Asset: {}", config.asset);
+    println!("Bundle: {}", config.bundle.as_str());
     println!("Cache: {}", config.cache_dir.display());
     if action == "apply" {
         println!("Backup: {}", config.backup_dir.display());
@@ -877,7 +914,7 @@ fn select_asset<'a>(
     if config.asset.trim() != "auto" {
         return find_asset(release, config.asset.trim());
     }
-    let expected = current_archive_name()?;
+    let expected = current_archive_name(config.bundle)?;
     find_asset(release, &expected)
 }
 
@@ -894,7 +931,46 @@ fn find_asset<'a>(release: &'a GitHubRelease, name: &str) -> Result<&'a ReleaseA
         })
 }
 
-fn current_archive_name() -> Result<String> {
+fn current_archive_name(bundle: UpgradeBundle) -> Result<String> {
+    let selected = resolve_requested_bundle(bundle, crate::build_info::PRIMARY_BUNDLE)?;
+    let target = current_release_target()?;
+    let ext = if cfg!(windows) { "zip" } else { "tar.gz" };
+    archive_name_for_bundle(selected, &target, ext)
+}
+
+fn resolve_requested_bundle(
+    requested: UpgradeBundle,
+    primary_bundle: &str,
+) -> Result<UpgradeBundle> {
+    match requested {
+        UpgradeBundle::Auto => match primary_bundle {
+            "full" => Ok(UpgradeBundle::Full),
+            "minimal" => Ok(UpgradeBundle::Minimal),
+            "standard" => Ok(UpgradeBundle::Standard),
+            "custom" => Err(DnsError::runtime(
+                "current build bundle is custom; pass --bundle full|minimal|standard or --asset <NAME>",
+            )),
+            other => Err(DnsError::runtime(format!(
+                "unsupported current build bundle '{other}'; pass --bundle full|minimal|standard or --asset <NAME>"
+            ))),
+        },
+        bundle => Ok(bundle),
+    }
+}
+
+fn archive_name_for_bundle(bundle: UpgradeBundle, target: &str, ext: &str) -> Result<String> {
+    match bundle {
+        UpgradeBundle::Full => Ok(format!("oxidns-{target}.{ext}")),
+        UpgradeBundle::Minimal | UpgradeBundle::Standard => {
+            Ok(format!("oxidns-{}-{target}.{ext}", bundle.as_str()))
+        }
+        UpgradeBundle::Auto => Err(DnsError::runtime(
+            "upgrade bundle auto must be resolved before archive naming",
+        )),
+    }
+}
+
+fn current_release_target() -> Result<String> {
     let arch = match std::env::consts::ARCH {
         "x86_64" => "x86_64",
         "aarch64" => "aarch64",
@@ -923,8 +999,7 @@ fn current_archive_name() -> Result<String> {
             )));
         }
     };
-    let ext = if cfg!(windows) { "zip" } else { "tar.gz" };
-    Ok(format!("oxidns-{target}.{ext}"))
+    Ok(target)
 }
 
 fn sha256_from_asset_digest(asset: &ReleaseAsset) -> Result<String> {
@@ -1233,11 +1308,97 @@ mod tests {
     }
 
     #[test]
+    fn archive_name_for_full_bundle_uses_legacy_name() {
+        let name =
+            archive_name_for_bundle(UpgradeBundle::Full, "x86_64-unknown-linux-musl", "tar.gz")
+                .unwrap();
+
+        assert_eq!(name, "oxidns-x86_64-unknown-linux-musl.tar.gz");
+    }
+
+    #[test]
+    fn archive_name_for_slim_bundles_uses_prefixed_name() {
+        let minimal = archive_name_for_bundle(
+            UpgradeBundle::Minimal,
+            "x86_64-unknown-linux-musl",
+            "tar.gz",
+        )
+        .unwrap();
+        let standard = archive_name_for_bundle(
+            UpgradeBundle::Standard,
+            "aarch64-unknown-linux-musl",
+            "tar.gz",
+        )
+        .unwrap();
+
+        assert_eq!(minimal, "oxidns-minimal-x86_64-unknown-linux-musl.tar.gz");
+        assert_eq!(
+            standard,
+            "oxidns-standard-aarch64-unknown-linux-musl.tar.gz"
+        );
+    }
+
+    #[test]
+    fn auto_bundle_resolves_from_primary_bundle() {
+        assert_eq!(
+            resolve_requested_bundle(UpgradeBundle::Auto, "standard").unwrap(),
+            UpgradeBundle::Standard
+        );
+        assert_eq!(
+            resolve_requested_bundle(UpgradeBundle::Auto, "minimal").unwrap(),
+            UpgradeBundle::Minimal
+        );
+        assert_eq!(
+            resolve_requested_bundle(UpgradeBundle::Auto, "full").unwrap(),
+            UpgradeBundle::Full
+        );
+    }
+
+    #[test]
+    fn auto_bundle_rejects_custom_builds() {
+        let err = resolve_requested_bundle(UpgradeBundle::Auto, "custom").unwrap_err();
+
+        assert!(err.to_string().contains("current build bundle is custom"));
+        assert!(err.to_string().contains("--asset"));
+    }
+
+    #[test]
+    fn explicit_asset_overrides_bundle_selection() {
+        let release = GitHubRelease {
+            tag_name: "v1.2.3".to_string(),
+            prerelease: false,
+            html_url: None,
+            assets: vec![
+                ReleaseAsset {
+                    name: "oxidns-standard-x86_64-unknown-linux-musl.tar.gz".to_string(),
+                    browser_download_url: "https://example.com/standard.tar.gz".to_string(),
+                    digest: None,
+                },
+                ReleaseAsset {
+                    name: "custom.tar.gz".to_string(),
+                    browser_download_url: "https://example.com/custom.tar.gz".to_string(),
+                    digest: None,
+                },
+            ],
+        };
+        let config = UpgradeConfig {
+            asset: "custom.tar.gz".to_string(),
+            bundle: UpgradeBundle::Standard,
+            ..UpgradeConfig::default()
+        };
+
+        let asset = select_asset(&config, &release).unwrap();
+
+        assert_eq!(asset.name, "custom.tar.gz");
+    }
+
+    #[test]
     fn config_default_has_webui_defaults() {
         let config = UpgradeConfig::default();
         assert_eq!(config.webui_dir, PathBuf::from("./webui"));
         assert!(!config.skip_webui);
         assert!(!config.no_restart);
+        assert_eq!(config.bundle, UpgradeBundle::Auto);
     }
 
     #[test]
@@ -1274,6 +1435,20 @@ mod tests {
         };
         let config = UpgradeConfig::from_cli(&opts);
         assert_eq!(config.github_token.as_deref(), Some("ghp_test"));
+    }
+
+    #[test]
+    fn from_cli_maps_bundle() {
+        use clap::Parser;
+
+        use crate::app::cli::{Cli, Command};
+
+        let cli = Cli::parse_from(["oxidns", "upgrade", "check", "--bundle", "minimal"]);
+        let Command::Upgrade(opts) = cli.command else {
+            panic!("expected upgrade command");
+        };
+        let config = UpgradeConfig::from_cli(&opts);
+        assert_eq!(config.bundle, UpgradeBundle::Minimal);
     }
 
     #[test]

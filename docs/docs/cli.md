@@ -301,8 +301,12 @@ sudo oxidns upgrade apply --no-restart
   - GitHub 仓库。
   - 默认值：`svenshi/oxidns`
 - `--asset <NAME|auto>`
-  - Release asset 名称；`auto` 会按当前平台选择 archive。
+  - Release asset 名称；`auto` 会按当前平台和编译版本选择 archive。
   - 默认值：`auto`
+- `--bundle <auto|full|standard|minimal>`
+  - 当 `--asset auto` 时选择 release 编译版本。
+  - 默认值：`auto`，跟随当前二进制的编译版本。
+  - `full` 使用旧资产名，例如 `oxidns-x86_64-unknown-linux-musl.tar.gz`；`standard` / `minimal` 使用 slim 资产名，例如 `oxidns-standard-x86_64-unknown-linux-musl.tar.gz`。
 - `--cache-dir <DIR>`
   - 升级文件缓存目录。
   - 默认值：`./upgrade/cache`
@@ -333,6 +337,7 @@ sudo oxidns upgrade apply --no-restart
 
 - `check` 只查询 release 并判断版本是否更新。
 - `download` 下载 archive，并使用 GitHub release asset 的 `digest` 字段校验 SHA256。
+- 显式传入 `--asset` 时优先使用指定 asset，不再根据 `--bundle` 推导。
 - 不写子命令时默认执行 `apply`。
 - `apply` 默认只有检测到新版本才会更新；`--force` 会强制更新。
 - `apply` 在 Unix 平台会解包 `.tar.gz`、备份当前二进制并替换；Windows 会解包 `.zip`、备份并替换二进制，同样支持 WebUI 目录升级。

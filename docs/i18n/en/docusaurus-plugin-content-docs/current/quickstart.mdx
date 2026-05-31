@@ -77,6 +77,7 @@ Common environment variables:
 | `OXIDNS_INSTALL_DIR` | Override the install directory |
 | `OXIDNS_BIN_DIR` | Override the command-link directory on Linux / macOS |
 | `OXIDNS_TARGET` | Override the release target, for example `x86_64-unknown-linux-musl` |
+| `OXIDNS_BUNDLE` | Select the release build bundle, default `full`; Linux x86_64 / ARM64 musl can use `minimal` or `standard` |
 | `OXIDNS_NO_PATH=1` | Do not create a command link or update PATH |
 | `OXIDNS_INSTALL_SERVICE=0` | Skip system service installation and use portable install mode |
 | `OXIDNS_START_SERVICE=0` | Install the service but do not start it immediately |
@@ -212,12 +213,14 @@ cargo run -- start -c config.yaml -l debug
 
 ## 3. Install From GitHub Release Archives
 
-The release workflow generates standalone binaries for multiple platforms. Each archive includes:
+The release workflow generates standalone binaries for multiple platforms. Each `full` archive includes:
 
 - `oxidns` or `oxidns.exe`
 - `config.yaml`
 - `LICENSE`
 - `webui/`
+
+Linux x86_64 / ARM64 musl also get `minimal` and `standard` slim archives. `minimal` only includes `oxidns`, `config.yaml`, and `LICENSE`; `standard` also includes WebUI static files, query_recorder, and the upgrade capability.
 
 Release page:
 
@@ -236,6 +239,13 @@ Non-Windows targets use `.tar.gz`:
 - `oxidns-x86_64-apple-darwin.tar.gz`
 - `oxidns-aarch64-apple-darwin.tar.gz`
 - `oxidns-x86_64-unknown-freebsd.tar.gz`
+
+Linux musl slim archives use a bundle prefix:
+
+- `oxidns-minimal-x86_64-unknown-linux-musl.tar.gz`
+- `oxidns-minimal-aarch64-unknown-linux-musl.tar.gz`
+- `oxidns-standard-x86_64-unknown-linux-musl.tar.gz`
+- `oxidns-standard-aarch64-unknown-linux-musl.tar.gz`
 
 Windows targets use `.zip`:
 

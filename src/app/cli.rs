@@ -9,6 +9,9 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 
+#[cfg(feature = "plugin-upgrade")]
+use crate::upgrade::UpgradeBundle;
+
 /// Top-level CLI definition.
 #[derive(Parser, Clone, Debug)]
 #[command(version = crate::build_info::CLI_VERSION, author = "Sven Shi <isvenshi@gmail.com>")]
@@ -134,9 +137,13 @@ pub struct UpgradeOptions {
     #[arg(long = "repository", default_value = "svenshi/oxidns", global = true)]
     pub repository: String,
 
-    /// Release asset name, or auto for the current platform archive.
+    /// Release asset name, or auto for the current platform and bundle archive.
     #[arg(long = "asset", default_value = "auto", global = true)]
     pub asset: String,
+
+    /// Release build bundle to use when asset is auto.
+    #[arg(long = "bundle", value_enum, default_value = "auto", global = true)]
+    pub bundle: UpgradeBundle,
 
     /// Directory used to cache downloaded release files.
     #[arg(long = "cache-dir", default_value = "./upgrade-cache", global = true)]
@@ -383,6 +390,7 @@ mod tests {
                 target: "v0.4.2".to_string(),
                 repository: "svenshi/oxidns".to_string(),
                 asset: "oxidns-x86_64-unknown-linux-gnu.tar.gz".to_string(),
+                bundle: UpgradeBundle::Auto,
                 cache_dir: PathBuf::from("./cache"),
                 backup_dir: PathBuf::from("./backups"),
                 webui_dir: PathBuf::from("./webui"),
@@ -396,6 +404,29 @@ mod tests {
                 github_token: Some("ghp_test_token".to_string()),
             })
         );
+    }
+
+    #[cfg(feature = "plugin-upgrade")]
+    #[test]
+    fn parse_upgrade_bundle_option() {
+        let args = ["oxidns", "upgrade", "check", "--bundle", "standard"];
+
+        let cli = Cli::parse_from(args);
+        assert!(matches!(
+            cli.command,
+            Command::Upgrade(UpgradeOptions {
+                bundle: UpgradeBundle::Standard,
+                ..
+            })
+        ));
+    }
+
+    #[cfg(feature = "plugin-upgrade")]
+    #[test]
+    fn parse_upgrade_rejects_unknown_bundle() {
+        let args = ["oxidns", "upgrade", "check", "--bundle", "tiny"];
+
+        assert!(Cli::try_parse_from(args).is_err());
     }
 
     #[cfg(feature = "plugin-upgrade")]
@@ -426,6 +457,7 @@ mod tests {
                 target: "latest".to_string(),
                 repository: "svenshi/oxidns".to_string(),
                 asset: "auto".to_string(),
+                bundle: UpgradeBundle::Auto,
                 cache_dir: PathBuf::from("./upgrade-cache"),
                 backup_dir: PathBuf::from("./upgrade-backups"),
                 webui_dir: PathBuf::from("./webui"),

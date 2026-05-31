@@ -149,10 +149,11 @@ default = ["full"]
 minimal = []
 
 # Typical home / router build: management API + encrypted protocols +
-# common providers + the leaf executor plugins most configs reach for.
-# No mikrotik, no query recorder, no upgrade tooling, no WebUI.
+# WebUI + self-upgrade tooling + common providers + the leaf executor plugins
+# most configs reach for. No mikrotik, no ipset/nftset.
 standard = [
     "api",
+    "webui",
     "metrics",
     "server-dot",
     "server-doh",
@@ -167,18 +168,17 @@ standard = [
     "plugin-download",
     "plugin-http-request",
     "plugin-reverse-lookup",
+    "plugin-upgrade",
+    "plugin-query-recorder",
 ]
 
 # Full functionality: equivalent to the pre-feature binary.
 full = [
     "standard",
-    "webui",
     "server-doh3",
     "upstream-doh3",
     "plugin-mikrotik",
-    "plugin-query-recorder",
     "plugin-ipset",
-    "plugin-upgrade",
 ]
 
 # --- Management API surface ------------------------------------------------

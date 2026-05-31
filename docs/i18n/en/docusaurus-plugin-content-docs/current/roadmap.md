@@ -27,7 +27,7 @@ flowchart LR
 
 Split compilation by plugin module so users can fork the repository, select only the plugins they need, produce a lean custom build, and keep it up to date via a configurable upgrade repository.
 
-**Done:** Bundle features `minimal` / `standard` / `full`, and every protocol stack and management surface is now behind a feature flag — `api` / `webui` / `metrics`, `server-dot` / `server-doh` / `server-doq` / `server-doh3`, `upstream-dot` / `upstream-doh` / `upstream-doq` / `upstream-doh3`, plus MikroTik, query_recorder, ipset/nftset, cron, script, upgrade, download, http_request, reverse_lookup, geo providers, and adguard_rule. `AppController` / `LogBuffer` were lifted into `src/core/`, so a `minimal` build excludes hyper / rustls / quinn and lands at roughly 40% of the `full` binary (≈ 8.9 MB vs 21 MB). See [Custom Build](/docs/custom-build).
+**Done:** Bundle features `minimal` / `standard` / `full`, and every protocol stack and management surface is now behind a feature flag — `api` / `webui` / `metrics`, `server-dot` / `server-doh` / `server-doq` / `server-doh3`, `upstream-dot` / `upstream-doh` / `upstream-doq` / `upstream-doh3`, plus MikroTik, query_recorder, ipset/nftset, cron, script, upgrade, download, http_request, reverse_lookup, geo providers, and adguard_rule. `AppController` / `LogBuffer` were lifted into `src/core/`, so a `minimal` build excludes hyper / rustls / quinn and lands at roughly 40% of the `full` binary (≈ 8.9 MB vs 21 MB). See [Custom Build](./custom-build).
 
 ---
 

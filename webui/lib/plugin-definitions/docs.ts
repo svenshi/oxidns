@@ -323,7 +323,9 @@ export const pluginFieldDocs = {
     repository:
       "- 类型：`string`；必填：否；默认值：`svenshi/oxidns`\n- 作用：GitHub 仓库。",
     asset:
-      "- 类型：`string`；必填：否；默认值：`auto`\n- 作用：Release asset 名称；`auto` 会按当前平台选择 archive。",
+      "- 类型：`string`；必填：否；默认值：`auto`\n- 作用：Release asset 名称；`auto` 会根据当前平台和编译版本选择 archive。\n- 优先级：显式填写 asset 时会跳过 `bundle` 推导。",
+    bundle:
+      "- 类型：`auto | full | standard | minimal`；必填：否；默认值：`auto`\n- 作用：当 `asset: auto` 时选择 release 编译版本。`full` 使用旧资产名，`standard` / `minimal` 使用带 bundle 前缀的 slim 资产名。",
     github_token:
       "- 类型：`string`；必填：否；默认值：无\n- 作用：GitHub 个人访问令牌，用于提高 API 速率限制或访问私有仓库。\n- 说明：会作为 GitHub API 请求的 Bearer token 使用。",
     cache_dir: "- 类型：`path`；必填：否；默认值：无\n- 作用：下载缓存目录。",

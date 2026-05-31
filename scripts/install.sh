@@ -6,6 +6,7 @@
 #   OXIDNS_INSTALL_DIR=/opt/oxidns
 #   OXIDNS_BIN_DIR=/usr/local/bin
 #   OXIDNS_TARGET=x86_64-unknown-linux-musl
+#   OXIDNS_BUNDLE=standard
 #   OXIDNS_INSTALL_SERVICE=0
 #   OXIDNS_START_SERVICE=0
 
@@ -14,6 +15,7 @@ set -eu
 REPO="${OXIDNS_REPO:-svenshi/oxidns}"
 VERSION="${OXIDNS_VERSION:-latest}"
 TARGET="${OXIDNS_TARGET:-}"
+BUNDLE="${OXIDNS_BUNDLE:-full}"
 INSTALL_DIR="${OXIDNS_INSTALL_DIR:-}"
 BIN_DIR="${OXIDNS_BIN_DIR:-}"
 NO_PATH="${OXIDNS_NO_PATH:-0}"
@@ -126,6 +128,7 @@ install_link() {
 if [ -z "$TARGET" ]; then
     TARGET="$(detect_target)"
 fi
+BUNDLE="$(printf '%s' "$BUNDLE" | tr '[:upper:]' '[:lower:]')"
 
 if is_truthy "$INSTALL_SERVICE" && ! is_root; then
     err "service installation is the default; rerun with sudo or set OXIDNS_INSTALL_SERVICE=0 for a user install"
@@ -137,6 +140,25 @@ case "$TARGET" in
         ;;
     *)
         ARCHIVE_EXT="tar.gz"
+        ;;
+esac
+
+case "$BUNDLE" in
+    full)
+        ASSET="oxidns-$TARGET.$ARCHIVE_EXT"
+        ;;
+    minimal|standard)
+        case "$TARGET" in
+            x86_64-unknown-linux-musl|aarch64-unknown-linux-musl)
+                ASSET="oxidns-$BUNDLE-$TARGET.$ARCHIVE_EXT"
+                ;;
+            *)
+                err "OXIDNS_BUNDLE=$BUNDLE is only published for x86_64-unknown-linux-musl and aarch64-unknown-linux-musl"
+                ;;
+        esac
+        ;;
+    *)
+        err "unsupported OXIDNS_BUNDLE=$BUNDLE; expected full, minimal, or standard"
         ;;
 esac
 
@@ -158,7 +180,6 @@ if [ -z "$BIN_DIR" ]; then
     fi
 fi
 
-ASSET="oxidns-$TARGET.$ARCHIVE_EXT"
 if [ "$VERSION" = "latest" ]; then
     URL="https://github.com/$REPO/releases/latest/download/$ASSET"
 else

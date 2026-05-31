@@ -301,8 +301,12 @@ Common arguments:
   - GitHub repository.
   - Default: `svenshi/oxidns`
 - `--asset <NAME|auto>`
-  - Release asset name. `auto` selects the current platform archive.
+  - Release asset name. `auto` selects the archive for the current platform and build bundle.
   - Default: `auto`
+- `--bundle <auto|full|standard|minimal>`
+  - Selects the release build bundle when `--asset auto` is used.
+  - Default: `auto`, which follows the current binary's build bundle.
+  - `full` uses the legacy asset name, for example `oxidns-x86_64-unknown-linux-musl.tar.gz`; `standard` / `minimal` use slim asset names such as `oxidns-standard-x86_64-unknown-linux-musl.tar.gz`.
 - `--cache-dir <DIR>`
   - Directory for cached upgrade files.
   - Default: `./upgrade/cache`
@@ -333,6 +337,7 @@ Behavior:
 
 - `check` only queries the release and compares versions.
 - `download` downloads the archive and verifies SHA256 with the GitHub release asset `digest` field.
+- An explicit `--asset` always wins and skips `--bundle` inference.
 - Omitting the subcommand defaults to `apply`.
 - `apply` updates only when a newer version is available by default. `--force` forces the update.
 - On Unix, `apply` unpacks the `.tar.gz`, backs up the current binary, and replaces it. On Windows, `apply` unpacks the `.zip`, backs up and replaces the binary, and also upgrades the WebUI directory.

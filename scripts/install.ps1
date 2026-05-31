@@ -4,6 +4,7 @@
 #   $env:OXIDNS_VERSION = "v1.0.1"
 #   $env:OXIDNS_INSTALL_DIR = "C:\OxiDNS"
 #   $env:OXIDNS_TARGET = "x86_64-pc-windows-msvc"
+#   $env:OXIDNS_BUNDLE = "full"
 #   $env:OXIDNS_INSTALL_SERVICE = "0"
 #   $env:OXIDNS_START_SERVICE = "0"
 
@@ -11,6 +12,7 @@ param(
     [string]$Version = $env:OXIDNS_VERSION,
     [string]$Repository = $env:OXIDNS_REPO,
     [string]$Target = $env:OXIDNS_TARGET,
+    [string]$Bundle = $env:OXIDNS_BUNDLE,
     [string]$InstallDir = $env:OXIDNS_INSTALL_DIR,
     [string]$NoPath = $env:OXIDNS_NO_PATH,
     [string]$InstallService = $env:OXIDNS_INSTALL_SERVICE,
@@ -89,6 +91,13 @@ if ([string]::IsNullOrWhiteSpace($InstallService)) {
 }
 if ([string]::IsNullOrWhiteSpace($StartService)) {
     $StartService = "1"
+}
+if ([string]::IsNullOrWhiteSpace($Bundle)) {
+    $Bundle = "full"
+}
+$Bundle = $Bundle.ToLowerInvariant()
+if ($Bundle -ne "full") {
+    throw "Windows release archives are only published for OXIDNS_BUNDLE=full"
 }
 $serviceInstall = Test-Truthy $InstallService
 $serviceStart = Test-Truthy $StartService
