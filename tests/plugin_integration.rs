@@ -199,6 +199,20 @@ async fn start_test_http_server(
     start_test_http_server_routes(routes).await
 }
 
+async fn start_tcp_probe_server() -> Result<SocketAddr> {
+    let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
+    let addr = listener.local_addr()?;
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            drop(stream);
+        }
+    });
+    Ok(addr)
+}
+
 #[derive(Clone)]
 struct TestHttpRoute {
     path: String,
@@ -1460,6 +1474,142 @@ plugins:
             .expect("response should exist")
             .rcode(),
         Rcode::NoError
+    );
+
+    registry.destroy().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_ip_selector_plugin_init_accepts_full_config_and_quick_setup() -> Result<()> {
+    let yaml = r#"
+log:
+  level: info
+plugins:
+  - tag: ip_select
+    type: ip_selector
+    args:
+      selection_mode: best_within_budget
+      probe_methods: "tcp:443,tcp:80"
+      probe_stagger: 0
+      probe_timeout: 50
+      max_wait: 100
+      top_n: 0
+      dnssec_policy: reorder_only
+      max_parallel_probes: 4
+      cache:
+        enabled: true
+        size: 16
+        ttl: 60
+        failure_ttl: 1
+  - tag: seq
+    type: sequence
+    args:
+      - exec: "ip_selector background none"
+      - exec: $ip_select
+      - exec: accept
+"#;
+
+    let config = parse_config(yaml)?;
+    let registry = plugin::init(config).await?;
+
+    assert!(registry.get_plugin("ip_select").is_some());
+    assert!(registry.get_plugin("seq").is_some());
+
+    registry.destroy().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_ip_selector_recommended_chain_keeps_cache_response_uncut() -> Result<()> {
+    let probe_addr = start_tcp_probe_server().await?;
+    let probe_port = probe_addr.port();
+    let yaml = format!(
+        r#"
+log:
+  level: info
+plugins:
+  - tag: ip_top1
+    type: ip_selector
+    args:
+      selection_mode: first_success
+      probe_methods: ["tcp:{probe_port}"]
+      probe_stagger: 0
+      probe_timeout: 80
+      max_wait: 200
+      top_n: 1
+      cache:
+        enabled: false
+  - tag: ip_reorder
+    type: ip_selector
+    args:
+      selection_mode: first_success
+      probe_methods: ["tcp:{probe_port}"]
+      probe_stagger: 0
+      probe_timeout: 80
+      max_wait: 200
+      top_n: 0
+      cache:
+        enabled: false
+  - tag: cache_main
+    type: cache
+    args:
+      short_circuit: true
+  - tag: hosts
+    type: hosts
+    args:
+      entries:
+        - "full:example.test 192.0.2.1 127.0.0.1"
+  - tag: seq_top1
+    type: sequence
+    args:
+      - exec: $ip_top1
+      - exec: $cache_main
+      - exec: $hosts
+      - exec: accept
+  - tag: seq_reorder
+    type: sequence
+    args:
+      - exec: $ip_reorder
+      - exec: $cache_main
+      - exec: $hosts
+      - exec: accept
+"#
+    );
+
+    let config = parse_config(&yaml)?;
+    let registry = plugin::init(config).await?;
+    let seq_top1 = registry
+        .get_plugin("seq_top1")
+        .expect("seq_top1 should exist")
+        .to_executor();
+    let seq_reorder = registry
+        .get_plugin("seq_reorder")
+        .expect("seq_reorder should exist")
+        .to_executor();
+
+    let mut first_ctx = make_context(registry.clone(), "example.test.");
+    seq_top1.execute(&mut first_ctx).await?;
+    assert_eq!(
+        first_ctx
+            .response()
+            .expect("response should exist")
+            .answer_ips(),
+        vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]
+    );
+
+    let mut second_ctx = make_context(registry.clone(), "example.test.");
+    seq_reorder.execute(&mut second_ctx).await?;
+    assert_eq!(
+        second_ctx
+            .response()
+            .expect("response should exist")
+            .answer_ips(),
+        vec![
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+        ],
+        "cache should retain the raw upstream/hosts RRset; ip_selector applies final shaping on return"
     );
 
     registry.destroy().await;

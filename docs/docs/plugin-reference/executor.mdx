@@ -1086,6 +1086,122 @@ old-static.example.com static.example.net
 
 ---
 
+## `ip_selector`
+
+### 作用
+
+响应 IP 优选器。它只处理已有 response 中的 A/AAAA 地址记录，根据缓存评分和有界测速结果进行稳定排序或裁剪。
+
+`ip_selector` 不负责上游响应竞速、双栈抑制或域名规则。上游竞速继续使用 `forward` / `fallback`，双栈策略继续使用 `prefer_ipv4` / `prefer_ipv6`，域名差异化策略继续用 `sequence`、matcher 和 provider 组合多个插件实例。
+
+### 配置示例
+
+```yaml
+- tag: ip_select
+  type: ip_selector
+  args:
+    selection_mode: first_success
+    probe_methods: ["tcp:443", "tcp:80"]
+    probe_stagger: 200
+    probe_timeout: 600
+    max_wait: 1000
+    top_n: 1
+    dnssec_policy: reorder_only
+    max_parallel_probes: 256
+    cache:
+      enabled: true
+      size: 4096
+      ttl: 3600
+      failure_ttl: 60
+```
+
+推荐放在 `cache` 之前，让 `cache` 保存原始上游响应，`ip_selector` 在返回路径做最终优选：
+
+```yaml
+- exec: $ip_select
+- exec: $cache_main
+- matches: !$has_resp
+  exec: $forward_main
+- exec: accept
+```
+
+### 配置项
+
+#### `selection_mode`
+
+- 类型：`string`；必填：否；默认值：`first_success`
+- 可选值：`first_success`、`best_within_budget`、`background`
+- 作用：
+  - `first_success`：返回第一个成功测速的候选 IP。
+  - `best_within_budget`：在 `max_wait` 预算内选择最低延迟 IP。
+  - `background`：优先返回原响应或缓存排序结果，并在后台刷新测速缓存。
+
+#### `probe_methods`
+
+- 类型：`array<string> | string`；必填：否；默认值：`["tcp:443", "tcp:80"]`
+- 可选值：`tcp:<port>`、`ping`、`none`
+- 作用：定义用于评分 IP 的探测方法。`ping` 为 best-effort；平台或权限不支持时会失败开放。
+
+#### `probe_stagger`
+
+- 类型：`integer`；单位：毫秒；必填：否；默认值：`200`
+- 作用：多种测速方式之间的错峰启动间隔。
+
+#### `probe_timeout`
+
+- 类型：`integer`；单位：毫秒；必填：否；默认值：`600`
+- 作用：单次 IP 探测超时时间。
+
+#### `max_wait`
+
+- 类型：`integer`；单位：毫秒；必填：否；默认值：`1000`
+- 作用：一次响应优选最多等待多久。
+
+#### `top_n`
+
+- 类型：`integer`；必填：否；默认值：`1`
+- 作用：保留排序后的前 N 个地址。设为 `0` 时只重排，不删除记录。
+
+#### `dnssec_policy`
+
+- 类型：`string`；必填：否；默认值：`reorder_only`
+- 可选值：`reorder_only`、`skip`
+- 作用：请求带 DO bit 或响应含覆盖 A/AAAA 的 RRSIG 时，默认只重排不裁剪；设为 `skip` 时完全跳过优选。
+
+#### `max_parallel_probes`
+
+- 类型：`integer`；必填：否；默认值：`256`
+- 作用：限制插件级并发探测数量，避免冷查询大量 fanout。
+
+#### `cache`
+
+- 类型：`object`；必填：否
+- 子字段：
+  - `enabled`：是否启用探测评分缓存，默认 `true`。
+  - `size`：缓存容量目标，默认 `4096`。
+  - `ttl`：成功评分保留时间，单位秒，默认 `3600`。
+  - `failure_ttl`：失败评分保留时间，单位秒，默认 `60`。
+
+### quick setup
+
+```yaml
+- exec: "ip_selector"
+- exec: "ip_selector best_within_budget tcp:443,tcp:80,ping"
+```
+
+`ip_selector` 只接受上面列出的 OxiDNS 原生命名，不提供兼容别名。
+
+### 指标
+
+- `ip_selector_probe_total{method,result}`
+- `ip_selector_probe_latency_count{method}`
+- `ip_selector_probe_latency_sum_ms{method}`
+- `ip_selector_selected_total{source="probe|cache|fallback"}`
+- `ip_selector_cache_entries`
+- `ip_selector_dropped_probe_total{reason="parallel_limit|inflight"}`
+
+---
+
 <span id="prefer_ipv4-prefer_ipv6"></span>
 
 ## `prefer_ipv4` / `prefer_ipv6`

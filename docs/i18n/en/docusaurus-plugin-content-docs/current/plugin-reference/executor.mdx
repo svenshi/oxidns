@@ -1018,6 +1018,124 @@ Full object form:
 
 ---
 
+## `ip_selector`
+
+### Purpose
+
+Response IP selector. It only shapes A/AAAA records already present in `response`, using cached probe scores and bounded active probing to produce a stable order or a smaller answer set.
+
+`ip_selector` does not race upstream DNS responses, suppress dual-stack families, or carry its own domain-rule system. Use `forward` / `fallback` for upstream racing, `prefer_ipv4` / `prefer_ipv6` for dual-stack policy, and `sequence` with matchers/providers for domain-specific routing.
+
+### Example Configuration
+
+```yaml
+- tag: ip_select
+  type: ip_selector
+  args:
+    selection_mode: first_success
+    probe_methods: ["tcp:443", "tcp:80"]
+    probe_stagger: 200
+    probe_timeout: 600
+    max_wait: 1000
+    top_n: 1
+    dnssec_policy: reorder_only
+    max_parallel_probes: 256
+    cache:
+      enabled: true
+      size: 4096
+      ttl: 3600
+      failure_ttl: 60
+```
+
+Recommended sequence placement:
+
+```yaml
+- exec: $ip_select
+- exec: $cache_main
+- matches: !$has_resp
+  exec: $forward_main
+- exec: accept
+```
+
+This lets `cache` store the original upstream response while `ip_selector` applies final response shaping on the return path.
+
+### Configuration Details
+
+#### `selection_mode`
+
+- Type: `string`; Required: no; Default: `first_success`
+- Values: `first_success`, `best_within_budget`, `background`
+- Purpose:
+  - `first_success`: use the first candidate IP with a successful probe.
+  - `best_within_budget`: choose the lowest-latency IP within `max_wait`.
+  - `background`: return immediately using the original or cached order while refreshing probe scores in the background.
+
+#### `probe_methods`
+
+- Type: `array<string> | string`; Required: no; Default: `["tcp:443", "tcp:80"]`
+- Values: `tcp:<port>`, `ping`, `none`
+- Purpose: Probe methods used to score answer IPs. `ping` is best-effort and fails open when unavailable.
+
+#### `probe_stagger`
+
+- Type: `integer`; Unit: milliseconds; Required: no; Default: `200`
+- Purpose: Delay between launching different probe methods.
+
+#### `probe_timeout`
+
+- Type: `integer`; Unit: milliseconds; Required: no; Default: `600`
+- Purpose: Timeout for one probe attempt.
+
+#### `max_wait`
+
+- Type: `integer`; Unit: milliseconds; Required: no; Default: `1000`
+- Purpose: Maximum per-response wait budget for selection.
+
+#### `top_n`
+
+- Type: `integer`; Required: no; Default: `1`
+- Purpose: Keep the first N selected addresses. Use `0` to reorder only without deleting records.
+
+#### `dnssec_policy`
+
+- Type: `string`; Required: no; Default: `reorder_only`
+- Values: `reorder_only`, `skip`
+- Purpose: When the request carries DO bit or the response contains RRSIGs covering A/AAAA, the default policy only reorders records. `skip` leaves the response unchanged.
+
+#### `max_parallel_probes`
+
+- Type: `integer`; Required: no; Default: `256`
+- Purpose: Plugin-wide active probe concurrency limit.
+
+#### `cache`
+
+- Type: `object`; Required: no
+- Fields:
+  - `enabled`: enable probe score cache, default `true`.
+  - `size`: target cache capacity, default `4096`.
+  - `ttl`: successful score retention in seconds, default `3600`.
+  - `failure_ttl`: failed score retention in seconds, default `60`.
+
+### quick setup
+
+```yaml
+- exec: "ip_selector"
+- exec: "ip_selector best_within_budget tcp:443,tcp:80,ping"
+```
+
+`ip_selector` accepts only the OxiDNS-native names listed above and does not provide compatibility aliases.
+
+### Metrics
+
+- `ip_selector_probe_total{method,result}`
+- `ip_selector_probe_latency_count{method}`
+- `ip_selector_probe_latency_sum_ms{method}`
+- `ip_selector_selected_total{source="probe|cache|fallback"}`
+- `ip_selector_cache_entries`
+- `ip_selector_dropped_probe_total{reason="parallel_limit|inflight"}`
+
+---
+
 <span id="prefer_ipv4-prefer_ipv6"></span>
 
 ## `prefer_ipv4` / `prefer_ipv6`
