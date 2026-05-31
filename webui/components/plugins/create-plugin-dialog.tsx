@@ -39,6 +39,8 @@ import {
   isPluginConfigFormValid,
 } from "@/components/plugins/plugin-config-fields-editor";
 import { PluginConfigModeEditor } from "@/components/plugins/plugin-config-mode-editor";
+import { isPluginKindSupported } from "@/lib/build-capabilities";
+import { cn } from "@/lib/utils";
 
 const SequenceComposer = dynamic(
   () =>
@@ -121,6 +123,7 @@ export function CreatePluginDialog({
   const saveConfig = useAppStore((s) => s.saveConfig);
   const isConfigSaving = useAppStore((s) => s.isConfigSaving);
   const plugins = useAppStore((s) => s.plugins);
+  const buildInfo = useAppStore((s) => s.buildInfo);
 
   const pluginsByType = useMemo(() => {
     const supported = supportedPluginKinds?.length
@@ -164,6 +167,7 @@ export function CreatePluginDialog({
   }, [search, supportedPluginKinds]);
 
   const handleSelectKind = (kind: PluginCatalogItem) => {
+    if (!isPluginKindSupported(buildInfo, kind.type, kind.kind)) return;
     setSelectedKind(kind);
     setConfigValues(createDefaultPluginConfigValues(kind.configSchema));
     setConfigValid(true);
@@ -179,6 +183,8 @@ export function CreatePluginDialog({
 
   const handleCreate = async () => {
     if (!selectedKind || !instanceName.trim()) return;
+    if (!isPluginKindSupported(buildInfo, selectedKind.type, selectedKind.kind))
+      return;
 
     const processedConfig = configValues;
 
@@ -214,6 +220,8 @@ export function CreatePluginDialog({
 
   const isValid = () => {
     if (!selectedKind || !instanceName.trim()) return false;
+    if (!isPluginKindSupported(buildInfo, selectedKind.type, selectedKind.kind))
+      return false;
     return (
       configValid &&
       isPluginConfigFormValid(selectedKind.configSchema, configValues)
@@ -222,17 +230,33 @@ export function CreatePluginDialog({
 
   const renderPluginKindCard = (kind: PluginCatalogItem) => {
     const IconComponent = getPluginKindIconComponent(kind.icon);
+    const supported = isPluginKindSupported(buildInfo, kind.type, kind.kind);
     return (
       <button
         key={kind.kind}
+        type="button"
+        disabled={!supported}
+        title={supported ? undefined : "当前编译版本不支持"}
         onClick={() => handleSelectKind(kind)}
-        className="flex items-start gap-3 p-3 rounded-lg border border-border bg-card hover:bg-accent/50 hover:border-primary/50 transition-colors text-left w-full"
+        className={cn(
+          "flex w-full items-start gap-3 rounded-lg border border-border bg-card p-3 text-left transition-colors",
+          supported
+            ? "hover:border-primary/50 hover:bg-accent/50"
+            : "cursor-not-allowed border-dashed opacity-55",
+        )}
       >
         <div className="p-2 rounded-md bg-primary/10 text-primary shrink-0">
           <IconComponent className="h-4 w-4" />
         </div>
         <div className="min-w-0">
-          <div className="font-medium text-sm">{kind.name}</div>
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="truncate text-sm font-medium">{kind.name}</div>
+            {!supported && (
+              <Badge variant="outline" className="shrink-0 text-[10px]">
+                未编译
+              </Badge>
+            )}
+          </div>
           <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">
             {kind.description}
           </div>

@@ -1,7 +1,7 @@
 # OxiDNS default configuration file
 #
 # See full documentation at:
-# https://oxidns.cn
+# https://oxidns.org
 
 log:
   level: info

@@ -13,6 +13,7 @@ import {
   type OxiDnsConfig,
 } from "./oxidns-config";
 import {
+  fetchBuildInfo,
   fetchControl,
   fetchConfigFile,
   fetchHealth,
@@ -23,6 +24,7 @@ import {
   requestRestart,
   saveConfigFile,
   validateConfigText,
+  type BuildInfo,
   type ConfigFileResponse,
   type ConfigValidateResponse,
   type ControlResponse,
@@ -82,6 +84,7 @@ export type PluginRenameResult =
 interface AppState {
   plugins: PluginInstance[];
   health: HealthResponse | null;
+  buildInfo: BuildInfo | null;
   control: ControlResponse | null;
   system: SystemResponse | null;
   reloadStatus: ReloadSnapshot | null;
@@ -135,6 +138,7 @@ interface AppState {
   clearConfigHistory: () => void;
   togglePluginPin: (id: string) => void;
   togglePluginEnabled: (id: string) => void;
+  reorderPlugins: (orderedVisibleIds: string[]) => Promise<void>;
   updatePluginConfig: (id: string, config: Record<string, unknown>) => void;
   previewPluginDelete: (id: string) => Promise<PluginDeletePreview>;
   confirmDeletePlugin: (id: string) => Promise<void>;
@@ -177,6 +181,7 @@ const initialConfigText = stringifyOxiDnsConfig(initialConfigModel);
 export const useAppStore = create<AppState>((set, get) => ({
   plugins: [],
   health: null,
+  buildInfo: null,
   control: null,
   system: null,
   reloadStatus: null,
@@ -248,6 +253,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       configHistory: [],
       reloadStatus: null,
       health: null,
+      buildInfo: null,
       control: null,
       system: null,
     });
@@ -295,16 +301,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       fetchControl(),
       fetchSystem(),
       fetchReloadStatus(),
+      fetchBuildInfo(),
     ]);
-    const [health, control, system, reloadStatus] = results;
+    const [health, control, system, reloadStatus, buildInfo] = results;
     const nextReload =
       reloadStatus.status === "fulfilled"
         ? reloadStatus.value
         : get().reloadStatus;
+    const nextSystem = system.status === "fulfilled" ? system.value : null;
+    const nextBuildInfo =
+      buildInfo.status === "fulfilled"
+        ? buildInfo.value.build
+        : nextSystem
+          ? (nextSystem.build ?? null)
+          : get().buildInfo;
     set({
       health: health.status === "fulfilled" ? health.value : get().health,
+      buildInfo: nextBuildInfo,
       control: control.status === "fulfilled" ? control.value : get().control,
-      system: system.status === "fulfilled" ? system.value : get().system,
+      system: nextSystem ?? get().system,
       reloadStatus: nextReload,
       // The backend authoritatively reports what config it is running; prefer
       // it over the load-time disk-version guess so the "未应用" state
@@ -552,6 +567,39 @@ export const useAppStore = create<AppState>((set, get) => ({
       const plugins: PluginInstance[] = state.plugins.map((p) => p);
       return { plugins };
     }),
+
+  // Reorder plugins in the config file to match a drag-and-drop arrangement.
+  // `orderedVisibleIds` is the new order of the *currently visible* cards
+  // (a single type tab, or all of them). Plugins outside that visible subset
+  // keep their absolute positions; only the slots the visible plugins occupy
+  // are refilled in the new order, so reordering within one type tab never
+  // disturbs the relative position of other types. The change is staged into
+  // the editor buffer and persisted to disk (mirroring add/edit/delete), then
+  // surfaced as an "应用更改" pill for the operator to hot-reload.
+  reorderPlugins: async (orderedVisibleIds) => {
+    const state = get();
+    if (state.configError) return;
+
+    const visible = new Set(orderedVisibleIds);
+    const byId = new Map(state.plugins.map((p) => [p.id, p] as const));
+    const queue = orderedVisibleIds
+      .map((id) => byId.get(id))
+      .filter((p): p is PluginInstance => Boolean(p));
+    if (queue.length === 0) return;
+
+    let next = 0;
+    const reordered = state.plugins.map((p) =>
+      visible.has(p.id) ? queue[next++] : p,
+    );
+    const unchanged = reordered.every((p, i) => p.id === state.plugins[i].id);
+    if (unchanged) return;
+
+    // No tags are passed as changed: every plugin reuses its original YAML
+    // node verbatim (comments/blank lines preserved) — only the node order
+    // changes.
+    set(syncPluginsToConfig(state, () => reordered, []));
+    if (!get().isOfflineMode) await get().saveConfig();
+  },
 
   updatePluginConfig: (id, config) =>
     set((state) => {

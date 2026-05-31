@@ -48,8 +48,11 @@ use crate::proto::Message;
 
 mod request_map;
 
+#[cfg(feature = "upstream-doh")]
 pub(crate) mod conn_h2;
+#[cfg(feature = "upstream-doh3")]
 pub(crate) mod conn_h3;
+#[cfg(feature = "upstream-doq")]
 pub(crate) mod conn_quic;
 pub(crate) mod conn_tcp;
 pub(crate) mod conn_udp;

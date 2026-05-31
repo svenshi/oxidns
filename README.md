@@ -198,6 +198,18 @@ Windows 可在 PowerShell 中执行：
 
 完整安装流程请参考 [快速开始](https://oxidns.org/quickstart)。
 
+### 按需裁剪
+
+OxiDNS 支持通过 Cargo features 裁剪可选协议和插件。从源码构建时:
+
+```bash
+cargo build --release                                                  # 默认 = full
+cargo build --release --no-default-features --features minimal         # 最小转发器
+cargo build --release --no-default-features --features standard        # 家用 / 路由器
+```
+
+详见 [自定义编译](https://oxidns.org/custom-build)。
+
 ---
 
 ## 文档

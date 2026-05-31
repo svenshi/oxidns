@@ -125,6 +125,11 @@ export default function SettingsPage() {
   const canConnect =
     backendUrl.trim().length > 0 &&
     (!requiresAuth || (username.trim().length > 0 && password.length > 0));
+  const runtimeVersion = system?.build
+    ? `${system.build.version} (${system.build.bundle})`
+    : health?.build_bundle
+      ? `${health.version} (${health.build_bundle})`
+      : (system?.version ?? health?.version ?? "-");
 
   const getConnectionConfig = (): ServerConfig => ({
     url: backendUrl.trim(),
@@ -345,10 +350,7 @@ export default function SettingsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <InfoTile
-                label="版本"
-                value={system?.version ?? health?.version ?? "-"}
-              />
+              <InfoTile label="编译版本" value={runtimeVersion} />
               <InfoTile
                 label="平台"
                 value={system ? `${system.os}/${system.arch}` : "-"}

@@ -2,6 +2,7 @@ use std::any::Any;
 use std::collections::HashMap as StdHashMap;
 use std::io::{self, Write};
 use std::sync::Mutex as StdMutex;
+#[cfg(feature = "api")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
@@ -9,6 +10,7 @@ use tracing_subscriber::fmt::MakeWriter;
 
 use super::init_plan::SkippedProvider;
 use super::*;
+#[cfg(feature = "api")]
 use crate::api::{clear_global_api, global_api_test_guard};
 use crate::config::types::{Config, PluginConfig};
 use crate::plugin::dependency::{
@@ -511,12 +513,14 @@ async fn test_init_plugins_warns_when_skipping_unused_provider() {
     registry.destroy().await;
 }
 
+#[cfg(feature = "api")]
 #[derive(Debug)]
 struct ReloadableProvider {
     tag: String,
     reload_count: Arc<AtomicUsize>,
 }
 
+#[cfg(feature = "api")]
 #[async_trait]
 impl Plugin for ReloadableProvider {
     fn tag(&self) -> &str {
@@ -532,6 +536,7 @@ impl Plugin for ReloadableProvider {
     }
 }
 
+#[cfg(feature = "api")]
 #[async_trait]
 impl Provider for ReloadableProvider {
     fn as_any(&self) -> &dyn Any {
@@ -552,11 +557,13 @@ impl Provider for ReloadableProvider {
     }
 }
 
+#[cfg(feature = "api")]
 #[derive(Debug)]
 struct ReloadableProviderFactory {
     reload_count: Arc<AtomicUsize>,
 }
 
+#[cfg(feature = "api")]
 impl PluginFactory for ReloadableProviderFactory {
     fn create(
         &self,
@@ -572,6 +579,7 @@ impl PluginFactory for ReloadableProviderFactory {
     }
 }
 
+#[cfg(feature = "api")]
 #[tokio::test]
 async fn test_reload_provider_calls_runtime_provider_reload() {
     let _guard = global_api_test_guard().await;
@@ -617,6 +625,7 @@ async fn test_reload_provider_calls_runtime_provider_reload() {
     clear_global_api();
 }
 
+#[cfg(feature = "api")]
 #[tokio::test]
 async fn test_reload_provider_rejects_non_provider_and_missing_tags() {
     let _guard = global_api_test_guard().await;

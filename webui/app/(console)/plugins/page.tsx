@@ -3,7 +3,7 @@
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { AppHeader } from "@/components/shell/app-header";
-import { PluginCard } from "@/components/plugins/plugin-card";
+import { SortablePluginGrid } from "@/components/plugins/sortable-plugin-grid";
 import { CreatePluginDialog } from "@/components/plugins/create-plugin-dialog";
 import { PluginDeleteButton } from "@/components/plugins/plugin-delete-button";
 import { useAppStore } from "@/lib/store";
@@ -22,6 +22,7 @@ import {
 import { Search, LayoutGrid, List, Pin, PinOff, GitBranch } from "lucide-react";
 import type { PluginType } from "@/lib/types";
 import { PLUGIN_TYPE_LABELS } from "@/lib/types";
+import { isPluginKindSupported } from "@/lib/build-capabilities";
 import { cn } from "@/lib/utils";
 import {
   Tooltip,
@@ -58,8 +59,10 @@ function PluginsPageContent() {
   const [search, setSearch] = useState("");
 
   const plugins = useAppStore((s) => s.plugins);
+  const buildInfo = useAppStore((s) => s.buildInfo);
   const dependencyGraph = useAppStore((s) => s.dependencyGraph);
-  const { setSelectedPlugin, setDetailOpen, togglePluginPin } = useAppStore();
+  const { setSelectedPlugin, setDetailOpen, togglePluginPin, reorderPlugins } =
+    useAppStore();
 
   const filteredPlugins = plugins.filter((p) => {
     const definition = getPluginCatalogItem(p.pluginKind);
@@ -173,11 +176,11 @@ function PluginsPageContent() {
           <div className="oxidns-dialog-scrollbar min-h-0 flex-1 overflow-auto">
             <TabsContent value={activeTab} className="m-0 p-6">
               {viewMode === "grid" ? (
-                <div className="grid items-stretch gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {filteredPlugins.map((plugin) => (
-                    <PluginCard key={plugin.id} plugin={plugin} />
-                  ))}
-                </div>
+                <SortablePluginGrid
+                  plugins={filteredPlugins}
+                  onReorder={(ids) => void reorderPlugins(ids)}
+                  disabled={search.trim() !== ""}
+                />
               ) : viewMode === "table" ? (
                 <div className="border rounded-lg overflow-hidden">
                   <Table>
@@ -217,7 +220,14 @@ function PluginsPageContent() {
                             </Badge>
                           </TableCell>
                           <TableCell>
-                            <PluginKindBadge pluginKind={plugin.pluginKind} />
+                            <PluginKindBadge
+                              pluginKind={plugin.pluginKind}
+                              supported={isPluginKindSupported(
+                                buildInfo,
+                                plugin.type,
+                                plugin.pluginKind,
+                              )}
+                            />
                           </TableCell>
                           <TableCell>
                             <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -302,14 +312,27 @@ function PluginsPageFallback() {
   );
 }
 
-function PluginKindBadge({ pluginKind }: { pluginKind: string }) {
+function PluginKindBadge({
+  pluginKind,
+  supported,
+}: {
+  pluginKind: string;
+  supported: boolean;
+}) {
   const definition = getPluginCatalogItem(pluginKind);
 
   return (
-    <Badge variant="outline" className="gap-1.5">
+    <Badge
+      variant="outline"
+      className={cn(
+        "gap-1.5",
+        !supported && "border-dashed text-muted-foreground",
+      )}
+    >
       {definition &&
         renderPluginKindIcon(definition.icon, { className: "h-3 w-3" })}
       {definition?.name ?? pluginKind}
+      {!supported && " · 未编译"}
     </Badge>
   );
 }

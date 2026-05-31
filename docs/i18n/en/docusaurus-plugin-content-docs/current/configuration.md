@@ -66,7 +66,11 @@ Supported syntax:
 | --- | --- |
 | `${VAR}` | Use the value of process environment variable `VAR`; fail if it is undefined |
 | `${VAR:-default}` | Use `default` when `VAR` is undefined or an empty string |
+| `${env:VAR}` | Explicitly read process environment variable `VAR`; useful when the name conflicts with a runtime placeholder |
+| `${env:VAR:-default}` | Explicitly read process environment variable `VAR`; use `default` when it is undefined or empty |
 | `$${...}` | Emit a literal `${...}` |
+
+Runtime placeholders used by executors such as `script` and `http_request` are preserved until request execution, so values like `${qname}`, `${client_ip}`, and `${resp_ip}` are not treated as process environment variables during config loading. Use the explicit form, such as `${env:qname}`, if you really need to read an environment variable with the same name.
 
 Undefined variables fail fast, and the error includes the variable name, line, and column so empty passwords or certificate paths do not silently pass validation.
 

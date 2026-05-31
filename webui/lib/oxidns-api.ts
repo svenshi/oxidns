@@ -34,6 +34,7 @@ export interface SaveConfigResponse {
 export interface HealthResponse {
   status: string;
   version: string;
+  build_bundle?: string;
   uptime_ms: number;
   checks: {
     api: string;
@@ -44,6 +45,26 @@ export interface HealthResponse {
     total: number;
     servers: number;
   };
+}
+
+export interface SupportedPlugins {
+  servers: string[];
+  executors: string[];
+  matchers: string[];
+  providers: string[];
+}
+
+export interface BuildInfo {
+  version: string;
+  bundle: string;
+  enabled_bundles: string[];
+  enabled_features: string[];
+  supported_plugins: SupportedPlugins;
+}
+
+export interface BuildInfoResponse {
+  ok: boolean;
+  build: BuildInfo;
 }
 
 export interface ReloadSnapshot {
@@ -71,6 +92,7 @@ export interface ControlResponse {
 export interface SystemResponse {
   ok: boolean;
   version: string;
+  build?: BuildInfo;
   os: string;
   arch: string;
   uptime_ms: number;
@@ -383,6 +405,14 @@ export async function fetchHealth(): Promise<HealthResponse> {
     headers: apiHeaders(),
   });
   return readJsonResponse<HealthResponse>(response);
+}
+
+export async function fetchBuildInfo(): Promise<BuildInfoResponse> {
+  const response = await fetch(apiUrl("/build"), {
+    method: "GET",
+    headers: apiHeaders(),
+  });
+  return readJsonResponse<BuildInfoResponse>(response);
 }
 
 export async function fetchControl(): Promise<ControlResponse> {

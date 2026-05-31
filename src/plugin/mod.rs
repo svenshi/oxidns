@@ -203,6 +203,7 @@ fn dependency_kind_from_module_path(module_path: &str) -> dependency::Dependency
     dependency::DependencyKind::Unknown
 }
 
+#[allow(dead_code)]
 pub(crate) fn registered_plugin_kind(plugin_type: &str) -> Option<dependency::DependencyKind> {
     inventory::iter::<FactoryRegistration>
         .into_iter()

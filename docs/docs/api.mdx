@@ -190,6 +190,7 @@ API 路由分成三类：
 {
   "status": "ok",
   "version": "x.y.z",
+  "build_bundle": "full",
   "uptime_ms": 12345,
   "checks": {
     "api": "ok",
@@ -202,6 +203,56 @@ API 路由分成三类：
   }
 }
 ```
+
+`build_bundle` 是当前二进制的主编译组合包，可能为 `minimal`、`standard`、`full` 或 `custom`。如果需要完整的 feature 和插件支持清单，请使用 `GET /api/build`。
+
+## 编译能力接口
+
+### `GET /api/build`
+
+作用：
+
+* 返回当前运行中二进制的包版本、编译组合包、启用的公开 Cargo features 和已编译支持的插件类型。
+* WebUI 使用该接口判断当前编译版本是否支持某个插件，并禁用未编译进二进制的插件入口。
+
+返回示例：
+
+```json
+{
+  "ok": true,
+  "build": {
+    "version": "1.1.4",
+    "bundle": "standard",
+    "enabled_bundles": ["standard"],
+    "enabled_features": [
+      "standard",
+      "api",
+      "metrics",
+      "server-dot",
+      "server-doh"
+    ],
+    "supported_plugins": {
+      "servers": ["tcp_server", "udp_server"],
+      "executors": ["cache", "fallback", "forward", "sequence"],
+      "matchers": ["has_resp", "qname", "qtype"],
+      "providers": ["domain_set", "ip_set"]
+    }
+  }
+}
+```
+
+字段说明：
+
+* `version`
+  * Cargo 包版本。
+* `bundle`
+  * 当前二进制的主组合包：`minimal`、`standard`、`full` 或 `custom`。
+* `enabled_bundles`
+  * 编译时显式启用的组合包 feature。默认 `full` 构建通常同时包含 `standard` 和 `full`。
+* `enabled_features`
+  * 启用的公开 Cargo features；内部 `_` features 不会出现在这里。
+* `supported_plugins`
+  * 已注册进当前二进制的插件类型，按 `servers`、`executors`、`matchers`、`providers` 分类。
 
 ## 内置控制接口
 
@@ -218,6 +269,29 @@ API 路由分成三类：
 * 当前配置路径
 * 是否请求过 shutdown
 * reload 状态快照
+
+### `GET /api/system`
+
+作用：
+
+* 返回当前进程、运行平台、配置路径、reload 状态、资源使用和编译能力摘要。
+
+返回内容包括：
+
+* `version`
+  * Cargo 包版本。
+* `build`
+  * 与 `GET /api/build` 中 `build` 字段相同的编译能力对象。
+* `os` / `arch`
+  * 当前运行平台。
+* `uptime_ms`
+  * 进程运行时长。
+* `config_path`
+  * 当前配置文件路径。
+* `reload`
+  * reload 状态快照。
+* `process_cpu_percent` / `process_memory_mb` / `system_memory_total_mb`
+  * 进程与系统资源使用信息。
 
 ### `POST /api/shutdown`
 

@@ -1,3 +1,4 @@
+#[cfg(feature = "webui")]
 use std::fs;
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::sync::Arc;
@@ -6,8 +7,10 @@ use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
+#[cfg(feature = "webui")]
+use http::HeaderValue;
 use http::header::{AUTHORIZATION, CONTENT_TYPE};
-use http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri};
+use http::{HeaderMap, Method, Request, StatusCode, Uri};
 use http_body_util::{BodyExt, Empty};
 use hyper::{Request as HyperRequest, Version};
 use hyper_util::client::legacy::Client;
@@ -17,6 +20,7 @@ use serde::Serialize;
 use tokio::time::{Duration, sleep};
 
 use super::cors::{add_cors_headers, infer_cors_config_from_listen, resolve_cors_config};
+#[cfg(feature = "webui")]
 use super::static_files::match_static_path;
 use super::*;
 use crate::config::types::{
@@ -59,6 +63,7 @@ fn test_api_hub_with_cors(
     test_api_hub_with_options(addr, auth, cors, None)
 }
 
+#[cfg(feature = "webui")]
 fn test_api_hub_with_webui(
     addr: SocketAddr,
     auth: Option<ApiAuthConfig>,
@@ -88,7 +93,9 @@ fn test_api_hub_with_options(
     let register = ApiRegister::new(hub.clone());
     health::register_builtin_routes(&register, hub.health_state())
         .expect("health routes should register");
+    #[cfg(feature = "metrics")]
     metrics::register_builtin_routes(&register).expect("metrics routes should register");
+    build::register_builtin_routes(&register).expect("build routes should register");
     hub
 }
 
@@ -308,6 +315,7 @@ fn test_api_prefix_helpers_strip_and_rewrite_path() {
     assert_eq!(request.uri().query(), Some("limit=10"));
 }
 
+#[cfg(feature = "webui")]
 #[test]
 fn test_static_path_rejects_traversal() {
     assert!(match_static_path("/assets/app.js").is_some());
@@ -578,6 +586,50 @@ async fn test_hyper_old_unprefixed_api_route_is_not_registered() {
 }
 
 #[tokio::test]
+async fn test_hyper_serves_build_info_route() {
+    AppClock::start();
+    let addr = reserve_local_addr();
+    let hub = test_api_hub(addr, None);
+
+    start_test_api_hub(&hub).await;
+
+    let client = http1_client();
+    let uri: Uri = format!("http://{addr}/api/build")
+        .parse()
+        .expect("request uri");
+    let response = client
+        .request(
+            HyperRequest::builder()
+                .method(Method::GET)
+                .uri(uri)
+                .body(Empty::new())
+                .expect("request"),
+        )
+        .await
+        .expect("build info response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("collect body")
+        .to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+    assert_eq!(value["build"]["version"], crate::core::VERSION);
+    assert!(
+        value["build"]["supported_plugins"]["executors"]
+            .as_array()
+            .expect("executors should be an array")
+            .iter()
+            .any(|value| value == "sequence")
+    );
+
+    hub.stop().await;
+}
+
+#[cfg(feature = "webui")]
+#[tokio::test]
 async fn test_hyper_serves_webui_static_files_and_spa_fallback() {
     AppClock::start();
     let temp = tempfile::tempdir().expect("temp webui dir");
@@ -745,6 +797,7 @@ async fn test_hyper_http2_serves_builtin_health_route() {
     hub.stop().await;
 }
 
+#[cfg(feature = "metrics")]
 #[tokio::test]
 async fn test_hyper_serves_builtin_metrics_route() {
     AppClock::start();

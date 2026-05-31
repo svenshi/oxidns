@@ -254,6 +254,31 @@ plugins:
     }
 
     #[test]
+    fn validate_text_preserves_runtime_template_placeholders() {
+        let summary = validate_text(
+            r#"
+plugins:
+  - tag: script_main
+    type: script
+    args:
+      command: /bin/sh
+      args:
+        - ./scripts/domain_cn.sh
+      env:
+        site: ${qname}
+      error_mode: continue
+"#,
+        )
+        .expect("runtime template placeholder should not be treated as a config env var");
+
+        assert_eq!(summary.plugin_count, 1);
+        assert_eq!(
+            summary.dependency_graph.init_order,
+            vec!["script_main".to_string()]
+        );
+    }
+
+    #[test]
     fn validate_file_loads_included_plugins_before_main_plugins() {
         let dir = TempDir::new().expect("temp dir");
         let included_path = dir.path().join("included.yaml");

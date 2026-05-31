@@ -44,7 +44,12 @@ impl fmt::Display for EnvExpandError {
 
 impl std::error::Error for EnvExpandError {}
 
-/// Expand `${VAR}` and `${VAR:-default}` placeholders in configuration text.
+/// Expand `${VAR}`, `${VAR:-default}`, and `${env:VAR}` placeholders in
+/// configuration text.
+///
+/// Executor runtime templates using built-in keys, such as `${qname}`, are
+/// preserved for per-request rendering. Use the explicit `env:` prefix when an
+/// environment variable name conflicts with a runtime template key.
 ///
 /// Use `$${...}` to keep a literal `${...}` in the output.
 pub fn expand_env(input: &str) -> Result<String, EnvExpandError> {
@@ -86,8 +91,16 @@ where
                 let body =
                     read_placeholder_body(&mut chars, &mut line, &mut col, start_line, start_col)?;
                 let (name, default) = split_placeholder_body(&body, start_line, start_col)?;
+                let (lookup_name, explicit_env) = resolve_lookup_name(name, start_line, start_col)?;
 
-                match (lookup(name), default) {
+                if !explicit_env && default.is_none() && is_runtime_template_key(name) {
+                    output.push_str("${");
+                    output.push_str(&body);
+                    output.push('}');
+                    continue;
+                }
+
+                match (lookup(lookup_name), default) {
                     (Some(value), Some(default)) if value.as_os_str().is_empty() => {
                         output.push_str(default);
                     }
@@ -99,7 +112,7 @@ where
                     }
                     (None, None) => {
                         return Err(EnvExpandError::UndefinedVariable {
-                            name: name.to_string(),
+                            name: lookup_name.to_string(),
                             line: start_line,
                             col: start_col,
                         });
@@ -161,6 +174,30 @@ fn split_placeholder_body(
     Ok((name, default))
 }
 
+fn resolve_lookup_name(
+    name: &str,
+    line: usize,
+    col: usize,
+) -> Result<(&str, bool), EnvExpandError> {
+    let Some(explicit_name) = name.strip_prefix("env:") else {
+        return Ok((name, false));
+    };
+
+    if explicit_name.is_empty() {
+        return Err(EnvExpandError::InvalidSyntax {
+            reason: "empty explicit environment variable name".to_string(),
+            line,
+            col,
+        });
+    }
+
+    Ok((explicit_name, true))
+}
+
+fn is_runtime_template_key(name: &str) -> bool {
+    crate::plugin::executor::template::BUILTIN_KEYS.contains(&name.trim())
+}
+
 fn advance_position(ch: char, line: &mut usize, col: &mut usize) {
     if ch == '\n' {
         *line += 1;
@@ -203,6 +240,29 @@ mod tests {
     }
 
     #[test]
+    fn expands_explicit_env_placeholders() {
+        let expanded = expand_env_with_lookup("before ${env:A} after", lookup).expect("expand");
+        assert_eq!(expanded, "before alpha after");
+    }
+
+    #[test]
+    fn explicit_env_placeholders_can_access_runtime_key_names() {
+        let expanded = expand_env_with_lookup("site=${env:qname}", |name| match name {
+            "qname" => Some("from-env".into()),
+            _ => lookup(name),
+        })
+        .expect("expand");
+        assert_eq!(expanded, "site=from-env");
+    }
+
+    #[test]
+    fn explicit_env_placeholders_support_default_value() {
+        let expanded =
+            expand_env_with_lookup("site=${env:qname:-fallback}", lookup).expect("expand");
+        assert_eq!(expanded, "site=fallback");
+    }
+
+    #[test]
     fn uses_default_for_empty_environment_value() {
         let expanded = expand_env_with_lookup("${EMPTY:-fallback}", lookup).expect("expand");
         assert_eq!(expanded, "fallback");
@@ -218,6 +278,38 @@ mod tests {
     fn keeps_escaped_placeholder_literal() {
         let expanded = expand_env_with_lookup("$${LITERAL}", lookup).expect("expand");
         assert_eq!(expanded, "${LITERAL}");
+    }
+
+    #[test]
+    fn keeps_runtime_template_placeholders_literal() {
+        let expanded =
+            expand_env_with_lookup("site=${qname} client=${client_ip}", lookup).expect("expand");
+        assert_eq!(expanded, "site=${qname} client=${client_ip}");
+    }
+
+    #[test]
+    fn keeps_all_runtime_template_placeholders_literal() {
+        for key in crate::plugin::executor::template::BUILTIN_KEYS {
+            let raw = format!("value=${{{key}}}");
+            let expanded = expand_env_with_lookup(&raw, lookup).expect("expand");
+            assert_eq!(expanded, raw, "runtime placeholder {key} should survive");
+        }
+    }
+
+    #[test]
+    fn keeps_runtime_template_placeholders_literal_even_when_env_exists() {
+        let expanded = expand_env_with_lookup("site=${qname}", |name| match name {
+            "qname" => Some("from-env".into()),
+            _ => lookup(name),
+        })
+        .expect("expand");
+        assert_eq!(expanded, "site=${qname}");
+    }
+
+    #[test]
+    fn runtime_template_names_with_defaults_still_expand_as_env_vars() {
+        let expanded = expand_env_with_lookup("site=${qname:-fallback}", lookup).expect("expand");
+        assert_eq!(expanded, "site=fallback");
     }
 
     #[test]
@@ -241,6 +333,16 @@ mod tests {
         let err = expand_env_with_lookup("${}", lookup).expect_err("syntax should fail");
         assert!(matches!(err, EnvExpandError::InvalidSyntax { .. }));
         assert!(err.to_string().contains("empty environment variable name"));
+    }
+
+    #[test]
+    fn rejects_empty_explicit_env_name() {
+        let err = expand_env_with_lookup("${env:}", lookup).expect_err("syntax should fail");
+        assert!(matches!(err, EnvExpandError::InvalidSyntax { .. }));
+        assert!(
+            err.to_string()
+                .contains("empty explicit environment variable name")
+        );
     }
 
     #[test]

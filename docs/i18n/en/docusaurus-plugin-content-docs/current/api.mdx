@@ -190,6 +190,7 @@ Example shape:
 {
   "status": "ok",
   "version": "x.y.z",
+  "build_bundle": "full",
   "uptime_ms": 12345,
   "checks": {
     "api": "ok",
@@ -202,6 +203,56 @@ Example shape:
   }
 }
 ```
+
+`build_bundle` is the primary build bundle of the running binary: `minimal`, `standard`, `full`, or `custom`. Use `GET /api/build` when you need the full feature and plugin capability snapshot.
+
+## Build Capability Endpoint
+
+### `GET /api/build`
+
+Purpose:
+
+* Returns the package version, compiled feature bundle, enabled public Cargo features, and plugin types compiled into the running binary.
+* The WebUI uses this endpoint to decide whether the current build supports each plugin kind and disables plugin entries that were not compiled in.
+
+Example response:
+
+```json
+{
+  "ok": true,
+  "build": {
+    "version": "1.1.4",
+    "bundle": "standard",
+    "enabled_bundles": ["standard"],
+    "enabled_features": [
+      "standard",
+      "api",
+      "metrics",
+      "server-dot",
+      "server-doh"
+    ],
+    "supported_plugins": {
+      "servers": ["tcp_server", "udp_server"],
+      "executors": ["cache", "fallback", "forward", "sequence"],
+      "matchers": ["has_resp", "qname", "qtype"],
+      "providers": ["domain_set", "ip_set"]
+    }
+  }
+}
+```
+
+Field notes:
+
+* `version`
+  * Cargo package version.
+* `bundle`
+  * Primary bundle for this binary: `minimal`, `standard`, `full`, or `custom`.
+* `enabled_bundles`
+  * Bundle features explicitly enabled at compile time. The default `full` build usually includes both `standard` and `full`.
+* `enabled_features`
+  * Enabled public Cargo features. Internal `_` features are intentionally omitted.
+* `supported_plugins`
+  * Plugin types registered in the current binary, grouped into `servers`, `executors`, `matchers`, and `providers`.
 
 ## Built-In Control Endpoints
 
@@ -218,6 +269,29 @@ The payload includes:
 * Active config path
 * Whether shutdown has been requested
 * Reload status snapshots
+
+### `GET /api/system`
+
+Purpose:
+
+* Returns process, platform, config path, reload status, resource usage, and compiled capability summary for the running binary.
+
+The payload includes:
+
+* `version`
+  * Cargo package version.
+* `build`
+  * Same build capability object as the `build` field returned by `GET /api/build`.
+* `os` / `arch`
+  * Current runtime platform.
+* `uptime_ms`
+  * Process uptime.
+* `config_path`
+  * Active config file path.
+* `reload`
+  * Reload status snapshot.
+* `process_cpu_percent` / `process_memory_mb` / `system_memory_total_mb`
+  * Process and system resource usage information.
 
 ### `POST /api/shutdown`
 

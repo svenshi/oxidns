@@ -52,6 +52,16 @@ impl PluginCatalog {
             .map(|entry| (entry.constructor)())
     }
 
+    pub(crate) fn plugin_types(&self) -> Vec<(&str, DependencyKind)> {
+        let mut entries: Vec<_> = self
+            .entries
+            .iter()
+            .map(|(plugin_type, entry)| (plugin_type.as_str(), entry.kind))
+            .collect();
+        entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        entries
+    }
+
     pub(super) fn iter_factories(
         &self,
     ) -> impl Iterator<Item = (&str, DependencyKind, Box<dyn PluginFactory>)> + '_ {

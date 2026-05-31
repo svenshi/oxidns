@@ -5,7 +5,7 @@
 
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
@@ -27,18 +27,57 @@ use crate::service;
 
 const DEFAULT_REPOSITORY: &str = "svenshi/oxidns";
 const DEFAULT_TARGET: &str = "latest";
+const DEFAULT_CONFIG_FILE: &str = "config.yaml";
 const DEFAULT_CACHE_DIR: &str = "./upgrade-cache";
 const DEFAULT_BACKUP_DIR: &str = "./upgrade-backups";
 const DEFAULT_WEBUI_DIR: &str = "./webui";
+#[cfg(target_os = "linux")]
+const DEFAULT_SERVICE_CONFIG: &str = "/etc/oxidns/config.yaml";
+#[cfg(target_os = "linux")]
+const DEFAULT_SERVICE_WORKING_DIR: &str = "/var/lib/oxidns";
 
 const EXIT_RESTART_REQUIRED: i32 = 75;
 const GITHUB_USER_AGENT: &str = "OxiDNS";
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum UpgradeBundle {
+    #[default]
+    Auto,
+    Full,
+    Minimal,
+    Standard,
+}
+
+impl UpgradeBundle {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Full => "full",
+            Self::Minimal => "minimal",
+            Self::Standard => "standard",
+        }
+    }
+
+    pub fn from_user_value(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "full" => Ok(Self::Full),
+            "minimal" => Ok(Self::Minimal),
+            "standard" => Ok(Self::Standard),
+            other => Err(DnsError::runtime(format!(
+                "invalid upgrade bundle '{other}', expected auto, full, minimal, or standard"
+            ))),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct UpgradeConfig {
     pub target: String,
     pub repository: String,
     pub asset: String,
+    pub bundle: UpgradeBundle,
     pub cache_dir: PathBuf,
     pub backup_dir: PathBuf,
     pub webui_dir: PathBuf,
@@ -59,6 +98,7 @@ impl Default for UpgradeConfig {
             target: DEFAULT_TARGET.to_string(),
             repository: DEFAULT_REPOSITORY.to_string(),
             asset: "auto".to_string(),
+            bundle: UpgradeBundle::Auto,
             cache_dir: PathBuf::from(DEFAULT_CACHE_DIR),
             backup_dir: PathBuf::from(DEFAULT_BACKUP_DIR),
             webui_dir: PathBuf::from(DEFAULT_WEBUI_DIR),
@@ -76,14 +116,24 @@ impl Default for UpgradeConfig {
 }
 
 impl UpgradeConfig {
-    pub fn from_cli(options: &UpgradeOptions) -> Self {
-        Self {
+    pub fn from_cli(options: &UpgradeOptions) -> Result<Self> {
+        let path_defaults = CliPathDefaults::system()?;
+        Self::from_cli_with_path_defaults(options, &path_defaults)
+    }
+
+    fn from_cli_with_path_defaults(
+        options: &UpgradeOptions,
+        path_defaults: &CliPathDefaults,
+    ) -> Result<Self> {
+        let path_context = resolve_cli_path_context(options, path_defaults);
+        Ok(Self {
             target: options.target.clone(),
             repository: options.repository.clone(),
             asset: options.asset.clone(),
+            bundle: options.bundle,
             cache_dir: options.cache_dir.clone(),
             backup_dir: options.backup_dir.clone(),
-            webui_dir: options.webui_dir.clone(),
+            webui_dir: resolve_cli_webui_dir(options, &path_context)?,
             skip_webui: options.skip_webui,
             no_restart: options.no_restart,
             allow_prerelease: options.allow_prerelease,
@@ -93,8 +143,225 @@ impl UpgradeConfig {
             socks5: options.socks5.clone(),
             insecure_skip_verify: options.insecure_skip_verify,
             github_token: options.github_token.clone(),
+        })
+    }
+}
+
+struct CliPathDefaults {
+    current_dir: PathBuf,
+    service_config: Option<PathBuf>,
+    service_working_dir: Option<PathBuf>,
+}
+
+impl CliPathDefaults {
+    fn system() -> Result<Self> {
+        let current_dir = std::env::current_dir().map_err(|err| {
+            DnsError::runtime(format!("failed to resolve current directory: {err}"))
+        })?;
+        Ok(Self {
+            current_dir,
+            service_config: default_service_config_path(),
+            service_working_dir: default_service_working_dir(),
+        })
+    }
+}
+
+struct CliPathContext {
+    config_path: Option<PathBuf>,
+    config_explicit: bool,
+    working_dir: PathBuf,
+}
+
+fn resolve_cli_path_context(
+    options: &UpgradeOptions,
+    defaults: &CliPathDefaults,
+) -> CliPathContext {
+    let explicit_working_dir = options
+        .working_dir
+        .as_ref()
+        .map(|path| resolve_path(&defaults.current_dir, path));
+    let config_explicit = options.config.is_some();
+    let config_path = if let Some(config) = &options.config {
+        let base = explicit_working_dir
+            .as_deref()
+            .unwrap_or(defaults.current_dir.as_path());
+        Some(resolve_path(base, config))
+    } else {
+        let cwd_config = defaults.current_dir.join(DEFAULT_CONFIG_FILE);
+        if cwd_config.is_file() {
+            Some(cwd_config)
+        } else {
+            defaults
+                .service_config
+                .as_ref()
+                .filter(|path| path.is_file())
+                .cloned()
+        }
+    };
+
+    let working_dir = explicit_working_dir.unwrap_or_else(|| {
+        if config_path
+            .as_ref()
+            .zip(defaults.service_config.as_ref())
+            .is_some_and(|(config, service_config)| same_path(config, service_config))
+            && let Some(service_working_dir) = defaults
+                .service_working_dir
+                .as_ref()
+                .filter(|path| path.is_dir())
+        {
+            return service_working_dir.clone();
+        }
+        defaults.current_dir.clone()
+    });
+
+    CliPathContext {
+        config_path,
+        config_explicit,
+        working_dir,
+    }
+}
+
+fn resolve_cli_webui_dir(options: &UpgradeOptions, context: &CliPathContext) -> Result<PathBuf> {
+    if let Some(webui_dir) = &options.webui_dir {
+        return Ok(resolve_path(&context.working_dir, webui_dir));
+    }
+    if options.skip_webui {
+        return Ok(resolve_path(
+            &context.working_dir,
+            Path::new(DEFAULT_WEBUI_DIR),
+        ));
+    }
+
+    if let Some(config_path) = &context.config_path {
+        match read_config_webui_root(config_path) {
+            Ok(Some(root)) => return Ok(resolve_path(&context.working_dir, Path::new(&root))),
+            Ok(None) => {}
+            Err(err) if context.config_explicit => return Err(err),
+            Err(_) => {}
         }
     }
+
+    Ok(resolve_path(
+        &context.working_dir,
+        Path::new(DEFAULT_WEBUI_DIR),
+    ))
+}
+
+fn read_config_webui_root(config_path: &Path) -> Result<Option<String>> {
+    let string = fs::read_to_string(config_path).map_err(|err| {
+        DnsError::config(format!(
+            "failed to read upgrade config {}: {}",
+            config_path.display(),
+            err
+        ))
+    })?;
+    let expanded = crate::config::env_expand::expand_env(&string).map_err(|err| {
+        DnsError::config(format!(
+            "env expansion failed in upgrade config {}: {}",
+            config_path.display(),
+            err
+        ))
+    })?;
+    let config: UpgradeRuntimeConfig = serde_yaml_ng::from_str(&expanded).map_err(|err| {
+        DnsError::config(format!(
+            "failed to parse upgrade config {}: {}",
+            config_path.display(),
+            err
+        ))
+    })?;
+    let root = config
+        .api
+        .and_then(|api| api.http)
+        .and_then(|http| match http {
+            UpgradeRuntimeHttpConfig::Listen(_) => None,
+            UpgradeRuntimeHttpConfig::Detailed(config) => config.webui.map(|webui| webui.root),
+        });
+    let Some(root) = root else {
+        return Ok(None);
+    };
+    let root = root.trim();
+    if root.is_empty() {
+        return Err(DnsError::config(format!(
+            "api.http.webui.root cannot be empty in {}",
+            config_path.display()
+        )));
+    }
+    Ok(Some(root.to_string()))
+}
+
+#[derive(Debug, Deserialize)]
+struct UpgradeRuntimeConfig {
+    api: Option<UpgradeRuntimeApiConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpgradeRuntimeApiConfig {
+    http: Option<UpgradeRuntimeHttpConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+#[allow(dead_code)]
+enum UpgradeRuntimeHttpConfig {
+    Listen(String),
+    Detailed(UpgradeRuntimeHttpDetailedConfig),
+}
+
+#[derive(Debug, Deserialize)]
+struct UpgradeRuntimeHttpDetailedConfig {
+    webui: Option<UpgradeRuntimeWebUiConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpgradeRuntimeWebUiConfig {
+    root: String,
+}
+
+fn resolve_path(base: &Path, path: &Path) -> PathBuf {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    };
+    normalize_path(&path)
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn default_service_config_path() -> Option<PathBuf> {
+    Some(PathBuf::from(DEFAULT_SERVICE_CONFIG))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn default_service_config_path() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn default_service_working_dir() -> Option<PathBuf> {
+    Some(PathBuf::from(DEFAULT_SERVICE_WORKING_DIR))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn default_service_working_dir() -> Option<PathBuf> {
+    None
 }
 
 #[derive(Debug, Clone)]
@@ -243,6 +510,7 @@ fn print_cli_plan(action: &str, config: &UpgradeConfig) {
     println!("Repository: {}", config.repository);
     println!("Target: {}", config.target);
     println!("Asset: {}", config.asset);
+    println!("Bundle: {}", config.bundle.as_str());
     println!("Cache: {}", config.cache_dir.display());
     if action == "apply" {
         println!("Backup: {}", config.backup_dir.display());
@@ -877,7 +1145,7 @@ fn select_asset<'a>(
     if config.asset.trim() != "auto" {
         return find_asset(release, config.asset.trim());
     }
-    let expected = current_archive_name()?;
+    let expected = current_archive_name(config.bundle)?;
     find_asset(release, &expected)
 }
 
@@ -894,7 +1162,46 @@ fn find_asset<'a>(release: &'a GitHubRelease, name: &str) -> Result<&'a ReleaseA
         })
 }
 
-fn current_archive_name() -> Result<String> {
+fn current_archive_name(bundle: UpgradeBundle) -> Result<String> {
+    let selected = resolve_requested_bundle(bundle, crate::build_info::PRIMARY_BUNDLE)?;
+    let target = current_release_target()?;
+    let ext = if cfg!(windows) { "zip" } else { "tar.gz" };
+    archive_name_for_bundle(selected, &target, ext)
+}
+
+fn resolve_requested_bundle(
+    requested: UpgradeBundle,
+    primary_bundle: &str,
+) -> Result<UpgradeBundle> {
+    match requested {
+        UpgradeBundle::Auto => match primary_bundle {
+            "full" => Ok(UpgradeBundle::Full),
+            "minimal" => Ok(UpgradeBundle::Minimal),
+            "standard" => Ok(UpgradeBundle::Standard),
+            "custom" => Err(DnsError::runtime(
+                "current build bundle is custom; pass --bundle full|minimal|standard or --asset <NAME>",
+            )),
+            other => Err(DnsError::runtime(format!(
+                "unsupported current build bundle '{other}'; pass --bundle full|minimal|standard or --asset <NAME>"
+            ))),
+        },
+        bundle => Ok(bundle),
+    }
+}
+
+fn archive_name_for_bundle(bundle: UpgradeBundle, target: &str, ext: &str) -> Result<String> {
+    match bundle {
+        UpgradeBundle::Full => Ok(format!("oxidns-{target}.{ext}")),
+        UpgradeBundle::Minimal | UpgradeBundle::Standard => {
+            Ok(format!("oxidns-{}-{target}.{ext}", bundle.as_str()))
+        }
+        UpgradeBundle::Auto => Err(DnsError::runtime(
+            "upgrade bundle auto must be resolved before archive naming",
+        )),
+    }
+}
+
+fn current_release_target() -> Result<String> {
     let arch = match std::env::consts::ARCH {
         "x86_64" => "x86_64",
         "aarch64" => "aarch64",
@@ -923,8 +1230,7 @@ fn current_archive_name() -> Result<String> {
             )));
         }
     };
-    let ext = if cfg!(windows) { "zip" } else { "tar.gz" };
-    Ok(format!("oxidns-{target}.{ext}"))
+    Ok(target)
 }
 
 fn sha256_from_asset_digest(asset: &ReleaseAsset) -> Result<String> {
@@ -1069,6 +1375,17 @@ fn move_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
+fn resolve_webui_install_target(target: &Path) -> PathBuf {
+    if fs::symlink_metadata(target)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+        && let Ok(resolved) = fs::canonicalize(target)
+    {
+        return resolved;
+    }
+    target.to_path_buf()
+}
+
 /// Installs the unpacked `webui/` tree into `target`, keeping the served
 /// directory crash-safe.
 ///
@@ -1088,6 +1405,8 @@ fn replace_webui(
     backup_dir: &Path,
     version: &str,
 ) -> Result<(PathBuf, Option<PathBuf>)> {
+    let target = resolve_webui_install_target(target);
+    let target = target.as_path();
     let parent = target.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(|err| {
         DnsError::runtime(format!(
@@ -1233,11 +1552,97 @@ mod tests {
     }
 
     #[test]
+    fn archive_name_for_full_bundle_uses_legacy_name() {
+        let name =
+            archive_name_for_bundle(UpgradeBundle::Full, "x86_64-unknown-linux-musl", "tar.gz")
+                .unwrap();
+
+        assert_eq!(name, "oxidns-x86_64-unknown-linux-musl.tar.gz");
+    }
+
+    #[test]
+    fn archive_name_for_slim_bundles_uses_prefixed_name() {
+        let minimal = archive_name_for_bundle(
+            UpgradeBundle::Minimal,
+            "x86_64-unknown-linux-musl",
+            "tar.gz",
+        )
+        .unwrap();
+        let standard = archive_name_for_bundle(
+            UpgradeBundle::Standard,
+            "aarch64-unknown-linux-musl",
+            "tar.gz",
+        )
+        .unwrap();
+
+        assert_eq!(minimal, "oxidns-minimal-x86_64-unknown-linux-musl.tar.gz");
+        assert_eq!(
+            standard,
+            "oxidns-standard-aarch64-unknown-linux-musl.tar.gz"
+        );
+    }
+
+    #[test]
+    fn auto_bundle_resolves_from_primary_bundle() {
+        assert_eq!(
+            resolve_requested_bundle(UpgradeBundle::Auto, "standard").unwrap(),
+            UpgradeBundle::Standard
+        );
+        assert_eq!(
+            resolve_requested_bundle(UpgradeBundle::Auto, "minimal").unwrap(),
+            UpgradeBundle::Minimal
+        );
+        assert_eq!(
+            resolve_requested_bundle(UpgradeBundle::Auto, "full").unwrap(),
+            UpgradeBundle::Full
+        );
+    }
+
+    #[test]
+    fn auto_bundle_rejects_custom_builds() {
+        let err = resolve_requested_bundle(UpgradeBundle::Auto, "custom").unwrap_err();
+
+        assert!(err.to_string().contains("current build bundle is custom"));
+        assert!(err.to_string().contains("--asset"));
+    }
+
+    #[test]
+    fn explicit_asset_overrides_bundle_selection() {
+        let release = GitHubRelease {
+            tag_name: "v1.2.3".to_string(),
+            prerelease: false,
+            html_url: None,
+            assets: vec![
+                ReleaseAsset {
+                    name: "oxidns-standard-x86_64-unknown-linux-musl.tar.gz".to_string(),
+                    browser_download_url: "https://example.com/standard.tar.gz".to_string(),
+                    digest: None,
+                },
+                ReleaseAsset {
+                    name: "custom.tar.gz".to_string(),
+                    browser_download_url: "https://example.com/custom.tar.gz".to_string(),
+                    digest: None,
+                },
+            ],
+        };
+        let config = UpgradeConfig {
+            asset: "custom.tar.gz".to_string(),
+            bundle: UpgradeBundle::Standard,
+            ..UpgradeConfig::default()
+        };
+
+        let asset = select_asset(&config, &release).unwrap();
+
+        assert_eq!(asset.name, "custom.tar.gz");
+    }
+
+    #[test]
     fn config_default_has_webui_defaults() {
         let config = UpgradeConfig::default();
         assert_eq!(config.webui_dir, PathBuf::from("./webui"));
         assert!(!config.skip_webui);
         assert!(!config.no_restart);
+        assert_eq!(config.bundle, UpgradeBundle::Auto);
     }
 
     #[test]
@@ -1257,7 +1662,7 @@ mod tests {
         let Command::Upgrade(opts) = cli.command else {
             panic!("expected upgrade command");
         };
-        let config = UpgradeConfig::from_cli(&opts);
+        let config = UpgradeConfig::from_cli(&opts).unwrap();
         assert_eq!(config.webui_dir, PathBuf::from("/tmp/oxidns-webui"));
         assert!(config.skip_webui);
     }
@@ -1272,8 +1677,22 @@ mod tests {
         let Command::Upgrade(opts) = cli.command else {
             panic!("expected upgrade command");
         };
-        let config = UpgradeConfig::from_cli(&opts);
+        let config = UpgradeConfig::from_cli(&opts).unwrap();
         assert_eq!(config.github_token.as_deref(), Some("ghp_test"));
+    }
+
+    #[test]
+    fn from_cli_maps_bundle() {
+        use clap::Parser;
+
+        use crate::app::cli::{Cli, Command};
+
+        let cli = Cli::parse_from(["oxidns", "upgrade", "check", "--bundle", "minimal"]);
+        let Command::Upgrade(opts) = cli.command else {
+            panic!("expected upgrade command");
+        };
+        let config = UpgradeConfig::from_cli(&opts);
+        assert_eq!(config.bundle, UpgradeBundle::Minimal);
     }
 
     #[test]
@@ -1286,8 +1705,89 @@ mod tests {
         let Command::Upgrade(opts) = cli.command else {
             panic!("expected upgrade command");
         };
-        let config = UpgradeConfig::from_cli(&opts);
+        let config = UpgradeConfig::from_cli(&opts).unwrap();
         assert!(config.no_restart);
+    }
+
+    #[test]
+    fn from_cli_resolves_webui_root_against_explicit_working_dir() {
+        use clap::Parser;
+
+        use crate::app::cli::{Cli, Command};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.yaml");
+        fs::write(
+            &config_path,
+            r#"
+api:
+  http:
+    listen: ":9199"
+    webui:
+      root: ./webui
+"#,
+        )
+        .unwrap();
+        let working_dir = tmp.path().join("work");
+        let cli = Cli::parse_from([
+            "oxidns",
+            "upgrade",
+            "-c",
+            config_path.to_str().unwrap(),
+            "-d",
+            working_dir.to_str().unwrap(),
+        ]);
+        let Command::Upgrade(opts) = cli.command else {
+            panic!("expected upgrade command");
+        };
+        let defaults = CliPathDefaults {
+            current_dir: tmp.path().to_path_buf(),
+            service_config: None,
+            service_working_dir: None,
+        };
+
+        let config = UpgradeConfig::from_cli_with_path_defaults(&opts, &defaults).unwrap();
+
+        assert_eq!(config.webui_dir, working_dir.join("webui"));
+    }
+
+    #[test]
+    fn from_cli_uses_service_config_and_working_dir_when_no_local_config_exists() {
+        use clap::Parser;
+
+        use crate::app::cli::{Cli, Command};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let current_dir = tmp.path().join("home");
+        let service_working_dir = tmp.path().join("var/lib/oxidns");
+        fs::create_dir_all(&current_dir).unwrap();
+        fs::create_dir_all(&service_working_dir).unwrap();
+        let service_config = tmp.path().join("etc/oxidns/config.yaml");
+        fs::create_dir_all(service_config.parent().unwrap()).unwrap();
+        fs::write(
+            &service_config,
+            br#"
+api:
+  http:
+    listen: ":9199"
+    webui:
+      root: ./webui
+"#,
+        )
+        .unwrap();
+        let cli = Cli::parse_from(["oxidns", "upgrade"]);
+        let Command::Upgrade(opts) = cli.command else {
+            panic!("expected upgrade command");
+        };
+        let defaults = CliPathDefaults {
+            current_dir,
+            service_config: Some(service_config),
+            service_working_dir: Some(service_working_dir.clone()),
+        };
+
+        let config = UpgradeConfig::from_cli_with_path_defaults(&opts, &defaults).unwrap();
+
+        assert_eq!(config.webui_dir, service_working_dir.join("webui"));
     }
 
     #[cfg(not(windows))]
@@ -1360,6 +1860,39 @@ mod tests {
         assert!(!target.join("marker.txt").exists());
         let backup = backup.expect("existing webui must be backed up");
         assert!(backup.starts_with(&backup_dir));
+        assert_eq!(fs::read(backup.join("marker.txt")).unwrap(), b"old-marker");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn replace_webui_updates_symlink_target_without_replacing_link() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let unpacked = tmp.path().join(".unpack/webui");
+        write_file(&unpacked.join("index.html"), b"new-content");
+        let real_target = tmp.path().join("usr/share/oxidns/webui");
+        write_file(&real_target.join("marker.txt"), b"old-marker");
+        let link_parent = tmp.path().join("var/lib/oxidns");
+        fs::create_dir_all(&link_parent).unwrap();
+        let link_target = link_parent.join("webui");
+        std::os::unix::fs::symlink(&real_target, &link_target).unwrap();
+        let backup_dir = tmp.path().join("backups");
+
+        let (installed, backup) =
+            replace_webui(&unpacked, &link_target, &backup_dir, "0.6.0").unwrap();
+
+        assert_eq!(installed, fs::canonicalize(&real_target).unwrap());
+        assert!(
+            fs::symlink_metadata(&link_target)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read(link_target.join("index.html")).unwrap(),
+            b"new-content"
+        );
+        assert!(!link_target.join("marker.txt").exists());
+        let backup = backup.expect("existing symlink target must be backed up");
         assert_eq!(fs::read(backup.join("marker.txt")).unwrap(), b"old-marker");
     }
 }

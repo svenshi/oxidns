@@ -1,18 +1,59 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AppHeader } from "@/components/shell/app-header";
 import { SystemMetrics } from "@/components/dashboard/system-metrics";
-import { PluginCard } from "@/components/plugins/plugin-card";
+import { SortablePluginGrid } from "@/components/plugins/sortable-plugin-grid";
 import { useAppStore } from "@/lib/store";
+import type { PluginInstance } from "@/lib/types";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { ArrowRight } from "lucide-react";
 
+// Dashboard card order is a frontend-only preference: it lives in
+// localStorage and never touches the config file (unlike the plugin center,
+// where reordering rewrites the YAML order).
+const DASHBOARD_ORDER_KEY = "oxidns:dashboard-order";
+
+function loadDashboardOrder(): string[] {
+  try {
+    const stored = localStorage.getItem(DASHBOARD_ORDER_KEY);
+    return stored ? (JSON.parse(stored) as string[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveDashboardOrder(ids: string[]): void {
+  try {
+    localStorage.setItem(DASHBOARD_ORDER_KEY, JSON.stringify(ids));
+  } catch {}
+}
+
+// Sort pinned plugins by the saved order; anything not yet ranked (newly
+// pinned) keeps its natural order at the end.
+function applyOrder(
+  pinned: PluginInstance[],
+  order: string[],
+): PluginInstance[] {
+  const rank = new Map(order.map((id, index) => [id, index]));
+  return [...pinned].sort((a, b) => {
+    const ra = rank.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+    const rb = rank.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+    return ra - rb;
+  });
+}
+
 export default function DashboardPage() {
   const plugins = useAppStore((s) => s.plugins);
   const refreshRuntimeState = useAppStore((s) => s.refreshRuntimeState);
-  const pinnedPlugins = plugins.filter((p) => p.pinned);
+  // Hydrate from localStorage lazily. On the server this is []; the first
+  // client render also produces an empty pinned grid (plugins load after
+  // mount), so applying a different order here cannot cause a hydration
+  // mismatch.
+  const [order, setOrder] = useState<string[]>(() =>
+    typeof window === "undefined" ? [] : loadDashboardOrder(),
+  );
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -20,6 +61,20 @@ export default function DashboardPage() {
     }, 3_000);
     return () => clearInterval(id);
   }, [refreshRuntimeState]);
+
+  const pinnedPlugins = useMemo(
+    () =>
+      applyOrder(
+        plugins.filter((p) => p.pinned),
+        order,
+      ),
+    [plugins, order],
+  );
+
+  const handleReorder = (ids: string[]) => {
+    setOrder(ids);
+    saveDashboardOrder(ids);
+  };
 
   return (
     <>
@@ -47,11 +102,10 @@ export default function DashboardPage() {
               </Button>
             </div>
             {pinnedPlugins.length > 0 ? (
-              <div className="grid items-stretch gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                {pinnedPlugins.map((plugin) => (
-                  <PluginCard key={plugin.id} plugin={plugin} />
-                ))}
-              </div>
+              <SortablePluginGrid
+                plugins={pinnedPlugins}
+                onReorder={handleReorder}
+              />
             ) : (
               <div className="border border-dashed rounded-lg p-8 text-center text-muted-foreground">
                 <p>还没有固定的插件</p>

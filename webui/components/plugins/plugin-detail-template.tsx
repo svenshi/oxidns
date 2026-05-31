@@ -22,6 +22,7 @@ import {
 import { Pencil, Pin, PinOff, Save } from "lucide-react";
 import { PLUGIN_TYPE_LABELS } from "@/lib/types";
 import { useAppStore } from "@/lib/store";
+import { isPluginKindSupported } from "@/lib/build-capabilities";
 import { cn } from "@/lib/utils";
 import type { PluginDetailTemplateProps, PluginSummaryItem } from "./types";
 import { pluginTypeColors, pluginTypeIcons } from "./display";
@@ -51,11 +52,17 @@ export function PluginDetailTemplate({
     configError,
     plugins,
     dependencyGraph,
+    buildInfo,
   } = useAppStore();
   const hasMetricSeries = useAppStore(
     (s) => (s.pluginMetrics[plugin.name]?.length ?? 0) > 0,
   );
   const definition = getPluginCatalogItem(plugin.pluginKind);
+  const supported = isPluginKindSupported(
+    buildInfo,
+    plugin.type,
+    plugin.pluginKind,
+  );
   const resolvedIcon =
     icon ??
     (definition
@@ -227,6 +234,11 @@ export function PluginDetailTemplate({
                 <Badge variant="outline" className="bg-background/70">
                   {definition?.name ?? plugin.pluginKind}
                 </Badge>
+                {!supported && (
+                  <Badge variant="outline" className="bg-background/70">
+                    未编译
+                  </Badge>
+                )}
               </div>
               {definition?.description && (
                 <p className="mt-2 max-w-2xl text-sm text-muted-foreground">

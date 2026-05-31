@@ -21,6 +21,7 @@
 //! matching or response generation.
 
 mod auth;
+mod build;
 pub mod control;
 mod cors;
 mod global;
@@ -28,11 +29,13 @@ mod handler;
 pub mod health;
 mod hub;
 pub mod logs;
+#[cfg(feature = "metrics")]
 mod metrics;
 mod request;
 mod response;
 mod route;
 mod server;
+#[cfg(feature = "webui")]
 mod static_files;
 
 use std::sync::Arc;
@@ -63,14 +66,18 @@ use crate::core::error::Result;
 pub fn register_builtin_routes() -> Result<()> {
     if let Some(register) = global_api_register() {
         health::register_builtin_routes(&register, register.health_state())?;
+        #[cfg(feature = "metrics")]
         metrics::register_builtin_routes(&register)?;
         logs::register_log_routes(&register)?;
+        build::register_builtin_routes(&register)?;
     }
     Ok(())
 }
 
 /// Register process-wide control routes that need the application controller.
-pub fn register_control_routes(controller: Arc<control::AppController>) -> Result<()> {
+pub fn register_control_routes(
+    controller: Arc<crate::core::app_controller::AppController>,
+) -> Result<()> {
     if let Some(register) = global_api_register() {
         control::register_builtin_routes(&register, controller)?;
     }
@@ -79,77 +86,3 @@ pub fn register_control_routes(controller: Arc<control::AppController>) -> Resul
 
 #[cfg(test)]
 mod tests;
-
-#[macro_export]
-macro_rules! register_plugin_api {
-    ($tag:expr, |$plugin_api:ident| $($method:ident $path:expr => $handler:expr),+ $(,)?) => {{
-        (|| -> $crate::core::error::Result<()> {
-            if let Some(api_register) = $crate::api::global_api_register() {
-                let $plugin_api = api_register.plugin($tag)?;
-                $(
-                    $crate::register_plugin_api!(@register $plugin_api, $method, $path, $handler)?;
-                )+
-            }
-            Ok(())
-        })()
-    }};
-    ($tag:expr, $($method:ident $path:expr => $handler:expr),+ $(,)?) => {{
-        (|| -> $crate::core::error::Result<()> {
-            if let Some(api_register) = $crate::api::global_api_register() {
-                let plugin_api = api_register.plugin($tag)?;
-                $(
-                    $crate::register_plugin_api!(@register plugin_api, $method, $path, $handler)?;
-                )+
-            }
-            Ok(())
-        })()
-    }};
-    (@register $plugin_api:ident, GET, $path:expr, $handler:expr) => {
-        $plugin_api.get($path, std::sync::Arc::new($handler))
-    };
-    (@register $plugin_api:ident, POST, $path:expr, $handler:expr) => {
-        $plugin_api.post($path, std::sync::Arc::new($handler))
-    };
-    (@register $plugin_api:ident, DELETE, $path:expr, $handler:expr) => {
-        $plugin_api.delete($path, std::sync::Arc::new($handler))
-    };
-    (@register $plugin_api:ident, GET_PREFIX, $path:expr, $handler:expr) => {
-        $plugin_api.get_prefix($path, std::sync::Arc::new($handler))
-    };
-    (@register $plugin_api:ident, POST_PREFIX, $path:expr, $handler:expr) => {
-        $plugin_api.post_prefix($path, std::sync::Arc::new($handler))
-    };
-    (@register $plugin_api:ident, DELETE_PREFIX, $path:expr, $handler:expr) => {
-        $plugin_api.delete_prefix($path, std::sync::Arc::new($handler))
-    };
-}
-
-#[macro_export]
-macro_rules! register_api_route {
-    ($method:ident $path:expr => $handler:expr $(,)?) => {{
-        (|| -> $crate::core::error::Result<()> {
-            if let Some(api_register) = $crate::api::global_api_register() {
-                $crate::register_api_route!(@register api_register, $method, $path, $handler)?;
-            }
-            Ok(())
-        })()
-    }};
-    (@register $api_register:ident, GET, $path:expr, $handler:expr) => {
-        $api_register.register_get($path, std::sync::Arc::new($handler))
-    };
-    (@register $api_register:ident, POST, $path:expr, $handler:expr) => {
-        $api_register.register_post($path, std::sync::Arc::new($handler))
-    };
-    (@register $api_register:ident, DELETE, $path:expr, $handler:expr) => {
-        $api_register.register_delete($path, std::sync::Arc::new($handler))
-    };
-    (@register $api_register:ident, GET_PREFIX, $path:expr, $handler:expr) => {
-        $api_register.register_get_prefix($path, std::sync::Arc::new($handler))
-    };
-    (@register $api_register:ident, POST_PREFIX, $path:expr, $handler:expr) => {
-        $api_register.register_post_prefix($path, std::sync::Arc::new($handler))
-    };
-    (@register $api_register:ident, DELETE_PREFIX, $path:expr, $handler:expr) => {
-        $api_register.register_delete_prefix($path, std::sync::Arc::new($handler))
-    };
-}

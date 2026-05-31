@@ -2,6 +2,10 @@ name: Rust CI
 
 on:
   workflow_dispatch:
+  schedule:
+    # Nightly deep feature-powerset sweep (UTC). Only the `feature-powerset`
+    # job runs on this trigger.
+    - cron: "0 18 * * *"
   push:
     branches:
       - main
@@ -37,6 +41,7 @@ env:
 jobs:
   lint:
     name: Lint / Fmt
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -68,8 +73,52 @@ jobs:
       - name: cargo shear
         run: cargo shear
 
+  feature-combos:
+    name: Feature combinations
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system packages on Linux
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ipset nftables
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+          components: clippy
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+
+      # Compile every public feature on its own (plus the bare
+      # no-default-features core). This is what catches "feature X fails to
+      # build in isolation" regressions. The three bundles are features too,
+      # so minimal/standard/full are covered here.
+      - name: Each-feature check
+        run: >
+          cargo +nightly hack check --each-feature --no-dev-deps --locked
+          --exclude-features hotpath,hotpath-alloc,_tls-base,_tls-client,_tls-server,_http-server,_http-client
+
+      # Strict clippy on the slim bundles, including tests/benches, so the
+      # -D warnings gate (unused imports under cfg, etc.) is enforced there
+      # too. full / all-features clippy is covered by the `lint` job.
+      - name: minimal clippy
+        run: cargo +nightly clippy --no-default-features --features minimal --all-targets --locked -- -D warnings
+
+      - name: standard clippy
+        run: cargo +nightly clippy --no-default-features --features standard --all-targets --locked -- -D warnings
+
   test:
     name: Test (${{ matrix.os }}, ${{ matrix.rust }})
+    if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -112,8 +161,37 @@ jobs:
         if: matrix.run_build
         run: cargo build --locked --workspace --all-features --verbose
 
+  test-bundles:
+    name: Test bundles (minimal / standard)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system packages on Linux
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ipset nftables
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # Exercises the cfg(not(feature = ...)) negative tests in
+      # tests/feature_gating.rs and the feature-gated integration tests.
+      - name: Test minimal bundle
+        run: cargo test --locked --no-default-features --features minimal --verbose
+
+      - name: Test standard bundle
+        run: cargo test --locked --no-default-features --features standard --verbose
+
   docs:
     name: Documentation
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -130,3 +208,35 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --locked --workspace --all-features --no-deps
+
+  feature-powerset:
+    name: Feature powerset (nightly)
+    # Expensive depth-2 sweep — only on the nightly schedule or manual dispatch.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system packages on Linux
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ipset nftables
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+
+      # Pairwise combinations of the granular features. Bundles are unions of
+      # the granular flags, so they add no signal here and are excluded.
+      - name: depth-2 powerset check
+        run: >
+          cargo +nightly hack check --feature-powerset --depth 2 --no-dev-deps --locked
+          --exclude-features minimal,standard,full,hotpath,hotpath-alloc,_tls-base,_tls-client,_tls-server,_http-server,_http-client

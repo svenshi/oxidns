@@ -37,10 +37,14 @@ use crate::plugin::{Plugin, PluginFactory};
 use crate::plugin_factory;
 
 mod http2_server;
+#[cfg(feature = "server-doh3")]
 mod http3_server;
 mod http_dispatcher;
 
-pub(crate) const DEFAULT_SERVER_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) use super::DEFAULT_SERVER_IDLE_TIMEOUT;
+
+type StartupResult = std::result::Result<(), String>;
+type StartupTx = oneshot::Sender<StartupResult>;
 
 /// HTTP server configuration
 #[derive(Deserialize)]
@@ -157,11 +161,41 @@ impl std::fmt::Debug for HttpServer {
 }
 
 impl HttpServer {
+    fn send_startup_error(tx: &mut Option<StartupTx>, message: &str) {
+        if let Some(tx) = tx.take() {
+            let _ = tx.send(Err(message.to_string()));
+        }
+    }
+
+    fn validate_http3_startup(&self, h3_startup_tx: &mut Option<StartupTx>) -> Result<()> {
+        if !self.enable_http3.unwrap_or(false) {
+            return Ok(());
+        }
+
+        #[cfg(not(feature = "server-doh3"))]
+        {
+            let message = "HTTP/3 not compiled in; rebuild with --features server-doh3";
+            Self::send_startup_error(h3_startup_tx, message);
+            Err(DnsError::plugin(message))
+        }
+
+        #[cfg(feature = "server-doh3")]
+        {
+            if self.server_config.is_none() {
+                let message = "HTTP/3 requires TLS; cert/key are missing";
+                Self::send_startup_error(h3_startup_tx, message);
+                return Err(DnsError::plugin(message));
+            }
+            Ok(())
+        }
+    }
+
     fn spawn_server_tasks(
         &self,
-        h2_startup_tx: Option<oneshot::Sender<std::result::Result<(), String>>>,
-        h3_startup_tx: Option<oneshot::Sender<std::result::Result<(), String>>>,
+        h2_startup_tx: Option<StartupTx>,
+        h3_startup_tx: Option<StartupTx>,
     ) -> Result<()> {
+        let mut h3_startup_tx = h3_startup_tx;
         let mut task_handles = self
             .task_handles
             .lock()
@@ -176,6 +210,8 @@ impl HttpServer {
             }
             return Ok(());
         }
+
+        self.validate_http3_startup(&mut h3_startup_tx)?;
 
         let listen = self.listen;
         let tls_mode = self.server_config.is_some();
@@ -198,32 +234,53 @@ impl HttpServer {
         )));
 
         if self.enable_http3.unwrap_or(false) {
-            match self.server_config.clone() {
-                Some(cfg) => {
-                    task_handles.push(tokio::spawn(http3_server::run_server(
-                        listen,
-                        self.dispatcher.clone(),
-                        cfg,
-                        self.idle_timeout,
-                        self.src_ip_header.clone(),
-                        self.shutdown_tx.subscribe(),
-                        h3_startup_tx,
-                    )));
-                }
-                None => {
-                    if let Some(tx) = h3_startup_tx {
-                        let _ = tx.send(Err("HTTP/3 requires TLS".to_string()));
-                    }
-                    return Err(DnsError::plugin(
-                        "HTTP/3 requires TLS; cert/key are missing",
-                    ));
-                }
-            };
+            #[cfg(feature = "server-doh3")]
+            {
+                let cfg = self
+                    .server_config
+                    .clone()
+                    .expect("HTTP/3 startup preflight requires TLS");
+                task_handles.push(tokio::spawn(http3_server::run_server(
+                    listen,
+                    self.dispatcher.clone(),
+                    cfg,
+                    self.idle_timeout,
+                    self.src_ip_header.clone(),
+                    self.shutdown_tx.subscribe(),
+                    h3_startup_tx,
+                )));
+            }
         } else if let Some(tx) = h3_startup_tx {
             let _ = tx.send(Ok(()));
         }
 
         Ok(())
+    }
+
+    async fn stop_server_tasks(&self) -> Result<()> {
+        let _ = self.shutdown_tx.send(true);
+        let handles = {
+            let mut task_handles = self
+                .task_handles
+                .lock()
+                .map_err(|_| DnsError::runtime("HTTP server task lock poisoned"))?;
+            std::mem::take(&mut *task_handles)
+        };
+        for handle in handles {
+            let _ = handle.await;
+        }
+        Ok(())
+    }
+
+    async fn cleanup_failed_startup(&self) {
+        unregister_metric_source(&self.tag);
+        if let Err(err) = self.stop_server_tasks().await {
+            warn!(
+                plugin = %self.tag,
+                error = %err,
+                "Failed to clean up HTTP server after startup error"
+            );
+        }
     }
 }
 
@@ -243,47 +300,45 @@ impl Plugin for HttpServer {
             (None, None)
         };
 
-        self.spawn_server_tasks(Some(h2_tx), h3_tx)?;
+        let startup_result = async {
+            self.spawn_server_tasks(Some(h2_tx), h3_tx)?;
 
-        match h2_rx.await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(DnsError::plugin(e)),
-            Err(_) => {
-                return Err(DnsError::plugin(
-                    "HTTP/2 server startup channel closed unexpectedly",
-                ));
-            }
-        }
-
-        if let Some(h3_rx) = h3_rx {
-            match h3_rx.await {
+            match h2_rx.await {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => return Err(DnsError::plugin(e)),
                 Err(_) => {
                     return Err(DnsError::plugin(
-                        "HTTP/3 server startup channel closed unexpectedly",
+                        "HTTP/2 server startup channel closed unexpectedly",
                     ));
                 }
             }
+
+            if let Some(h3_rx) = h3_rx {
+                match h3_rx.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => return Err(DnsError::plugin(e)),
+                    Err(_) => {
+                        return Err(DnsError::plugin(
+                            "HTTP/3 server startup channel closed unexpectedly",
+                        ));
+                    }
+                }
+            }
+
+            Ok(())
+        }
+        .await;
+
+        if startup_result.is_err() {
+            self.cleanup_failed_startup().await;
         }
 
-        Ok(())
+        startup_result
     }
 
     async fn destroy(&self) -> Result<()> {
         unregister_metric_source(&self.tag);
-        let _ = self.shutdown_tx.send(true);
-        let handles = {
-            let mut task_handles = self
-                .task_handles
-                .lock()
-                .map_err(|_| DnsError::runtime("HTTP server task lock poisoned"))?;
-            std::mem::take(&mut *task_handles)
-        };
-        for handle in handles {
-            let _ = handle.await;
-        }
-        Ok(())
+        self.stop_server_tasks().await
     }
 }
 
@@ -483,12 +538,97 @@ pub fn extract_client_ip(
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::{Arc, Mutex};
 
     use http::HeaderMap;
     use serde_yaml_ng::from_str;
+    use tokio::sync::{oneshot, watch};
 
     use super::*;
-    use crate::plugin::test_utils::plugin_config;
+    use crate::plugin::test_utils::{plugin_config, test_registry};
+    use crate::plugin::{PluginCreateContext, PluginInitContext};
+
+    fn test_http_server(
+        listen: SocketAddr,
+        enable_http3: Option<bool>,
+        server_config: Option<ServerConfig>,
+    ) -> HttpServer {
+        HttpServer {
+            tag: "http_test".to_string(),
+            entries: Vec::new(),
+            listen,
+            src_ip_header: None,
+            dispatcher: Arc::new(HttpDispatcher::new()),
+            server_config,
+            idle_timeout: DEFAULT_SERVER_IDLE_TIMEOUT,
+            enable_http3,
+            http2_alt_svc: http2_alt_svc_for_config(enable_http3, listen)
+                .expect("Alt-Svc initialization should succeed"),
+            shutdown_tx: watch::channel(false).0,
+            task_handles: Mutex::new(Vec::new()),
+            metrics: Arc::new(ServerMetrics::new("http_test".to_string(), "doh")),
+        }
+    }
+
+    #[cfg(not(feature = "server-doh3"))]
+    #[tokio::test]
+    async fn test_http3_feature_gate_rejects_before_spawning_http2() {
+        let server = test_http_server(SocketAddr::from(([127, 0, 0, 1], 0)), Some(true), None);
+        let (h2_tx, h2_rx) = oneshot::channel();
+        let (h3_tx, h3_rx) = oneshot::channel();
+
+        let err = server
+            .spawn_server_tasks(Some(h2_tx), Some(h3_tx))
+            .expect_err("HTTP/3 should be rejected before spawning listeners");
+
+        assert!(err.to_string().contains("HTTP/3 not compiled in"));
+        assert!(server.task_handles.lock().unwrap().is_empty());
+        assert!(h2_rx.await.is_err());
+        assert!(matches!(
+            h3_rx.await,
+            Ok(Err(message)) if message.contains("HTTP/3 not compiled in")
+        ));
+    }
+
+    #[cfg(feature = "server-doh3")]
+    #[tokio::test]
+    async fn test_http3_tls_requirement_rejects_before_spawning_http2() {
+        let server = test_http_server(SocketAddr::from(([127, 0, 0, 1], 0)), Some(true), None);
+        let (h2_tx, h2_rx) = oneshot::channel();
+        let (h3_tx, h3_rx) = oneshot::channel();
+
+        let err = server
+            .spawn_server_tasks(Some(h2_tx), Some(h3_tx))
+            .expect_err("HTTP/3 without TLS should be rejected before spawning listeners");
+
+        assert!(err.to_string().contains("HTTP/3 requires TLS"));
+        assert!(server.task_handles.lock().unwrap().is_empty());
+        assert!(h2_rx.await.is_err());
+        assert!(matches!(
+            h3_rx.await,
+            Ok(Err(message)) if message.contains("HTTP/3 requires TLS")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_http_init_cleans_up_task_handles_when_startup_fails() {
+        let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("test listener should bind");
+        let listen = listener.local_addr().expect("listener should have address");
+        let mut server = test_http_server(listen, Some(false), None);
+        let create_context = PluginCreateContext::default();
+        let init_context =
+            PluginInitContext::new(test_registry(), "http_test".to_string(), &create_context);
+
+        let err = server
+            .init(&init_context)
+            .await
+            .expect_err("HTTP/2 bind conflict should fail startup");
+
+        assert!(err.to_string().contains("Failed to bind HTTP socket"));
+        assert!(server.task_handles.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn test_http_factory_requires_args() {

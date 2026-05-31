@@ -16,12 +16,14 @@ use tracing::{debug, error, trace, warn};
 
 use crate::core::app_clock::AppClock;
 use crate::core::error::{DnsError, Result};
-use crate::network::transport::tcp_transport::{
-    TcpTransport, TcpTransportReader, TcpTransportWriter,
-};
+#[cfg(feature = "upstream-dot")]
+use crate::network::transport::tcp_transport::TcpTransport;
+use crate::network::transport::tcp_transport::{TcpTransportReader, TcpTransportWriter};
 use crate::network::upstream::pool::request_map::RequestMap;
 use crate::network::upstream::pool::{Connection, ConnectionBuilder};
-use crate::network::upstream::utils::{connect_stream, connect_tls};
+use crate::network::upstream::utils::connect_stream;
+#[cfg(feature = "upstream-dot")]
+use crate::network::upstream::utils::connect_tls;
 use crate::network::upstream::{ConnectionInfo, ConnectionType, Socks5Opt};
 use crate::proto::Message;
 
@@ -335,6 +337,7 @@ pub struct TcpConnectionBuilder {
     timeout: Duration,
     tls_enabled: bool,
     server_name: String,
+    #[cfg_attr(not(feature = "upstream-dot"), allow(dead_code))]
     insecure_skip_verify: bool,
     connection_type: ConnectionType,
     request_map_capacity: u16,
@@ -345,11 +348,15 @@ pub struct TcpConnectionBuilder {
 
 impl TcpConnectionBuilder {
     pub fn new(connection_info: &ConnectionInfo, request_map_capacity: u16) -> Self {
+        #[cfg(feature = "upstream-dot")]
+        let tls_enabled = matches!(connection_info.connection_type, ConnectionType::DoT);
+        #[cfg(not(feature = "upstream-dot"))]
+        let tls_enabled = false;
         Self {
             remote_ip: connection_info.remote_ip,
             port: connection_info.port,
             timeout: connection_info.timeout,
-            tls_enabled: matches!(connection_info.connection_type, ConnectionType::DoT),
+            tls_enabled,
             server_name: connection_info.server_name.clone(),
             insecure_skip_verify: connection_info.insecure_skip_verify,
             connection_type: connection_info.connection_type,
@@ -397,22 +404,30 @@ impl ConnectionBuilder<TcpConnection> for TcpConnectionBuilder {
         let arc = Arc::new(connection);
 
         if self.tls_enabled {
-            let tls_stream = connect_tls(
-                stream,
-                self.insecure_skip_verify,
-                self.server_name.clone(),
-                self.timeout,
-                vec![b"dot".to_vec()],
-            )
-            .await?;
+            #[cfg(feature = "upstream-dot")]
+            {
+                let tls_stream = connect_tls(
+                    stream,
+                    self.insecure_skip_verify,
+                    self.server_name.clone(),
+                    self.timeout,
+                    vec![b"dot".to_vec()],
+                )
+                .await?;
 
-            let transport = TcpTransport::new(tls_stream);
-            let (reader, writer) = transport.into_split();
-            tokio::spawn(TcpConnection::listen_dns_response(arc.clone(), reader));
-            tokio::spawn(TcpConnection::send_dns_request(
-                arc.clone(),
-                writer,
-                receiver,
+                let transport = TcpTransport::new(tls_stream);
+                let (reader, writer) = transport.into_split();
+                tokio::spawn(TcpConnection::listen_dns_response(arc.clone(), reader));
+                tokio::spawn(TcpConnection::send_dns_request(
+                    arc.clone(),
+                    writer,
+                    receiver,
+                ));
+            }
+            #[cfg(not(feature = "upstream-dot"))]
+            return Err(DnsError::plugin(
+                "upstream DoT is not compiled into this build; \
+                 rebuild with --features upstream-dot",
             ));
         } else {
             // Plain TCP can be split into independent owned halves, avoiding
@@ -437,8 +452,10 @@ impl ConnectionBuilder<TcpConnection> for TcpConnectionBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "upstream-dot")]
     use crate::network::upstream::ConnectionType;
 
+    #[cfg(feature = "upstream-dot")]
     #[test]
     fn test_builder_new_marks_dot_connections_as_tls_enabled() {
         let mut connection_info = ConnectionInfo::with_addr("tls://dns.example.com:853")

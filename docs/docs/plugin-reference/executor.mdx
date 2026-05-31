@@ -2408,6 +2408,7 @@ old-static.example.com static.example.net
   args:
       repository: svenshi/oxidns
       asset: auto
+      bundle: auto
       github_token: ghp_xxx
       cache_dir: ./upgrade/cache
       backup_dir: ./upgrade/backups
@@ -2434,7 +2435,12 @@ old-static.example.com static.example.net
 - `repository`
     - GitHub 仓库，默认 `svenshi/oxidns`。
 - `asset`
-    - Release asset 名称；`auto` 会按当前平台选择 archive。
+    - Release asset 名称；`auto` 会按当前平台和编译版本选择 archive。
+    - 显式填写 asset 时优先级最高，不再根据 `bundle` 推导。
+- `bundle`
+    - 类型：`auto | full | standard | minimal`
+    - 默认值：`auto`
+    - 当 `asset: auto` 时选择 release 编译版本。`full` 使用旧资产名，`standard` / `minimal` 使用带 bundle 前缀的 slim 资产名。
 - `github_token`
     - GitHub 个人访问令牌，用于提高 API 速率限制或访问私有仓库。
     - 会作为 GitHub API 请求的 Bearer token 使用。
@@ -2463,6 +2469,7 @@ old-static.example.com static.example.net
 - 默认只有检测到新版本才会更新；`force: true` 会强制更新。
 - 默认升级成功后会清理缓存和备份；如需保留回滚文件，设置 `cleanup: false`。
 - 升级时会下载 archive，并使用 GitHub release asset 的 `digest` 字段校验 SHA256。
+- `asset: auto` 会根据 `bundle` 选择 archive；`bundle: auto` 跟随当前二进制的编译版本，custom 构建需要显式设置 `bundle` 或 `asset`。
 - Unix 平台解包 `.tar.gz`、备份当前二进制并替换；Windows 当前不支持插件升级。
 - 默认在替换二进制后，将 archive 中的 `webui/` 目录备份并安装到 `webui_dir`；`skip_webui: true` 可跳过。archive 不含 `webui/`（旧版本 release）时会跳过 WebUI 升级且不影响二进制升级结果。
 
@@ -2472,6 +2479,7 @@ old-static.example.com static.example.net
 - exec: upgrade
 - exec: upgrade force
 - exec: upgrade force=false
+- exec: upgrade bundle=standard
 ```
 
 - 空参数使用默认配置执行 apply。

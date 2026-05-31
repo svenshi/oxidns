@@ -112,7 +112,7 @@ impl Bootstrap {
         })?;
 
         Ok(Bootstrap {
-            upstream: UpstreamBuilder::with_connection_info(bootstrap_info),
+            upstream: UpstreamBuilder::with_connection_info(bootstrap_info)?,
             state: AtomicU8::new(STATE_NONE),
             cache: RwLock::new(None),
             query_done: Notify::new(),

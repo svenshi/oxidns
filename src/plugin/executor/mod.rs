@@ -30,11 +30,14 @@ use crate::core::error::Result;
 use crate::plugin::Plugin;
 pub use crate::plugin::executor::sequence::chain::ExecutorNext;
 
+#[cfg(feature = "plugin-arbitrary")]
 pub mod arbitrary;
 pub mod black_hole;
 pub mod cache;
+#[cfg(feature = "plugin-cron")]
 pub mod cron;
 pub mod debug_print;
+#[cfg(feature = "plugin-download")]
 pub mod download;
 pub mod drop_resp;
 pub mod dual_selector;
@@ -43,23 +46,33 @@ pub mod fallback;
 pub mod forward;
 pub mod forward_edns0opt;
 pub mod hosts;
+#[cfg(feature = "plugin-http-request")]
 pub mod http_request;
 pub mod ip_selector;
+#[cfg(feature = "plugin-ipset")]
 pub mod ipset;
+#[cfg(feature = "metrics")]
 pub mod metrics_collector;
+#[cfg(feature = "plugin-ipset")]
 pub mod nftset;
+#[cfg(feature = "plugin-query-recorder")]
 pub mod query_recorder;
 pub mod query_summary;
 pub mod redirect;
 pub mod reload;
 pub mod reload_provider;
+#[cfg(feature = "plugin-reverse-lookup")]
 pub mod reverse_lookup;
+#[cfg(feature = "plugin-mikrotik")]
 pub mod ros_address_list;
+#[cfg(feature = "plugin-script")]
 pub mod script;
 pub mod sequence;
 pub mod sleep;
+#[cfg(any(feature = "plugin-http-request", feature = "plugin-script"))]
 pub(crate) mod template;
 pub mod ttl;
+#[cfg(feature = "plugin-upgrade")]
 pub mod upgrade;
 
 // Helper macro to continue to next chain node if present

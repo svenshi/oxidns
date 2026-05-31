@@ -1643,10 +1643,25 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "asset",
-        description: "Release asset 名称；auto 会按当前平台选择 archive。",
+        description:
+          "Release asset 名称；auto 会根据当前平台和编译版本选择 archive。",
         label: "Release Asset",
         type: "text",
         default: "auto",
+      },
+      {
+        key: "bundle",
+        description:
+          "asset 为 auto 时使用的编译版本；auto 会跟随当前二进制的编译版本。",
+        label: "编译版本",
+        type: "select",
+        default: "auto",
+        options: [
+          { label: "Auto", value: "auto" },
+          { label: "Full", value: "full" },
+          { label: "Standard", value: "standard" },
+          { label: "Minimal", value: "minimal" },
+        ],
       },
       {
         key: "github_token",

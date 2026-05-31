@@ -26,9 +26,9 @@ flowchart LR
   <div className="doc-plugin-card" style={{display: 'flex', gap: '1.25rem', alignItems: 'flex-start'}}>
     <div style={{flexShrink: 0, width: '2.2rem', height: '2.2rem', borderRadius: '50%', background: 'var(--ifm-color-primary)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: '0.95rem', marginTop: '0.1rem'}}>1</div>
     <div>
-      <div className="doc-plugin-card__eyebrow">第一阶段</div>
+      <div className="doc-plugin-card__eyebrow">第一阶段 · 已完成 ✓</div>
       <h3 className="doc-plugin-card__title">编译定制化</h3>
-      <p style={{margin: '0.4rem 0 0', lineHeight: 1.7}}>按功能模块拆分编译，用户 fork 仓库后可自由组合所需插件，构建精简的定制版本，并通过自定义仓库地址实现自动更新。</p>
+      <p style={{margin: '0.4rem 0 0', lineHeight: 1.7}}>按功能模块拆分编译，用户 fork 仓库后可自由组合所需插件，构建精简的定制版本，并通过自定义仓库地址实现自动更新。<br/><strong>已完成</strong>：<code>minimal</code> / <code>standard</code> / <code>full</code> 三档组合包；每个协议栈与管理面都已 feature 化 —— <code>api</code> / <code>webui</code> / <code>metrics</code>、<code>server-dot</code> / <code>server-doh</code> / <code>server-doq</code> / <code>server-doh3</code>、<code>upstream-dot</code> / <code>upstream-doh</code> / <code>upstream-doq</code> / <code>upstream-doh3</code>,以及 MikroTik、query_recorder、ipset/nftset、cron、script、upgrade、download、http_request、reverse_lookup、geo provider、adguard_rule 均可单独裁剪。<code>AppController</code> / <code>LogBuffer</code> 已下沉到 <code>src/core/</code>,因此 <code>minimal</code> 构建排除了 hyper / rustls / quinn,release 二进制约为 <code>full</code> 的 40%(≈ 8.9 MB vs 21 MB)。详见 <a href="/docs/custom-build">自定义编译</a>。</p>
     </div>
   </div>
 

@@ -5,18 +5,31 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket as StdUdpSocket
 use std::path::PathBuf;
 #[cfg(target_os = "linux")]
 use std::process::Command;
-use std::sync::{Arc as StdArc, Arc};
+use std::sync::Arc;
+#[cfg(feature = "plugin-script")]
+use std::sync::Arc as StdArc;
 
+// The HTTP / SOCKS5 mock-server helpers are only compiled when a feature that
+// exercises the shared HTTP client (download / http_request) is enabled.
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 use bytes::Bytes;
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 use http_body_util::{BodyExt, Full};
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 use hyper::header::LOCATION;
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 use hyper::server::conn::http1;
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 use hyper::service::service_fn;
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 use hyper::{Request, Response, StatusCode};
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 use hyper_util::rt::TokioIo;
 use oxidns::config::types::Config;
 use oxidns::core::app_clock::AppClock;
-use oxidns::core::context::{DnsContext, RequestMeta};
+use oxidns::core::context::DnsContext;
+#[cfg(feature = "plugin-script")]
+use oxidns::core::context::RequestMeta;
 use oxidns::core::error::{DnsError, Result};
 use oxidns::network::transport::udp_transport::UdpTransport;
 use oxidns::plugin;
@@ -24,8 +37,12 @@ use oxidns::plugin::executor::ExecStep;
 use oxidns::plugin::{PluginRegistry, PluginType};
 use oxidns::proto::{DNSClass, Message, Name, Question, Rcode, RecordType};
 use tempfile::TempDir;
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::net::UdpSocket;
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
+use tokio::net::{TcpListener, TcpStream};
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 use tokio::sync::mpsc;
 #[cfg(target_os = "linux")]
 use tokio::time::sleep;
@@ -73,11 +90,13 @@ fn yaml_path(path: &std::path::Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+#[cfg(feature = "plugin-script")]
 #[cfg(unix)]
 fn platform_script_command(script_path: &std::path::Path) -> (String, Vec<String>) {
     ("sh".to_string(), vec![yaml_path(script_path)])
 }
 
+#[cfg(feature = "plugin-script")]
 #[cfg(windows)]
 fn platform_script_command(script_path: &std::path::Path) -> (String, Vec<String>) {
     (
@@ -86,6 +105,7 @@ fn platform_script_command(script_path: &std::path::Path) -> (String, Vec<String
     )
 }
 
+#[cfg(feature = "plugin-script")]
 #[cfg(unix)]
 fn write_capture_script(
     script_path: &std::path::Path,
@@ -110,6 +130,7 @@ fn write_capture_script(
     Ok(())
 }
 
+#[cfg(feature = "plugin-script")]
 #[cfg(windows)]
 fn write_capture_script(
     script_path: &std::path::Path,
@@ -125,24 +146,28 @@ fn write_capture_script(
     Ok(())
 }
 
+#[cfg(feature = "plugin-script")]
 #[cfg(unix)]
 fn write_timeout_script(script_path: &std::path::Path) -> Result<()> {
     std::fs::write(script_path, "#!/bin/sh\nsleep 3\n")?;
     Ok(())
 }
 
+#[cfg(feature = "plugin-script")]
 #[cfg(windows)]
 fn write_timeout_script(script_path: &std::path::Path) -> Result<()> {
     std::fs::write(script_path, "@echo off\r\nping 127.0.0.1 -n 4 >nul\r\n")?;
     Ok(())
 }
 
+#[cfg(feature = "plugin-script")]
 #[cfg(unix)]
 fn write_failure_script(script_path: &std::path::Path, code: i32) -> Result<()> {
     std::fs::write(script_path, format!("#!/bin/sh\nexit {}\n", code))?;
     Ok(())
 }
 
+#[cfg(feature = "plugin-script")]
 #[cfg(windows)]
 fn write_failure_script(script_path: &std::path::Path, code: i32) -> Result<()> {
     std::fs::write(script_path, format!("@echo off\r\nexit /b {}\r\n", code))?;
@@ -187,6 +212,7 @@ async fn exchange_udp_query_with_qtype(
         .map_err(|_| DnsError::runtime("timed out waiting for UDP server response"))?
 }
 
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 async fn start_test_http_server(
     routes: Vec<(&'static str, StatusCode, &'static str)>,
 ) -> Result<SocketAddr> {
@@ -213,6 +239,7 @@ async fn start_tcp_probe_server() -> Result<SocketAddr> {
     Ok(addr)
 }
 
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 #[derive(Clone)]
 struct TestHttpRoute {
     path: String,
@@ -222,6 +249,7 @@ struct TestHttpRoute {
     response_delay: Option<Duration>,
 }
 
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 impl TestHttpRoute {
     fn new(path: String, status: StatusCode, body: Vec<u8>) -> Self {
         Self {
@@ -235,6 +263,7 @@ impl TestHttpRoute {
 }
 
 #[derive(Debug, Clone)]
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 struct CapturedHttpRequest {
     method: String,
     path: String,
@@ -243,6 +272,7 @@ struct CapturedHttpRequest {
     body: Vec<u8>,
 }
 
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 impl CapturedHttpRequest {
     fn header(&self, name: &str) -> Option<&str> {
         self.headers
@@ -256,6 +286,7 @@ impl CapturedHttpRequest {
     }
 }
 
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 async fn start_test_http_server_routes(routes: Vec<TestHttpRoute>) -> Result<SocketAddr> {
     let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
     let addr = listener.local_addr()?;
@@ -311,6 +342,7 @@ async fn start_test_http_server_routes(routes: Vec<TestHttpRoute>) -> Result<Soc
     Ok(addr)
 }
 
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 async fn start_recording_http_server_routes(
     routes: Vec<TestHttpRoute>,
 ) -> Result<(SocketAddr, mpsc::UnboundedReceiver<CapturedHttpRequest>)> {
@@ -394,6 +426,7 @@ async fn start_recording_http_server_routes(
     Ok((addr, rx))
 }
 
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 async fn wait_for_captured_request(
     rx: &mut mpsc::UnboundedReceiver<CapturedHttpRequest>,
 ) -> Result<CapturedHttpRequest> {
@@ -403,6 +436,7 @@ async fn wait_for_captured_request(
         .ok_or_else(|| DnsError::runtime("recording HTTP server channel closed unexpectedly"))
 }
 
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 async fn start_test_socks5_proxy() -> Result<SocketAddr> {
     let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
     let addr = listener.local_addr()?;
@@ -421,6 +455,7 @@ async fn start_test_socks5_proxy() -> Result<SocketAddr> {
     Ok(addr)
 }
 
+#[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 async fn handle_test_socks5_client(mut client: TcpStream) -> Result<()> {
     let mut greeting = [0u8; 2];
     client.read_exact(&mut greeting).await?;
@@ -1715,6 +1750,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "provider-adguard-rule")]
 #[tokio::test]
 async fn test_domain_set_can_compose_adguard_rule_provider() -> Result<()> {
     let yaml = r#"
@@ -1928,6 +1964,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "provider-protobuf")]
 #[tokio::test]
 async fn test_geoip_provider_loads_cn_rules_and_is_case_insensitive() -> Result<()> {
     let geoip_dat = test_rule_path("geoip.dat");
@@ -1968,6 +2005,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "provider-protobuf")]
 #[tokio::test]
 async fn test_geoip_provider_without_selectors_loads_full_union() -> Result<()> {
     let geoip_dat = test_rule_path("geoip.dat");
@@ -2006,6 +2044,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "provider-protobuf")]
 #[tokio::test]
 async fn test_geosite_provider_loads_requested_selectors_and_supports_question() -> Result<()> {
     let geosite_dat = test_rule_path("geosite.dat");
@@ -2056,6 +2095,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "provider-protobuf")]
 #[tokio::test]
 async fn test_geosite_provider_without_selectors_loads_full_union() -> Result<()> {
     let geosite_dat = test_rule_path("geosite.dat");
@@ -2092,6 +2132,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "provider-protobuf")]
 #[tokio::test]
 async fn test_geosite_provider_supports_code_attribute_selector() -> Result<()> {
     let geosite_dat = test_rule_path("geosite.dat");
@@ -2133,6 +2174,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "provider-protobuf")]
 #[tokio::test]
 async fn test_matchers_can_reference_geo_providers_directly() -> Result<()> {
     let geoip_dat = test_rule_path("geoip.dat");
@@ -2203,6 +2245,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "provider-protobuf")]
 #[tokio::test]
 async fn test_set_providers_can_compose_geo_providers() -> Result<()> {
     let geoip_dat = test_rule_path("geoip.dat");
@@ -2463,6 +2506,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "provider-protobuf")]
 #[tokio::test]
 async fn test_geo_provider_failure_paths_are_reported() -> Result<()> {
     let geoip_dat = test_rule_path("geoip.dat");
@@ -2568,6 +2612,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "provider-adguard-rule")]
 #[tokio::test]
 async fn test_adguard_rule_provider_drives_question_matcher_branch() -> Result<()> {
     let yaml = r#"
@@ -2641,6 +2686,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "provider-adguard-rule")]
 #[tokio::test]
 async fn test_adguard_rule_provider_drives_qname_matcher_branch() -> Result<()> {
     let yaml = r#"
@@ -2683,6 +2729,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "provider-adguard-rule")]
 #[tokio::test]
 async fn test_adguard_rule_provider_loads_rules_from_file() -> Result<()> {
     let adguard_rules = test_rule_path("adguard_rule_1.txt");
@@ -2970,6 +3017,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-cron")]
 #[tokio::test]
 async fn test_cron_plugin_init_accepts_interval_and_quick_setup_executor() -> Result<()> {
     let yaml = r#"
@@ -3002,6 +3050,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-cron")]
 #[tokio::test]
 async fn test_cron_plugin_init_accepts_schedule_job() -> Result<()> {
     let yaml = r#"
@@ -3034,6 +3083,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-cron")]
 #[tokio::test]
 async fn test_cron_plugin_init_rejects_invalid_timezone() -> Result<()> {
     let yaml = r#"
@@ -3060,6 +3110,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-cron")]
 #[tokio::test]
 async fn test_cron_plugin_init_rejects_second_level_schedule() -> Result<()> {
     let yaml = r#"
@@ -3085,6 +3136,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-cron")]
 #[tokio::test]
 async fn test_cron_plugin_init_rejects_second_level_interval() -> Result<()> {
     let yaml = r#"
@@ -3110,6 +3162,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-cron")]
 #[tokio::test]
 async fn test_cron_plugin_init_rejects_cron_dependency() -> Result<()> {
     let yaml = r#"
@@ -3140,6 +3193,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-download")]
 #[tokio::test]
 async fn test_download_executor_continues_after_item_failure() -> Result<()> {
     let server_addr = start_test_http_server(vec![
@@ -3191,6 +3245,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-download")]
 #[tokio::test]
 async fn test_download_executor_supports_socks5_proxy() -> Result<()> {
     let server_addr =
@@ -3236,6 +3291,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-download")]
 #[tokio::test]
 async fn test_download_executor_startup_if_missing_bootstraps_files_before_provider_init()
 -> Result<()> {
@@ -3301,6 +3357,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-download")]
 #[tokio::test]
 async fn test_sequence_download_quick_setup_executes_and_overwrites_target() -> Result<()> {
     let server_addr =
@@ -3341,6 +3398,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-script")]
 #[tokio::test]
 async fn test_script_executor_injects_context_into_args_and_env() -> Result<()> {
     let tmp_dir = TempDir::new().expect("temp dir should be created");
@@ -3422,6 +3480,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-script")]
 #[tokio::test]
 async fn test_script_executor_timeout_continue_returns_next() -> Result<()> {
     let tmp_dir = TempDir::new().expect("temp dir should be created");
@@ -3466,6 +3525,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-script")]
 #[tokio::test]
 async fn test_script_executor_failure_stop_returns_stop() -> Result<()> {
     let tmp_dir = TempDir::new().expect("temp dir should be created");
@@ -3509,6 +3569,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-script")]
 #[tokio::test]
 async fn test_script_executor_failure_fail_returns_error() -> Result<()> {
     let tmp_dir = TempDir::new().expect("temp dir should be created");
@@ -3555,6 +3616,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-http-request")]
 #[tokio::test]
 async fn test_http_request_executor_sync_before_get_sends_headers_and_query_params() -> Result<()> {
     let (server_addr, mut rx) = start_recording_http_server_routes(vec![TestHttpRoute::new(
@@ -3617,6 +3679,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-http-request")]
 #[tokio::test]
 async fn test_http_request_executor_sync_after_post_json_uses_response_placeholders() -> Result<()>
 {
@@ -3676,6 +3739,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-http-request")]
 #[tokio::test]
 async fn test_http_request_executor_supports_raw_body_and_content_type() -> Result<()> {
     let (server_addr, mut rx) = start_recording_http_server_routes(vec![TestHttpRoute::new(
@@ -3719,6 +3783,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-http-request")]
 #[tokio::test]
 async fn test_http_request_executor_supports_form_body_encoding() -> Result<()> {
     let (server_addr, mut rx) = start_recording_http_server_routes(vec![TestHttpRoute::new(
@@ -3770,6 +3835,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-http-request")]
 #[tokio::test]
 async fn test_http_request_executor_follows_redirects() -> Result<()> {
     let mut redirect = TestHttpRoute::new("/start".to_string(), StatusCode::FOUND, Vec::new());
@@ -3813,6 +3879,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-http-request")]
 #[tokio::test]
 async fn test_http_request_executor_supports_socks5_proxy() -> Result<()> {
     let (server_addr, mut rx) = start_recording_http_server_routes(vec![TestHttpRoute::new(
@@ -3855,6 +3922,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-http-request")]
 #[tokio::test]
 async fn test_http_request_executor_error_modes_map_sync_failures() -> Result<()> {
     let server_addr =
@@ -3903,6 +3971,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-http-request")]
 #[tokio::test]
 async fn test_http_request_executor_async_mode_enqueues_and_sends_in_background() -> Result<()> {
     let (server_addr, mut rx) = start_recording_http_server_routes(vec![TestHttpRoute::new(
@@ -3945,6 +4014,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-http-request")]
 #[tokio::test]
 async fn test_http_request_executor_async_queue_full_returns_stop() -> Result<()> {
     let mut slow_route = TestHttpRoute::new("/slow".to_string(), StatusCode::OK, b"ok".to_vec());
@@ -3988,6 +4058,7 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "plugin-http-request")]
 #[tokio::test]
 async fn test_http_request_executor_async_closed_channel_returns_stop() -> Result<()> {
     let server_addr = start_test_http_server(vec![("/closed", StatusCode::OK, "ok")]).await?;

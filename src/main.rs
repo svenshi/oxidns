@@ -8,7 +8,9 @@
 
 use oxidns::app::cli::{self, Command};
 use oxidns::core::error::Result;
-use oxidns::{app, service, upgrade};
+#[cfg(feature = "plugin-upgrade")]
+use oxidns::upgrade;
+use oxidns::{app, service};
 
 fn main() -> Result<()> {
     #[cfg(windows)]
@@ -19,11 +21,14 @@ fn main() -> Result<()> {
     match cli::parse_cli().command {
         Command::Start(start) => app::run(start),
         Command::Check(check) => app::check(check),
+        Command::BuildInfo => app::print_build_info(),
+        #[cfg(feature = "provider-protobuf")]
         Command::ExportDat(export) => app::export_dat::run(export),
         Command::Service(service_opts) => service::run(service_opts),
+        #[cfg(feature = "plugin-upgrade")]
         Command::Upgrade(upgrade_opts) => {
             let action = upgrade_opts.action.unwrap_or(cli::UpgradeAction::Apply);
-            let config = upgrade::UpgradeConfig::from_cli(&upgrade_opts);
+            let config = upgrade::UpgradeConfig::from_cli(&upgrade_opts)?;
             upgrade::run_cli(action, config)
         }
     }

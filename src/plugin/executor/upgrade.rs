@@ -21,7 +21,7 @@ use crate::core::system_utils::parse_simple_duration;
 use crate::plugin::executor::{ExecStep, Executor};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;
-use crate::upgrade::{self, UpgradeConfig};
+use crate::upgrade::{self, UpgradeBundle, UpgradeConfig};
 
 #[derive(Debug)]
 struct UpgradeExecutor {
@@ -51,6 +51,7 @@ impl Executor for UpgradeExecutor {
             plugin = %self.tag,
             repository = %self.config.repository,
             asset = %self.config.asset,
+            bundle = %self.config.bundle.as_str(),
             cache_dir = %self.config.cache_dir.display(),
             backup_dir = %self.config.backup_dir.display(),
             webui_dir = %self.config.webui_dir.display(),
@@ -153,6 +154,7 @@ impl PluginFactory for UpgradeFactory {
 struct UpgradePluginConfig {
     repository: Option<String>,
     asset: Option<String>,
+    bundle: Option<UpgradeBundle>,
     cache_dir: Option<PathBuf>,
     backup_dir: Option<PathBuf>,
     webui_dir: Option<PathBuf>,
@@ -175,6 +177,9 @@ impl UpgradePluginConfig {
         }
         if let Some(value) = self.asset {
             config.asset = value;
+        }
+        if let Some(value) = self.bundle {
+            config.bundle = value;
         }
         if let Some(value) = self.cache_dir {
             config.cache_dir = value;
@@ -260,6 +265,11 @@ fn parse_quick_setup(param: Option<String>) -> Result<UpgradeConfig> {
             }
             "github_token" => {
                 config.github_token = Some(value.to_string());
+            }
+            "bundle" => {
+                config.bundle = UpgradeBundle::from_user_value(value).map_err(|err| {
+                    DnsError::plugin(format!("invalid upgrade quick setup bundle: {err}"))
+                })?;
             }
             _ => {
                 return Err(DnsError::plugin(format!(
@@ -354,6 +364,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_upgrade_config_accepts_bundle() {
+        let value = serde_yaml_ng::from_str::<Value>("bundle: standard").unwrap();
+        let parsed = parse_upgrade_config(Some(value)).unwrap();
+        let config = parsed.into_upgrade_config().unwrap();
+        assert_eq!(config.bundle, UpgradeBundle::Standard);
+    }
+
+    #[test]
+    fn parse_upgrade_config_rejects_invalid_bundle() {
+        let value = serde_yaml_ng::from_str::<Value>("bundle: tiny").unwrap();
+        let err = parse_upgrade_config(Some(value)).unwrap_err();
+        assert!(err.to_string().contains("unknown variant `tiny`"));
+    }
+
+    #[test]
     fn parse_upgrade_config_rejects_cli_style_github_token_alias() {
         let value = serde_yaml_ng::from_str::<Value>("github-token: ghp_test").unwrap();
         let err = parse_upgrade_config(Some(value)).unwrap_err();
@@ -423,12 +448,13 @@ mod tests {
     #[test]
     fn quick_setup_accepts_apply_options() {
         let config = parse_quick_setup(Some(
-            "force=true no_restart=true github_token=ghp_test".to_string(),
+            "force=true no_restart=true github_token=ghp_test bundle=standard".to_string(),
         ))
         .unwrap();
         assert!(config.force);
         assert!(config.no_restart);
         assert_eq!(config.github_token.as_deref(), Some("ghp_test"));
+        assert_eq!(config.bundle, UpgradeBundle::Standard);
         assert_eq!(config.repository, "svenshi/oxidns");
     }
 

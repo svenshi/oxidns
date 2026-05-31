@@ -12,6 +12,7 @@ use http::{Request, StatusCode};
 use serde::Serialize;
 
 use crate::api::{ApiHandler, ApiRegister, json_ok, simple_response};
+use crate::build_info::PRIMARY_BUNDLE;
 use crate::core::VERSION;
 use crate::core::app_clock::AppClock;
 use crate::core::error::Result;
@@ -61,6 +62,7 @@ impl HealthState {
                 "not_ready"
             },
             version: VERSION,
+            build_bundle: PRIMARY_BUNDLE,
             uptime_ms: AppClock::elapsed_millis().saturating_sub(self.started_at_ms),
             checks: HealthChecks {
                 api: bool_status(api_listening),
@@ -85,6 +87,7 @@ impl Default for HealthState {
 struct HealthSnapshot {
     status: &'static str,
     version: &'static str,
+    build_bundle: &'static str,
     uptime_ms: u64,
     checks: HealthChecks,
     plugins: HealthPluginCounts,
@@ -238,6 +241,7 @@ mod tests {
         let body = std::str::from_utf8(&body).expect("utf8 json");
         assert!(body.contains("\"status\":\"ok\""));
         assert!(body.contains(&format!("\"version\":\"{}\"", VERSION)));
+        assert!(body.contains(&format!("\"build_bundle\":\"{}\"", PRIMARY_BUNDLE)));
         assert!(body.contains("\"api\":\"ok\""));
         assert!(body.contains("\"plugin_init\":\"ok\""));
         assert!(body.contains("\"server_startup\":\"ok\""));

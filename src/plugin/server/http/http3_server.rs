@@ -15,7 +15,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::plugin::server::http::extract_client_ip;
 use crate::plugin::server::http::http_dispatcher::HttpDispatcher;
-use crate::plugin::server::{ConnectionGuard, quic};
+use crate::plugin::server::{ConnectionGuard, quic_endpoint};
 
 const MAX_HTTP3_BODY_SIZE: usize = 64 * 1024;
 
@@ -51,7 +51,7 @@ pub async fn run_server(
     let mut startup_tx = startup_tx;
     server_config = http3_server_config(server_config);
 
-    let endpoint = match quic::build_quic_endpoint(addr, server_config, idle_timeout) {
+    let endpoint = match quic_endpoint::build_quic_endpoint(addr, server_config, idle_timeout) {
         Ok(value) => value,
         Err(e) => {
             if let Some(tx) = startup_tx.take() {

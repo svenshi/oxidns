@@ -53,64 +53,271 @@ rand = "0.10.1"
 url = "2.5"
 fs2 = "0.4"
 hex = "0.4"
-semver = "1.0"
 sha2 = "0.11.0"
-flate2 = "1.1"
-tar = "0.4"
 wincode = { version = "0.5", features = ["derive"] }
 oxidns-proto = { version = "0.1.1", path = "crates/proto" }
 oxidns-macros = { version = "0.1.0", path = "crates/macros" }
 hotpath = "0.16"
 
-# DNS transport and TLS stack used by server plugins and upstream clients
-h2 = "0.4"
-h3 = "0.0.8"
-h3-quinn = "0.0.10"
-quinn = "0.11.9"
-rustls = { version = "0.23.40", features = ["ring"] }
-rustls-pemfile = "2.2.0"
-tokio-rustls = "0.26.4"
-webpki-roots = "1.0.2"
+# Optional: only needed by the `plugin-upgrade` feature (self-upgrade CLI +
+# `upgrade` executor). Pulled in by tarball / archive verification helpers.
+semver = { version = "1.0", optional = true }
+flate2 = { version = "1.1", optional = true }
+tar = { version = "0.4", optional = true }
 
-# HTTP stack for DoH server/client paths and the download executor
+# DNS transport and TLS stack used by server plugins and upstream clients.
+# All of these are now optional: the `api` / `webui` / `metrics` features pull
+# in the HTTP server + TLS server stack; `server-dot` / `server-doh` /
+# `upstream-dot` / `upstream-doh` pull in their respective pieces; `quinn` /
+# `h3` / `h3-quinn` are reached through `server-doq` / `server-doh3` /
+# `upstream-doq` / `upstream-doh3`.
+h2 = { version = "0.4", optional = true }
+quinn = { version = "0.11.9", optional = true }
+h3 = { version = "0.0.8", optional = true }
+h3-quinn = { version = "0.0.10", optional = true }
+rustls = { version = "0.23.40", features = ["ring"], optional = true }
+rustls-pemfile = { version = "2.2.0", optional = true }
+tokio-rustls = { version = "0.26.4", optional = true }
+webpki-roots = { version = "1.0.2", optional = true }
+
+# HTTP stack for DoH server/client paths, the management API, and the
+# download executor.
 base64 = "0.22"
-http = "1.4"
-http-body-util = "0.1.3"
-hyper = { version = "1.9.0", features = ["server", "client", "http1", "http2"] }
-hyper-rustls = { version = "0.27.8", features = ["http1", "http2", "ring", "webpki-tokio"] }
-hyper-util = { version = "0.1.20", features = ["server", "client", "client-legacy", "http1", "http2", "tokio"] }
-tower-service = "0.3"
+http = { version = "1.4", optional = true }
+http-body-util = { version = "0.1.3", optional = true }
+hyper = { version = "1.9.0", features = ["server", "client", "http1", "http2"], optional = true }
+hyper-rustls = { version = "0.27.8", features = ["http1", "http2", "ring", "webpki-tokio"], optional = true }
+hyper-util = { version = "0.1.20", features = ["server", "client", "client-legacy", "http1", "http2", "tokio"], optional = true }
+tower-service = { version = "0.3", optional = true }
 
-# Matcher and provider plugin dependencies
+# Matcher and provider plugin dependencies.
+# `prost` is pulled in by `provider-protobuf` (geoip + geosite + v2ray_dat).
+# `aho-corasick` is kept always-on because it backs `core::rule_matcher::domain`
+# in addition to the `hosts` / `redirect` executors.
 aho-corasick = "1.1.4"
-prost = "0.14"
+prost = { version = "0.14", optional = true }
 regex = "1.12.2"
 
-# Executor plugin dependencies
-cronexpr = "1.5.0"
+# Executor plugin dependencies, each gated by its own feature.
+cronexpr = { version = "1.5.0", optional = true }
 fast-socks5 = "1.0.0"
-mikrotik-rs = "0.8.0"
-rusqlite = { version = "0.39.0", features = ["bundled"] }
+mikrotik-rs = { version = "0.8.0", optional = true }
+rusqlite = { version = "0.39.0", features = ["bundled"], optional = true }
+zoneparser = { package = "oxidns-zoneparser", version = "0.1.0", path = "crates/zoneparser", optional = true }
 
 # Service management
 service-manager = "0.11.0"
-zoneparser = { package = "oxidns-zoneparser", version = "0.1.0", path = "crates/zoneparser" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ripset = { package = "oxidns-ripset", version = "0.1.2", path = "crates/ripset" }
+ripset = { package = "oxidns-ripset", version = "0.1.2", path = "crates/ripset", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-zip = "8"
+zip = { version = "8", optional = true }
 windows-service = "0.6"
 
 
+# =============================================================================
+# Features
+# -----------------------------------------------------------------------------
+# Three layers:
+#   1. Bundles: `minimal` / `standard` / `full` (default = full).
+#   2. Granular feature flags (one per protocol / heavy plugin / surface).
+#   3. Private `_` features that aggregate shared optional deps across
+#      multiple public features (kept private so consumers don't enable them
+#      directly).
+#
+# Phase 1 (complete): every protocol stack and management surface is
+# behind a feature flag. `--no-default-features --features minimal`
+# builds a forwarder-only binary with no hyper / rustls / quinn / ...
+#
+# Cargo build cookbook:
+#   cargo build                                                # = full
+#   cargo build --no-default-features --features minimal       # ~smallest
+#   cargo build --no-default-features --features standard
+#   cargo build --no-default-features --features "minimal,plugin-mikrotik"
+# =============================================================================
 [features]
+default = ["full"]
+
+# --- Bundles ---------------------------------------------------------------
+
+# Minimal core DNS forwarder: UDP + TCP listeners, UDP + TCP upstream,
+# sequence / forward / cache / fallback / hosts / redirect / dual_selector /
+# ecs_handler / ttl / drop_resp / black_hole / debug_print / reload, all
+# matchers, and the `domain_set` + `ip_set` providers.
+# Nothing else is compiled. No hyper / rustls / quinn / h2 / h3 / zoneparser.
+minimal = []
+
+# Typical home / router build: management API + encrypted protocols +
+# WebUI + self-upgrade tooling + common providers + the leaf executor plugins
+# most configs reach for. No mikrotik, no ipset/nftset.
+standard = [
+    "api",
+    "webui",
+    "metrics",
+    "server-dot",
+    "server-doh",
+    "server-doq",
+    "upstream-dot",
+    "upstream-doh",
+    "upstream-doq",
+    "provider-protobuf",
+    "provider-adguard-rule",
+    "plugin-arbitrary",
+    "plugin-cron",
+    "plugin-script",
+    "plugin-download",
+    "plugin-http-request",
+    "plugin-reverse-lookup",
+    "plugin-upgrade",
+    "plugin-query-recorder",
+]
+
+# Full functionality: equivalent to the pre-feature binary.
+full = [
+    "standard",
+    "server-doh3",
+    "upstream-doh3",
+    "plugin-mikrotik",
+    "plugin-ipset",
+]
+
+# --- Management API surface ------------------------------------------------
+
+# HTTP management API (control / health / metrics / logs / config /
+# plugin-scoped endpoints). Pulls in hyper(server) + rustls(server) so HTTPS
+# can be enabled from config; plain HTTP still works without `_tls-*` paths
+# being exercised at runtime.
+api = ["_http-server", "_tls-server"]
+
+# Static WebUI assets served from the api hub (requires `api`).
+webui = ["api"]
+
+# Prometheus `/metrics` endpoint on the api hub (requires `api`). The
+# in-process `MetricSource` registry stays in core regardless, so disabling
+# this only drops the HTTP surface.
+metrics = ["api"]
+
+# --- Granular protocol features --------------------------------------------
+
+# Inbound DoT (TLS over TCP) server. Pulls in the TLS server stack.
+server-dot = ["_tls-server"]
+
+# Inbound DoH (HTTP/2 over TLS) server. Pulls in hyper(server) + TLS server.
+# The HTTP/2 leg drives the `h2` crate directly for the DoH handshake.
+server-doh = ["_http-server", "_tls-server", "dep:h2"]
+
+# Inbound DoQ server (QUIC). Pulls in the `quinn` server stack and the
+# rustls glue it needs for the QUIC TLS layer.
+server-doq = ["dep:quinn", "_tls-server"]
+
+# Inbound HTTP/3 leg of the DoH server (requires `server-doh`). Adds
+# `h3` + `h3-quinn` + `quinn` on top.
+server-doh3 = ["server-doh", "dep:h3", "dep:h3-quinn", "dep:quinn"]
+
+# Outbound DoT upstream. Pulls in the TLS client stack.
+upstream-dot = ["_tls-client"]
+
+# Outbound DoH (HTTP/2) upstream. Pulls in the HTTP client stack + h2.
+upstream-doh = ["_http-client", "dep:h2"]
+
+# Outbound DoQ upstream. Pulls in the `quinn` client stack and the
+# `_tls-client` rustls glue it shares with DoT / DoH.
+upstream-doq = ["dep:quinn", "_tls-client"]
+
+# Outbound HTTP/3 leg of DoH upstreams (`h3://` scheme or
+# `enable_http3: true`). Requires `upstream-doh`.
+upstream-doh3 = ["upstream-doh", "dep:h3", "dep:h3-quinn", "dep:quinn"]
+
+# --- Granular plugin features ----------------------------------------------
+
+# `ros_address_list` executor (MikroTik RouterOS API integration).
+plugin-mikrotik = ["dep:mikrotik-rs"]
+
+# `query_recorder` executor backed by bundled SQLite. Its management API
+# surface is part of the build, hence the `api` requirement.
+plugin-query-recorder = ["api", "_sequence-step-recording", "dep:rusqlite"]
+
+# `ipset` + `nftset` executors (Linux netlink-backed firewall set sync).
+plugin-ipset = ["dep:ripset"]
+
+# `cron` executor (cron-expression scheduled triggers).
+plugin-cron = ["dep:cronexpr"]
+
+# `script` executor (run an external command per request).
+plugin-script = []
+
+# `arbitrary` executor (zone-style static DNS records).
+plugin-arbitrary = ["dep:zoneparser"]
+
+# Self-upgrade CLI sub-command + `upgrade` executor (archive download &
+# verify, then replace the binary). Needs the HTTP client to fetch
+# release archives.
+plugin-upgrade = [
+    "_http-client",
+    "dep:semver",
+    "dep:flate2",
+    "dep:tar",
+    "dep:zip",
+]
+
+# `download` executor (fetch remote files into the working directory).
+# Needs the HTTP client.
+plugin-download = ["_http-client"]
+
+# `http_request` executor (send arbitrary HTTP requests as a side effect).
+# Needs the HTTP client.
+plugin-http-request = ["_http-client"]
+
+# `reverse_lookup` executor + its management API surface.
+plugin-reverse-lookup = ["api"]
+
+# `geoip` + `geosite` + `v2ray_dat` providers (share `prost`).
+provider-protobuf = ["dep:prost"]
+
+# `adguard_rule` provider.
+provider-adguard-rule = []
+
+# --- Private aggregator features -------------------------------------------
+# These are pulled in by the public features above and should not be
+# enabled directly. They exist so each crate group is declared once.
+
+_tls-base = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]
+_tls-client = ["_tls-base", "dep:webpki-roots"]
+_tls-server = ["_tls-base"]
+_http-server = [
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:http",
+    "dep:http-body-util",
+    "dep:tower-service",
+]
+_http-client = [
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:hyper-rustls",
+    "dep:http",
+    "dep:http-body-util",
+    "dep:tower-service",
+    "_tls-client",
+]
+
+# Request-local sequence step capture used by observer plugins such as
+# `query_recorder`.
+_sequence-step-recording = []
+
+# --- Profiling -------------------------------------------------------------
 hotpath = ["hotpath/hotpath"]
 hotpath-alloc = ["hotpath/hotpath-alloc"]
 
 [dev-dependencies]
 criterion = "0.8.2"
 tempfile = "3.23.0"
+# Integration tests use hyper to spin up mock HTTP servers regardless of
+# which library features are enabled, so we re-declare them as dev deps.
+http-body-util = "0.1.3"
+hyper = { version = "1.9.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.20", features = ["server", "tokio"] }
 
 [[bench]]
 name = "message_codec"

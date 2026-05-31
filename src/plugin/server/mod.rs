@@ -22,6 +22,7 @@
 use std::net::{SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use tracing::{Level, debug, event_enabled, warn};
 
@@ -33,10 +34,20 @@ use crate::plugin::Plugin;
 use crate::plugin::executor::{ExecStep, Executor};
 use crate::proto::{Edns, Message, Rcode};
 
+#[cfg(feature = "server-doh")]
 pub mod http;
+#[cfg(feature = "server-doq")]
 pub mod quic;
+/// Shared QUIC endpoint builder used by both the DoQ server and the DoH/HTTP3
+/// server, so a `server-doh3`-only build still has access to it.
+#[cfg(any(feature = "server-doq", feature = "server-doh3"))]
+pub mod quic_endpoint;
 pub mod tcp;
 pub mod udp;
+
+/// Default idle timeout applied to TCP / DoT / DoH connections. Shared across
+/// `tcp.rs` and `http/` so a build without DoH still has a sane default.
+pub(crate) const DEFAULT_SERVER_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub trait Server: Plugin {
     fn run(&self);

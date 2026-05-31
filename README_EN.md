@@ -198,6 +198,18 @@ On Windows PowerShell, run:
 
 For the full installation flow, see [Quick Start](https://oxidns.org/en/quickstart).
 
+### Slim builds
+
+OxiDNS lets you strip optional protocols and plugins via Cargo features. When building from source:
+
+```bash
+cargo build --release                                                  # default = full
+cargo build --release --no-default-features --features minimal         # bare forwarder
+cargo build --release --no-default-features --features standard        # home / router
+```
+
+See [Custom Build](https://oxidns.org/en/custom-build) for details.
+
 ---
 
 ## Documentation

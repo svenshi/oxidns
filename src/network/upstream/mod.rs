@@ -40,6 +40,7 @@ use std::time::Duration;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use serde::Deserialize;
+#[cfg(feature = "_http-client")]
 use tokio::net::TcpStream;
 use tracing::{debug, info, warn};
 use url::Url;
@@ -47,8 +48,11 @@ use url::Url;
 use crate::core::error::{DnsError, Result};
 use crate::core::system_utils::deserialize_duration_option;
 use crate::network::upstream::bootstrap::Bootstrap;
+#[cfg(feature = "upstream-doh")]
 use crate::network::upstream::pool::conn_h2::{H2Connection, H2ConnectionBuilder};
+#[cfg(feature = "upstream-doh3")]
 use crate::network::upstream::pool::conn_h3::{H3Connection, H3ConnectionBuilder};
+#[cfg(feature = "upstream-doq")]
 use crate::network::upstream::pool::conn_quic::{QuicConnection, QuicConnectionBuilder};
 use crate::network::upstream::pool::conn_tcp::{TcpConnection, TcpConnectionBuilder};
 use crate::network::upstream::pool::conn_udp::{UdpConnection, UdpConnectionBuilder};
@@ -691,14 +695,14 @@ fn detect_connection_type(
 pub struct UpstreamBuilder;
 
 impl UpstreamBuilder {
-    pub fn with_connection_info(connection_info: ConnectionInfo) -> Box<dyn Upstream> {
+    pub fn with_connection_info(connection_info: ConnectionInfo) -> Result<Box<dyn Upstream>> {
         debug!(
             "Creating upstream: type={:?}, remote={:?}, port={}",
             connection_info.connection_type, connection_info.remote_ip, connection_info.port
         );
 
         if connection_info.bootstrap.is_none() {
-            match connection_info.connection_type {
+            let upstream: Box<dyn Upstream> = match connection_info.connection_type {
                 ConnectionType::UDP => {
                     debug!("Creating UDP upstream for {}", connection_info.raw_addr);
                     let builder = UdpConnectionBuilder::new(
@@ -732,11 +736,8 @@ impl UpstreamBuilder {
                         fallback_pool,
                     })
                 }
-                ConnectionType::TCP | ConnectionType::DoT => {
-                    debug!(
-                        "Creating {:?} upstream for {}",
-                        connection_info.connection_type, connection_info.raw_addr
-                    );
+                ConnectionType::TCP => {
+                    debug!("Creating TCP upstream for {}", connection_info.raw_addr);
                     if connection_info.enable_pipeline.unwrap_or(false) {
                         let builder = TcpConnectionBuilder::new(
                             &connection_info,
@@ -751,11 +752,44 @@ impl UpstreamBuilder {
                         create_reuse_pool(0, connection_info, Box::new(builder))
                     }
                 }
+                #[cfg(feature = "upstream-dot")]
+                ConnectionType::DoT => {
+                    debug!("Creating DoT upstream for {}", connection_info.raw_addr);
+                    if connection_info.enable_pipeline.unwrap_or(false) {
+                        let builder = TcpConnectionBuilder::new(
+                            &connection_info,
+                            pipeline_request_map_capacity(),
+                        );
+                        create_pipeline_pool(0, connection_info, Box::new(builder))
+                    } else {
+                        let builder = TcpConnectionBuilder::new(
+                            &connection_info,
+                            reuse_request_map_capacity(),
+                        );
+                        create_reuse_pool(0, connection_info, Box::new(builder))
+                    }
+                }
+                #[cfg(not(feature = "upstream-dot"))]
+                ConnectionType::DoT => {
+                    return Err(DnsError::plugin(
+                        "upstream DoT is not compiled into this build; \
+                         rebuild with --features upstream-dot",
+                    ));
+                }
+                #[cfg(feature = "upstream-doq")]
                 ConnectionType::DoQ => {
                     debug!("Creating QUIC upstream for {}", connection_info.raw_addr);
                     let builder = QuicConnectionBuilder::new(&connection_info);
                     create_pipeline_pool(0, connection_info, Box::new(builder))
                 }
+                #[cfg(not(feature = "upstream-doq"))]
+                ConnectionType::DoQ => {
+                    return Err(DnsError::plugin(
+                        "upstream DoQ is not compiled into this build; \
+                         rebuild with --features upstream-doq",
+                    ));
+                }
+                #[cfg(feature = "upstream-doh")]
                 ConnectionType::DoH => {
                     debug!(
                         "Creating DoH upstream for {} (HTTP/{})",
@@ -767,44 +801,102 @@ impl UpstreamBuilder {
                         }
                     );
                     if connection_info.enable_http3 {
-                        let builder = H3ConnectionBuilder::new(&connection_info);
-                        create_pipeline_pool(0, connection_info, Box::new(builder))
+                        #[cfg(feature = "upstream-doh3")]
+                        {
+                            let builder = H3ConnectionBuilder::new(&connection_info);
+                            create_pipeline_pool(0, connection_info, Box::new(builder))
+                        }
+                        #[cfg(not(feature = "upstream-doh3"))]
+                        {
+                            return Err(DnsError::plugin(
+                                "upstream DoH3 (HTTP/3) is not compiled into this build; \
+                                 rebuild with --features upstream-doh3",
+                            ));
+                        }
                     } else {
                         let builder = H2ConnectionBuilder::new(&connection_info);
                         create_pipeline_pool(0, connection_info, Box::new(builder))
                     }
                 }
-            }
+                #[cfg(not(feature = "upstream-doh"))]
+                ConnectionType::DoH => {
+                    return Err(DnsError::plugin(
+                        "upstream DoH is not compiled into this build; \
+                         rebuild with --features upstream-doh",
+                    ));
+                }
+            };
+            Ok(upstream)
         } else {
             // Domain-based upstream: use bootstrap or system DNS for resolution
-            match &connection_info.connection_type {
+            let upstream: Box<dyn Upstream> = match &connection_info.connection_type {
                 ConnectionType::UDP => {
                     let upstream: BootstrapUpstream<UdpConnection> =
                         BootstrapUpstream::new(connection_info);
                     Box::new(upstream)
                 }
-                ConnectionType::TCP | ConnectionType::DoT => {
+                ConnectionType::TCP => {
                     let upstream: BootstrapUpstream<TcpConnection> =
                         BootstrapUpstream::new(connection_info);
                     Box::new(upstream)
                 }
+                #[cfg(feature = "upstream-dot")]
+                ConnectionType::DoT => {
+                    let upstream: BootstrapUpstream<TcpConnection> =
+                        BootstrapUpstream::new(connection_info);
+                    Box::new(upstream)
+                }
+                #[cfg(not(feature = "upstream-dot"))]
+                ConnectionType::DoT => {
+                    return Err(DnsError::plugin(
+                        "upstream DoT is not compiled into this build; \
+                         rebuild with --features upstream-dot",
+                    ));
+                }
+                #[cfg(feature = "upstream-doq")]
                 ConnectionType::DoQ => {
                     let upstream: BootstrapUpstream<QuicConnection> =
                         BootstrapUpstream::new(connection_info);
                     Box::new(upstream)
                 }
+                #[cfg(not(feature = "upstream-doq"))]
+                ConnectionType::DoQ => {
+                    return Err(DnsError::plugin(
+                        "upstream DoQ is not compiled into this build; \
+                         rebuild with --features upstream-doq",
+                    ));
+                }
+                #[cfg(feature = "upstream-doh")]
                 ConnectionType::DoH => {
                     if connection_info.enable_http3 {
-                        let upstream: BootstrapUpstream<H3Connection> =
-                            BootstrapUpstream::new(connection_info);
-                        Box::new(upstream)
+                        #[cfg(feature = "upstream-doh3")]
+                        {
+                            let upstream: BootstrapUpstream<H3Connection> =
+                                BootstrapUpstream::new(connection_info);
+                            Box::new(upstream)
+                        }
+                        #[cfg(not(feature = "upstream-doh3"))]
+                        {
+                            return Err(DnsError::plugin(
+                                "upstream DoH3 (HTTP/3) is not compiled into this build; \
+                                 rebuild with --features upstream-doh3",
+                            ));
+                        }
                     } else {
                         let upstream: BootstrapUpstream<H2Connection> =
                             BootstrapUpstream::new(connection_info);
                         Box::new(upstream)
                     }
                 }
-            }
+                #[cfg(not(feature = "upstream-doh"))]
+                ConnectionType::DoH => {
+                    return Err(DnsError::plugin(
+                        "upstream DoH is not compiled into this build; \
+                         rebuild with --features upstream-doh",
+                    ));
+                }
+            };
+            Ok(upstream)
         }
     }
 
@@ -812,7 +904,7 @@ impl UpstreamBuilder {
     pub fn with_upstream_config(upstream_config: UpstreamConfig) -> Result<Box<dyn Upstream>> {
         let connection_info = ConnectionInfo::try_from(upstream_config)?;
         debug!("create upstream, connection info: {:?}", connection_info);
-        Ok(Self::with_connection_info(connection_info))
+        Self::with_connection_info(connection_info)
     }
 }
 
@@ -989,7 +1081,7 @@ impl ConnectionBuilderFactory {
                     >(src)
                 }
             }
-            ConnectionType::TCP | ConnectionType::DoT => {
+            ConnectionType::TCP => {
                 let src: Box<dyn ConnectionBuilder<TcpConnection>> =
                     Box::new(TcpConnectionBuilder::new(&info, request_map_capacity));
                 unsafe {
@@ -999,6 +1091,22 @@ impl ConnectionBuilderFactory {
                     >(src)
                 }
             }
+            #[cfg(feature = "upstream-dot")]
+            ConnectionType::DoT => {
+                let src: Box<dyn ConnectionBuilder<TcpConnection>> =
+                    Box::new(TcpConnectionBuilder::new(&info, request_map_capacity));
+                unsafe {
+                    std::mem::transmute::<
+                        Box<dyn ConnectionBuilder<TcpConnection>>,
+                        Box<dyn ConnectionBuilder<C>>,
+                    >(src)
+                }
+            }
+            #[cfg(not(feature = "upstream-dot"))]
+            ConnectionType::DoT => {
+                unreachable!("upstream DoT branch reached but feature `upstream-dot` is disabled")
+            }
+            #[cfg(feature = "upstream-doq")]
             ConnectionType::DoQ => {
                 let src: Box<dyn ConnectionBuilder<QuicConnection>> =
                     Box::new(QuicConnectionBuilder::new(&info));
@@ -1009,15 +1117,32 @@ impl ConnectionBuilderFactory {
                     >(src)
                 }
             }
+            #[cfg(not(feature = "upstream-doq"))]
+            ConnectionType::DoQ => {
+                // Unreachable: with_connection_info refuses DoQ when the feature
+                // is off, so a BootstrapUpstream that would call back into this
+                // builder is never constructed.
+                unreachable!("upstream DoQ branch reached but feature `upstream-doq` is disabled")
+            }
+            #[cfg(feature = "upstream-doh")]
             ConnectionType::DoH => {
                 if info.enable_http3 {
-                    let src: Box<dyn ConnectionBuilder<H3Connection>> =
-                        Box::new(H3ConnectionBuilder::new(&info));
-                    unsafe {
-                        std::mem::transmute::<
-                            Box<dyn ConnectionBuilder<H3Connection>>,
-                            Box<dyn ConnectionBuilder<C>>,
-                        >(src)
+                    #[cfg(feature = "upstream-doh3")]
+                    {
+                        let src: Box<dyn ConnectionBuilder<H3Connection>> =
+                            Box::new(H3ConnectionBuilder::new(&info));
+                        unsafe {
+                            std::mem::transmute::<
+                                Box<dyn ConnectionBuilder<H3Connection>>,
+                                Box<dyn ConnectionBuilder<C>>,
+                            >(src)
+                        }
+                    }
+                    #[cfg(not(feature = "upstream-doh3"))]
+                    {
+                        unreachable!(
+                            "upstream DoH3 branch reached but feature `upstream-doh3` is disabled"
+                        )
                     }
                 } else {
                     let src: Box<dyn ConnectionBuilder<H2Connection>> =
@@ -1029,6 +1154,10 @@ impl ConnectionBuilderFactory {
                         >(src)
                     }
                 }
+            }
+            #[cfg(not(feature = "upstream-doh"))]
+            ConnectionType::DoH => {
+                unreachable!("upstream DoH branch reached but feature `upstream-doh` is disabled")
             }
         }
     }
@@ -1339,6 +1468,7 @@ pub(crate) fn parse_socks5_opt(socks5_str: &str) -> Option<Socks5Opt> {
     parse_socks5_opt_with_resolver(socks5_str, try_lookup_server_name)
 }
 
+#[cfg(feature = "_http-client")]
 pub(crate) async fn connect_tcp_stream(
     remote_ip: Option<IpAddr>,
     server_name: String,

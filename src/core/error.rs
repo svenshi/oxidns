@@ -52,10 +52,22 @@ pub enum DnsError {
     Protocol(String),
 
     /// Quic connect error
+    #[cfg(any(
+        feature = "server-doq",
+        feature = "server-doh3",
+        feature = "upstream-doq",
+        feature = "upstream-doh3"
+    ))]
     #[error("quic connect error: {0}")]
     QuicConnectError(#[from] quinn::ConnectError),
 
     /// No initial cipher error
+    #[cfg(any(
+        feature = "server-doq",
+        feature = "server-doh3",
+        feature = "upstream-doq",
+        feature = "upstream-doh3"
+    ))]
     #[error("No initial cipher error: {0}")]
     NoInitialCipherSuiteError(#[from] quinn::crypto::rustls::NoInitialCipherSuite),
 
@@ -67,6 +79,12 @@ pub enum DnsError {
     #[error("record type string unknown: {0}")]
     UnknownRecordTypeStr(String),
 
+    #[cfg(any(
+        feature = "server-doq",
+        feature = "server-doh3",
+        feature = "upstream-doq",
+        feature = "upstream-doh3"
+    ))]
     #[error("integer bounds exceeded error: {0}")]
     VarIntBoundsExceeded(#[from] quinn::VarIntBoundsExceeded),
 
@@ -83,6 +101,7 @@ pub enum DnsError {
     WinCodeReadError(#[from] wincode::ReadError),
 
     /// rusqlite error
+    #[cfg(feature = "plugin-query-recorder")]
     #[error("rusqlite error: {0}")]
     Rusqlite(#[from] rusqlite::Error),
 

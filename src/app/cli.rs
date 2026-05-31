@@ -4,13 +4,17 @@
 //! Application CLI definition and startup options.
 
 use std::path::PathBuf;
+#[cfg(feature = "plugin-upgrade")]
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 
+#[cfg(feature = "plugin-upgrade")]
+use crate::upgrade::UpgradeBundle;
+
 /// Top-level CLI definition.
 #[derive(Parser, Clone, Debug)]
-#[command(version, author = "Sven Shi <isvenshi@gmail.com>")]
+#[command(version = crate::build_info::CLI_VERSION, author = "Sven Shi <isvenshi@gmail.com>")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -23,11 +27,15 @@ pub enum Command {
     Start(StartOptions),
     /// Check whether a configuration file is valid.
     Check(CheckOptions),
+    /// Print compiled feature and plugin capability information.
+    BuildInfo,
     /// Export selected rules from a dat file into text files.
+    #[cfg(feature = "provider-protobuf")]
     ExportDat(ExportDatOptions),
     /// Manage the operating system service.
     Service(ServiceOptions),
     /// Check, download, or apply OxiDNS release upgrades.
+    #[cfg(feature = "plugin-upgrade")]
     Upgrade(UpgradeOptions),
 }
 
@@ -65,6 +73,7 @@ pub struct CheckOptions {
 }
 
 /// Dat export options.
+#[cfg(feature = "provider-protobuf")]
 #[derive(Args, Clone, Debug, PartialEq, Eq)]
 pub struct ExportDatOptions {
     /// Path to the source dat file
@@ -97,6 +106,7 @@ pub struct ExportDatOptions {
 }
 
 /// Supported dat kinds.
+#[cfg(feature = "provider-protobuf")]
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DatKind {
     Auto,
@@ -105,6 +115,7 @@ pub enum DatKind {
 }
 
 /// Supported export text formats.
+#[cfg(feature = "provider-protobuf")]
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExportFormat {
     Oxidns,
@@ -112,10 +123,19 @@ pub enum ExportFormat {
 }
 
 /// Upgrade command options.
+#[cfg(feature = "plugin-upgrade")]
 #[derive(Args, Clone, Debug, PartialEq, Eq)]
 pub struct UpgradeOptions {
     #[command(subcommand)]
     pub action: Option<UpgradeAction>,
+
+    /// Path to runtime configuration used to infer the WebUI directory.
+    #[arg(short = 'c', long = "config", global = true)]
+    pub config: Option<PathBuf>,
+
+    /// Working directory for resolving runtime-relative paths.
+    #[arg(short = 'd', long = "working-dir", global = true)]
+    pub working_dir: Option<PathBuf>,
 
     /// Release tag to use, or latest.
     #[arg(long = "target", default_value = "latest", global = true)]
@@ -125,9 +145,13 @@ pub struct UpgradeOptions {
     #[arg(long = "repository", default_value = "svenshi/oxidns", global = true)]
     pub repository: String,
 
-    /// Release asset name, or auto for the current platform archive.
+    /// Release asset name, or auto for the current platform and bundle archive.
     #[arg(long = "asset", default_value = "auto", global = true)]
     pub asset: String,
+
+    /// Release build bundle to use when asset is auto.
+    #[arg(long = "bundle", value_enum, default_value = "auto", global = true)]
+    pub bundle: UpgradeBundle,
 
     /// Directory used to cache downloaded release files.
     #[arg(long = "cache-dir", default_value = "./upgrade-cache", global = true)]
@@ -142,8 +166,8 @@ pub struct UpgradeOptions {
     pub backup_dir: PathBuf,
 
     /// Directory where the served WebUI assets are installed.
-    #[arg(long = "webui-dir", default_value = "./webui", global = true)]
-    pub webui_dir: PathBuf,
+    #[arg(long = "webui-dir", global = true)]
+    pub webui_dir: Option<PathBuf>,
 
     /// Skip upgrading the WebUI directory during apply.
     #[arg(long = "skip-webui", default_value_t = false, global = true)]
@@ -180,6 +204,7 @@ pub struct UpgradeOptions {
 }
 
 /// Upgrade subcommands.
+#[cfg(feature = "plugin-upgrade")]
 #[derive(Subcommand, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UpgradeAction {
     Check,
@@ -187,6 +212,7 @@ pub enum UpgradeAction {
     Apply,
 }
 
+#[cfg(feature = "plugin-upgrade")]
 fn parse_cli_duration(raw: &str) -> std::result::Result<Duration, String> {
     crate::core::system_utils::parse_simple_duration(raw)
 }
@@ -233,9 +259,17 @@ pub fn parse_cli() -> Cli {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     use super::*;
+
+    #[test]
+    fn cli_version_uses_compiled_version() {
+        assert_eq!(
+            Cli::command().get_version(),
+            Some(crate::build_info::CLI_VERSION)
+        );
+    }
 
     #[test]
     fn parse_start_command_with_explicit_flags() {
@@ -322,6 +356,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_build_info_command() {
+        let args = ["oxidns", "build-info"];
+
+        let cli = Cli::parse_from(args);
+        assert_eq!(cli.command, Command::BuildInfo);
+    }
+
+    #[cfg(feature = "plugin-upgrade")]
+    #[test]
     fn parse_upgrade_apply_with_options() {
         let args = [
             "oxidns",
@@ -352,12 +395,15 @@ mod tests {
             cli.command,
             Command::Upgrade(UpgradeOptions {
                 action: Some(UpgradeAction::Apply),
+                config: None,
+                working_dir: None,
                 target: "v0.4.2".to_string(),
                 repository: "svenshi/oxidns".to_string(),
                 asset: "oxidns-x86_64-unknown-linux-gnu.tar.gz".to_string(),
+                bundle: UpgradeBundle::Auto,
                 cache_dir: PathBuf::from("./cache"),
                 backup_dir: PathBuf::from("./backups"),
-                webui_dir: PathBuf::from("./webui"),
+                webui_dir: None,
                 skip_webui: false,
                 no_restart: false,
                 allow_prerelease: true,
@@ -370,6 +416,30 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "plugin-upgrade")]
+    #[test]
+    fn parse_upgrade_bundle_option() {
+        let args = ["oxidns", "upgrade", "check", "--bundle", "standard"];
+
+        let cli = Cli::parse_from(args);
+        assert!(matches!(
+            cli.command,
+            Command::Upgrade(UpgradeOptions {
+                bundle: UpgradeBundle::Standard,
+                ..
+            })
+        ));
+    }
+
+    #[cfg(feature = "plugin-upgrade")]
+    #[test]
+    fn parse_upgrade_rejects_unknown_bundle() {
+        let args = ["oxidns", "upgrade", "check", "--bundle", "tiny"];
+
+        assert!(Cli::try_parse_from(args).is_err());
+    }
+
+    #[cfg(feature = "plugin-upgrade")]
     #[test]
     fn parse_upgrade_no_restart_flag() {
         let args = ["oxidns", "upgrade", "apply", "--no-restart"];
@@ -384,6 +454,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "plugin-upgrade")]
     #[test]
     fn parse_upgrade_defaults_to_apply_and_accepts_force() {
         let args = ["oxidns", "upgrade", "--force"];
@@ -393,12 +464,15 @@ mod tests {
             cli.command,
             Command::Upgrade(UpgradeOptions {
                 action: None,
+                config: None,
+                working_dir: None,
                 target: "latest".to_string(),
                 repository: "svenshi/oxidns".to_string(),
                 asset: "auto".to_string(),
+                bundle: UpgradeBundle::Auto,
                 cache_dir: PathBuf::from("./upgrade-cache"),
                 backup_dir: PathBuf::from("./upgrade-backups"),
-                webui_dir: PathBuf::from("./webui"),
+                webui_dir: None,
                 skip_webui: false,
                 no_restart: false,
                 allow_prerelease: false,
@@ -409,6 +483,33 @@ mod tests {
                 github_token: None,
             })
         );
+    }
+
+    #[test]
+    fn parse_upgrade_accepts_runtime_path_context() {
+        let args = [
+            "oxidns",
+            "upgrade",
+            "-c",
+            "/etc/oxidns/config.yaml",
+            "-d",
+            "/var/lib/oxidns",
+            "--webui-dir",
+            "./webui",
+        ];
+
+        let cli = Cli::parse_from(args);
+        assert!(matches!(
+            cli.command,
+            Command::Upgrade(UpgradeOptions {
+                config: Some(config),
+                working_dir: Some(working_dir),
+                webui_dir: Some(webui_dir),
+                ..
+            }) if config.as_path() == std::path::Path::new("/etc/oxidns/config.yaml")
+                && working_dir.as_path() == std::path::Path::new("/var/lib/oxidns")
+                && webui_dir.as_path() == std::path::Path::new("./webui")
+        ));
     }
 
     #[test]
@@ -502,6 +603,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "provider-protobuf")]
     #[test]
     fn parse_export_dat_command() {
         let args = [
@@ -539,6 +641,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "provider-protobuf")]
     #[test]
     fn parse_export_dat_command_without_selectors() {
         let args = [

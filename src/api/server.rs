@@ -24,6 +24,7 @@ use crate::api::cors::add_cors_headers;
 use crate::api::health::HealthState;
 use crate::api::request::{read_hyper_request, rewrite_request_path, strip_api_prefix};
 use crate::api::route::{PrefixRoute, RouteKey, lookup_handler};
+#[cfg(feature = "webui")]
 use crate::api::static_files::StaticFileServer;
 use crate::api::{ApiHandler, ApiResponse, simple_response};
 use crate::config::types::{ApiAuthConfig, ApiCorsConfig, ResolvedApiHttpConfig};
@@ -38,6 +39,7 @@ pub(super) struct ApiServerContext {
     pub(super) tls_acceptor: Option<Arc<TlsAcceptor>>,
     pub(super) auth: Option<ApiAuthConfig>,
     pub(super) cors: Option<ApiCorsConfig>,
+    #[cfg(feature = "webui")]
     pub(super) webui: Option<Arc<StaticFileServer>>,
     pub(super) health: Arc<HealthState>,
 }
@@ -79,12 +81,16 @@ pub(super) async fn run_api_server(
     };
     context.health.mark_api_listening();
     let _ = startup_tx.send(Ok(()));
+    #[cfg(feature = "webui")]
+    let webui_enabled = context.webui.is_some();
+    #[cfg(not(feature = "webui"))]
+    let webui_enabled = false;
     info!(
         listen = %context.listen,
         tls = %context.tls_acceptor.is_some(),
         auth = %context.auth.is_some(),
         cors = %context.cors.is_some(),
-        webui = %context.webui.is_some(),
+        webui = %webui_enabled,
         routes = context.routes.len(),
         prefix_routes = context.prefix_routes.len(),
         "Management API listening"
@@ -183,10 +189,20 @@ async fn handle_hyper_request(
 
     let request_headers = request.headers().clone();
     let Some(api_path) = strip_api_prefix(request.uri().path()) else {
-        return Ok(match &context.webui {
-            Some(webui) => webui.handle(request).await,
-            None => simple_response(StatusCode::NOT_FOUND, Bytes::from("404 Not Found")),
-        });
+        #[cfg(feature = "webui")]
+        {
+            return Ok(match &context.webui {
+                Some(webui) => webui.handle(request).await,
+                None => simple_response(StatusCode::NOT_FOUND, Bytes::from("404 Not Found")),
+            });
+        }
+        #[cfg(not(feature = "webui"))]
+        {
+            return Ok(simple_response(
+                StatusCode::NOT_FOUND,
+                Bytes::from("404 Not Found"),
+            ));
+        }
     };
     let request = match rewrite_request_path(request, &api_path) {
         Ok(request) => request,

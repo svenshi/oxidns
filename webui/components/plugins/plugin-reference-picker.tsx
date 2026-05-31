@@ -23,6 +23,8 @@ import {
 } from "@/components/ui/popover";
 import type { PluginInstance, PluginType } from "@/lib/types";
 import { PLUGIN_TYPE_LABELS } from "@/lib/types";
+import { isPluginKindSupported } from "@/lib/build-capabilities";
+import { useAppStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 const CreatePluginDialog = dynamic(
@@ -61,6 +63,7 @@ export function PluginReferencePicker({
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
+  const buildInfo = useAppStore((s) => s.buildInfo);
   const listRef = useRef<HTMLDivElement | null>(null);
   const touchYRef = useRef<number | null>(null);
   const normalizedValue = stripReferencePrefix(value);
@@ -68,6 +71,13 @@ export function PluginReferencePicker({
   const selectedPlugin = plugins.find(
     (plugin) => plugin.name === normalizedValue,
   );
+  const selectedSupported = selectedPlugin
+    ? isPluginKindSupported(
+        buildInfo,
+        selectedPlugin.type,
+        selectedPlugin.pluginKind,
+      )
+    : true;
   const createType = referenceTypes?.[0];
 
   const filteredPlugins = plugins.filter((plugin) => {
@@ -116,7 +126,10 @@ export function PluginReferencePicker({
             disabled={disabled}
           >
             {selectedPlugin ? (
-              <PluginReferenceCompact plugin={selectedPlugin} />
+              <PluginReferenceCompact
+                plugin={selectedPlugin}
+                supported={selectedSupported}
+              />
             ) : normalizedValue ? (
               <span className="min-w-0 flex-1 truncate text-left font-mono text-xs">
                 {normalizedValue}
@@ -156,18 +169,20 @@ export function PluginReferencePicker({
             }}
           >
             {filteredPlugins.map((plugin) => (
-              <button
+              <PluginReferenceOption
                 key={plugin.id}
-                type="button"
-                className="flex w-full items-center gap-2 rounded-md border bg-background p-2 text-left hover:bg-accent"
-                onClick={() => {
+                plugin={plugin}
+                supported={isPluginKindSupported(
+                  buildInfo,
+                  plugin.type,
+                  plugin.pluginKind,
+                )}
+                onPick={() => {
                   onChange(plugin.name);
                   setOpen(false);
                   setSearch("");
                 }}
-              >
-                <PluginReferenceCompact plugin={plugin} />
-              </button>
+              />
             ))}
             {filteredPlugins.length === 0 && (
               <div className="rounded-md border border-dashed p-3 text-center text-xs text-muted-foreground">
@@ -241,7 +256,40 @@ function scrollListByTouch(
   touchYRef.current = nextY;
 }
 
-function PluginReferenceCompact({ plugin }: { plugin: PluginInstance }) {
+function PluginReferenceOption({
+  plugin,
+  supported,
+  onPick,
+}: {
+  plugin: PluginInstance;
+  supported: boolean;
+  onPick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={!supported}
+      title={supported ? undefined : "当前编译版本不支持"}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-md border bg-background p-2 text-left",
+        supported
+          ? "hover:bg-accent"
+          : "cursor-not-allowed border-dashed opacity-55",
+      )}
+      onClick={onPick}
+    >
+      <PluginReferenceCompact plugin={plugin} supported={supported} />
+    </button>
+  );
+}
+
+function PluginReferenceCompact({
+  plugin,
+  supported = true,
+}: {
+  plugin: PluginInstance;
+  supported?: boolean;
+}) {
   const definition = getPluginCatalogItem(plugin.pluginKind);
 
   return (
@@ -265,6 +313,11 @@ function PluginReferenceCompact({ plugin }: { plugin: PluginInstance }) {
           {definition?.name ?? plugin.pluginKind}
         </span>
       </span>
+      {!supported && (
+        <span className="shrink-0 rounded border px-1 py-0.5 text-[10px] text-muted-foreground">
+          未编译
+        </span>
+      )}
     </span>
   );
 }

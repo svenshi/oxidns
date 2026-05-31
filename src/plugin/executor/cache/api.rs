@@ -15,14 +15,19 @@ use tracing::{info, warn};
 
 use super::key::{CacheKey, EcsScopeDigest, normalize_domain_key};
 use super::persistence::{dump_cache_to_bytes, load_cache_from_bytes};
-use super::{CacheItem, CacheMap};
+use super::{Cache, CacheItem, CacheMap};
 use crate::api::{ApiHandler, json_error, json_ok, simple_response};
 use crate::core::app_clock::AppClock;
 use crate::core::error::Result;
 use crate::proto::{DNSClass, RData, Record, RecordType};
 use crate::register_plugin_api;
 
-pub(super) fn register(tag: &str, cache_map: CacheMap, ecs_in_key: bool) -> Result<()> {
+pub(super) fn register(
+    tag: &str,
+    cache_map: CacheMap,
+    ecs_in_key: bool,
+    cache_size: usize,
+) -> Result<()> {
     register_plugin_api!(
         tag,
         |plugin_api|
@@ -43,6 +48,7 @@ pub(super) fn register(tag: &str, cache_map: CacheMap, ecs_in_key: bool) -> Resu
         POST "/load_dump" => CacheLoadDumpHandler {
             cache_map,
             ecs_in_key,
+            cache_size,
         },
     )?;
     Ok(())
@@ -116,6 +122,7 @@ impl ApiHandler for CacheDumpHandler {
 struct CacheLoadDumpHandler {
     cache_map: CacheMap,
     ecs_in_key: bool,
+    cache_size: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -128,13 +135,29 @@ struct CacheLoadDumpResponse {
 impl ApiHandler for CacheLoadDumpHandler {
     async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
         match load_cache_from_bytes(&self.cache_map, request.body(), self.ecs_in_key, true) {
-            Ok(loaded_entries) => json_ok(
-                StatusCode::OK,
-                &CacheLoadDumpResponse {
-                    ok: true,
-                    loaded_entries,
-                },
-            ),
+            Ok(loaded_entries) => {
+                let stats = Cache::prune_cache_after_load(
+                    &self.cache_map,
+                    self.cache_size,
+                    AppClock::elapsed_millis(),
+                );
+                if stats.total_removed() > 0 {
+                    info!(
+                        expired_removed = stats.expired_removed,
+                        evicted = stats.evicted,
+                        before = stats.before_len,
+                        after = stats.after_len,
+                        "cache dump load pruned entries"
+                    );
+                }
+                json_ok(
+                    StatusCode::OK,
+                    &CacheLoadDumpResponse {
+                        ok: true,
+                        loaded_entries,
+                    },
+                )
+            }
             Err(err) => {
                 warn!("Failed to load cache dump via API: {}", err);
                 json_error(

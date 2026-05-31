@@ -12,6 +12,7 @@ import {
 import { PLUGIN_TYPE_LABELS } from "@/lib/types";
 import { useAppStore } from "@/lib/store";
 import { selectCardMetrics } from "@/lib/metrics";
+import { isPluginKindSupported } from "@/lib/build-capabilities";
 import { cn } from "@/lib/utils";
 import type { PluginCardTemplateProps } from "./types";
 import { pluginTypeColors, pluginTypeIcons } from "./display";
@@ -27,9 +28,15 @@ export function PluginCardTemplate({
 }: PluginCardTemplateProps) {
   const { setSelectedPlugin, setDetailOpen, togglePluginPin } = useAppStore();
   const series = useAppStore((s) => s.pluginMetrics[plugin.name]);
+  const buildInfo = useAppStore((s) => s.buildInfo);
   const cardMetrics = selectCardMetrics(series, plugin.pluginKind, 4);
   const showFallbackContent = cardMetrics.length === 0 && Boolean(children);
   const definition = getPluginCatalogItem(plugin.pluginKind);
+  const supported = isPluginKindSupported(
+    buildInfo,
+    plugin.type,
+    plugin.pluginKind,
+  );
   const resolvedIcon =
     icon ??
     (definition
@@ -48,7 +55,9 @@ export function PluginCardTemplate({
       className={cn(
         "group flex h-full min-h-[9.25rem] cursor-pointer flex-col transition-all hover:border-primary/50 hover:shadow-md",
         plugin.pinned && "border-primary/30",
+        !supported && "border-dashed opacity-70",
       )}
+      aria-disabled={!supported}
       onClick={handleClick}
     >
       <CardHeader className="flex flex-row items-start justify-between gap-2 px-3 pb-2 pt-1">
@@ -73,6 +82,11 @@ export function PluginCardTemplate({
             <Badge variant="outline" className="text-xs">
               {definition?.name ?? plugin.pluginKind}
             </Badge>
+            {!supported && (
+              <Badge variant="outline" className="text-xs">
+                未编译
+              </Badge>
+            )}
           </div>
           {definition?.description && !compact && !children && (
             <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">

@@ -18,6 +18,8 @@ import {
   getPluginCatalogItemsByType,
 } from "@/components/plugins/catalog";
 import { PluginReferencePicker } from "@/components/plugins/plugin-reference-picker";
+import { isPluginKindSupported } from "@/lib/build-capabilities";
+import { useAppStore } from "@/lib/store";
 import type { PluginInstance, PluginType } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -32,7 +34,7 @@ export function InlineSelect({
   className,
 }: {
   value: string;
-  options: Array<{ value: string; label: string }>;
+  options: Array<{ value: string; label: string; disabled?: boolean }>;
   disabled: boolean;
   onChange: (value: string) => void;
   placeholder?: string;
@@ -45,7 +47,11 @@ export function InlineSelect({
       </SelectTrigger>
       <SelectContent className="z-[1200]">
         {options.map((option) => (
-          <SelectItem key={option.value} value={option.value}>
+          <SelectItem
+            key={option.value}
+            value={option.value}
+            disabled={option.disabled}
+          >
             {option.label}
           </SelectItem>
         ))}
@@ -73,6 +79,7 @@ export function QuickSetupRow({
   readOnly: boolean;
   onChange: (next: string) => void;
 }) {
+  const buildInfo = useAppStore((s) => s.buildInfo);
   const { pluginType, param } = parseQuickSetupValue(value);
   const catalog = getPluginCatalogItemsByType(type).filter(
     (item) => item.quickSetup,
@@ -104,7 +111,10 @@ export function QuickSetupRow({
         className="w-[9rem] shrink-0"
         options={catalog.map((item) => ({
           value: item.kind,
-          label: item.kind,
+          label: isPluginKindSupported(buildInfo, item.type, item.kind)
+            ? item.kind
+            : `${item.kind} · 未编译`,
+          disabled: !isPluginKindSupported(buildInfo, item.type, item.kind),
         }))}
       />
       <div className="min-w-0 flex-1">
