@@ -555,8 +555,8 @@ Matches environment variables.
 - tag: env_profile_prod
   type: env
   args:
-    - "PROFILE"
-    - "prod"
+    - "PROFILE:prod"
+    - "FEATURE_X"
 ```
 
 Or check only existence:
@@ -569,23 +569,29 @@ args:
 ### Configuration Details
 
 - Type: `array`; Required: yes; Default: none
-- Each item is an environment expression.
+- Each item is an environment expression; all expressions must match.
 - Typical forms:
+  - `KEY:VALUE`
   - `KEY=value`
   - `KEY`
+- Compatibility:
+  - Exactly two bare items such as `["PROFILE", "prod"]` keep the legacy meaning `PROFILE == prod`.
+  - Use `KEY:` or `KEY=` when two bare existence checks would be ambiguous.
 - Runtime impact:
   - Lets one config behave differently across environments without editing the policy graph itself.
 
 ### quick setup
 
 ```yaml
-- matches: "env PROFILE prod"
+- matches: "env PROFILE:prod FEATURE_X"
 ```
 
 ### Behavior
 
-- `KEY=value` requires an exact match.
+- `KEY:VALUE` and `KEY=value` require an exact match.
 - `KEY` checks only for existence.
+- `KEY:` and `KEY=` also check only for existence.
+- Values are cached during plugin initialization and are not re-read per request.
 
 ### Typical Uses
 

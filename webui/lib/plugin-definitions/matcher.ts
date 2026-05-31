@@ -270,14 +270,14 @@ export const matcherPluginDefinitions: PluginKindDefinition[] = [
     configSchema: [
       stringArrayField(
         "args",
-        "变量和值",
-        "PROFILE\nprod",
+        "环境变量条件",
+        "PROFILE:prod\nFEATURE_X",
         true,
-        "第一行为变量名，第二行为可选期望值。",
+        "定义需要同时满足的环境变量条件。",
       ),
     ],
     quickSetup: {
-      paramPlaceholder: "PROFILE prod",
+      paramPlaceholder: "PROFILE:prod FEATURE_X",
     },
   },
   {

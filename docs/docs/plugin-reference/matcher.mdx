@@ -579,8 +579,8 @@ import Admonition from "@theme/Admonition";
 - tag: env_profile_prod
   type: env
   args:
-    - "PROFILE"
-    - "prod"
+    - "PROFILE:prod"
+    - "FEATURE_X"
 ```
 
 或只校验存在：
@@ -592,26 +592,29 @@ args:
 
 ### 配置项
 
-`env` 的 `args` 为一到两个元素。
+`env` 的 `args` 为环境变量条件列表。
 
 - 类型：`array`；必填：是；默认值：无
 - 元素定义：
-  - 第一个元素：环境变量名
-  - 第二个元素：可选，期望值
+  - `KEY:VALUE` 或 `KEY=VALUE`：环境变量必须存在且值完全匹配。
+  - `KEY`：环境变量存在即命中。
+  - `KEY:` 或 `KEY=`：显式存在性检查，适合规避两个裸参数的歧义。
+- 兼容性：
+  - 恰好两个裸参数（如 `["PROFILE", "prod"]`）仍按旧语法解释为 `PROFILE == prod`。
 - 运行影响：
-  - 仅配置变量名时，环境变量存在即返回 `true`。
-  - 同时配置变量名和值时，需完全匹配才返回 `true`。
+  - 所有环境变量条件都满足时才返回 `true`。
+  - 环境变量值在插件 `init` 阶段缓存，运行中不会动态重新读取。
 
 ### quick setup
 
 ```yaml
-- matches: "env PROFILE prod"
+- matches: "env PROFILE:prod FEATURE_X"
 ```
 
 ### 行为说明
 
-- 在 `init` 时缓存环境变量值。
-- 运行中不会动态重新读取环境变量。
+- `KEY:VALUE` 和 `KEY=VALUE` 要求值完全匹配。
+- `KEY`、`KEY:` 和 `KEY=` 只检查变量是否存在。
 
 ### 典型用途
 
