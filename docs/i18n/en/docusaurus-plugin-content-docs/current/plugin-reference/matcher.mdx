@@ -575,6 +575,7 @@ args:
   - `KEY:VALUE` as an equivalent rule-expression-style alias.
   - `KEY`
   - `KEY:` or `KEY=` for explicit existence checks.
+- Each string item in the array is parsed as one complete expression and is not split on commas or whitespace, so values such as `NO_PROXY=localhost,127.0.0.1` or `GREETING=hello world` should be written as their own quoted array item.
 - Runtime impact:
   - Lets one config behave differently across environments without editing the policy graph itself.
 
@@ -590,6 +591,7 @@ args:
 - `KEY` checks only for existence.
 - `KEY:` and `KEY=` also check only for existence.
 - `["PROFILE", "prod"]` checks that both `PROFILE` and `prod` exist; it does not mean `PROFILE == prod`.
+- quick setup separates expressions with whitespace; use the full `args` array when a value itself contains spaces.
 - Values are cached during plugin initialization and are not re-read per request.
 
 ### Typical Uses

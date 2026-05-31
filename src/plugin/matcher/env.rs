@@ -8,13 +8,13 @@
 use std::fmt::Debug;
 
 use async_trait::async_trait;
+use serde_yaml_ng::Value;
 
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
 use crate::core::env;
 use crate::core::error::{DnsError, Result as DnsResult};
 use crate::plugin::matcher::Matcher;
-use crate::plugin::matcher::matcher_utils::{parse_quick_setup_rules, parse_rules_from_value};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;
 
@@ -28,8 +28,7 @@ impl PluginFactory for EnvFactory {
         plugin_config: &PluginConfig,
         _init_context: &crate::plugin::PluginInitContext<'_>,
     ) -> DnsResult<UninitializedPlugin> {
-        let args = parse_rules_from_value(plugin_config.args.clone())?;
-        let conditions = parse_env_args(args)?;
+        let conditions = parse_env_args_from_value(plugin_config.args.clone())?;
         Ok(UninitializedPlugin::Matcher(Box::new(EnvMatcher {
             tag: plugin_config.tag.clone(),
             conditions,
@@ -37,13 +36,51 @@ impl PluginFactory for EnvFactory {
     }
 
     fn quick_setup(&self, tag: &str, param: Option<String>) -> DnsResult<UninitializedPlugin> {
-        let args = parse_quick_setup_rules(param)?;
-        let conditions = parse_env_args(args)?;
+        let conditions = parse_env_quick_setup_args(param)?;
         Ok(UninitializedPlugin::Matcher(Box::new(EnvMatcher {
             tag: tag.to_string(),
             conditions,
         })))
     }
+}
+
+fn parse_env_args_from_value(args: Option<Value>) -> DnsResult<Vec<EnvCondition>> {
+    let args = args.ok_or_else(|| DnsError::plugin("env matcher requires env conditions"))?;
+    match args {
+        Value::String(raw) => parse_env_args(split_env_inline_args(&raw)),
+        Value::Sequence(seq) => {
+            let mut args = Vec::with_capacity(seq.len());
+            for (idx, item) in seq.into_iter().enumerate() {
+                match item {
+                    Value::String(raw) => args.push(raw),
+                    other => {
+                        return Err(DnsError::plugin(format!(
+                            "env matcher args[{idx}] must be a string, got {:?}",
+                            other
+                        )));
+                    }
+                }
+            }
+            parse_env_args(args)
+        }
+        other => Err(DnsError::plugin(format!(
+            "env matcher args must be a string or string array, got {:?}",
+            other
+        ))),
+    }
+}
+
+fn parse_env_quick_setup_args(param: Option<String>) -> DnsResult<Vec<EnvCondition>> {
+    let raw = param.ok_or_else(|| DnsError::plugin("quick setup requires matcher parameter"))?;
+    parse_env_args(split_env_inline_args(&raw))
+}
+
+fn split_env_inline_args(raw: &str) -> Vec<String> {
+    raw.split_ascii_whitespace()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn parse_env_args(args: Vec<String>) -> DnsResult<Vec<EnvCondition>> {
@@ -207,6 +244,40 @@ mod tests {
             assert_eq!(conditions.len(), 1);
             assert_condition(&conditions[0], "KEY", Some("VALUE"));
         }
+    }
+
+    #[test]
+    fn test_parse_env_args_from_value_preserves_sequence_item_delimiters() {
+        let value = serde_yaml_ng::from_str::<Value>(
+            r#"
+- "NO_PROXY=localhost,127.0.0.1"
+- "GREETING=hello world"
+- "URL=https://example.com/path,a?x=1"
+"#,
+        )
+        .expect("yaml should parse");
+
+        let conditions = parse_env_args_from_value(Some(value)).expect("parse should succeed");
+
+        assert_eq!(conditions.len(), 3);
+        assert_condition(&conditions[0], "NO_PROXY", Some("localhost,127.0.0.1"));
+        assert_condition(&conditions[1], "GREETING", Some("hello world"));
+        assert_condition(
+            &conditions[2],
+            "URL",
+            Some("https://example.com/path,a?x=1"),
+        );
+    }
+
+    #[test]
+    fn test_parse_env_inline_args_preserves_commas_in_values() {
+        let conditions =
+            parse_env_quick_setup_args(Some("NO_PROXY=localhost,127.0.0.1 FEATURE_X".to_string()))
+                .expect("parse should succeed");
+
+        assert_eq!(conditions.len(), 2);
+        assert_condition(&conditions[0], "NO_PROXY", Some("localhost,127.0.0.1"));
+        assert_condition(&conditions[1], "FEATURE_X", None);
     }
 
     #[test]

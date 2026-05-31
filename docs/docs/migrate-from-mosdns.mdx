@@ -27,7 +27,7 @@ OxiDNS 的 `env` matcher 中，`args` 的每个元素都是一个独立的环境
     - "FEATURE_X"
 ```
 
-等值匹配推荐写成 `KEY=VALUE`，也可以写成 `KEY:VALUE`。只写 `KEY`、`KEY:` 或 `KEY=` 时表示检查环境变量存在。
+等值匹配推荐写成 `KEY=VALUE`，也可以写成 `KEY:VALUE`。只写 `KEY`、`KEY:` 或 `KEY=` 时表示检查环境变量存在。数组中的每个字符串都是完整表达式，不会按逗号或空白继续拆分；如果环境变量值包含逗号或空格，请把它写成单独的带引号数组项，例如 `"NO_PROXY=localhost,127.0.0.1"`。
 
 需要特别注意：`["PROFILE", "prod"]` 表示同时检查 `PROFILE` 和 `prod` 两个环境变量存在，不表示 `PROFILE == prod`。如果迁移前的配置使用过这种两段式写法，请改成 `"PROFILE=prod"` 或 `"PROFILE:prod"`。
 

@@ -27,7 +27,7 @@ In OxiDNS, every item in the `env` matcher's `args` array is an independent envi
     - "FEATURE_X"
 ```
 
-Use `KEY=VALUE` for exact matches; `KEY:VALUE` is also accepted as a rule-expression-style alias. `KEY`, `KEY:`, and `KEY=` only check that the variable exists.
+Use `KEY=VALUE` for exact matches; `KEY:VALUE` is also accepted as a rule-expression-style alias. `KEY`, `KEY:`, and `KEY=` only check that the variable exists. Each string item in the array is a complete expression and is not split further on commas or whitespace; if an environment value contains commas or spaces, write it as its own quoted array item, such as `"NO_PROXY=localhost,127.0.0.1"`.
 
 Be careful with two bare items: `["PROFILE", "prod"]` checks that both `PROFILE` and `prod` exist. It does not mean `PROFILE == prod`. If a migrated config used that two-token value form, rewrite it as `"PROFILE=prod"` or `"PROFILE:prod"`.
 
