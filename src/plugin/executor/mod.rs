@@ -30,6 +30,7 @@ use crate::core::error::Result;
 use crate::plugin::Plugin;
 pub use crate::plugin::executor::sequence::chain::ExecutorNext;
 
+#[cfg(feature = "plugin-arbitrary")]
 pub mod arbitrary;
 pub mod black_hole;
 pub mod cache;

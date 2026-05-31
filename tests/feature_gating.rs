@@ -181,6 +181,24 @@ plugins:
     );
 }
 
+#[cfg(not(feature = "plugin-arbitrary"))]
+#[tokio::test]
+async fn arbitrary_type_not_compiled_is_unknown_plugin() {
+    let yaml = r#"
+plugins:
+  - tag: arbitrary_main
+    type: arbitrary
+    args:
+      rules:
+        - "example.com. 60 IN A 192.0.2.10"
+"#;
+    let err = start_error(yaml).await;
+    assert!(
+        err.contains("Unknown plugin type"),
+        "expected an unknown-plugin-type error, got: {err}"
+    );
+}
+
 // --- Positive: protocol feature compiled in --------------------------------
 
 #[cfg(feature = "upstream-dot")]
@@ -194,4 +212,27 @@ async fn upstream_dot_builds_when_compiled() {
 #[tokio::test]
 async fn upstream_doh_builds_when_compiled() {
     start_ok(&forward_via_udp("https://1.1.1.1/dns-query")).await;
+}
+
+#[cfg(feature = "plugin-arbitrary")]
+#[tokio::test]
+async fn arbitrary_builds_when_compiled() {
+    let yaml = r#"
+plugins:
+  - tag: arbitrary_main
+    type: arbitrary
+    args:
+      rules:
+        - "example.com. 60 IN A 192.0.2.10"
+  - tag: entry
+    type: sequence
+    args:
+      - exec: "$arbitrary_main"
+  - tag: udp_main
+    type: udp_server
+    args:
+      entry: entry
+      listen: "127.0.0.1:0"
+"#;
+    start_ok(yaml).await;
 }

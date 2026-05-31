@@ -18,12 +18,12 @@ on the command line, to produce a binary tailored to your scenario.
 
 | Bundle | Use case | Roughly contains |
 |---|---|---|
-| `minimal` | Embedded / container / experimentation | UDP + TCP listeners, UDP + TCP upstreams, basic executors (sequence / forward / cache / fallback / hosts / redirect / arbitrary / dual_selector / ecs_handler / ttl / drop_resp / black_hole / debug_print / reload), all matchers, `domain_set` + `ip_set` providers. **No** hyper / rustls / quinn — smallest binary |
-| `standard` | Home router / mid-range | minimal + management API + WebUI + metrics + DoT/DoH/DoQ ingress & upstream + `provider-protobuf` (geoip / geosite / v2ray_dat) + adguard_rule + cron + script + download + http_request + reverse_lookup + query_recorder + the `upgrade` subcommand |
+| `minimal` | Embedded / container / experimentation | UDP + TCP listeners, UDP + TCP upstreams, basic executors (sequence / forward / cache / fallback / hosts / redirect / dual_selector / ecs_handler / ttl / drop_resp / black_hole / debug_print / reload), all matchers, `domain_set` + `ip_set` providers. **No** hyper / rustls / quinn / zoneparser — smallest binary |
+| `standard` | Home router / mid-range | minimal + management API + WebUI + metrics + DoT/DoH/DoQ ingress & upstream + `provider-protobuf` (geoip / geosite / v2ray_dat) + adguard_rule + arbitrary + cron + script + download + http_request + reverse_lookup + query_recorder + the `upgrade` subcommand |
 | `full` (default) | Everything | standard + DoH3 ingress & upstream + MikroTik integration + ipset / nftset |
 
 > Release binary sizes vary by feature composition. `minimal` excludes hyper /
-> rustls / quinn / h2 / h3 / sqlite entirely and remains the smallest bundle.
+> rustls / quinn / h2 / h3 / sqlite / zoneparser entirely and remains the smallest bundle.
 
 ## Preset capability matrix
 
@@ -33,7 +33,7 @@ the project and compose features yourself, treat `oxidns build-info` or
 
 | Capability | `minimal` | `standard` | `full` |
 |---|---|---|---|
-| Core DNS path | UDP / TCP listeners and upstreams, sequence / forward / cache / fallback / hosts / redirect / arbitrary / dual_selector / ecs_handler / ttl / drop_resp / black_hole / debug_print / reload, all matchers, `domain_set` / `ip_set` providers | Same as `minimal` | Same as `standard` |
+| Core DNS path | UDP / TCP listeners and upstreams, sequence / forward / cache / fallback / hosts / redirect / dual_selector / ecs_handler / ttl / drop_resp / black_hole / debug_print / reload, all matchers, `domain_set` / `ip_set` providers | Same as `minimal` + `arbitrary` static DNS records | Same as `standard` |
 | Management plane | No HTTP API / WebUI / Prometheus HTTP endpoint | Management API, health checks, logs, config, plugin APIs, WebUI, `/metrics`, `metrics_collector` | Same as `standard` |
 | Inbound protocols | UDP, TCP | UDP, TCP, DoT, DoH (HTTP/2), DoQ | `standard` + DoH over HTTP/3 |
 | Upstream protocols | UDP, TCP | UDP, TCP, DoT, DoH (HTTP/2), DoQ | `standard` + DoH over HTTP/3 upstream |
@@ -95,6 +95,7 @@ the presets entirely.
 | `plugin-ipset` | `ipset` + `nftset` | `ripset` (Linux only) |
 | `plugin-cron` | `cron` | `cronexpr` |
 | `plugin-script` | `script` | — |
+| `plugin-arbitrary` | `arbitrary` | `oxidns-zoneparser` |
 | `plugin-download` | `download` | — |
 | `plugin-http-request` | `http_request` | — |
 | `plugin-reverse-lookup` | `reverse_lookup` | — |

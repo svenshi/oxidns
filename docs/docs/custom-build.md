@@ -16,12 +16,12 @@ fork 仓库后修改 `Cargo.toml` 的 `default = [...]`,或在编译时用 `--fe
 
 | Bundle | 适用场景 | 大致内容 |
 |---|---|---|
-| `minimal` | 嵌入式 / 容器 / 学习 | UDP + TCP 监听,UDP + TCP upstream,sequence / forward / cache / fallback / hosts / redirect / arbitrary / dual_selector / ecs_handler / ttl / drop_resp / black_hole / debug_print / reload 等基础执行器,全部 matcher,`domain_set` + `ip_set` provider。**不含** hyper / rustls / quinn,二进制最小 |
-| `standard` | 家用路由器 / 中等规模 | minimal + 管理 API + WebUI + metrics + DoT/DoH/DoQ 上下行 + provider-protobuf(geoip/geosite/v2ray_dat) + adguard_rule + cron + script + download + http_request + reverse_lookup + query_recorder + upgrade 子命令 |
+| `minimal` | 嵌入式 / 容器 / 学习 | UDP + TCP 监听,UDP + TCP upstream,sequence / forward / cache / fallback / hosts / redirect / dual_selector / ecs_handler / ttl / drop_resp / black_hole / debug_print / reload 等基础执行器,全部 matcher,`domain_set` + `ip_set` provider。**不含** hyper / rustls / quinn / zoneparser,二进制最小 |
+| `standard` | 家用路由器 / 中等规模 | minimal + 管理 API + WebUI + metrics + DoT/DoH/DoQ 上下行 + provider-protobuf(geoip/geosite/v2ray_dat) + adguard_rule + arbitrary + cron + script + download + http_request + reverse_lookup + query_recorder + upgrade 子命令 |
 | `full`(默认) | 全功能 | standard + DoH3 上下行 + MikroTik 集成 + ipset / nftset |
 
 > 实测 release 二进制体积会随 feature 组合变化。`minimal` 把 hyper /
-> rustls / quinn / h2 / h3 / sqlite 全部排除,仍是体积最小的组合。
+> rustls / quinn / h2 / h3 / sqlite / zoneparser 全部排除,仍是体积最小的组合。
 
 ## 预设能力矩阵
 
@@ -30,7 +30,7 @@ fork 仓库后修改 `Cargo.toml` 的 `default = [...]`,或在编译时用 `--fe
 
 | 能力 | `minimal` | `standard` | `full` |
 |---|---|---|---|
-| 核心 DNS 能力 | UDP / TCP 监听与 upstream,sequence / forward / cache / fallback / hosts / redirect / arbitrary / dual_selector / ecs_handler / ttl / drop_resp / black_hole / debug_print / reload,全部 matcher,`domain_set` / `ip_set` provider | 同 `minimal` | 同 `standard` |
+| 核心 DNS 能力 | UDP / TCP 监听与 upstream,sequence / forward / cache / fallback / hosts / redirect / dual_selector / ecs_handler / ttl / drop_resp / black_hole / debug_print / reload,全部 matcher,`domain_set` / `ip_set` provider | 同 `minimal` + `arbitrary` 静态 DNS 记录 | 同 `standard` |
 | 管理面 | 无 HTTP API / WebUI / Prometheus HTTP 端点 | 管理 API、健康检查、日志、配置、插件 API、WebUI、`/metrics`、`metrics_collector` | 同 `standard` |
 | 入站协议 | UDP、TCP | UDP、TCP、DoT、DoH(HTTP/2)、DoQ | `standard` + DoH HTTP/3 |
 | 出站 upstream | UDP、TCP | UDP、TCP、DoT、DoH(HTTP/2)、DoQ | `standard` + DoH HTTP/3 upstream |
@@ -88,6 +88,7 @@ fork 仓库后修改 `Cargo.toml` 的 `default = [...]`,或在编译时用 `--fe
 | `plugin-ipset` | `ipset` + `nftset` | `ripset`(Linux only) |
 | `plugin-cron` | `cron` | `cronexpr` |
 | `plugin-script` | `script` | — |
+| `plugin-arbitrary` | `arbitrary` | `oxidns-zoneparser` |
 | `plugin-download` | `download` | — |
 | `plugin-http-request` | `http_request` | — |
 | `plugin-reverse-lookup` | `reverse_lookup` | — |

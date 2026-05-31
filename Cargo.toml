@@ -103,10 +103,10 @@ cronexpr = { version = "1.5.0", optional = true }
 fast-socks5 = "1.0.0"
 mikrotik-rs = { version = "0.8.0", optional = true }
 rusqlite = { version = "0.39.0", features = ["bundled"], optional = true }
+zoneparser = { package = "oxidns-zoneparser", version = "0.1.0", path = "crates/zoneparser", optional = true }
 
 # Service management
 service-manager = "0.11.0"
-zoneparser = { package = "oxidns-zoneparser", version = "0.1.0", path = "crates/zoneparser" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ripset = { package = "oxidns-ripset", version = "0.1.2", path = "crates/ripset", optional = true }
@@ -142,10 +142,10 @@ default = ["full"]
 # --- Bundles ---------------------------------------------------------------
 
 # Minimal core DNS forwarder: UDP + TCP listeners, UDP + TCP upstream,
-# sequence / forward / cache / fallback / hosts / redirect / arbitrary /
-# dual_selector / ecs_handler / ttl / drop_resp / black_hole / debug_print /
-# reload, all matchers, and the `domain_set` + `ip_set` providers.
-# Nothing else is compiled. No hyper / rustls / quinn / h2 / h3.
+# sequence / forward / cache / fallback / hosts / redirect / dual_selector /
+# ecs_handler / ttl / drop_resp / black_hole / debug_print / reload, all
+# matchers, and the `domain_set` + `ip_set` providers.
+# Nothing else is compiled. No hyper / rustls / quinn / h2 / h3 / zoneparser.
 minimal = []
 
 # Typical home / router build: management API + encrypted protocols +
@@ -163,6 +163,7 @@ standard = [
     "upstream-doq",
     "provider-protobuf",
     "provider-adguard-rule",
+    "plugin-arbitrary",
     "plugin-cron",
     "plugin-script",
     "plugin-download",
@@ -245,6 +246,9 @@ plugin-cron = ["dep:cronexpr"]
 
 # `script` executor (run an external command per request).
 plugin-script = []
+
+# `arbitrary` executor (zone-style static DNS records).
+plugin-arbitrary = ["dep:zoneparser"]
 
 # Self-upgrade CLI sub-command + `upgrade` executor (archive download &
 # verify, then replace the binary). Needs the HTTP client to fetch

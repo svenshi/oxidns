@@ -140,6 +140,11 @@ fn enabled_public_features() -> Vec<&'static str> {
     );
     push_feature(
         &mut features,
+        cfg!(feature = "plugin-arbitrary"),
+        "plugin-arbitrary",
+    );
+    push_feature(
+        &mut features,
         cfg!(feature = "plugin-upgrade"),
         "plugin-upgrade",
     );
