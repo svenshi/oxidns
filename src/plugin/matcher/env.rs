@@ -59,10 +59,7 @@ fn parse_env_args(args: Vec<String>) -> DnsResult<Vec<EnvCondition>> {
         return Err(DnsError::plugin("env condition cannot be empty"));
     }
 
-    if args.len() == 2
-        && !has_explicit_value_separator(&args[0])
-        && !has_explicit_value_separator(&args[1])
-    {
+    if args.len() == 2 && !has_explicit_value_separator(&args[0]) {
         return Ok(vec![EnvCondition::new(
             args[0].clone(),
             Some(args[1].clone()),
@@ -247,6 +244,17 @@ mod tests {
 
         assert_eq!(conditions.len(), 1);
         assert_condition(&conditions[0], "KEY", Some("VALUE"));
+    }
+
+    #[test]
+    fn test_parse_env_args_keeps_legacy_separator_values() {
+        for value in ["/usr/bin:/bin", "postgres://user:pass@localhost/db", "a=b"] {
+            let conditions = parse_env_args(vec!["KEY".to_string(), value.to_string()])
+                .expect("parse should succeed");
+
+            assert_eq!(conditions.len(), 1);
+            assert_condition(&conditions[0], "KEY", Some(value));
+        }
     }
 
     #[test]
