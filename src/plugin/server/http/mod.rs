@@ -176,7 +176,7 @@ impl HttpServer {
         {
             let message = "HTTP/3 not compiled in; rebuild with --features server-doh3";
             Self::send_startup_error(h3_startup_tx, message);
-            return Err(DnsError::plugin(message));
+            Err(DnsError::plugin(message))
         }
 
         #[cfg(feature = "server-doh3")]
