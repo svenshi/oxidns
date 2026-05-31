@@ -59,13 +59,16 @@ impl PluginRuntimeManager {
     }
 
     pub async fn init_runtime(&self, config: Config) -> Result<Arc<PluginRuntime>> {
-        let _guard = self.lifecycle.lock().await;
+        // Test serialization must not wait while holding the lifecycle lock.
+        // A concurrently running test may need `destroy_runtime` to acquire
+        // that lifecycle lock before it can drop the previous test guard.
         #[cfg(debug_assertions)]
         let test_guard = if SERIALIZE_RUNTIME_FOR_TESTS.load(Ordering::Relaxed) {
             Some(test_runtime_lock().lock_owned().await)
         } else {
             None
         };
+        let _guard = self.lifecycle.lock().await;
         let mut candidate = PluginRegistry::new();
         #[cfg(debug_assertions)]
         candidate.set_test_runtime_guard(test_guard);

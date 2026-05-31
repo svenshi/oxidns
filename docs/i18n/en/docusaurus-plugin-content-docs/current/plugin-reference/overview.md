@@ -81,6 +81,7 @@ See [Executor Plugins](executor.mdx) for full field reference. Grouped as: polic
 | Plugin | Purpose |
 | --- | --- |
 | [`http_request`](executor.mdx#http_request) | Sends callbacks to external `http/https` services — webhooks, audit, alerts, external integrations. |
+| [`learn_domain`](executor.mdx#learn_domain) | Learns pipeline request domains into `dynamic_domain_set` for dynamic allow or block lists. |
 | [`script`](executor.mdx#script) | Runs an external command and injects a stable subset of `DnsContext` as arguments or environment variables. |
 | [`ipset`](executor.mdx#ipset) | Writes response IPs into Linux `ipset` via the embedded netlink backend (no `ipset` binary required). |
 | [`nftset`](executor.mdx#nftset) | Writes response IPs into nftables sets via the embedded netlink backend (no `nft` binary required). |
@@ -146,6 +147,7 @@ See [Provider Plugins](provider.mdx) for full field reference.
 | Plugin | Purpose |
 | --- | --- |
 | [`domain_set`](provider.mdx#domain_set) | High-performance domain rule set, referenced by `qname`, `cname`, and similar plugins. |
+| [`dynamic_domain_set`](provider.mdx#dynamic_domain_set) | Writable local domain rule file with hot-snapshot matching, API management, and learned appends. |
 | [`geosite`](provider.mdx#geosite) | Loads one or more codes from the v2ray-rules-dat `geosite.dat` into a reusable domain rule set. |
 | [`adguard_rule`](provider.mdx#adguard_rule) | Provides a reusable subset of AdGuard Home DNS rule evaluation as a provider. |
 | [`ip_set`](provider.mdx#ip_set) | IP / CIDR rule set, referenced by `client_ip`, `resp_ip`, `ptr_ip`, and similar matchers. |

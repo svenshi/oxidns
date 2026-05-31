@@ -117,6 +117,95 @@ Provides a high-performance domain rule set that can be referenced by plugins su
 
 ---
 
+## `dynamic_domain_set`
+
+### Purpose
+
+Provides a writable local domain rule set. It persists rules to a text file and exposes the same hot-snapshot domain matching capability as `domain_set`, making it suitable for learned allow or block lists driven by `learn_domain`.
+
+`dynamic_domain_set` does not use SQLite and keeps the read-only aggregation role of `domain_set` separate.
+
+### Example Configuration
+
+```yaml
+- tag: learned_allow
+  type: dynamic_domain_set
+  args:
+    path: "/etc/oxidns/learned-allow.txt"
+    bootstrap_rules:
+      - "domain:example.org"
+    queue_size: 1024
+    batch_size: 256
+    flush_interval_ms: 200
+```
+
+### Configuration Details
+
+#### `path`
+
+- Type: `string`; Required: yes
+- Purpose: Local rule file managed by this provider.
+- Runtime impact:
+  - Created automatically when missing.
+  - Read during startup and `reload_provider`.
+
+#### `bootstrap_rules`
+
+- Type: `array`; Required: no; Default: empty array
+- Purpose: Initial rules written only when `path` does not exist.
+- Supports `full:`, `domain:`, `keyword:`, `regexp:`, and bare domains. Bare domains are parsed as `domain:`.
+
+#### `queue_size`
+
+- Type: `integer`; Required: no; Default: `1024`
+- Purpose: Bounded queue size for learned append work.
+
+#### `batch_size`
+
+- Type: `integer`; Required: no; Default: `256`
+- Purpose: Batch threshold for background append flushes.
+
+#### `flush_interval_ms`
+
+- Type: `integer`; Required: no; Default: `200`
+- Purpose: Timed flush interval for background appends.
+
+### File Format
+
+- One rule per line.
+- Supports `full:example.com`, `domain:example.com`, `keyword:cdn`, `regexp:^api\\.example\\.com$`, and `example.com`.
+- Empty lines and lines starting with `#` are ignored on load.
+- Domains are normalized to lowercase with trailing dots removed.
+
+### Management API
+
+These plugin endpoints are exposed under the default management prefix as `/api/plugins/<tag>/...`:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/rules?limit=500&cursor=0` | Lists rules with `total`, `next_cursor`, and `rules`. |
+| `POST` | `/rules` | Adds rules. Body example: `{ "rules": ["example.com"], "rule_kind": "full" }`. |
+| `DELETE` | `/rules` | Removes rules. Body example: `{ "rules": ["full:example.com"] }`. |
+| `POST` | `/rules/clear` | Clears the dynamic file and swaps in an empty snapshot. |
+| `POST` | `/reload` | Uses the generic provider reload endpoint to re-read the file. |
+
+### Behavior
+
+- `contains_name` and `contains_question` only read the current hot snapshot and never perform file I/O.
+- Writes from `learn_domain` or the API update this provider's snapshot immediately; `qname` and parent `domain_set.sets` references see the new result without reload.
+- Learned appends are asynchronous and batched by default; API add/delete/clear waits for file persistence and snapshot replacement.
+- External manual file edits require `reload_provider` or `POST /api/plugins/<tag>/reload`; v1 does not include a file watcher.
+- remove/clear rewrites the managed file; API rewrites are not guaranteed to preserve hand-written comments.
+
+<Admonition type="note" title="Notes">
+
+- Treat `path` as a machine-managed file owned by `dynamic_domain_set`.
+- Use separate `dynamic_domain_set` instances for allow and block lists.
+
+</Admonition>
+
+---
+
 ## `geosite`
 
 ### Purpose

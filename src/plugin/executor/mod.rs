@@ -51,6 +51,7 @@ pub mod http_request;
 pub mod ip_selector;
 #[cfg(feature = "plugin-ipset")]
 pub mod ipset;
+pub mod learn_domain;
 #[cfg(feature = "metrics")]
 pub mod metrics_collector;
 #[cfg(feature = "plugin-ipset")]

@@ -1368,6 +1368,109 @@ Maintains a reverse IP-to-name cache and optionally handles PTR requests.
 
 ---
 
+## `learn_domain`
+
+### Purpose
+
+Observes qnames in the DNS pipeline and writes matching request names into a target `dynamic_domain_set`. It is a side-effect executor and never modifies the DNS request or response.
+
+### Example Configuration
+
+```yaml
+- tag: learned_allow
+  type: dynamic_domain_set
+  args:
+    path: "/etc/oxidns/learned-allow.txt"
+
+- tag: learn_allow
+  type: learn_domain
+  args:
+    provider: learned_allow
+    phase: after
+    questions: first
+    qtypes: ["A", "AAAA"]
+    success_only: true
+    answer_required: true
+    rule_kind: full
+    async: true
+    error_mode: continue
+    timeout: 1s
+```
+
+### Configuration Details
+
+#### `provider`
+
+- Type: `string`; Required: yes
+- Purpose: Target `dynamic_domain_set` provider tag.
+- Constraint: must reference `dynamic_domain_set`, not a regular `domain_set`.
+
+#### `phase`
+
+- Type: `string`; Required: no; Default: `after`
+- Values: `before`, `after`
+- Purpose:
+  - `before`: learn from the request questions before downstream executors run.
+  - `after`: run downstream first, then decide whether to learn based on the response.
+
+#### `questions`
+
+- Type: `string`; Required: no; Default: `first`
+- Values: `first`, `all`
+- Purpose: Learns only the first question or all questions.
+
+#### `qtypes`
+
+- Type: `array`; Required: no; Default: `["A", "AAAA"]`
+- Purpose: DNS query types eligible for learning.
+
+#### `success_only`
+
+- Type: `bool`; Required: no; Default: `true`
+- Purpose: Only applies to `phase: after`; requires `NOERROR`.
+
+#### `answer_required`
+
+- Type: `bool`; Required: no; Default: `true`
+- Purpose: Only applies to `phase: after`; requires at least one answer record.
+
+#### `rule_kind`
+
+- Type: `string`; Required: no; Default: `full`
+- Values: `full`, `domain`
+- Purpose: Rule kind written into the target `dynamic_domain_set`.
+
+#### `async`
+
+- Type: `bool`; Required: no; Default: `true`
+- Purpose: Enqueues learned rules and continues immediately. When `false`, waits for provider persistence.
+
+#### `error_mode`
+
+- Type: `string`; Required: no; Default: `continue`
+- Values: `continue`, `stop`, `fail`
+- Purpose: Controls execution behavior if learning fails.
+
+#### `timeout`
+
+- Type: `duration`; Required: no; Default: `1s`
+- Purpose: Limits provider write waiting time when `async: false`.
+
+### Behavior
+
+- Learned domains are normalized to lowercase with trailing dots removed.
+- The default output is `full:example.com` to avoid broad accidental matches.
+- With the default `phase: after`, only successful `A` / `AAAA` responses with answers are learned.
+- `phase: before` does not inspect response conditions.
+- v1 only learns the request question qname and does not learn CNAME targets.
+
+### Typical Uses
+
+- Add successfully resolved domains to a dynamic allow list.
+- Persist domains seen on a policy branch into a local file for later `qname $learned_allow` or parent `domain_set` matching.
+
+---
+
 ## `query_summary`
 
 ### Purpose

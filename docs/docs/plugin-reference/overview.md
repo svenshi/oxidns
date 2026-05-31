@@ -81,6 +81,7 @@ server -> sequence
 | 插件 | 作用 |
 | --- | --- |
 | [`http_request`](executor.mdx#http_request) | 向外部 `http/https` 服务发送回调请求，适合 webhook、审计、告警和外部联动。 |
+| [`learn_domain`](executor.mdx#learn_domain) | 把流水线中的请求域名学习到 `dynamic_domain_set`，用于动态放行或拦截列表。 |
 | [`script`](executor.mdx#script) | 执行外部命令，并把 `DnsContext` 中的稳定字段注入为参数或环境变量。 |
 | [`ipset`](executor.mdx#ipset) | 把响应中的 IP 写入 Linux `ipset`（内置 netlink 后端，无需 `ipset` 命令）。 |
 | [`nftset`](executor.mdx#nftset) | 把响应 IP 写入 Linux `nftables set`（内置 netlink 后端，无需 `nft` 命令）。 |
@@ -146,6 +147,7 @@ server -> sequence
 | 插件 | 作用 |
 | --- | --- |
 | [`domain_set`](provider.mdx#domain_set) | 高性能域名规则集合，可被 `qname`、`cname` 等插件引用。 |
+| [`dynamic_domain_set`](provider.mdx#dynamic_domain_set) | 可写的本地域名规则文件，支持热快照匹配、API 管理和自动学习写入。 |
 | [`geosite`](provider.mdx#geosite) | 从 v2ray-rules-dat 的 `geosite.dat` 中提取一个或多个 code，并编译成可复用域名规则集合。 |
 | [`adguard_rule`](provider.mdx#adguard_rule) | 提供 AdGuard Home DNS 规则子集的可复用 provider。 |
 | [`ip_set`](provider.mdx#ip_set) | IP / CIDR 规则集合，可被 `client_ip`、`resp_ip`、`ptr_ip` 等 matcher 引用。 |

@@ -1691,7 +1691,7 @@ mod tests {
         let Command::Upgrade(opts) = cli.command else {
             panic!("expected upgrade command");
         };
-        let config = UpgradeConfig::from_cli(&opts);
+        let config = UpgradeConfig::from_cli(&opts).unwrap();
         assert_eq!(config.bundle, UpgradeBundle::Minimal);
     }
 

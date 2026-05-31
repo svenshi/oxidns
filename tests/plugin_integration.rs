@@ -35,7 +35,8 @@ use oxidns::network::transport::udp_transport::UdpTransport;
 use oxidns::plugin;
 use oxidns::plugin::executor::ExecStep;
 use oxidns::plugin::{PluginRegistry, PluginType};
-use oxidns::proto::{DNSClass, Message, Name, Question, Rcode, RecordType};
+use oxidns::proto::rdata::A;
+use oxidns::proto::{DNSClass, Message, Name, Question, RData, Rcode, Record, RecordType};
 use tempfile::TempDir;
 #[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1859,6 +1860,121 @@ plugins:
     }
 
     registry.destroy().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_dynamic_domain_set_learns_through_sequence_and_parent_domain_set() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let learned_file = temp_dir.path().join("learned-domains.txt");
+    let yaml = format!(
+        r#"
+log:
+  level: info
+plugins:
+  - tag: learned_domains
+    type: dynamic_domain_set
+    args:
+      path: "{}"
+      batch_size: 1
+      flush_interval_ms: 10
+  - tag: learn_success
+    type: learn_domain
+    args:
+      provider: learned_domains
+      phase: after
+      async: false
+      rule_kind: full
+      qtypes:
+        - A
+      success_only: true
+      answer_required: true
+  - tag: learn_seq
+    type: sequence
+    args:
+      - exec: "$learn_success"
+  - tag: combined_domains
+    type: domain_set
+    args:
+      sets:
+        - learned_domains
+  - tag: match_learned
+    type: qname
+    args:
+      - "$combined_domains"
+"#,
+        yaml_path(&learned_file)
+    );
+
+    let config = parse_config(&yaml)?;
+    let registry = plugin::init(config).await?;
+    let matcher = registry
+        .get_plugin("match_learned")
+        .expect("qname matcher should exist")
+        .to_matcher();
+    let executor = registry
+        .get_plugin("learn_seq")
+        .expect("sequence executor should exist")
+        .to_executor();
+
+    let mut before_ctx = make_context(registry.clone(), "learned.example.");
+    assert!(!matcher.is_match(&mut before_ctx));
+
+    let mut learn_ctx = make_context(registry.clone(), "learned.example.");
+    let mut response = learn_ctx.request().response(Rcode::NoError);
+    response.answers_mut().push(Record::from_rdata(
+        Name::from_ascii("learned.example.").expect("answer name"),
+        60,
+        RData::A(A(Ipv4Addr::new(192, 0, 2, 9))),
+    ));
+    learn_ctx.set_response(response);
+    assert!(matches!(
+        executor.execute(&mut learn_ctx).await?,
+        ExecStep::Next
+    ));
+
+    let mut after_ctx = make_context(registry.clone(), "learned.example.");
+    assert!(matcher.is_match(&mut after_ctx));
+    assert_eq!(
+        std::fs::read_to_string(&learned_file)?,
+        "full:learned.example\n"
+    );
+
+    registry.destroy().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_learn_domain_rejects_non_dynamic_domain_set_provider() -> Result<()> {
+    let yaml = r#"
+log:
+  level: info
+plugins:
+  - tag: static_domains
+    type: domain_set
+    args:
+      exps:
+        - example.com
+  - tag: learn_static
+    type: learn_domain
+    args:
+      provider: static_domains
+  - tag: seq
+    type: sequence
+    args:
+      - exec: "$learn_static"
+"#;
+
+    let config = parse_config(yaml)?;
+    let err = plugin::init(config)
+        .await
+        .expect_err("learn_domain should reject regular domain_set provider");
+    let msg = err.to_string();
+
+    assert!(msg.contains("plugin 'learn_static'"));
+    assert!(msg.contains("args.provider"));
+    assert!(msg.contains("dynamic_domain_set"));
+    assert!(msg.contains("static_domains"));
     Ok(())
 }
 

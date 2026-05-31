@@ -1445,6 +1445,109 @@ old-static.example.com static.example.net
 
 ---
 
+## `learn_domain`
+
+### 作用
+
+观察 DNS 流水线中的请求域名，并把命中的 qname 写入指定 `dynamic_domain_set`。它只产生副作用，不修改请求或响应。
+
+### 配置示例
+
+```yaml
+- tag: learned_allow
+  type: dynamic_domain_set
+  args:
+    path: "/etc/oxidns/learned-allow.txt"
+
+- tag: learn_allow
+  type: learn_domain
+  args:
+    provider: learned_allow
+    phase: after
+    questions: first
+    qtypes: ["A", "AAAA"]
+    success_only: true
+    answer_required: true
+    rule_kind: full
+    async: true
+    error_mode: continue
+    timeout: 1s
+```
+
+### 配置项
+
+#### `provider`
+
+- 类型：`string`；必填：是
+- 作用：引用目标 `dynamic_domain_set` provider。
+- 约束：必须是 `dynamic_domain_set`，不能引用普通 `domain_set`。
+
+#### `phase`
+
+- 类型：`string`；必填：否；默认值：`after`
+- 可选值：`before`、`after`
+- 作用：
+  - `before`：在后续 executor 执行前学习 request question。
+  - `after`：先执行后续链路，再根据响应结果决定是否学习。
+
+#### `questions`
+
+- 类型：`string`；必填：否；默认值：`first`
+- 可选值：`first`、`all`
+- 作用：控制学习第一个 question 或所有 question。
+
+#### `qtypes`
+
+- 类型：`array`；必填：否；默认值：`["A", "AAAA"]`
+- 作用：只学习指定 DNS 查询类型。
+
+#### `success_only`
+
+- 类型：`bool`；必填：否；默认值：`true`
+- 作用：仅 `phase: after` 生效，要求响应 RCODE 为 `NOERROR`。
+
+#### `answer_required`
+
+- 类型：`bool`；必填：否；默认值：`true`
+- 作用：仅 `phase: after` 生效，要求响应包含 answer。
+
+#### `rule_kind`
+
+- 类型：`string`；必填：否；默认值：`full`
+- 可选值：`full`、`domain`
+- 作用：控制学习到 `dynamic_domain_set` 的规则类型。
+
+#### `async`
+
+- 类型：`bool`；必填：否；默认值：`true`
+- 作用：控制是否只入队后继续执行。设为 `false` 时会等待 provider 写入完成。
+
+#### `error_mode`
+
+- 类型：`string`；必填：否；默认值：`continue`
+- 可选值：`continue`、`stop`、`fail`
+- 作用：控制学习失败后的执行结果。
+
+#### `timeout`
+
+- 类型：`duration`；必填：否；默认值：`1s`
+- 作用：仅 `async: false` 时用于限制等待 provider 写入的时间。
+
+### 行为说明
+
+- 学习域名会规范化为小写并移除尾部 `.`。
+- 默认生成 `full:example.com` 精确规则，避免意外扩大匹配范围。
+- `phase: after` 默认只学习成功且有 answer 的 `A` / `AAAA` 响应。
+- `phase: before` 不检查响应条件。
+- v1 只学习请求 question 的 qname，不学习 CNAME target。
+
+### 典型用途
+
+- 把成功解析过的域名加入动态放行列表。
+- 把某个分支中的域名沉淀到本地文件，供后续 `qname $learned_allow` 或父级 `domain_set` 使用。
+
+---
+
 ## `query_summary`
 
 ### 作用
