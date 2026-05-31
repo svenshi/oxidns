@@ -235,7 +235,7 @@ plugin-mikrotik = ["dep:mikrotik-rs"]
 
 # `query_recorder` executor backed by bundled SQLite. Its management API
 # surface is part of the build, hence the `api` requirement.
-plugin-query-recorder = ["api", "dep:rusqlite"]
+plugin-query-recorder = ["api", "_sequence-step-recording", "dep:rusqlite"]
 
 # `ipset` + `nftset` executors (Linux netlink-backed firewall set sync).
 plugin-ipset = ["dep:ripset"]
@@ -297,6 +297,10 @@ _http-client = [
     "dep:tower-service",
     "_tls-client",
 ]
+
+# Request-local sequence step capture used by observer plugins such as
+# `query_recorder`.
+_sequence-step-recording = []
 
 # --- Profiling -------------------------------------------------------------
 hotpath = ["hotpath/hotpath"]

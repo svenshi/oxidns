@@ -1010,7 +1010,7 @@ impl Plugin for Cache {
 
         let _ = self.cache_map.set(cache_map.clone());
         self.metrics.set_cache_map(cache_map.clone());
-      
+
         #[cfg(feature = "api")]
         api::register(
             &self.tag,
