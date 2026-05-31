@@ -188,6 +188,22 @@ fn parse_config_rejects_unknown_fields() {
 }
 
 #[test]
+fn parse_config_rejects_unknown_cache_fields() {
+    let args = serde_yaml_ng::from_str::<Value>(
+        r#"
+cache:
+  enabled: true
+  failure_ttls: 1
+"#,
+    )
+    .unwrap();
+
+    let err = parse_ip_selector_config(Some(args)).unwrap_err();
+
+    assert!(err.to_string().contains("unknown field"));
+}
+
+#[test]
 fn parse_config_rejects_unknown_selection_mode() {
     let args = serde_yaml_ng::from_str::<Value>("selection_mode: fastest").unwrap();
 

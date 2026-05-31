@@ -152,6 +152,7 @@ impl From<RawIpSelectorConfig> for IpSelectorConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub(super) struct IpSelectorCacheConfig {
     pub(super) enabled: Option<bool>,
     pub(super) size: Option<usize>,
