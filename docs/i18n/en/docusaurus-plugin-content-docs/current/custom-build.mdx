@@ -1,0 +1,415 @@
+---
+title: Custom Build
+sidebar_position: 6
+---
+
+import Admonition from '@theme/Admonition';
+
+# Custom Build
+
+OxiDNS exposes every protocol, every optional plugin, and every external
+dependency as an independent Cargo feature flag. When you need a smaller
+binary, a specific platform, or a particular plugin set, you have **three
+paths**:
+
+| Approach | Best for | Needs local Rust toolchain? |
+|---|---|---|
+| [Template repo + GitHub Actions](#path-1-template-repo-automated-builds) | "Rebuild my own version every time upstream releases," without forking | ❌ |
+| [Local `cargo build`](#path-2-local-cargo-build) | One-off custom binary, you already have Rust installed | ✅ |
+| [Fork the whole project](#path-3-fork-the-project) | Long-term source modifications, diverging from upstream | ✅ |
+
+<Admonition type="tip" title="Default behavior">
+
+`cargo build` enables the `full` bundle by default and produces a binary
+equivalent to the official release. Only `--no-default-features` enters
+slim-build mode.
+
+</Admonition>
+
+---
+
+## Bundles
+
+| Bundle | Use case | Approx. size |
+|---|---|---|
+| `minimal` | Low-memory devices / containers / experiments — UDP/TCP forwarding only | ~8.9 MB |
+| `standard` | Home router — WebUI + encrypted protocols + common plugins | between the two |
+| `full` (default) | Everything, equivalent to the official release | ~21 MB |
+
+<Admonition type="note">
+
+When you mix and match features yourself, the actual capability is the one
+reported by `oxidns build-info` or `GET /api/build`. The list below describes
+the **official preset** contents.
+
+</Admonition>
+
+### `minimal` — smallest usable
+
+Only the DNS forwarding path is compiled. HTTP, encrypted protocols, and all
+optional plugins are dropped. The dependency closure excludes hyper / rustls
+/ quinn / h2 / h3 / sqlite / zoneparser, producing the smallest binary.
+
+**Includes**
+
+- Inbound: UDP, TCP
+- Upstream: UDP, TCP (plaintext)
+- Providers: `domain_set`, `ip_set`
+- Matchers: all
+- Executors: `sequence`, `forward`, `cache`, `fallback`, `hosts`, `redirect`,
+  `dual_selector`, `ecs_handler`, `ttl`, `drop_resp`, `black_hole`,
+  `debug_print`, `reload`
+- In-process metric counters (no HTTP endpoint)
+
+**Excludes**
+
+- Management API / WebUI / Prometheus `/metrics`
+- DoT / DoH / DoQ / DoH3
+- All optional plugins and the `upgrade` subcommand
+
+### `standard` — home router
+
+Adds management surface, encrypted protocol stack, and common plugins on top
+of `minimal`.
+
+**Additional**
+
+- Management: HTTP API, WebUI, Prometheus `/metrics`, `metrics_collector`
+- Inbound / upstream: DoT, DoH (HTTP/2), DoQ
+- Providers: `geoip`, `geosite`, `v2ray_dat`, `adguard_rule`
+- Executors: `arbitrary`, `cron`, `download`, `http_request`,
+  `reverse_lookup`, `query_recorder`, `script`
+- `upgrade` CLI subcommand and `upgrade` executor
+
+### `full` (default) — everything
+
+Adds DoH3 and platform integrations on top of `standard`.
+
+**Additional**
+
+- Inbound / upstream: DoH HTTP/3
+- Executors: `ros_address_list` (MikroTik), `ipset`, `nftset`
+
+### Official release matrix
+
+| Channel | minimal | standard | full |
+|---|---|---|---|
+| Linux x86_64 / ARM64 musl slim archive | ✓ (no WebUI) | ✓ (with WebUI) | — |
+| Full release targets | — | — | ✓ |
+| `.deb` / Docker | — | — | ✓ |
+
+---
+
+## Feature reference
+
+Every feature can be toggled individually. Bundles are simply curated sets
+of these switches — you can **pick only what you need** instead of using a
+preset.
+
+### Inbound / outbound protocols
+
+| Feature | Purpose |
+|---|---|
+| `server-dot` | DoT (TLS over TCP) inbound server, rustls server stack |
+| `server-doh` | DoH (HTTP/2 over TLS) inbound server, hyper server + rustls |
+| `server-doq` | DoQ (QUIC) inbound server, `quinn` |
+| `server-doh3` | HTTP/3 leg on the DoH server (requires `server-doh`), adds `h3` / `h3-quinn` / `quinn` |
+| `upstream-dot` | DoT upstreams (`tls://` scheme) |
+| `upstream-doh` | DoH (HTTP/2) upstreams (`https://` scheme) |
+| `upstream-doq` | DoQ upstreams (`quic://` / `doq://` scheme) |
+| `upstream-doh3` | HTTP/3 leg on DoH upstreams (`h3://` or `enable_http3: true`, requires `upstream-doh`) |
+
+<Admonition type="info" title="Disabled-feature errors">
+
+If yaml still references a disabled protocol, startup fails cleanly with
+e.g. `upstream DoT is not compiled into this build; rebuild with --features
+upstream-dot` instead of crashing mid-run.
+
+</Admonition>
+
+### Management surface
+
+| Feature | Purpose | Pulls in |
+|---|---|---|
+| `api` | Management / health / control / logs / config HTTP API plus per-plugin `/plugins/<tag>/...` endpoints | hyper server + rustls server |
+| `webui` | Serves the WebUI static assets from the API hub (requires `api`) | — |
+| `metrics` | `/metrics` Prometheus endpoint + `metrics_collector` executor (requires `api`) | — |
+
+<Admonition type="note">
+
+Disabling `api` removes the entire `src/api/` module along with the
+hyper / rustls server stack — the main reason `minimal` is so much smaller.
+The in-process `MetricSource` registry stays in core regardless, so
+disabling `metrics` only drops the HTTP surface and never touches the hot
+path.
+
+</Admonition>
+
+### Optional plugins
+
+| Feature | Plugin | Main dependency |
+|---|---|---|
+| `plugin-mikrotik` | `ros_address_list` | `mikrotik-rs` |
+| `plugin-query-recorder` | `query_recorder` | `rusqlite` (bundled SQLite) |
+| `plugin-ipset` | `ipset` + `nftset` | `ripset` (Linux only) |
+| `plugin-cron` | `cron` | `cronexpr` |
+| `plugin-script` | `script` | — |
+| `plugin-arbitrary` | `arbitrary` | `oxidns-zoneparser` |
+| `plugin-download` | `download` | — |
+| `plugin-http-request` | `http_request` | — |
+| `plugin-reverse-lookup` | `reverse_lookup` | — |
+| `plugin-upgrade` | `upgrade` CLI subcommand + `upgrade` executor | `flate2` / `tar` / `zip` (Windows) / `semver` |
+| `provider-protobuf` | `geoip` + `geosite` + `v2ray_dat` (shared `prost`) | `prost` |
+| `provider-adguard-rule` | `adguard_rule` | — |
+
+---
+
+## Path 1: template repo (automated builds)
+
+If you don't want to fork the project but still want **"every time upstream
+releases, automatically rebuild with my own feature set and target list,
+and publish to my own release feed"**, start from the official template:
+
+<div className="custom-build-cta">
+
+### 👉 [svenshi/oxidns-build-template](https://github.com/svenshi/oxidns-build-template)
+
+</div>
+
+### How it works
+
+```
+svenshi/oxidns                     you/oxidns-build (from template)
+─────────────                      ────────────────────────────────
+ release v1.2.0  ─poll every 30m─▶ watch-upstream.yml
+                                            │
+                                            ▼  reads build.config.yml
+                                    build.yml (~50-line shell)
+                                            │
+                                            ▼  uses: svenshi/oxidns@main
+                          ┌────────────────────────────────────┐
+                          │ svenshi/oxidns/.github/workflows/  │
+                          │      custom-build.yml              │  ← build matrix
+                          │  (runs on the caller's runner)     │
+                          └─────────────────┬──────────────────┘
+                                            ▼
+                                  publishes to you/oxidns-build releases
+                                            ▼
+                       oxidns upgrade --repository you/oxidns-build
+```
+
+**Key design decisions:**
+
+- The **build matrix is maintained in one place**, the upstream
+  [`.github/workflows/custom-build.yml`](https://github.com/svenshi/oxidns/blob/main/.github/workflows/custom-build.yml)
+- Your repo only contains a 50-line `build.yml` that calls it via `uses:`
+- When upstream improves the pipeline (new target / cross toolchain fix /
+  UPX upgrade), every derivative repo **picks it up on the next trigger**
+  without local changes
+
+### Quick start
+
+1. Open [svenshi/oxidns-build-template](https://github.com/svenshi/oxidns-build-template)
+   and click **Use this template** → **Create a new repository**
+2. Edit `build.config.yml` in your new repo:
+
+   ```yaml
+   upstream: svenshi/oxidns
+   # full | standard | minimal | custom
+   bundle: custom
+   # only used when bundle: custom
+   features:
+     - api
+     - webui
+     - server-doh
+     - upstream-doh
+     - plugin-cron
+     - plugin-upgrade
+   targets:
+     - x86_64-unknown-linux-musl
+     - aarch64-unknown-linux-musl
+     - aarch64-apple-darwin
+     - x86_64-pc-windows-msvc
+   upx: true
+   make_deb: false
+   ```
+
+3. Push to `main`. From the Actions tab, manually run **Watch Upstream** once
+   to trigger the first build.
+
+The workflow polls upstream's latest release every 30 minutes thereafter and
+publishes a matching build into your repo whenever a new version appears.
+You can also manually `workflow_dispatch` against any tag at any time.
+
+### Upgrading the client to your custom build
+
+The most common command:
+
+```bash
+oxidns upgrade apply \
+  --repository you/oxidns-build \
+  --bundle full
+```
+
+<Admonition type="warning" title="Custom bundle still needs --bundle full">
+
+The client binary's `PRIMARY_BUNDLE` reports as `custom`, and `--bundle auto`
+refuses to run on custom builds (to avoid guessing the wrong asset name).
+Custom builds use the `oxidns-{target}.{ext}` naming convention, which
+matches `--bundle full` exactly.
+
+</Admonition>
+
+Or specify the asset directly to bypass bundle inference:
+
+```bash
+oxidns upgrade apply \
+  --repository you/oxidns-build \
+  --asset oxidns-x86_64-unknown-linux-musl.tar.gz
+```
+
+Or wire it into `config.yaml` so the `upgrade` plugin uses it automatically:
+
+```yaml
+plugins:
+  - tag: my_upgrader
+    type: upgrade
+    args:
+      repository: you/oxidns-build
+      bundle: full
+```
+
+### Asset naming (must match upstream exactly)
+
+The template's outputs follow the same naming as the official release —
+otherwise `oxidns upgrade` cannot find or unpack them:
+
+| bundle | filename | archive contents | config used |
+|---|---|---|---|
+| `full` / `custom` | `oxidns-{target}.tar.gz` / `.zip` | `oxidns`/`oxidns.exe`, `config.yaml`, `LICENSE`, `webui/` | `config.yaml` |
+| `standard` | `oxidns-standard-{target}.tar.gz` | same as above | `config.yaml` |
+| `minimal` | `oxidns-minimal-{target}.tar.gz` | `oxidns`, `config.yaml`, `LICENSE` | `config.minimal.yaml` |
+
+All files live at the tarball **root** (no nested directory). Any deviation
+breaks `oxidns upgrade`.
+
+### Supported targets
+
+Identical to upstream's `release.yml` — 12 targets:
+
+- `x86_64-unknown-linux-gnu` / `x86_64-unknown-linux-musl`
+- `aarch64-unknown-linux-gnu` / `aarch64-unknown-linux-musl`
+- `i686-unknown-linux-musl` / `arm-unknown-linux-musleabihf`
+- `x86_64-apple-darwin` / `aarch64-apple-darwin`
+- `x86_64-unknown-freebsd`
+- `x86_64-pc-windows-msvc` / `i686-pc-windows-msvc` / `aarch64-pc-windows-msvc`
+
+Comment out the targets you don't need in `build.config.yml` to shorten CI.
+
+---
+
+## Path 2: local `cargo build`
+
+When you already have Rust installed and just want a one-off custom binary:
+
+```bash
+# Default full bundle (equivalent to the official release)
+cargo build --release
+
+# Smallest usable build — basic forwarding only
+cargo build --release --no-default-features --features minimal
+
+# Home router (API, DoT/DoH/DoQ, geo, adguard, ...)
+cargo build --release --no-default-features --features standard
+
+# minimal + MikroTik integration on top
+cargo build --release --no-default-features --features "minimal,plugin-mikrotik"
+
+# Plain forwarder + management API, no heavy plugins
+cargo build --release --no-default-features --features "minimal,api"
+```
+
+The binary lands in `target/release/oxidns` (`oxidns.exe` on Windows).
+WebUI assets need a separate build — see
+[webui/README.md](https://github.com/svenshi/oxidns/blob/main/webui).
+
+---
+
+## Path 3: fork the project
+
+For long-term source modifications:
+
+1. Fork [svenshi/oxidns](https://github.com/svenshi/oxidns)
+2. Change `default = ["standard"]` (or any custom combination) at the top of
+   `Cargo.toml` so that `cargo build` and `cargo install` both produce the
+   tailored binary out of the box
+3. For automatic updates: override the defaults of the `upgrade` subcommand
+   (`--repository`, `--asset` / `--bundle`) so `oxidns upgrade` looks at
+   your release feed. Custom builds should not rely on `bundle: auto` —
+   set `asset` explicitly
+4. Reuse upstream's
+   [`.github/workflows/release.yml`](https://github.com/svenshi/oxidns/blob/main/.github/workflows/release.yml)
+   to maintain your own release pipeline
+
+---
+
+## Verifying the compile matrix
+
+The repo ships with `just` recipes that run clippy across all three bundles
+plus the default-features test suite in one go:
+
+```bash
+just check-matrix
+```
+
+Or run them individually:
+
+```bash
+just check-minimal   # cargo +nightly clippy --no-default-features --features minimal
+just check-standard
+just check-full      # cargo +nightly clippy --all-features
+```
+
+CI runs the same set, so running locally first saves round-trips.
+
+---
+
+## Runtime behavior for missing plugins
+
+When a feature is off, the matching `#[plugin_factory("...")]` registration
+block is not compiled, so the plugin type name never enters the global
+factory table. A config that references a plugin not compiled into the
+binary is rejected at startup by `analyze_configuration`:
+
+```
+Error: Plugin("Unknown plugin type: query_recorder")
+```
+
+This is the intended behavior — the user sees a clean error instead of a
+mid-run crash.
+
+---
+
+## FAQ
+
+**Q: I'm using the template repo — upstream changed the build pipeline,
+what do I do?**
+A: Usually nothing. The template's `build.yml` pins to
+`svenshi/oxidns@main`, so the next trigger picks up the latest logic
+automatically. Pin to `@v1.2.0` (or any tag) for a fixed version.
+
+**Q: Can I build a PR branch or a specific commit?**
+A: Tweak `watch-upstream.yml` to use `git rev-parse` instead of "latest
+release", or manually `workflow_dispatch` `build.yml` with a tag, branch,
+or SHA.
+
+**Q: How is artifact integrity verified?**
+A: GitHub generates a SHA256 digest per release asset automatically, and
+`oxidns upgrade` validates it on download. No manual signing needed.
+
+**Q: What's the difference between `bundle: custom` and `bundle: full`?**
+A: The filenames match (`oxidns-{target}.{ext}`), but `custom` lets you
+freely combine features and the resulting binary reports
+`PRIMARY_BUNDLE=custom`, so clients must pass `--bundle full` explicitly
+when upgrading. `full` compiles with `--features full` and is equivalent
+to the official release.

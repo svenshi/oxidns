@@ -1,0 +1,390 @@
+---
+title: 自定义编译
+sidebar_position: 6
+---
+
+import Admonition from '@theme/Admonition';
+
+# 自定义编译
+
+OxiDNS 把每一种协议、每一个可选插件、每一组外部依赖都拆成了独立的 Cargo
+feature 开关。需要小体积 / 特定平台 / 特定插件组合的二进制时,你有**三条路**:
+
+| 方式 | 适合场景 | 需要本地 Rust 工具链? |
+|---|---|---|
+| [模版仓库 + GitHub Actions](#方式一模版仓库自动编译) | "我想每次上游发布就自动重编自己版本",但不想维护 fork | ❌ |
+| [本地 `cargo build`](#方式二本地-cargo-build) | 手头有 Rust 环境,只需要一次性产出一个定制二进制 | ✅ |
+| [fork 整个项目](#方式三fork-项目) | 需要持续修改源码 / 长期偏离上游 | ✅ |
+
+<Admonition type="tip" title="默认行为">
+
+`cargo build` 默认启用 `full` 组合,产出与官方发布物完全等价的二进制。
+只有显式 `--no-default-features` 才进入裁剪模式。
+
+</Admonition>
+
+---
+
+## Bundles 预设组合
+
+| Bundle | 定位 | 体积参考 |
+|---|---|---|
+| `minimal` | 小内存设备 / 容器 / 实验,仅基础 UDP/TCP 转发 | ~8.9 MB |
+| `standard` | 家用路由器,含 WebUI + 加密协议 + 常用插件 | 介于两者之间 |
+| `full`(默认) | 全功能,覆盖发布版的全部能力 | ~21 MB |
+
+<Admonition type="note">
+
+自行组合 feature 时,实际能力以 `oxidns build-info` 或 `GET /api/build` 的
+返回值为准。下面列出的是**官方预设**的具体内容。
+
+</Admonition>
+
+### `minimal` — 最小可用
+
+只编译 DNS 转发必需的部分,剔除 HTTP / 加密协议 / 全部可选插件。依赖排除了
+hyper / rustls / quinn / h2 / h3 / sqlite / zoneparser,是体积最小的组合。
+
+**包含**
+
+- 入站:UDP、TCP
+- 上游:UDP、TCP(明文)
+- Provider:`domain_set`、`ip_set`
+- Matcher:全部
+- Executor:`sequence`、`forward`、`cache`、`fallback`、`hosts`、`redirect`、
+  `dual_selector`、`ecs_handler`、`ttl`、`drop_resp`、`black_hole`、
+  `debug_print`、`reload`
+- 进程内 metric 计数器(不暴露 HTTP 端点)
+
+**不包含**
+
+- 管理 API / WebUI / Prometheus `/metrics`
+- DoT / DoH / DoQ / DoH3
+- 全部可选插件与 `upgrade` 子命令
+
+### `standard` — 家用路由器
+
+`minimal` 之上引入管理面、加密协议栈和常用插件。
+
+**额外包含**
+
+- 管理面:HTTP API、WebUI、Prometheus `/metrics`、`metrics_collector`
+- 入站 / 上游:DoT、DoH (HTTP/2)、DoQ
+- Provider:`geoip`、`geosite`、`v2ray_dat`、`adguard_rule`
+- Executor:`arbitrary`、`cron`、`download`、`http_request`、
+  `reverse_lookup`、`query_recorder`、`script`
+- `upgrade` CLI 子命令与 `upgrade` executor
+
+### `full`(默认) — 全功能
+
+`standard` 之上引入 DoH3 与平台集成。
+
+**额外包含**
+
+- 入站 / 上游:DoH HTTP/3
+- Executor:`ros_address_list`(MikroTik)、`ipset`、`nftset`
+
+### 官方发布物对照
+
+| 渠道 | minimal | standard | full |
+|---|---|---|---|
+| Linux x86_64 / ARM64 musl slim 包 | ✓(无 WebUI) | ✓(含 WebUI) | — |
+| 完整 release target | — | — | ✓ |
+| `.deb` / Docker | — | — | ✓ |
+
+---
+
+## Feature 颗粒度
+
+每个 feature 都可以单独打开或关闭。Bundle 只是这些开关的集合,
+你也可以**只挑自己需要的开关**而不走预设。
+
+### 入站 / 出站协议
+
+| Feature | 作用 |
+|---|---|
+| `server-dot` | 启用 DoT(TLS over TCP)入站服务器,依赖 rustls 服务端栈 |
+| `server-doh` | 启用 DoH(HTTP/2 over TLS)入站服务器,依赖 hyper 服务端 + rustls |
+| `server-doq` | 启用 DoQ(QUIC)入站服务器,依赖 `quinn` |
+| `server-doh3` | 在 DoH 服务器上启用 HTTP/3 路径(需 `server-doh`),额外依赖 `h3` / `h3-quinn` / `quinn` |
+| `upstream-dot` | 启用 DoT upstream(`tls://` scheme) |
+| `upstream-doh` | 启用 DoH(HTTP/2)upstream(`https://` scheme) |
+| `upstream-doq` | 启用 DoQ upstream(`quic://` / `doq://` scheme) |
+| `upstream-doh3` | 启用 DoH HTTP/3 upstream(`h3://` 或 `enable_http3: true`,需 `upstream-doh`) |
+
+<Admonition type="info" title="关闭后的报错">
+
+关闭某协议后,如果 yaml 里仍写了对应 scheme/配置,启动时会得到清晰错误,
+例如 `upstream DoT is not compiled into this build; rebuild with --features
+upstream-dot`,而不是直接崩溃。
+
+</Admonition>
+
+### 管理面
+
+| Feature | 作用 | 依赖 |
+|---|---|---|
+| `api` | 管理 / 健康 / 控制 / 日志 / 配置 HTTP API,以及各插件的 `/plugins/<tag>/...` 端点 | hyper 服务端 + rustls 服务端 |
+| `webui` | 在 API hub 上托管 WebUI 静态资源(需 `api`) | — |
+| `metrics` | `/metrics` Prometheus 端点 + `metrics_collector` 执行器(需 `api`) | — |
+
+<Admonition type="note">
+
+`api` 关闭后,`src/api/` 整个模块都不编译,hyper / rustls 服务端栈随之
+排除,这是 `minimal` 体积大幅下降的主因。进程内的 `MetricSource` 计数器
+始终保留在 core,关闭 `metrics` 只是不暴露 HTTP 端点,不影响热路径。
+
+</Admonition>
+
+### 可选插件
+
+| Feature | 插件 | 主要依赖 |
+|---|---|---|
+| `plugin-mikrotik` | `ros_address_list` | `mikrotik-rs` |
+| `plugin-query-recorder` | `query_recorder` | `rusqlite`(bundled SQLite) |
+| `plugin-ipset` | `ipset` + `nftset` | `ripset`(Linux only) |
+| `plugin-cron` | `cron` | `cronexpr` |
+| `plugin-script` | `script` | — |
+| `plugin-arbitrary` | `arbitrary` | `oxidns-zoneparser` |
+| `plugin-download` | `download` | — |
+| `plugin-http-request` | `http_request` | — |
+| `plugin-reverse-lookup` | `reverse_lookup` | — |
+| `plugin-upgrade` | `upgrade` CLI 子命令 + `upgrade` 执行器 | `flate2` / `tar` / `zip`(Windows) / `semver` |
+| `provider-protobuf` | `geoip` + `geosite` + `v2ray_dat`(共享 `prost`) | `prost` |
+| `provider-adguard-rule` | `adguard_rule` | — |
+
+---
+
+## 方式一:模版仓库(自动编译)
+
+如果你不想维护 fork,只想**每次上游发布新版,就自动用你选定的 features 和
+平台重编,并发布到你自己的仓库 release**,从官方模版仓库开始:
+
+<div className="custom-build-cta">
+
+### 👉 [svenshi/oxidns-build-template](https://github.com/svenshi/oxidns-build-template)
+
+</div>
+
+### 工作方式
+
+```
+svenshi/oxidns                     you/oxidns-build (从模版生成)
+─────────────                      ─────────────────────────────
+ 发布 v1.2.0   ─每 30 分钟轮询─▶   watch-upstream.yml
+                                            │
+                                            ▼  读 build.config.yml
+                                    build.yml(~50 行薄壳)
+                                            │
+                                            ▼  uses: svenshi/oxidns@main
+                          ┌────────────────────────────────────┐
+                          │ svenshi/oxidns/.github/workflows/  │
+                          │      custom-build.yml              │  ← 编译矩阵在这里
+                          │ (在调用方 runner 上执行)            │
+                          └─────────────────┬──────────────────┘
+                                            ▼
+                                  发布到 you/oxidns-build 的 releases
+                                            ▼
+                       oxidns upgrade --repository you/oxidns-build
+```
+
+**关键设计点:**
+
+- **编译矩阵的真实源代码只有一份**,维护在主仓库的
+  [`.github/workflows/custom-build.yml`](https://github.com/svenshi/oxidns/blob/main/.github/workflows/custom-build.yml)
+- 你的仓库里只有 50 行的 `build.yml`,通过 `uses:` 调用上游
+- 上游改了构建流程(新增 target / 修复 cross 工具链 / 升级 UPX),所有派生
+  仓库**下次触发就自动跟上**,不需要更新模版
+
+### 快速开始
+
+1. 打开 [svenshi/oxidns-build-template](https://github.com/svenshi/oxidns-build-template),
+   点右上角 **Use this template** → **Create a new repository**
+2. 在你的新仓库里编辑 `build.config.yml`:
+
+   ```yaml
+   upstream: svenshi/oxidns
+   # full | standard | minimal | custom
+   bundle: custom
+   # 仅 bundle: custom 时生效
+   features:
+     - api
+     - webui
+     - server-doh
+     - upstream-doh
+     - plugin-cron
+     - plugin-upgrade
+   targets:
+     - x86_64-unknown-linux-musl
+     - aarch64-unknown-linux-musl
+     - aarch64-apple-darwin
+     - x86_64-pc-windows-msvc
+   upx: true
+   make_deb: false
+   ```
+
+3. push 到 `main`。Actions 页手动 Run 一次 **Watch Upstream** 触发首次构建。
+
+之后每 30 分钟轮询一次上游 latest release,有新版本就自动编译并发布到你的
+仓库。也可以在 Actions 页随时手动 `workflow_dispatch` 一个指定 tag。
+
+### 在客户端使用自定义编译
+
+最常用的命令:
+
+```bash
+oxidns upgrade apply \
+  --repository you/oxidns-build \
+  --bundle full
+```
+
+<Admonition type="warning" title="custom bundle 也要传 --bundle full">
+
+客户端本地二进制的 `PRIMARY_BUNDLE` 为 `custom`,`--bundle auto` 在 custom
+上会拒绝执行(防止猜错 asset 名)。custom 构建产物文件名格式是
+`oxidns-{target}.{ext}`,刚好与 `--bundle full` 匹配。
+
+</Admonition>
+
+也可以跳过 bundle 推断,直接指定 asset 名:
+
+```bash
+oxidns upgrade apply \
+  --repository you/oxidns-build \
+  --asset oxidns-x86_64-unknown-linux-musl.tar.gz
+```
+
+或写进 `config.yaml` 让 `upgrade` 插件自动用:
+
+```yaml
+plugins:
+  - tag: my_upgrader
+    type: upgrade
+    args:
+      repository: you/oxidns-build
+      bundle: full
+```
+
+### 产物命名约定(必须严格对齐)
+
+模版仓库的产物命名与官方 release 完全相同,否则 `oxidns upgrade` 无法升级:
+
+| bundle | 文件名 | 压缩包内容 | 用的 config |
+|---|---|---|---|
+| `full` / `custom` | `oxidns-{target}.tar.gz` / `.zip` | `oxidns`/`oxidns.exe`、`config.yaml`、`LICENSE`、`webui/` | `config.yaml` |
+| `standard` | `oxidns-standard-{target}.tar.gz` | 同上 | `config.yaml` |
+| `minimal` | `oxidns-minimal-{target}.tar.gz` | `oxidns`、`config.yaml`、`LICENSE` | `config.minimal.yaml` |
+
+所有文件都在 tarball **根目录**(没有套子目录)。任何偏离这套约定的产物都
+会导致 `oxidns upgrade` 找不到 asset 或解压后找不到二进制。
+
+### 支持的 targets
+
+与上游 `release.yml` 完全一致 12 个:
+
+- `x86_64-unknown-linux-gnu` / `x86_64-unknown-linux-musl`
+- `aarch64-unknown-linux-gnu` / `aarch64-unknown-linux-musl`
+- `i686-unknown-linux-musl` / `arm-unknown-linux-musleabihf`
+- `x86_64-apple-darwin` / `aarch64-apple-darwin`
+- `x86_64-unknown-freebsd`
+- `x86_64-pc-windows-msvc` / `i686-pc-windows-msvc` / `aarch64-pc-windows-msvc`
+
+注释掉 `build.config.yml` 里不需要的 target 来缩短 CI 时间。
+
+---
+
+## 方式二:本地 `cargo build`
+
+手头有 Rust 环境,只是想一次性产一个定制二进制时,直接本地 cargo:
+
+```bash
+# 默认全功能(等价于发布版本)
+cargo build --release
+
+# 最小可用,只跑基础转发
+cargo build --release --no-default-features --features minimal
+
+# 家用路由器(含 API、DoT/DoH/DoQ、geo、adguard 等)
+cargo build --release --no-default-features --features standard
+
+# 只在 minimal 上加 MikroTik 集成
+cargo build --release --no-default-features --features "minimal,plugin-mikrotik"
+
+# 只要纯转发 + 管理 API,不要任何重型插件
+cargo build --release --no-default-features --features "minimal,api"
+```
+
+产物在 `target/release/oxidns`(Windows 上是 `oxidns.exe`)。
+WebUI 静态资源需要单独编译,见 [webui/README.md](https://github.com/svenshi/oxidns/blob/main/webui)。
+
+---
+
+## 方式三:fork 项目
+
+需要长期修改源码时:
+
+1. fork [svenshi/oxidns](https://github.com/svenshi/oxidns)
+2. 改 `Cargo.toml` 顶部的 `default = ["standard"]`(或自定义组合),让
+   `cargo build`、`cargo install` 都走你需要的版本
+3. 自动更新需求:把发布资产名 / 仓库地址写进 `upgrade` 子命令的 CLI 默认值
+   (`--repository`、`--asset` / `--bundle`),用户在你的 fork 上跑
+   `oxidns upgrade` 就会自动指向你的发布仓库。custom 构建不应依赖
+   `bundle: auto`,建议显式设置 `asset`
+4. 维护自己的 release pipeline 时可以直接复用主仓库的
+   [`.github/workflows/release.yml`](https://github.com/svenshi/oxidns/blob/main/.github/workflows/release.yml)
+
+---
+
+## 验证编译矩阵
+
+仓库自带 `just` 配方,一次跑完三种组合的 clippy + 默认 feature 的 test:
+
+```bash
+just check-matrix
+```
+
+或者分别:
+
+```bash
+just check-minimal   # cargo +nightly clippy --no-default-features --features minimal
+just check-standard
+just check-full      # cargo +nightly clippy --all-features
+```
+
+CI 也会跑这套组合,改 feature 开关前先在本地过一遍可以节省往返。
+
+---
+
+## 缺失插件的运行时行为
+
+每个 feature 关闭后,对应插件的 `#[plugin_factory("...")]` 注册块不会
+被编译,因此插件类型名也不会出现在全局工厂表里。如果 yaml 配置里使用了
+未编译的插件,启动时会被 `analyze_configuration` 拦截:
+
+```
+Error: Plugin("Unknown plugin type: query_recorder")
+```
+
+这是预期行为 —— 用户得到清晰的错误提示,而不是运行到一半才崩。
+
+---
+
+## FAQ
+
+**Q: 用模版仓库构建,上游改了编译流程,我要做什么?**
+A: 通常什么都不用做。模版 `build.yml` 默认 pin 到 `svenshi/oxidns@main`,
+下次触发就自动用最新逻辑。要锁版本就把 `@main` 改成 `@v1.2.0` 之类的 tag。
+
+**Q: 能编译上游 PR 分支或某个 commit 吗?**
+A: 改 `watch-upstream.yml` 把 latest release 检测换成 git rev-parse,或者
+直接手动 `workflow_dispatch` 给 build.yml 传一个 tag/branch/SHA。
+
+**Q: 产物完整性怎么验证?**
+A: GitHub 自动给每个 release asset 生成 SHA256 digest,`oxidns upgrade`
+会自动校验,无需手动签名。
+
+**Q: `bundle: custom` 和 `bundle: full` 的区别是?**
+A: 文件名相同(都是 `oxidns-{target}.{ext}`),但 `custom` 模式下你可以
+自由组合 features,产出的二进制 `PRIMARY_BUNDLE` 会被报告为 `custom`,
+因此客户端必须显式 `--bundle full` 升级。`full` 模式会编译 `--features full`,
+和官方发布物完全等价。
