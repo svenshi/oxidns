@@ -35,19 +35,19 @@ On top of the existing one-way push, add pulling RouterOS address lists as an Ox
 
 </RoadmapItem>
 
-<RoadmapItem type="done" label="v1.2.0" title="IP Optimization" desc="Parallel latency testing of A/AAAA addresses; return the lowest-latency IP" version="v1.2.0">
+<RoadmapItem type="version" title="IP Optimization" desc="Parallel latency testing of A/AAAA addresses; return the lowest-latency IP" version="v1.2.0" date="2026-06-03">
 
 Test multiple A/AAAA addresses from a DNS response in parallel and return the lowest-latency IP to the client, improving real-world access speed. Implementation is complete and ships with v1.2.0.
 
 </RoadmapItem>
 
-<RoadmapItem type="done" label="v1.2.0" title="Self-learning Domain Set" desc="learn_domain auto-captures query names into a persistent dynamic_domain_set; rules managed from the WebUI" version="v1.2.0">
+<RoadmapItem type="version" title="Self-learning Domain Set" desc="learn_domain auto-captures query names into a persistent dynamic_domain_set; rules managed from the WebUI" version="v1.2.0" date="2026-06-03">
 
 A new `learn_domain` executor paired with the `dynamic_domain_set` provider: the executor captures matching query names from the resolver pipeline and writes them to `dynamic_domain_set`, which persists to disk and hot-reloads — no manual rule list maintenance. The WebUI adds a Detail tab for `dynamic_domain_set` to browse, add, remove, and clear rules in place, and every config field of `learn_domain` / `dynamic_domain_set` ships with field-level documentation.
 
 </RoadmapItem>
 
-<RoadmapItem type="done" label="v1.2.0" title="Custom Builds" desc="minimal / standard / full bundle presets; minimal binary ~40% of full" version="v1.2.0">
+<RoadmapItem type="version" title="Custom Builds" desc="minimal / standard / full bundle presets; minimal binary ~40% of full" version="v1.2.0" date="2026-06-03">
 
 Split compilation by plugin module — users fork the repo, pick only the plugins they need, and produce a lean custom binary.
 

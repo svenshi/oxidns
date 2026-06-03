@@ -119,6 +119,12 @@ Provides a high-performance domain rule set that can be referenced by plugins su
 
 ## `dynamic_domain_set`
 
+<Admonition type="warning" title="Experimental Plugin (Introduced in v1.2.0)">
+
+`dynamic_domain_set` was first introduced in `v1.2.0` and is currently in an **experimental** stage. Related configuration options may change in future releases. Before deploying in production, please evaluate the impact of learning rates and disk writes on the persistence layer.
+
+</Admonition>
+
 ### Purpose
 
 Provides a writable local domain rule set. It persists rules to a text file and exposes the same hot-snapshot domain matching capability as `domain_set`, making it suitable for learned allow or block lists driven by `learn_domain`.

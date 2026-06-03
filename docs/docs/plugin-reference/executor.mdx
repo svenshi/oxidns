@@ -1088,6 +1088,12 @@ old-static.example.com static.example.net
 
 ## `ip_selector`
 
+<Admonition type="warning" title="实验性插件（v1.2.0 引入）">
+
+`ip_selector` 在 `v1.2.0` 首次发布，目前处于**实验阶段**：配置字段、默认值、探测策略与缓存语义可能在后续版本根据实际使用反馈调整。建议在非关键链路先行验证，关注 release notes 中的相关变更说明。
+
+</Admonition>
+
 ### 作用
 
 响应 IP 优选器。它只处理已有 response 中的 A/AAAA 地址记录，根据缓存评分和有界测速结果进行稳定排序或裁剪。
@@ -1446,6 +1452,12 @@ old-static.example.com static.example.net
 ---
 
 ## `learn_domain`
+
+<Admonition type="warning" title="实验性插件（v1.2.0 引入）">
+
+`learn_domain` 在 `v1.2.0` 首次发布，目前处于**实验阶段**：过滤条件、写入触发时机与配套 `dynamic_domain_set` 的接口可能在后续版本调整。生产部署前请评估学习速率与磁盘写入对持久化层的影响。
+
+</Admonition>
 
 ### 作用
 

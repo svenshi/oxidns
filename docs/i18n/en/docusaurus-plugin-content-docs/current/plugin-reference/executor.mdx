@@ -1020,6 +1020,12 @@ Full object form:
 
 ## `ip_selector`
 
+<Admonition type="warning" title="Experimental Plugin (Introduced in v1.2.0)">
+
+`ip_selector` was first introduced in `v1.2.0` and is currently in an **experimental** stage. Configuration fields, default values, probing strategies, and cache semantics may be adjusted in future releases based on real-world usage feedback. It is recommended to validate the plugin in non-critical environments first and monitor the release notes for related changes.
+
+</Admonition>
+
 ### Purpose
 
 Response IP selector. It only shapes A/AAAA records already present in `response`, using cached probe scores and bounded active probing to produce a stable order or a smaller answer set.
@@ -1369,6 +1375,12 @@ Maintains a reverse IP-to-name cache and optionally handles PTR requests.
 ---
 
 ## `learn_domain`
+
+<Admonition type="warning" title="Experimental Plugin (Introduced in v1.2.0)">
+
+`learn_domain` was first introduced in `v1.2.0` and is currently in an **experimental** stage. Filtering rules, write trigger timing, and the integration interface with `dynamic_domain_set` may change in future releases. Before deploying in production, please evaluate the impact of learning rates and disk writes on the persistence layer.
+
+</Admonition>
 
 ### Purpose
 

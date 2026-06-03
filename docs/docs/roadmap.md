@@ -35,19 +35,19 @@ import RoadmapTimeline, { RoadmapItem } from '@site/src/components/RoadmapTimeli
 
 </RoadmapItem>
 
-<RoadmapItem type="done" label="v1.2.0" title="IP 优选" desc="对多个 A/AAAA 地址并行测速，自动返回延迟最低的 IP" version="v1.2.0">
+<RoadmapItem type="version" title="IP 优选" desc="对多个 A/AAAA 地址并行测速，自动返回延迟最低的 IP" version="v1.2.0"  date="2026-06-03">
 
 对 DNS 响应中的多个 A/AAAA 地址并行测速，自动选出延迟最低的 IP 返回给客户端，提升实际访问速度。开发完成，将随 v1.2.0 发布。
 
 </RoadmapItem>
 
-<RoadmapItem type="done" label="v1.2.0" title="自学习域名集" desc="learn_domain 自动收集查询域名，写入持久化的 dynamic_domain_set，WebUI 可视化管理规则" version="v1.2.0">
+<RoadmapItem type="version" title="自学习域名集" desc="learn_domain 自动收集查询域名，写入持久化的 dynamic_domain_set，WebUI 可视化管理规则" version="v1.2.0" date="2026-06-03">
 
 新增 `learn_domain` 执行器与 `dynamic_domain_set` provider 组合：执行器在查询流中按规则自动捕获域名，写入 `dynamic_domain_set` 持久化文件并热生效，无需手动维护规则列表。WebUI 为 `dynamic_domain_set` 增加 Detail 标签页，可直接查看、增删、清空规则；`learn_domain` / `dynamic_domain_set` 的每个配置字段均补齐了字段级说明。
 
 </RoadmapItem>
 
-<RoadmapItem type="done" label="v1.2.0" title="编译定制化" desc="三档组合包（minimal / standard / full），minimal 二进制约为 full 的 40%" version="v1.2.0">
+<RoadmapItem type="version" title="编译定制化" desc="三档组合包（minimal / standard / full），minimal 二进制约为 full 的 40%" version="v1.2.0"  date="2026-06-03">
 
 按功能模块拆分编译，用户 fork 仓库后可自由组合所需插件，构建精简的定制版本。
 
