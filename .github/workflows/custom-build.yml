@@ -69,7 +69,7 @@ jobs:
   # runner / toolchain metadata.
   # -------------------------------------------------------------------------
   plan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.gen.outputs.matrix }}
       features: ${{ steps.gen.outputs.features }}
@@ -110,7 +110,7 @@ jobs:
               "os": (
                 if test("apple-darwin") then "macos-latest"
                 elif test("windows") then "windows-latest"
-                else "ubuntu-latest" end
+                else "ubuntu-24.04" end
               ),
               "exe": (if test("windows") then "oxidns.exe" else "oxidns" end),
               "archive_ext": (if test("windows") then "zip" else "tar.gz" end),
@@ -142,7 +142,7 @@ jobs:
   webui:
     needs: plan
     if: inputs.bundle != 'minimal'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout oxidns source
         uses: actions/checkout@v6
@@ -354,7 +354,7 @@ jobs:
   # -------------------------------------------------------------------------
   publish:
     needs: [plan, build]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v8
         with:
