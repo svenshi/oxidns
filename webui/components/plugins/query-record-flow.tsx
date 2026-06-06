@@ -417,7 +417,7 @@ function QuerySequenceNode({ data }: NodeProps<QuerySequenceFlowNode>) {
         </Badge>
       </div>
 
-      <div className="max-h-[390px] overflow-x-hidden overflow-y-auto border-t">
+      <div className="border-t">
         {flow.rules.map((rule, index) => (
           <SequenceRuleRow
             key={rule.index}
