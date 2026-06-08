@@ -10,7 +10,34 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-06
 
 <div className="release-stack">
-   <ReleaseCard version="v1.2.0" badge="Minor Release" date="2026-06-03" defaultOpen>
+   <ReleaseCard version="v1.2.1" badge="Patch Release" date="2026-06-08" defaultOpen>
+       **Release Scope**
+
+       - Patch Release delivering a WebUI Basic Auth login flow with unified auth management, draggable plugin canvases, and several WebUI interaction fixes (unapplied-plugin warning, numeric type preservation for select fields, all sequence rules visible in the query record flow canvas). Also fixes an upstream connection-pool deadlock after network outage, makes `${VAR}` expansion YAML-quote-aware, and improves `ros_address_list` concurrent write throughput. No breaking configuration changes.
+
+       **Changes**
+
+       - `ros_address_list` performance: pipeline concurrent ROS API write operations and remove the post-add re-query step, reducing latency for large address-list updates.
+       - `upstream` connection pool fix: prevent the pool from entering a deadlock state after a network outage, eliminating connection-acquisition stalls on recovery.
+       - WebUI: new Basic Auth login flow with a unified auth management entry point; login state persists to `localStorage` with logout and session-restore support.
+       - WebUI fix: show an explicit warning when a plugin is staged but not yet applied; suppress 404 noise.
+       - Config fix: `${VAR}` env-var substitution now correctly handles placeholders wrapped in YAML quotes, matching the behavior of bare placeholders.
+       - WebUI fix: preserve the numeric type of `select` field values on save, preventing silent coercion to string that caused config validation failures.
+       - WebUI: plugin canvases support content-keyed draggable layout; canvas positions are persisted per content key.
+       - WebUI fix: the query record flow canvas now renders all sequence rules instead of only a subset.
+       - Dependencies: batch patch-and-minor Cargo dependency upgrades (2 packages).
+       - CI: build environment upgraded to Ubuntu 24.04; added a release artifact collection step.
+
+       **Compatibility and Upgrade Notes**
+
+       - Root crate version bumped to `1.2.1`; no workspace crate under `crates/` changed this cycle (`crates/macros`, `crates/proto`, `crates/ripset`, `crates/zoneparser`), so none need a version bump; the release tag should use `v1.2.1`.
+       - `v1.2.0` configs upgrade directly to `v1.2.1` with no new required fields.
+       - Deployments with management API auth (`auth`) configured: the WebUI login flow automatically uses the existing Basic Auth credentials — no config changes needed, just refresh the WebUI after upgrading.
+       - Deployments using `ros_address_list` with high-volume address writes will see improved concurrent write throughput with no config changes required.
+       - Deployments that quote `${VAR}` placeholders in YAML (e.g. `value: "${MY_VAR}"`) will find that expansion now behaves identically to bare placeholders; any extra quoting added to work around the old behavior can be simplified, though the old form remains valid.
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.2.0" badge="Minor Release" date="2026-06-03">
        **Release Scope**
 
        - Minor Release. The headline change is a full compile-time feature system (`minimal` / `standard` / `full` bundles plus granular flags) that gates DoQ / DoH3, DoT / DoH, `api` / `webui` / `metrics`, optional plugins, and TLS / HTTP dependencies behind opt-in features, and exposes the compiled capability set to the CLI, the API, and the WebUI. Two new plugins land in the same cycle: `ip_selector` (response-IP selection) and `dynamic_domain_set` + `learn_domain` (writable dynamic domain sets with online learning). The `env` matcher gains multi-condition support, the WebUI gets drag-and-drop card reordering and a `dynamic_domain_set` rule manager, and several memory / lifecycle bugs in the cache, DoH listener startup, and WebUI upgrade path are fixed. Multiple Cargo dependencies are bumped.
