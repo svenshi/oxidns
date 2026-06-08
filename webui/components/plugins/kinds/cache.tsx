@@ -55,7 +55,11 @@ import type {
 } from "../types";
 import { DnsRecordDetailDialog } from "../dns-record-detail-dialog";
 import { PluginCardTemplate } from "../plugin-card-template";
-import { PluginDetailTemplate } from "../plugin-detail-template";
+import {
+  PluginDetailTemplate,
+  PluginNotAppliedPlaceholder,
+} from "../plugin-detail-template";
+import { usePluginAppliedStatus } from "@/hooks/use-plugin-applied";
 
 function CachePluginCard({
   plugin,
@@ -101,6 +105,14 @@ function CachePluginDetail(props: PluginDetailComponentProps) {
 }
 
 function CacheEntriesPanel({ tag }: { tag: string }) {
+  const appliedStatus = usePluginAppliedStatus(tag);
+  if (appliedStatus === "not-applied") {
+    return <PluginNotAppliedPlaceholder />;
+  }
+  return <CacheEntriesPanelInner tag={tag} />;
+}
+
+function CacheEntriesPanelInner({ tag }: { tag: string }) {
   const [entries, setEntries] = useState<CacheEntryRow[]>([]);
   const [nextCursor, setNextCursor] = useState<string | undefined>();
   const [total, setTotal] = useState(0);

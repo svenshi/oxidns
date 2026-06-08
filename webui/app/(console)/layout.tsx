@@ -14,6 +14,7 @@ import { AppHeader } from "@/components/shell/app-header";
 import {
   ConnectionRequired,
   ConnectionPending,
+  LoginRequired,
 } from "@/components/shell/connection-required";
 import { RestartingOverlay } from "@/components/shell/restarting-overlay";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -33,6 +34,7 @@ export default function ConsoleLayout({
   const isConnected = useAuthStore((s) => s.isConnected);
   const isConnecting = useAuthStore((s) => s.isConnecting);
   const connectionError = useAuthStore((s) => s.connectionError);
+  const needsCredentials = useAuthStore((s) => s.needsCredentials);
   const hasAttemptedAutoConnect = useAuthStore(
     (s) => s.hasAttemptedAutoConnect,
   );
@@ -131,6 +133,11 @@ export default function ConsoleLayout({
             <>
               <AppHeader title="连接后台服务" />
               <ConnectionPending />
+            </>
+          ) : needsCredentials ? (
+            <>
+              <AppHeader title="登录" />
+              <LoginRequired />
             </>
           ) : (
             <>

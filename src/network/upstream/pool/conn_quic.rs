@@ -11,6 +11,7 @@ use tokio::sync::Notify;
 use tokio::time::timeout;
 use tracing::{debug, trace, warn};
 
+use super::UsingCountGuard;
 use crate::core::app_clock::AppClock;
 use crate::core::error::{DnsError, Result};
 use crate::network::transport::quic_transport::QuicTransport;
@@ -76,12 +77,14 @@ impl Connection for QuicConnection {
             return Err(DnsError::protocol("Cannot query on closed QUIC connection"));
         }
         self.using_count.fetch_add(1, Ordering::Relaxed);
+        // Guard ensures using_count is decremented even if this future is
+        // cancelled by an outer timeout (cancel-safety).
+        let _guard = UsingCountGuard(&self.using_count);
 
         // Open a new bidirectional stream (reader/writer) via connection wrapper
         let (mut reader, mut writer) = match timeout(self.timeout, self.transport.open_bi()).await {
             Ok(Ok((reader, writer))) => (reader, writer),
             Ok(Err(e)) => {
-                self.using_count.fetch_sub(1, Ordering::Relaxed);
                 self.close();
                 return Err(DnsError::protocol(format!(
                     "Failed to open QUIC bidirectional stream: {}",
@@ -89,7 +92,6 @@ impl Connection for QuicConnection {
                 )));
             }
             Err(_) => {
-                self.using_count.fetch_sub(1, Ordering::Relaxed);
                 return Err(DnsError::protocol(
                     "Timeout opening QUIC bidirectional stream",
                 ));
@@ -98,7 +100,6 @@ impl Connection for QuicConnection {
 
         let raw_id = request.id();
         if let Err(e) = writer.write_message(&request).await {
-            self.using_count.fetch_sub(1, Ordering::Relaxed);
             return Err(DnsError::protocol(format!(
                 "Failed to write DNS query to QUIC stream: {}",
                 e
@@ -149,7 +150,6 @@ impl Connection for QuicConnection {
 
         self.last_used
             .store(AppClock::elapsed_millis(), Ordering::Relaxed);
-        self.using_count.fetch_sub(1, Ordering::Relaxed);
         result
     }
 

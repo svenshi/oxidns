@@ -19,11 +19,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Pencil, Pin, PinOff, Save } from "lucide-react";
+import { AlertTriangle, Pencil, Pin, PinOff, Rocket, Save } from "lucide-react";
 import { PLUGIN_TYPE_LABELS } from "@/lib/types";
 import { useAppStore } from "@/lib/store";
 import { isPluginKindSupported } from "@/lib/build-capabilities";
 import { cn } from "@/lib/utils";
+import { Spinner } from "@/components/ui/spinner";
+import { usePluginAppliedStatus } from "@/hooks/use-plugin-applied";
 import type { PluginDetailTemplateProps, PluginSummaryItem } from "./types";
 import { pluginTypeColors, pluginTypeIcons } from "./display";
 import { getPluginCatalogItem, renderPluginKindIcon } from "./catalog";
@@ -46,6 +48,7 @@ export function PluginDetailTemplate({
     updatePluginConfig,
     renamePlugin,
     saveConfig,
+    applyConfig,
     isConfigSaving,
     isApplying,
     isRestarting,
@@ -54,6 +57,7 @@ export function PluginDetailTemplate({
     dependencyGraph,
     buildInfo,
   } = useAppStore();
+  const appliedStatus = usePluginAppliedStatus(plugin.name);
   const hasMetricSeries = useAppStore(
     (s) => (s.pluginMetrics[plugin.name]?.length ?? 0) > 0,
   );
@@ -288,6 +292,20 @@ export function PluginDetailTemplate({
         </div>
       </header>
 
+      {appliedStatus === "not-applied" && (
+        <PluginNotAppliedBanner
+          applying={isApplying}
+          saving={isConfigSaving}
+          restarting={isRestarting}
+          disabled={Boolean(configError)}
+          onApply={() => {
+            void applyConfig().catch(() => {
+              // 失败状态会通过头部的 ConfigSyncControl 同步出来,这里静默。
+            });
+          }}
+        />
+      )}
+
       <Tabs
         defaultValue="config"
         className="mx-auto min-h-0 w-full max-w-6xl flex-1 overflow-y-auto px-5 py-5 [scrollbar-gutter:stable]"
@@ -510,6 +528,75 @@ function SummaryItem({ item }: { item: PluginSummaryItem }) {
       <div className="text-xs text-muted-foreground">{item.label}</div>
       <div className="mt-1 truncate font-mono text-sm font-semibold">
         {item.value}
+      </div>
+    </div>
+  );
+}
+
+// Inline placeholder used inside per-plugin "统计 / 聚合" tabs when the plugin
+// hasn't been applied to the backend yet — short-circuits all /api/plugins/{tag}/*
+// fetches so the user gets a clear hint instead of an HTTP 404 noise wall.
+export function PluginNotAppliedPlaceholder({
+  title = "插件未应用",
+  description = "此插件目前只存在于配置草稿中,后端尚未注册其接口,因此无法读取数据。请先在顶部点击「立即应用」(或在右上角「应用更改」)。",
+}: {
+  title?: string;
+  description?: string;
+} = {}) {
+  return (
+    <div className="flex flex-col items-start gap-2 rounded-lg border border-dashed border-yellow-500/40 bg-yellow-500/5 px-4 py-6 text-sm text-yellow-700 dark:text-yellow-400">
+      <div className="flex items-center gap-2 font-medium">
+        <AlertTriangle className="h-4 w-4 shrink-0" />
+        {title}
+      </div>
+      <div className="text-xs text-yellow-700/80 dark:text-yellow-400/80">
+        {description}
+      </div>
+    </div>
+  );
+}
+
+function PluginNotAppliedBanner({
+  applying,
+  saving,
+  restarting,
+  disabled,
+  onApply,
+}: {
+  applying: boolean;
+  saving: boolean;
+  restarting: boolean;
+  disabled: boolean;
+  onApply: () => void;
+}) {
+  const busy = applying || saving || restarting;
+  return (
+    <div className="shrink-0 border-b bg-yellow-500/5">
+      <div className="mx-auto flex w-full max-w-6xl items-start gap-3 px-5 py-3">
+        <div className="flex items-start gap-2 text-sm text-yellow-700 dark:text-yellow-400">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <div className="font-medium">此插件尚未应用到后端</div>
+            <div className="mt-0.5 text-xs text-yellow-700/80 dark:text-yellow-400/80">
+              新增 / 重命名的插件需要先保存并应用配置,后端才会注册对应接口;在此之前
+              「统计」「聚合」等需要后端数据的标签页都不可用。
+            </div>
+          </div>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="ml-auto h-7 gap-1.5 rounded-md border-yellow-500/40 bg-yellow-500/10 px-2.5 text-yellow-700 hover:bg-yellow-500/20 hover:text-yellow-700 dark:text-yellow-300 dark:hover:text-yellow-300"
+          disabled={busy || disabled}
+          onClick={onApply}
+        >
+          {busy ? (
+            <Spinner className="h-3.5 w-3.5" />
+          ) : (
+            <Rocket className="h-3.5 w-3.5" />
+          )}
+          {applying ? "应用中" : restarting ? "重启中" : "立即应用"}
+        </Button>
       </div>
     </div>
   );

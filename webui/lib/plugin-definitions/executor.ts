@@ -176,8 +176,8 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
               label: "Bootstrap IP 版本",
               type: "select",
               options: [
-                { label: "IPv4", value: "4" },
-                { label: "IPv6", value: "6" },
+                { label: "IPv4", value: 4 },
+                { label: "IPv6", value: 6 },
               ],
             },
             {

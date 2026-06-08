@@ -609,8 +609,11 @@ function ConfigFieldControl({
     case "select":
       return (
         <Select
-          value={(value as string) || ""}
-          onValueChange={onChange}
+          value={value == null || value === "" ? "" : String(value)}
+          onValueChange={(next) => {
+            const opt = field.options?.find((o) => String(o.value) === next);
+            onChange(opt ? opt.value : next);
+          }}
           disabled={readOnly}
         >
           <SelectTrigger>
@@ -618,7 +621,7 @@ function ConfigFieldControl({
           </SelectTrigger>
           <SelectContent>
             {field.options?.map((opt) => (
-              <SelectItem key={opt.value} value={opt.value}>
+              <SelectItem key={String(opt.value)} value={String(opt.value)}>
                 {opt.label}
               </SelectItem>
             ))}

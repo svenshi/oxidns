@@ -1,6 +1,12 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   Background,
   Controls,
@@ -9,6 +15,7 @@ import {
   Panel,
   Position,
   ReactFlow,
+  useNodesState,
   type Edge,
   type Node,
   type NodeProps,
@@ -19,7 +26,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { ArrowRight, CornerDownRight, GitBranch } from "lucide-react";
+import { ArrowRight, CornerDownRight, GitBranch, RotateCcw } from "lucide-react";
 import type { PluginInstance, PluginType } from "@/lib/types";
 import { PLUGIN_TYPE_LABELS } from "@/lib/types";
 import type {
@@ -197,6 +204,60 @@ const kindAccentBgClass = pluginKindAccentBgClass;
 
 // ─── Main TopologyView ────────────────────────────────────────────────────────
 
+type NodePositions = Record<string, { x: number; y: number }>;
+
+type DerivedTopology = {
+  nodes: Node[];
+  edges: Edge[];
+  visibleTags: Set<string>;
+  layout: ReturnType<typeof layoutTopology> | null;
+};
+
+// v2: flat map keyed by per-node content fingerprint (`topo:<hash of kind:tag>`),
+// no longer nested per active-root. A plugin keeps its dragged position
+// regardless of which root view it appears under, which matches what the
+// sequence-composer and query-record-flow canvases do.
+const TOPOLOGY_STORAGE_KEY = "oxidns_topo_positions_v2";
+
+function loadTopologyPositions(): NodePositions {
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem(TOPOLOGY_STORAGE_KEY) ?? "null",
+    ) as NodePositions | null;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+// Content fingerprint for a topology node. `kind` distinguishes two plugins
+// that happen to share a tag across types (rare but possible during edits);
+// `tag` is the human-stable identity. Rename a plugin → key changes → its
+// position resets, mirroring the sequence-composer behaviour where editing
+// rule content also loses the saved position.
+function topologyNodeKey(kind: string, tag: string): string {
+  return `topo:${cyrb53(`${kind}:${tag}`)}`;
+}
+
+// Inline cyrb53 — same implementation as sequence-composer. Kept local so
+// this file has no external dep on the composer module.
+function cyrb53(str: string, seed = 0): string {
+  let h1 = 0xdeadbeef ^ seed;
+  let h2 = 0x41c6ce57 ^ seed;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
 export function TopologyView({
   plugins,
   dependencyGraph,
@@ -207,62 +268,91 @@ export function TopologyView({
   onSelect: (plugin: PluginInstance) => void;
 }) {
   const [selectedRoot, setSelectedRoot] = useState<string | null>(null);
+  const [savedPositions, setSavedPositions] =
+    useState<NodePositions>(loadTopologyPositions);
 
   const topology = useMemo(() => {
     if (!dependencyGraph) return null;
     return buildTopologyModel(dependencyGraph);
   }, [dependencyGraph]);
 
-  if (!dependencyGraph) {
-    return (
-      <div className="rounded-lg border border-dashed p-12 text-center text-sm text-muted-foreground">
-        暂无依赖图，请先读取并校验配置。
-      </div>
-    );
-  }
-
-  if (!topology) return null;
-
   const activeRoot =
-    topology.roots.find((root) => root.tag === selectedRoot)?.tag ??
-    topology.roots[0]?.tag;
-  // filteredReachableByRoot excludes nodes only reachable via inlined paths,
-  // so floating "orphan" nodes (e.g. raw providers) never appear in the graph.
-  const visibleTags =
-    topology.filteredReachableByRoot.get(activeRoot ?? "") ?? new Set<string>();
-  const layout = layoutTopology(topology, activeRoot, visibleTags);
+    topology?.roots.find((root) => root.tag === selectedRoot)?.tag ??
+    topology?.roots[0]?.tag;
 
-  const nodes: Node[] = layout.nodes.map(({ node, x, y, isRoot }) => ({
-    id: node.tag,
-    type: "topologyPlugin",
-    position: { x, y },
-    sourcePosition: Position.Right,
-    targetPosition: Position.Left,
-    data: {
-      label: topology.sequenceFlowsByTag.has(node.tag) ? (
-        <SequenceFlowNode
-          node={node}
-          flow={topology.sequenceFlowsByTag.get(node.tag)!}
-          nodesByTag={topology.nodesByTag}
-          inlinedTags={topology.inlinedTags}
-          sequenceFlowsByTag={topology.sequenceFlowsByTag}
-          plugins={plugins}
-          isRoot={isRoot}
-          onSelect={onSelect}
-        />
-      ) : (
-        <TopologyNodeCard
-          node={node}
-          isRoot={isRoot}
-          plugin={plugins.find((p) => p.name === node.tag)}
-          onSelect={onSelect}
-        />
-      ),
-    },
-    draggable: false,
-  }));
+  const handlePositionChange = (
+    key: string,
+    pos: { x: number; y: number },
+  ) => {
+    setSavedPositions((prev) => {
+      const next: NodePositions = { ...prev, [key]: pos };
+      localStorage.setItem(TOPOLOGY_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
 
-  const edges: Edge[] = topology.edges
+  // Reset clears every saved position. The previous per-root scope is gone
+  // because positions are now content-keyed and shared across root views.
+  const resetPositions = () => {
+    setSavedPositions({});
+    localStorage.removeItem(TOPOLOGY_STORAGE_KEY);
+  };
+
+  // `onSelect` is recreated each render by the parent page; capture it in a
+  // ref so the memo below can use data-only deps. Otherwise the memo would
+  // re-fire every render → setNodes loop.
+  const onSelectRef = useRef(onSelect);
+  useEffect(() => {
+    onSelectRef.current = onSelect;
+  });
+
+  // Build the flow up front so we can keep `useNodesState` above the early
+  // returns and stay within React's Rules of Hooks. When the graph isn't
+  // available yet the derived nodes are empty and the early-return path
+  // renders an empty-state without touching React Flow.
+  const derived = useMemo<DerivedTopology>(() => {
+    if (!topology)
+      return { nodes: [], edges: [], visibleTags: new Set(), layout: null };
+    // filteredReachableByRoot excludes nodes only reachable via inlined paths,
+    // so floating "orphan" nodes (e.g. raw providers) never appear in the graph.
+    const visibleTags =
+      topology.filteredReachableByRoot.get(activeRoot ?? "") ?? new Set<string>();
+    const layout = layoutTopology(topology, activeRoot, visibleTags);
+
+    const nodes: Node[] = layout.nodes.map(({ node, x, y, isRoot }) => {
+      const positionKey = topologyNodeKey(node.kind, node.tag);
+      return {
+      id: node.tag,
+      type: "topologyPlugin",
+      position: savedPositions[positionKey] ?? { x, y },
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+      data: {
+        positionKey,
+        label: topology.sequenceFlowsByTag.has(node.tag) ? (
+          <SequenceFlowNode
+            node={node}
+            flow={topology.sequenceFlowsByTag.get(node.tag)!}
+            nodesByTag={topology.nodesByTag}
+            inlinedTags={topology.inlinedTags}
+            sequenceFlowsByTag={topology.sequenceFlowsByTag}
+            plugins={plugins}
+            isRoot={isRoot}
+            onSelect={(p) => onSelectRef.current(p)}
+          />
+        ) : (
+          <TopologyNodeCard
+            node={node}
+            isRoot={isRoot}
+            plugin={plugins.find((p) => p.name === node.tag)}
+            onSelect={(p) => onSelectRef.current(p)}
+          />
+        ),
+      },
+    };
+    });
+
+    const edges: Edge[] = topology.edges
     .filter(
       (edge) =>
         !topology.inlinedTags.has(edge.source_tag) &&
@@ -316,6 +406,29 @@ export function TopologyView({
       };
     });
 
+    return { nodes, edges, visibleTags, layout };
+  }, [topology, activeRoot, savedPositions, plugins]);
+
+  // Hold the flow nodes in state and let React Flow's drag pipeline feed
+  // updates back via `onNodesChange`; otherwise the in-progress drag never
+  // reaches the rendered transform (only `onNodeDragStop` does), so the node
+  // appears to jump only after the user releases.
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>(derived.nodes);
+  useEffect(() => {
+    setNodes(derived.nodes);
+  }, [derived.nodes, setNodes]);
+
+  if (!dependencyGraph) {
+    return (
+      <div className="rounded-lg border border-dashed p-12 text-center text-sm text-muted-foreground">
+        暂无依赖图，请先读取并校验配置。
+      </div>
+    );
+  }
+
+  if (!topology) return null;
+
+  const { edges, visibleTags } = derived;
   const graphNodeCount = visibleTags.size;
   // Inlined count = full reachable - filtered reachable for this root
   const fullReachable =
@@ -323,6 +436,8 @@ export function TopologyView({
   const inlinedCount = [...fullReachable].filter((t) =>
     topology.inlinedTags.has(t),
   ).length;
+
+  const hasCustomPositions = Object.keys(savedPositions).length > 0;
 
   return (
     <div className="space-y-3">
@@ -346,18 +461,38 @@ export function TopologyView({
           key={activeRoot ?? "empty"}
           nodes={nodes}
           edges={edges}
+          onNodesChange={onNodesChange}
           nodeTypes={topologyNodeTypes}
-          fitView
+          fitView={!hasCustomPositions}
           fitViewOptions={{ padding: 0.12 }}
-          nodesDraggable={false}
+          nodesDraggable
           minZoom={0.2}
           maxZoom={2}
+          onNodeDragStop={(_event, node) => {
+            // Persist by the content-derived key from data, not the React
+            // Flow id. The id is the plugin tag, which would silently follow
+            // a rename and clobber the wrong plugin's stored position.
+            const key = (node.data as { positionKey?: string }).positionKey;
+            if (key) handlePositionChange(key, node.position);
+          }}
         >
           <Background gap={20} size={1} className="opacity-30" />
           <Controls showInteractive={false} />
           <Panel position="bottom-left">
             <TopologyLegend />
           </Panel>
+          {hasCustomPositions && (
+            <Panel position="top-right">
+              <button
+                type="button"
+                title="重置布局"
+                className="rounded border bg-card/90 p-1.5 text-muted-foreground shadow-sm backdrop-blur-sm hover:text-foreground"
+                onClick={resetPositions}
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+              </button>
+            </Panel>
+          )}
         </ReactFlow>
       </div>
     </div>
@@ -588,9 +723,10 @@ function SequenceFlowNode({
         </div>
       </div>
 
-      {/* Rules — only vertical scrolling, never horizontal (the rule grid
-          can be forced wider than the card by long exec chips otherwise) */}
-      <div className="max-h-80 overflow-x-hidden overflow-y-auto border-t">
+      {/* Rules — render all rows in full so users can see the whole sequence
+          on the topology canvas. Horizontal overflow is still clipped because
+          long exec chips would otherwise force the card wider than its column. */}
+      <div className="overflow-x-hidden border-t">
         {flow.rules.map((rule, idx) => {
           const hasSeqCall = ruleHasOutgoingSequenceCall(rule);
           return (
@@ -1300,8 +1436,10 @@ function estimateNodeHeight(
 ): number {
   const flow = sequenceFlowsByTag.get(tag);
   if (!flow) return 96; // regular card node
-  // header ≈ 58px  +  rule rows capped by max-h-80 (320px)  +  16px bottom buffer
-  return 58 + Math.min(flow.rules.length * 58, 320) + 16;
+  // header ≈ 58px  +  every rule row rendered in full (no scroll cap)  +
+  // 16px bottom buffer. The layout has to reserve the real height so a
+  // long sequence's rules don't overlap the node below it.
+  return 58 + flow.rules.length * 58 + 16;
 }
 
 function layoutTopology(

@@ -57,7 +57,11 @@ import type {
   PluginComponentDefinition,
   PluginDetailComponentProps,
 } from "../types";
-import { PluginDetailTemplate } from "../plugin-detail-template";
+import {
+  PluginDetailTemplate,
+  PluginNotAppliedPlaceholder,
+} from "../plugin-detail-template";
+import { usePluginAppliedStatus } from "@/hooks/use-plugin-applied";
 
 const PAGE_LIMIT = 200;
 
@@ -96,6 +100,14 @@ function DynamicDomainSetDetail(props: PluginDetailComponentProps) {
 }
 
 function RulesPanel({ tag }: { tag: string }) {
+  const appliedStatus = usePluginAppliedStatus(tag);
+  if (appliedStatus === "not-applied") {
+    return <PluginNotAppliedPlaceholder />;
+  }
+  return <RulesPanelInner tag={tag} />;
+}
+
+function RulesPanelInner({ tag }: { tag: string }) {
   const [rules, setRules] = useState<string[]>([]);
   const [total, setTotal] = useState(0);
   const [nextCursor, setNextCursor] = useState<number | null>(null);

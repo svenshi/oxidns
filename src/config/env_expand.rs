@@ -76,8 +76,33 @@ impl std::error::Error for EnvExpandError {}
 /// environment variable name conflicts with a runtime template key.
 ///
 /// Use `$${...}` to keep a literal `${...}` in the output.
+///
+/// Substitution is YAML scalar aware. When a placeholder appears inside a
+/// `'single'` or `"double"` quoted YAML scalar, the substituted value is
+/// escaped per YAML 1.2 quoting rules so env values containing YAML-special
+/// characters (`*`, `&`, `:`, `'`, `"`, `\`, newlines, …) cannot break the
+/// surrounding YAML structure. Plain (unquoted) scalar substitution stays
+/// verbatim — values whose leading char triggers YAML semantics (anchor
+/// alias `*`, block sequence `- `, etc.) must be wrapped in quotes.
 pub fn expand_env(input: &str) -> Result<String, EnvExpandError> {
     expand_env_with_lookup(input, |name| env::var_os(name))
+}
+
+/// YAML scalar context for `${VAR}` placeholders. Substituted values are
+/// escaped to match the enclosing scalar style so env values containing
+/// YAML-special characters (`*`, `&`, `\`, `"`, `'`, newlines, …) do not
+/// corrupt the surrounding YAML when the placeholder is expanded.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScalarContext {
+    /// Outside any quoted scalar. Substitution is verbatim (legacy behavior);
+    /// the caller is responsible for choosing a value whose characters parse
+    /// correctly as a YAML plain scalar.
+    Plain,
+    /// Inside a single-quoted scalar `'...'`. Substituted `'` is doubled.
+    SingleQuoted,
+    /// Inside a double-quoted scalar `"..."`. `\` and `"` are escaped and
+    /// control characters are rewritten as YAML 1.2 hex escapes.
+    DoubleQuoted,
 }
 
 fn expand_env_with_lookup<F>(input: &str, lookup: F) -> Result<String, EnvExpandError>
@@ -88,17 +113,89 @@ where
     let mut chars = input.chars().peekable();
     let mut line = 1;
     let mut col = 1;
+    let mut context = ScalarContext::Plain;
+    // True when the previous char inside a double-quoted scalar was a
+    // backslash, so the current char (including `"` or `\`) is part of an
+    // escape sequence and should not toggle quote state.
+    let mut double_quoted_escape = false;
 
     while let Some(ch) = chars.next() {
         let start_line = line;
         let start_col = col;
         advance_position(ch, &mut line, &mut col);
 
-        if ch != '$' {
-            output.push(ch);
-            continue;
+        // Track YAML scalar style before deciding how to substitute `${...}`.
+        // The substituted value is escaped to match the enclosing context so
+        // env values with YAML-special characters do not break the surrounding
+        // structure when the placeholder is expanded.
+        match context {
+            ScalarContext::Plain => match ch {
+                '\'' => {
+                    context = ScalarContext::SingleQuoted;
+                    output.push(ch);
+                    continue;
+                }
+                '"' => {
+                    context = ScalarContext::DoubleQuoted;
+                    output.push(ch);
+                    continue;
+                }
+                '$' => {} // fall through to $-handling below
+                _ => {
+                    output.push(ch);
+                    continue;
+                }
+            },
+            ScalarContext::SingleQuoted => match ch {
+                '\'' => {
+                    // YAML 1.2 single-quoted escape: `''` represents a literal
+                    // `'`. Preserve both quotes and stay in single-quoted
+                    // context so we don't treat the second quote as a close.
+                    if chars.peek().copied() == Some('\'') {
+                        chars.next();
+                        advance_position('\'', &mut line, &mut col);
+                        output.push('\'');
+                        output.push('\'');
+                        continue;
+                    }
+                    context = ScalarContext::Plain;
+                    output.push(ch);
+                    continue;
+                }
+                '$' => {}
+                _ => {
+                    output.push(ch);
+                    continue;
+                }
+            },
+            ScalarContext::DoubleQuoted => {
+                if double_quoted_escape {
+                    double_quoted_escape = false;
+                    output.push(ch);
+                    continue;
+                }
+                match ch {
+                    '\\' => {
+                        double_quoted_escape = true;
+                        output.push(ch);
+                        continue;
+                    }
+                    '"' => {
+                        context = ScalarContext::Plain;
+                        output.push(ch);
+                        continue;
+                    }
+                    '$' => {}
+                    _ => {
+                        output.push(ch);
+                        continue;
+                    }
+                }
+            }
         }
 
+        // ch == '$'. Decide between `$$` literal, `${...}` placeholder, or a
+        // bare `$` followed by something that is not an opener.
         match chars.peek().copied() {
             Some('$') => {
                 chars.next();
@@ -124,16 +221,12 @@ where
                     continue;
                 }
 
-                match (lookup(lookup_name), default) {
+                let raw_value: String = match (lookup(lookup_name), default) {
                     (Some(value), Some(default)) if value.as_os_str().is_empty() => {
-                        output.push_str(default);
+                        default.to_string()
                     }
-                    (Some(value), _) => {
-                        output.push_str(&value.to_string_lossy());
-                    }
-                    (None, Some(default)) => {
-                        output.push_str(default);
-                    }
+                    (Some(value), _) => value.to_string_lossy().into_owned(),
+                    (None, Some(default)) => default.to_string(),
                     (None, None) => {
                         return Err(EnvExpandError::UndefinedVariable {
                             name: lookup_name.to_string(),
@@ -141,13 +234,60 @@ where
                             col: start_col,
                         });
                     }
-                }
+                };
+
+                escape_substitution(&raw_value, context, &mut output);
             }
             _ => output.push('$'),
         }
     }
 
     Ok(output)
+}
+
+/// Append `value` to `output`, escaping it for the YAML scalar context the
+/// placeholder appears in so any character (including newlines, quotes, and
+/// backslashes) round-trips through YAML parsing.
+fn escape_substitution(value: &str, context: ScalarContext, output: &mut String) {
+    match context {
+        ScalarContext::Plain => {
+            // Verbatim: the user accepted plain-scalar quoting responsibility
+            // by leaving the placeholder unquoted. Special characters at the
+            // start (e.g. a leading `*`) still need the user to wrap the
+            // scalar in quotes; we cannot rewrite the surrounding YAML here.
+            output.push_str(value);
+        }
+        ScalarContext::SingleQuoted => {
+            // YAML single-quoted scalars only escape `'` as `''`. Every other
+            // char (including newlines) is literal.
+            for ch in value.chars() {
+                if ch == '\'' {
+                    output.push_str("''");
+                } else {
+                    output.push(ch);
+                }
+            }
+        }
+        ScalarContext::DoubleQuoted => {
+            for ch in value.chars() {
+                match ch {
+                    '\\' => output.push_str(r"\\"),
+                    '"' => output.push_str("\\\""),
+                    '\n' => output.push_str(r"\n"),
+                    '\r' => output.push_str(r"\r"),
+                    '\t' => output.push_str(r"\t"),
+                    c if (c as u32) < 0x20 || c as u32 == 0x7F => {
+                        // YAML 1.2 8-bit hex escape covers all C0 controls
+                        // and DEL; anything wider stays literal because
+                        // double-quoted YAML accepts arbitrary Unicode.
+                        let _ =
+                            std::fmt::Write::write_fmt(output, format_args!("\\x{:02x}", c as u32));
+                    }
+                    c => output.push(c),
+                }
+            }
+        }
+    }
 }
 
 fn read_placeholder_body<I>(
@@ -387,5 +527,130 @@ mod tests {
         let expected = env::var_lossy("PATH").expect("PATH should exist in test environment");
         let expanded = expand_env("${PATH}").expect("PATH should expand");
         assert_eq!(expanded, expected);
+    }
+
+    /// `${PW}` inside a single-quoted YAML scalar must escape literal `'`
+    /// inside the env value so the surrounding scalar stays terminated. Values
+    /// containing every other YAML-special character (`*`, `&`, `:`, `#`, …)
+    /// stay literal because single-quoted YAML treats them as plain text.
+    #[test]
+    fn substitutes_inside_single_quoted_scalar_escaping_single_quotes() {
+        let yaml = "key: '${PW}'";
+        let lookup = |name: &str| match name {
+            "PW" => Some(OsString::from("can't*stop & go")),
+            _ => None,
+        };
+        let expanded = expand_env_with_lookup(yaml, lookup).expect("expand");
+        assert_eq!(expanded, "key: 'can''t*stop & go'");
+        let value: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&expanded).expect("expanded YAML must parse");
+        assert_eq!(
+            value.get("key").and_then(|v| v.as_str()),
+            Some("can't*stop & go")
+        );
+    }
+
+    /// `${PW}` inside a double-quoted YAML scalar must escape `\`, `"`, and
+    /// control chars per YAML 1.2 double-quoted style so the env value
+    /// survives parsing intact.
+    #[test]
+    fn substitutes_inside_double_quoted_scalar_escaping_special_chars() {
+        let yaml = "key: \"${PW}\"";
+        let lookup = |name: &str| match name {
+            "PW" => Some(OsString::from("a\"b\\c\nd\te")),
+            _ => None,
+        };
+        let expanded = expand_env_with_lookup(yaml, lookup).expect("expand");
+        assert_eq!(expanded, r#"key: "a\"b\\c\nd\te""#);
+        let value: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&expanded).expect("expanded YAML must parse");
+        assert_eq!(
+            value.get("key").and_then(|v| v.as_str()),
+            Some("a\"b\\c\nd\te")
+        );
+    }
+
+    /// Quoted-scalar substitution must work for the specific YAML alias trap
+    /// users hit: `*` at the start of an env value would alias-parse if
+    /// substituted into a plain scalar, but quoting must make it safe.
+    #[test]
+    fn quoted_scalars_accept_yaml_alias_leading_chars() {
+        let lookup = |name: &str| match name {
+            "PW" => Some(OsString::from("*foo")),
+            _ => None,
+        };
+        for yaml in ["key: \"${PW}\"", "key: '${PW}'"] {
+            let expanded = expand_env_with_lookup(yaml, lookup).expect("expand");
+            let value: serde_yaml_ng::Value =
+                serde_yaml_ng::from_str(&expanded).expect("expanded YAML must parse");
+            assert_eq!(
+                value.get("key").and_then(|v| v.as_str()),
+                Some("*foo"),
+                "{yaml} must round-trip the env value verbatim"
+            );
+        }
+    }
+
+    /// Plain-scalar substitution stays verbatim (legacy behavior). A `${PW}`
+    /// with a leading `*` still fails YAML parsing because we cannot rewrite
+    /// the unquoted scalar; documented behavior is that the user must quote.
+    #[test]
+    fn plain_scalar_substitution_is_verbatim() {
+        let lookup = |name: &str| match name {
+            "A" => Some(OsString::from("alpha")),
+            _ => None,
+        };
+        let expanded = expand_env_with_lookup("key: ${A}", lookup).expect("expand");
+        assert_eq!(expanded, "key: alpha");
+    }
+
+    /// `'` inside an enclosing double-quoted scalar must be treated as a
+    /// literal — not as the start of a single-quoted scalar — so a subsequent
+    /// `${VAR}` is still seen as double-quoted.
+    #[test]
+    fn nested_quote_chars_dont_flip_context() {
+        let lookup = |name: &str| match name {
+            "PW" => Some(OsString::from("X\"Y")),
+            _ => None,
+        };
+        let expanded = expand_env_with_lookup("key: \"o'clock ${PW}\"", lookup).expect("expand");
+        let value: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&expanded).expect("expanded YAML must parse");
+        assert_eq!(
+            value.get("key").and_then(|v| v.as_str()),
+            Some("o'clock X\"Y")
+        );
+    }
+
+    /// A `\"` escape inside a double-quoted scalar must NOT terminate the
+    /// scalar — the next char remains in DoubleQuoted context.
+    #[test]
+    fn double_quoted_backslash_escape_keeps_context() {
+        let lookup = |name: &str| match name {
+            "PW" => Some(OsString::from("*foo")),
+            _ => None,
+        };
+        // The literal YAML escape `\"` represents `"` inside the value; the
+        // ${PW} placeholder remains inside the same double-quoted scalar.
+        let expanded = expand_env_with_lookup(r#"key: "pre\"mid ${PW}""#, lookup).expect("expand");
+        let value: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&expanded).expect("expanded YAML must parse");
+        assert_eq!(
+            value.get("key").and_then(|v| v.as_str()),
+            Some("pre\"mid *foo")
+        );
+    }
+
+    /// `''` inside a single-quoted scalar must NOT terminate the scalar.
+    #[test]
+    fn single_quoted_double_apostrophe_keeps_context() {
+        let lookup = |name: &str| match name {
+            "PW" => Some(OsString::from("*foo")),
+            _ => None,
+        };
+        let expanded = expand_env_with_lookup("key: 'it''s ${PW}'", lookup).expect("expand");
+        let value: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&expanded).expect("expanded YAML must parse");
+        assert_eq!(value.get("key").and_then(|v| v.as_str()), Some("it's *foo"));
     }
 }

@@ -15,13 +15,17 @@ import {
   SidebarGroupLabel,
   SidebarGroupContent,
 } from "@/components/ui/sidebar";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useAuthStore } from "@/lib/auth-store";
 import {
+  BookOpen,
+  GitBranch,
   LayoutDashboard,
+  LogOut,
   Puzzle,
   ScrollText,
   Settings,
-  BookOpen,
-  GitBranch,
+  User,
 } from "lucide-react";
 
 const navItems = [
@@ -49,6 +53,9 @@ const navItems = [
 
 export function AppSidebar() {
   const pathname = usePathname();
+  const isConnected = useAuthStore((s) => s.isConnected);
+  const serverConfig = useAuthStore((s) => s.serverConfig);
+  const logout = useAuthStore((s) => s.logout);
 
   return (
     <Sidebar variant="inset">
@@ -107,6 +114,28 @@ export function AppSidebar() {
 
       <SidebarFooter className="border-t border-sidebar-border">
         <SidebarMenu>
+          {isConnected && serverConfig.requiresAuth && (
+            <SidebarMenuItem>
+              <div className="flex items-center justify-between gap-1 px-2 py-1">
+                <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                  <User className="size-3.5 shrink-0" />
+                  <span className="truncate">{serverConfig.username}</span>
+                </span>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      onClick={logout}
+                      className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                    >
+                      <LogOut className="size-3.5" />
+                      <span className="sr-only">退出登录</span>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right">退出登录</TooltipContent>
+                </Tooltip>
+              </div>
+            </SidebarMenuItem>
+          )}
           <SidebarMenuItem>
             <SidebarMenuButton asChild>
               <a

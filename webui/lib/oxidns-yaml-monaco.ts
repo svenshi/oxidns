@@ -671,9 +671,9 @@ function fieldValueSuggestions(
   if (field.type === "select") {
     return (
       field.options?.map((option) => ({
-        label: option.value,
+        label: String(option.value),
         kind: monaco.languages.CompletionItemKind.EnumMember,
-        insertText: option.value,
+        insertText: String(option.value),
         range,
         detail: option.label,
       })) ?? []

@@ -88,7 +88,7 @@ pub(super) trait MikrotikApi: Debug + Send + Sync {
         comment_prefix: &str,
         plugin_tag: &str,
         refresh_timeout: bool,
-    ) -> Result<Option<String>>;
+    ) -> Result<Option<()>>;
     /// Delete one row by RouterOS internal id.
     async fn delete_entry_by_id(&self, id: &str, family: AddressListFamily) -> Result<()>;
     /// Cheap connectivity check used during startup.
@@ -286,9 +286,7 @@ impl MikrotikRsClient {
         key: &AddressListKey,
         timeout: Option<&str>,
         comment: &str,
-    ) -> Result<String> {
-        // Add is followed by a re-query because RouterOS does not always return
-        // the created row id directly in a stable shape.
+    ) -> Result<()> {
         let mut add = CommandBuilder::new()
             .command(address_list_command(key.family, ListOp::Add))
             .attribute(ADDRESS_LIST_FIELD, Some(key.list.as_str()))
@@ -300,18 +298,7 @@ impl MikrotikRsClient {
         let _ = self
             .send_rows("add address-list entry", add.build())
             .await?;
-
-        let mut created = self.find_entries_by_key(key).await?;
-        created.retain(|entry| entry.comment.as_deref() == Some(comment));
-        created
-            .into_iter()
-            .map(|entry| entry.id)
-            .next()
-            .ok_or_else(|| {
-                DnsError::plugin(
-                    "ros_address_list add address-list entry succeeded but entry id not found",
-                )
-            })
+        Ok(())
     }
 }
 
@@ -435,7 +422,7 @@ impl MikrotikApi for MikrotikRsClient {
         comment_prefix: &str,
         plugin_tag: &str,
         refresh_timeout: bool,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<()>> {
         // Upsert policy:
         // 1) query all rows for the exact `(family, list, address)` key
         // 2) refuse overwrite when only foreign rows exist
@@ -471,8 +458,8 @@ impl MikrotikApi for MikrotikRsClient {
             if timeout_kind_changed {
                 self.delete_entry_by_id(&existing.id, existing.key.family)
                     .await?;
-                let id = self.add_entry(key, timeout, comment).await?;
-                return Ok(Some(id));
+                self.add_entry(key, timeout, comment).await?;
+                return Ok(Some(()));
             }
 
             // `refresh_timeout` lets callers force a timeout rewrite even when
@@ -491,11 +478,11 @@ impl MikrotikApi for MikrotikRsClient {
                     .send_rows("set address-list entry", set.build())
                     .await?;
             }
-            return Ok(Some(existing.id));
+            return Ok(Some(()));
         }
 
-        let id = self.add_entry(key, timeout, comment).await?;
-        Ok(Some(id))
+        self.add_entry(key, timeout, comment).await?;
+        Ok(Some(()))
     }
 
     async fn delete_entry_by_id(&self, id: &str, family: AddressListFamily) -> Result<()> {

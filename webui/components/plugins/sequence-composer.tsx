@@ -5,13 +5,21 @@
 
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   Background,
   Controls,
   Handle,
+  Panel,
   Position,
   ReactFlow,
+  useNodesState,
   type Edge,
   type Node,
   type NodeProps,
@@ -20,11 +28,13 @@ import {
   ArrowDown,
   ArrowRight,
   GitBranch,
+  GripHorizontal,
   Maximize2,
   Minimize2,
   Minus,
   Pencil,
   Plus,
+  RotateCcw,
   Save,
   Trash2,
 } from "lucide-react";
@@ -67,6 +77,10 @@ type SequenceFlowNode =
   | Node<PreviewNodeData, "preview">;
 
 interface RuleNodeData extends Record<string, unknown> {
+  // Content-derived storage key for persisted drag position. Stable across
+  // rule reordering / insertion / deletion because it hashes the rule body
+  // rather than its index. See `rulePositionKey` for the derivation.
+  positionKey: string;
   rule: SequenceRule;
   index: number;
   total: number;
@@ -81,6 +95,7 @@ interface RuleNodeData extends Record<string, unknown> {
 }
 
 interface PreviewNodeData extends Record<string, unknown> {
+  positionKey: string;
   action: SequenceAction;
   plugins: PluginInstance[];
   currentSequenceName?: string;
@@ -121,6 +136,8 @@ interface SequenceComposerProps {
   onSaveEdit?: () => void | Promise<void>;
 }
 
+type NodePositions = Record<string, { x: number; y: number }>;
+
 interface SequenceCanvasProps {
   rules: SequenceRule[];
   plugins: PluginInstance[];
@@ -129,6 +146,9 @@ interface SequenceCanvasProps {
   currentSequenceName?: string;
   fullHeight?: boolean;
   heightMode?: SequenceCanvasHeightMode;
+  savedPositions: NodePositions;
+  onPositionChange: (nodeId: string, pos: { x: number; y: number }) => void;
+  onResetPositions: () => void;
   onAddRule: () => void;
   onUpdateRule: (ruleId: string, patch: Partial<SequenceRule>) => void;
   onMoveRule: (index: number, offset: number) => void;
@@ -193,6 +213,35 @@ export function SequenceComposer({
   );
   const [yamlError, setYamlError] = useState<string | null>(null);
   const rules = useMemo(() => parseSequenceRules(value.args), [value.args]);
+
+  const positionStorageKey = `oxidns_seq_positions_${currentSequenceName ?? "_default"}`;
+  const [savedPositions, setSavedPositions] = useState<NodePositions>(() => {
+    try {
+      return (
+        (JSON.parse(
+          localStorage.getItem(positionStorageKey) ?? "null",
+        ) as NodePositions | null) ?? {}
+      );
+    } catch {
+      return {};
+    }
+  });
+
+  const handlePositionChange = (
+    nodeId: string,
+    pos: { x: number; y: number },
+  ) => {
+    setSavedPositions((prev) => {
+      const next = { ...prev, [nodeId]: pos };
+      localStorage.setItem(positionStorageKey, JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const resetPositions = () => {
+    setSavedPositions({});
+    localStorage.removeItem(positionStorageKey);
+  };
 
   const sequenceTags = useMemo(() => {
     const tags = new Set(
@@ -297,6 +346,17 @@ export function SequenceComposer({
         {!readOnly && view === "visual" && (
           <div className="flex flex-wrap items-center gap-2">
             <CreateDependencyPluginButton />
+            {Object.keys(savedPositions).length > 0 && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={resetPositions}
+              >
+                <RotateCcw className="h-4 w-4" />
+                重置布局
+              </Button>
+            )}
             <Button
               type="button"
               variant="outline"
@@ -313,15 +373,28 @@ export function SequenceComposer({
           </div>
         )}
         {readOnly && view === "visual" && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setExpanded(true)}
-          >
-            <Maximize2 className="h-4 w-4" />
-            全屏
-          </Button>
+          <div className="flex items-center gap-2">
+            {Object.keys(savedPositions).length > 0 && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={resetPositions}
+              >
+                <RotateCcw className="h-4 w-4" />
+                重置布局
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setExpanded(true)}
+            >
+              <Maximize2 className="h-4 w-4" />
+              全屏
+            </Button>
+          </div>
         )}
       </div>
 
@@ -334,6 +407,9 @@ export function SequenceComposer({
             readOnly={readOnly}
             currentSequenceName={currentSequenceName}
             heightMode={heightMode}
+            savedPositions={savedPositions}
+            onPositionChange={handlePositionChange}
+            onResetPositions={resetPositions}
             onAddRule={addRule}
             onUpdateRule={updateRule}
             onMoveRule={moveRule}
@@ -351,6 +427,9 @@ export function SequenceComposer({
               onRequestEdit={onRequestEdit}
               onCancelEdit={onCancelEdit}
               onSaveEdit={onSaveEdit}
+              savedPositions={savedPositions}
+              onPositionChange={handlePositionChange}
+              onResetPositions={resetPositions}
               onAddRule={addRule}
               onUpdateRule={updateRule}
               onMoveRule={moveRule}
@@ -387,6 +466,9 @@ function SequenceExpandedCanvas({
   onRequestEdit,
   onCancelEdit,
   onSaveEdit,
+  savedPositions,
+  onPositionChange,
+  onResetPositions,
   onAddRule,
   onUpdateRule,
   onMoveRule,
@@ -402,6 +484,9 @@ function SequenceExpandedCanvas({
   onRequestEdit?: () => void;
   onCancelEdit?: () => void;
   onSaveEdit?: () => void | Promise<void>;
+  savedPositions: NodePositions;
+  onPositionChange: (nodeId: string, pos: { x: number; y: number }) => void;
+  onResetPositions: () => void;
   onAddRule: () => void;
   onUpdateRule: (ruleId: string, patch: Partial<SequenceRule>) => void;
   onMoveRule: (index: number, offset: number) => void;
@@ -476,6 +561,17 @@ function SequenceExpandedCanvas({
               )}
             </>
           )}
+          {Object.keys(savedPositions).length > 0 && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onResetPositions}
+            >
+              <RotateCcw className="h-4 w-4" />
+              重置布局
+            </Button>
+          )}
           <Button type="button" variant="outline" size="sm" onClick={onClose}>
             <Minimize2 className="h-4 w-4" />
             退出全屏
@@ -490,6 +586,9 @@ function SequenceExpandedCanvas({
           readOnly={readOnly}
           currentSequenceName={currentSequenceName}
           fullHeight
+          savedPositions={savedPositions}
+          onPositionChange={onPositionChange}
+          onResetPositions={onResetPositions}
           onAddRule={onAddRule}
           onUpdateRule={onUpdateRule}
           onMoveRule={onMoveRule}
@@ -508,11 +607,57 @@ function SequenceCanvas({
   currentSequenceName,
   fullHeight = false,
   heightMode = "inline",
-  onAddRule,
+  savedPositions,
+  onPositionChange,
   onUpdateRule,
   onMoveRule,
   onDeleteRule,
+  onAddRule,
 }: SequenceCanvasProps) {
+  // Route callbacks through a ref so the memo below can use data-only deps;
+  // the inline closures from `SequenceComposer` change identity each render
+  // but their behaviour only depends on the props above. Without this the
+  // memo would invalidate every render → setNodes would loop infinitely.
+  const callbacksRef = useRef({ onUpdateRule, onMoveRule, onDeleteRule });
+  useEffect(() => {
+    callbacksRef.current = { onUpdateRule, onMoveRule, onDeleteRule };
+  });
+
+  // Derive flow nodes/edges from props. Memoised on the actual data inputs so
+  // the reference is stable across renders that don't affect graph contents.
+  const built = useMemo(
+    () =>
+      buildSequenceFlow({
+        rules,
+        plugins,
+        sequenceTags,
+        readOnly,
+        currentSequenceName,
+        savedPositions,
+        onUpdateRule: (id, patch) =>
+          callbacksRef.current.onUpdateRule(id, patch),
+        onMoveRule: (index, offset) =>
+          callbacksRef.current.onMoveRule(index, offset),
+        onDeleteRule: (id) => callbacksRef.current.onDeleteRule(id),
+      }),
+    [rules, plugins, sequenceTags, readOnly, currentSequenceName, savedPositions],
+  );
+
+  // Hold nodes as local state so React Flow's d3-drag updates land via
+  // `onNodesChange` and re-render the node DURING the gesture. Without this
+  // the node only "jumps" to its new spot on drag-stop, because the position
+  // prop never reflects the in-progress drag.
+  const [nodes, setNodes, onNodesChange] = useNodesState<SequenceFlowNode>(
+    built.nodes,
+  );
+
+  // Re-sync when rules / savedPositions / readOnly change. `built.nodes` is
+  // referentially stable thanks to the memo above, so this only fires on real
+  // input changes — never mid-drag.
+  useEffect(() => {
+    setNodes(built.nodes);
+  }, [built.nodes, setNodes]);
+
   if (rules.length === 0) {
     return (
       <div
@@ -536,16 +681,7 @@ function SequenceCanvas({
     );
   }
 
-  const { nodes, edges } = buildSequenceFlow({
-    rules,
-    plugins,
-    sequenceTags,
-    readOnly,
-    currentSequenceName,
-    onUpdateRule,
-    onMoveRule,
-    onDeleteRule,
-  });
+  const hasCustomPositions = Object.keys(savedPositions).length > 0;
 
   return (
     <div
@@ -556,13 +692,14 @@ function SequenceCanvas({
     >
       <ReactFlow<SequenceFlowNode, Edge>
         nodes={nodes}
-        edges={edges}
+        edges={built.edges}
+        onNodesChange={onNodesChange}
         nodeTypes={flowNodeTypes}
-        fitView
+        fitView={!hasCustomPositions}
         fitViewOptions={{ padding: 0.16 }}
         minZoom={0.35}
         maxZoom={1.8}
-        nodesDraggable={false}
+        nodesDraggable
         nodesConnectable={false}
         nodesFocusable={false}
         edgesFocusable={false}
@@ -573,14 +710,23 @@ function SequenceCanvas({
         panActivationKeyCode={null}
         zoomActivationKeyCode={null}
         disableKeyboardA11y
-        noDragClassName="sequence-flow-interactive"
-        noPanClassName="sequence-flow-interactive"
-        noWheelClassName="sequence-flow-interactive"
+        // Use the default `nodrag` / `nopan` / `nowheel` classes. React Flow's
+        // NodeWrapper applies `noPanClassName` to the node container itself, so
+        // sharing a single class for all three would put `nodrag` on the node
+        // root and block drags from the grip handle. The `InteractiveNodeFrame`
+        // already carries `nodrag nopan nowheel` to protect controls inside.
         panOnDrag={[0]}
         zoomOnScroll
         zoomOnPinch
         zoomOnDoubleClick={false}
         preventScrolling
+        onNodeDragStop={(_event, node) => {
+          // Persist by the content-derived storage key carried in node.data,
+          // not the React Flow id. That way moving / deleting rules around it
+          // doesn't drag this rule's saved position onto a different rule.
+          const key = (node.data as { positionKey?: string }).positionKey;
+          if (key) onPositionChange(key, node.position);
+        }}
       >
         <Background gap={18} size={1} />
         <Controls showInteractive={false} />
@@ -612,6 +758,7 @@ function buildSequenceFlow({
   sequenceTags,
   readOnly,
   currentSequenceName,
+  savedPositions,
   onUpdateRule,
   onMoveRule,
   onDeleteRule,
@@ -621,6 +768,7 @@ function buildSequenceFlow({
   sequenceTags: string[];
   readOnly: boolean;
   currentSequenceName?: string;
+  savedPositions: NodePositions;
   onUpdateRule: (ruleId: string, patch: Partial<SequenceRule>) => void;
   onMoveRule: (index: number, offset: number) => void;
   onDeleteRule: (ruleId: string) => void;
@@ -636,14 +784,25 @@ function buildSequenceFlow({
   // Rule nodes are 1200px wide; leave a 140px gap before the preview column.
   const PREVIEW_X = 1340;
 
+  // Disambiguate identical-content rules: first occurrence gets the bare
+  // fingerprint, subsequent ones get `#1`, `#2`, …  This keeps duplicate
+  // rules visually pinnable while still letting move/delete carry positions.
+  const keyOccurrences = new Map<string, number>();
+
   rules.forEach((rule, index) => {
     const ruleId = `rule-${rule.id}`;
+    const baseKey = rulePositionKey(rule);
+    const occ = keyOccurrences.get(baseKey) ?? 0;
+    keyOccurrences.set(baseKey, occ + 1);
+    const positionKey = occ === 0 ? `rule:${baseKey}` : `rule:${baseKey}#${occ}`;
     const ruleY = currentY;
     nodes.push({
       id: ruleId,
       type: "rule",
-      position: { x: 0, y: ruleY },
+      position: savedPositions[positionKey] ?? { x: 0, y: ruleY },
+      dragHandle: ".sequence-drag-handle",
       data: {
+        positionKey,
         rule,
         index,
         total: rules.length,
@@ -656,15 +815,19 @@ function buildSequenceFlow({
         onMove: (offset) => onMoveRule(index, offset),
         onDelete: () => onDeleteRule(rule.id),
       },
-      draggable: false,
       selectable: false,
       focusable: false,
     });
 
     if (index < rules.length - 1) {
+      // Pin the edge to the bottom "next" handle and the next rule's top
+      // target. Without explicit handle ids the source rule has two source
+      // handles (bottom + right), so React Flow can't tell which one to
+      // anchor on — once the node is dragged, the line routes randomly.
       edges.push({
         id: `seq-${rule.id}-${rules[index + 1].id}`,
         source: ruleId,
+        sourceHandle: "next",
         target: `rule-${rules[index + 1].id}`,
         type: "smoothstep",
         animated: false,
@@ -675,20 +838,22 @@ function buildSequenceFlow({
     const target = getSequenceControlTarget(rule.action);
     if (target) {
       const previewId = `preview-${rule.id}-${target}`;
+      const previewKey = `preview:${positionKey}:${target}`;
       // Align with the rule's Y when possible, but push down if a previous
       // preview occupies that vertical space.
       const previewY = Math.max(ruleY, rightColumnBottom);
       nodes.push({
         id: previewId,
         type: "preview",
-        position: { x: PREVIEW_X, y: previewY },
+        position: savedPositions[previewKey] ?? { x: PREVIEW_X, y: previewY },
+        dragHandle: ".sequence-drag-handle",
         data: {
+          positionKey: previewKey,
           action: rule.action,
           plugins,
           currentSequenceName,
           visitedSequences: baseVisited,
         },
-        draggable: false,
         selectable: false,
         focusable: false,
       });
@@ -701,6 +866,7 @@ function buildSequenceFlow({
       edges.push({
         id: `branch-${rule.id}-${target}`,
         source: ruleId,
+        sourceHandle: "branch",
         target: previewId,
         type: "smoothstep",
         animated: isGoto,
@@ -750,6 +916,11 @@ function SequenceRuleFlowNode({ data }: NodeProps<Node<RuleNodeData, "rule">>) {
   return (
     <>
       <Handle type="target" position={Position.Top} />
+      {/* Drag handle — must be OUTSIDE InteractiveNodeFrame so pointer events
+          reach ReactFlow. InteractiveNodeFrame stops all propagation to protect
+          the interactive controls inside, so any draggable area must be a
+          sibling, not a descendant. */}
+      <SequenceNodeDragHandle />
       <InteractiveNodeFrame>
         <SequenceRuleNode {...data} />
       </InteractiveNodeFrame>
@@ -765,10 +936,19 @@ function SequencePreviewFlowNode({
   return (
     <>
       <Handle type="target" position={Position.Left} />
+      <SequenceNodeDragHandle />
       <InteractiveNodeFrame>
         <SequenceReferencePreview {...data} />
       </InteractiveNodeFrame>
     </>
+  );
+}
+
+function SequenceNodeDragHandle() {
+  return (
+    <div className="sequence-drag-handle flex h-5 cursor-grab items-center justify-center rounded-t-md border border-b-0 bg-muted/30 active:cursor-grabbing">
+      <GripHorizontal className="h-3.5 w-3.5 text-muted-foreground/40" />
+    </div>
   );
 }
 
@@ -1536,6 +1716,41 @@ function serializeAction(action: SequenceAction) {
   }
   // `quick_setup` and `text` modes both store the raw form already.
   return action.value.trim();
+}
+
+// Fingerprint a rule by its serialised body so persisted drag positions
+// follow the rule even when its index in the array shifts. Two rules with
+// identical YAML produce the same fingerprint; `buildSequenceFlow` then
+// disambiguates duplicates with a `#N` occurrence suffix.
+function rulePositionKey(rule: SequenceRule): string {
+  const matches = serializeMatches(rule.matches);
+  const exec = serializeAction(rule.action);
+  // `matches` is `string | string[] | undefined` — normalise to a single
+  // canonical string so equal-content rules hash identically regardless of
+  // whether they were parsed from scalar or sequence YAML form.
+  const matchesText = Array.isArray(matches)
+    ? matches.join("\n")
+    : (matches ?? "");
+  return cyrb53(`${matchesText}>>>${exec}`);
+}
+
+// cyrb53 — fast, non-cryptographic 53-bit string hash. Good enough for
+// localStorage keys (collisions are vanishingly rare and only cause two
+// distinct rules to share a saved position, which the user can fix by
+// re-dragging).
+function cyrb53(str: string, seed = 0): string {
+  let h1 = 0xdeadbeef ^ seed;
+  let h2 = 0x41c6ce57 ^ seed;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
 }
 
 function createEmptyRule(): SequenceRule {

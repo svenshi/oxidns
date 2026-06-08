@@ -101,7 +101,11 @@ import type {
   PluginComponentDefinition,
   PluginDetailComponentProps,
 } from "../types";
-import { PluginDetailTemplate } from "../plugin-detail-template";
+import {
+  PluginDetailTemplate,
+  PluginNotAppliedPlaceholder,
+} from "../plugin-detail-template";
+import { usePluginAppliedStatus } from "@/hooks/use-plugin-applied";
 import { DnsRecordDetailDialog } from "../dns-record-detail-dialog";
 import { QueryRecordFlowCanvas } from "../query-record-flow";
 
@@ -205,6 +209,14 @@ const CHART_MAX_HEIGHT = 640;
 // ---------------------------------------------------------------------------
 
 function QueryRecordsPanel({ tag }: { tag: string }) {
+  const appliedStatus = usePluginAppliedStatus(tag);
+  if (appliedStatus === "not-applied") {
+    return <PluginNotAppliedPlaceholder />;
+  }
+  return <QueryRecordsPanelInner tag={tag} />;
+}
+
+function QueryRecordsPanelInner({ tag }: { tag: string }) {
   const [records, setRecords] = useState<QueryRecordRow[]>([]);
   const [nextCursor, setNextCursor] = useState<string | undefined>();
   const [matcherStats, setMatcherStats] = useState<
@@ -1007,6 +1019,14 @@ function defaultBucketForRange(
 }
 
 function QueryRecorderInsightsPanel({ tag }: { tag: string }) {
+  const appliedStatus = usePluginAppliedStatus(tag);
+  if (appliedStatus === "not-applied") {
+    return <PluginNotAppliedPlaceholder />;
+  }
+  return <QueryRecorderInsightsPanelInner tag={tag} />;
+}
+
+function QueryRecorderInsightsPanelInner({ tag }: { tag: string }) {
   const [range, setRange] = useState<InsightsRangeKey>("1h");
   // `nonce` lets the user force a refresh of every sub-tab without changing
   // the range; we bump it on the toolbar refresh button.

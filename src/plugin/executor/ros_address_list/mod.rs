@@ -864,7 +864,7 @@ mod tests {
             comment_prefix: &str,
             plugin_tag: &str,
             refresh_timeout: bool,
-        ) -> Result<Option<String>> {
+        ) -> Result<Option<()>> {
             let mut state = self
                 .state
                 .lock()
@@ -900,9 +900,9 @@ mod tests {
                     entry.timeout = timeout.map(str::to_string);
                     entry.comment = Some(comment.to_string());
                     state.update_ops = state.update_ops.saturating_add(1);
-                    state.entries.insert(Self::storage_key(key), entry.clone());
+                    state.entries.insert(Self::storage_key(key), entry);
                 }
-                return Ok(Some(entry.id));
+                return Ok(Some(()));
             }
 
             state.next_id = state.next_id.saturating_add(1);
@@ -914,13 +914,13 @@ mod tests {
             state.entries.insert(
                 Self::storage_key(key),
                 RouterListEntry {
-                    id: id.clone(),
+                    id,
                     key: key.clone(),
                     timeout: timeout.map(str::to_string),
                     comment: Some(comment.to_string()),
                 },
             );
-            Ok(Some(id))
+            Ok(Some(()))
         }
 
         async fn delete_entry_by_id(&self, id: &str, _family: AddressListFamily) -> Result<()> {

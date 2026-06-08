@@ -18,11 +18,15 @@ export interface AuthState {
   isHydrated: boolean;
   hasAttemptedAutoConnect: boolean;
   connectionError: string | null;
+  needsCredentials: boolean;
+  rememberLogin: boolean;
 
   setServerConfig: (config: ServerConfig) => void;
   connect: (config?: ServerConfig) => Promise<boolean>;
   attemptAutoConnect: () => Promise<void>;
   markHydrated: () => void;
+  setRememberLogin: (remember: boolean) => void;
+  logout: () => void;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -40,6 +44,8 @@ export const useAuthStore = create<AuthState>()(
       isHydrated: false,
       hasAttemptedAutoConnect: false,
       connectionError: null,
+      needsCredentials: false,
+      rememberLogin: true,
 
       setServerConfig: (config) =>
         set((state) => ({
@@ -50,7 +56,23 @@ export const useAuthStore = create<AuthState>()(
                 isAuthenticated: false,
                 isConnected: false,
                 connectionError: null,
+                needsCredentials: false,
               }),
+        })),
+
+      setRememberLogin: (remember) => set({ rememberLogin: remember }),
+
+      logout: () =>
+        set((state) => ({
+          isConnected: false,
+          isAuthenticated: false,
+          needsCredentials: true,
+          connectionError: null,
+          serverConfig: {
+            ...state.serverConfig,
+            username: "",
+            password: "",
+          },
         })),
 
       connect: async (config?: ServerConfig) => {
@@ -68,7 +90,14 @@ export const useAuthStore = create<AuthState>()(
           };
           if (serverConfig.requiresAuth) {
             if (!serverConfig.username || !serverConfig.password) {
-              throw new Error("请输入用户名和密码");
+              // Credentials known to be incomplete (e.g. rememberLogin=false cleared
+              // the password). Skip the network round-trip and show the login form.
+              set({
+                isConnecting: false,
+                needsCredentials: true,
+                connectionError: null,
+              });
+              return false;
             }
             headers.Authorization = `Basic ${btoa(`${serverConfig.username}:${serverConfig.password}`)}`;
           }
@@ -76,18 +105,31 @@ export const useAuthStore = create<AuthState>()(
             method: "GET",
             headers,
           });
+          if (response.status === 401) {
+            set({
+              isConnected: false,
+              isAuthenticated: false,
+              isConnecting: false,
+              needsCredentials: true,
+              connectionError:
+                serverConfig.requiresAuth &&
+                serverConfig.username &&
+                serverConfig.password
+                  ? "用户名或密码错误"
+                  : null,
+              serverConfig: { ...serverConfig, requiresAuth: true },
+            });
+            return false;
+          }
           if (!response.ok) {
-            throw new Error(
-              response.status === 401
-                ? "用户名或密码错误"
-                : `连接失败：HTTP ${response.status}`,
-            );
+            throw new Error(`连接失败：HTTP ${response.status}`);
           }
           set({
             serverConfig,
             isConnected: true,
             isAuthenticated: true,
             isConnecting: false,
+            needsCredentials: false,
           });
           return true;
         } catch (error) {
@@ -95,6 +137,7 @@ export const useAuthStore = create<AuthState>()(
             isConnected: false,
             isAuthenticated: false,
             isConnecting: false,
+            needsCredentials: false,
             connectionError:
               error instanceof Error ? error.message : "连接失败",
           });
@@ -115,8 +158,13 @@ export const useAuthStore = create<AuthState>()(
       name: "oxidns-auth",
       // Don't persist live connection flags: every page load should
       // re-verify the backend before assuming we're online.
+      // When rememberLogin is false, strip the password so the next
+      // visit forces the user to re-enter it (username is kept for pre-fill).
       partialize: (state) => ({
-        serverConfig: state.serverConfig,
+        rememberLogin: state.rememberLogin,
+        serverConfig: state.rememberLogin
+          ? state.serverConfig
+          : { ...state.serverConfig, password: "" },
       }),
       onRehydrateStorage: () => (state) => {
         state?.markHydrated();

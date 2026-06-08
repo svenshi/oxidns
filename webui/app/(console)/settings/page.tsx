@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { AppHeader } from "@/components/shell/app-header";
 import { useAppStore } from "@/lib/store";
-import { useAuthStore, type ServerConfig } from "@/lib/auth-store";
+import { useAuthStore } from "@/lib/auth-store";
 import { stringifyOxiDnsConfig, type OxiDnsConfig } from "@/lib/oxidns-config";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,16 +31,19 @@ import {
   Cpu,
   FileCode2,
   Globe,
+  LogOut,
   PlugZap,
   RefreshCw,
   ScrollText,
   Server,
+  ShieldCheck,
 } from "lucide-react";
 
 export default function SettingsPage() {
   const serverConfig = useAuthStore((s) => s.serverConfig);
   const setServerConfig = useAuthStore((s) => s.setServerConfig);
   const connect = useAuthStore((s) => s.connect);
+  const logout = useAuthStore((s) => s.logout);
   const isConnected = useAuthStore((s) => s.isConnected);
   const isConnecting = useAuthStore((s) => s.isConnecting);
   const connectionError = useAuthStore((s) => s.connectionError);
@@ -61,9 +64,6 @@ export default function SettingsPage() {
   const restartApp = useAppStore((s) => s.restartApp);
 
   const [backendUrl, setBackendUrl] = useState(serverConfig.url);
-  const [requiresAuth, setRequiresAuth] = useState(serverConfig.requiresAuth);
-  const [username, setUsername] = useState(serverConfig.username ?? "");
-  const [password, setPassword] = useState(serverConfig.password ?? "");
   const [workerThreads, setWorkerThreads] = useState("");
   const [apiListen, setApiListen] = useState("");
   const [apiSslEnabled, setApiSslEnabled] = useState(false);
@@ -74,6 +74,11 @@ export default function SettingsPage() {
   const [apiAuthEnabled, setApiAuthEnabled] = useState(false);
   const [apiAuthUsername, setApiAuthUsername] = useState("");
   const [apiAuthPassword, setApiAuthPassword] = useState("");
+  // "账号与安全" card local form state
+  const [authEditMode, setAuthEditMode] = useState<null | "enable" | "change" | "disable">(null);
+  const [newAuthUsername, setNewAuthUsername] = useState("");
+  const [newAuthPassword, setNewAuthPassword] = useState("");
+  const [confirmAuthPassword, setConfirmAuthPassword] = useState("");
   const [apiCorsOrigins, setApiCorsOrigins] = useState("");
   const [apiWebuiEnabled, setApiWebuiEnabled] = useState(false);
   const [apiWebuiRoot, setApiWebuiRoot] = useState("");
@@ -122,34 +127,73 @@ export default function SettingsPage() {
     return () => window.clearTimeout(timer);
   }, [configModel]);
 
-  const canConnect =
-    backendUrl.trim().length > 0 &&
-    (!requiresAuth || (username.trim().length > 0 && password.length > 0));
+  const canConnect = backendUrl.trim().length > 0;
   const runtimeVersion = system?.build
     ? `${system.build.version} (${system.build.bundle})`
     : health?.build_bundle
       ? `${health.version} (${health.build_bundle})`
       : (system?.version ?? health?.version ?? "-");
 
-  const getConnectionConfig = (): ServerConfig => ({
-    url: backendUrl.trim(),
-    requiresAuth,
-    username: requiresAuth ? username.trim() : "",
-    password: requiresAuth ? password : "",
-  });
-
   const handleSaveConnection = () => {
-    setServerConfig(getConnectionConfig());
+    setServerConfig({ ...serverConfig, url: backendUrl.trim() });
   };
 
   const handleConnect = async () => {
-    const nextConfig = getConnectionConfig();
+    const nextConfig = { ...serverConfig, url: backendUrl.trim() };
     setServerConfig(nextConfig);
     const ok = await connect(nextConfig);
     if (ok) await loadConfig();
   };
 
-  const buildTopLevelConfig = (): OxiDnsConfig => {
+  type AuthOverride = { enabled: boolean; username: string; password: string };
+
+  const buildApiHttpConfig = (authOverride?: AuthOverride): unknown => {
+    const authEnabled = authOverride !== undefined ? authOverride.enabled : apiAuthEnabled;
+    const authUsername = authOverride !== undefined ? authOverride.username : apiAuthUsername;
+    const authPassword = authOverride !== undefined ? authOverride.password : apiAuthPassword;
+
+    const sslConfig =
+      apiSslEnabled && apiSslCert.trim() && apiSslKey.trim()
+        ? {
+            cert: apiSslCert.trim(),
+            key: apiSslKey.trim(),
+            ...(apiSslClientCa.trim()
+              ? { client_ca: apiSslClientCa.trim() }
+              : {}),
+            ...(apiSslRequireClientCert ? { require_client_cert: true } : {}),
+          }
+        : undefined;
+    const authConfig =
+      authEnabled && authUsername.trim()
+        ? { type: "basic", username: authUsername.trim(), password: authPassword }
+        : undefined;
+    const corsOriginsList = apiCorsOrigins
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const corsConfig =
+      corsOriginsList.length > 0
+        ? { allowed_origins: corsOriginsList }
+        : undefined;
+    const webuiConfig =
+      apiWebuiEnabled && apiWebuiRoot.trim()
+        ? {
+            root: apiWebuiRoot.trim(),
+            ...(apiWebuiIndex.trim() ? { index: apiWebuiIndex.trim() } : {}),
+          }
+        : undefined;
+    const hasDetail = sslConfig || authConfig || corsConfig || webuiConfig;
+    if (!hasDetail) return apiListen.trim();
+    return {
+      listen: apiListen.trim(),
+      ...(sslConfig ? { ssl: sslConfig } : {}),
+      ...(authConfig ? { auth: authConfig } : {}),
+      ...(corsConfig ? { cors: corsConfig } : {}),
+      ...(webuiConfig ? { webui: webuiConfig } : {}),
+    };
+  };
+
+  const buildTopLevelConfig = (authOverride?: AuthOverride): OxiDnsConfig => {
     const nextRuntime: Record<string, unknown> = {
       ...asRecord(configModel.runtime),
     };
@@ -161,7 +205,7 @@ export default function SettingsPage() {
 
     const nextApi: Record<string, unknown> = { ...asRecord(configModel.api) };
     if (apiListen.trim()) {
-      nextApi.http = buildApiHttpConfig();
+      nextApi.http = buildApiHttpConfig(authOverride);
     } else {
       delete nextApi.http;
     }
@@ -197,49 +241,24 @@ export default function SettingsPage() {
     await restartApp();
   };
 
-  const buildApiHttpConfig = (): unknown => {
-    const sslConfig =
-      apiSslEnabled && apiSslCert.trim() && apiSslKey.trim()
-        ? {
-            cert: apiSslCert.trim(),
-            key: apiSslKey.trim(),
-            ...(apiSslClientCa.trim()
-              ? { client_ca: apiSslClientCa.trim() }
-              : {}),
-            ...(apiSslRequireClientCert ? { require_client_cert: true } : {}),
-          }
-        : undefined;
-    const authConfig = apiAuthEnabled
-      ? {
-          type: "basic",
-          username: apiAuthUsername.trim(),
-          password: apiAuthPassword,
-        }
-      : undefined;
-    const corsOriginsList = apiCorsOrigins
-      .split("\n")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const corsConfig =
-      corsOriginsList.length > 0
-        ? { allowed_origins: corsOriginsList }
-        : undefined;
-    const webuiConfig =
-      apiWebuiEnabled && apiWebuiRoot.trim()
-        ? {
-            root: apiWebuiRoot.trim(),
-            ...(apiWebuiIndex.trim() ? { index: apiWebuiIndex.trim() } : {}),
-          }
-        : undefined;
-    const hasDetail = sslConfig || authConfig || corsConfig || webuiConfig;
-    if (!hasDetail) return apiListen.trim();
-    return {
-      listen: apiListen.trim(),
-      ...(sslConfig ? { ssl: sslConfig } : {}),
-      ...(authConfig ? { auth: authConfig } : {}),
-      ...(corsConfig ? { cors: corsConfig } : {}),
-      ...(webuiConfig ? { webui: webuiConfig } : {}),
-    };
+  // Dedicated auth save: updates config.yaml + syncs WebUI connection credentials atomically.
+  const handleAuthSave = async (enabled: boolean, uname: string, pwd: string) => {
+    const override: AuthOverride = { enabled, username: uname, password: pwd };
+    setYamlConfig(stringifyOxiDnsConfig(buildTopLevelConfig(override)));
+
+    if (enabled && uname.trim()) {
+      setServerConfig({ ...serverConfig, requiresAuth: true, username: uname.trim(), password: pwd });
+    } else {
+      setServerConfig({ ...serverConfig, requiresAuth: false, username: "", password: "" });
+    }
+
+    setApiAuthEnabled(enabled);
+    setApiAuthUsername(enabled ? uname : "");
+    setApiAuthPassword(enabled ? pwd : "");
+    setAuthEditMode(null);
+    setNewAuthPassword("");
+    setConfirmAuthPassword("");
+    await restartApp();
   };
 
   return (
@@ -256,7 +275,7 @@ export default function SettingsPage() {
                     后台服务
                   </CardTitle>
                   <CardDescription className="mt-1.5">
-                    配置 WebUI 连接的 OxiDNS 管理 API，可使用 /api 或完整地址
+                    配置 WebUI 连接的后端地址，认证凭据通过登录流程自动管理
                   </CardDescription>
                 </div>
                 <Badge
@@ -271,54 +290,16 @@ export default function SettingsPage() {
                 </Badge>
               </div>
             </CardHeader>
-            <CardContent className="space-y-5">
-              <div className="space-y-4">
-                <Field>
-                  <FieldLabel>服务地址</FieldLabel>
-                  <Input
-                    value={backendUrl}
-                    onChange={(event) => setBackendUrl(event.target.value)}
-                    placeholder="/api 或 http://localhost:8080"
-                    className="font-mono"
-                  />
-                </Field>
-                <div className="space-y-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-sm font-medium">需要用户名密码</p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        使用 Basic Auth 连接管理 API
-                      </p>
-                    </div>
-                    <Switch
-                      checked={requiresAuth}
-                      onCheckedChange={setRequiresAuth}
-                      aria-label="启用后台服务认证"
-                    />
-                  </div>
-                  {requiresAuth && (
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <Field>
-                        <FieldLabel>用户名</FieldLabel>
-                        <Input
-                          value={username}
-                          onChange={(event) => setUsername(event.target.value)}
-                          autoComplete="username"
-                        />
-                      </Field>
-                      <Field>
-                        <FieldLabel>密码</FieldLabel>
-                        <Input
-                          value={password}
-                          onChange={(event) => setPassword(event.target.value)}
-                          type="password"
-                          autoComplete="current-password"
-                        />
-                      </Field>
-                    </div>
-                  )}
-                </div>
-              </div>
+            <CardContent className="space-y-4">
+              <Field>
+                <FieldLabel>服务地址</FieldLabel>
+                <Input
+                  value={backendUrl}
+                  onChange={(event) => setBackendUrl(event.target.value)}
+                  placeholder="/api 或 http://localhost:8080"
+                  className="font-mono"
+                />
+              </Field>
               {connectionError && (
                 <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                   <CircleAlert className="h-4 w-4" />
@@ -326,19 +307,196 @@ export default function SettingsPage() {
                 </div>
               )}
               <div className="flex flex-wrap items-center gap-2">
-                <Button onClick={handleSaveConnection}>保存连接配置</Button>
+                <Button onClick={handleSaveConnection}>保存地址</Button>
                 <Button
                   variant="outline"
                   onClick={handleConnect}
                   disabled={!canConnect || isConnecting}
                 >
                   <PlugZap className="h-4 w-4 mr-1.5" />
-                  {isConnecting ? "连接中" : "保存并连接"}
+                  {isConnecting ? "连接中" : "重新连接"}
                 </Button>
               </div>
             </CardContent>
           </Card>
 
+          {isConnected && (<>
+
+          {/* ── 账号与安全 ─────────────────────────────────── */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <ShieldCheck className="h-5 w-5" />
+                账号与安全
+              </CardTitle>
+              <CardDescription>
+                管理 API 的身份验证，修改账号密码后需重启生效
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {authEditMode === null && (
+                <>
+                  {apiAuthEnabled ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <Badge
+                          variant="outline"
+                          className="bg-primary/10 text-primary border-primary/30"
+                        >
+                          已启用
+                        </Badge>
+                        <span className="text-sm text-muted-foreground">
+                          账号：
+                          <span className="font-mono font-medium text-foreground">
+                            {apiAuthUsername}
+                          </span>
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setNewAuthUsername(apiAuthUsername);
+                            setNewAuthPassword("");
+                            setConfirmAuthPassword("");
+                            setAuthEditMode("change");
+                          }}
+                          disabled={isRestarting}
+                        >
+                          修改密码
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setAuthEditMode("disable")}
+                          disabled={isRestarting}
+                        >
+                          关闭认证
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-700 dark:text-yellow-400">
+                        <CircleAlert className="h-4 w-4 shrink-0" />
+                        未开启身份验证，任何可访问后台地址的用户均可操作
+                      </div>
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          setNewAuthUsername("");
+                          setNewAuthPassword("");
+                          setConfirmAuthPassword("");
+                          setAuthEditMode("enable");
+                        }}
+                        disabled={isRestarting}
+                      >
+                        设置账号密码
+                      </Button>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {(authEditMode === "enable" || authEditMode === "change") && (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void handleAuthSave(true, newAuthUsername, newAuthPassword);
+                  }}
+                  className="space-y-4"
+                >
+                  <Field>
+                    <FieldLabel>用户名</FieldLabel>
+                    <Input
+                      value={newAuthUsername}
+                      onChange={(e) => setNewAuthUsername(e.target.value)}
+                      autoComplete="username"
+                      autoFocus
+                      className="max-w-xs"
+                    />
+                  </Field>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <Field>
+                      <FieldLabel>
+                        {authEditMode === "change" ? "新密码" : "密码"}
+                      </FieldLabel>
+                      <Input
+                        type="password"
+                        value={newAuthPassword}
+                        onChange={(e) => setNewAuthPassword(e.target.value)}
+                        autoComplete="new-password"
+                      />
+                    </Field>
+                    <Field>
+                      <FieldLabel>确认密码</FieldLabel>
+                      <Input
+                        type="password"
+                        value={confirmAuthPassword}
+                        onChange={(e) => setConfirmAuthPassword(e.target.value)}
+                        autoComplete="new-password"
+                      />
+                    </Field>
+                  </div>
+                  {confirmAuthPassword.length > 0 &&
+                    newAuthPassword !== confirmAuthPassword && (
+                      <p className="text-sm text-destructive">两次密码不一致</p>
+                    )}
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="submit"
+                      disabled={
+                        isRestarting ||
+                        !newAuthUsername.trim() ||
+                        !newAuthPassword ||
+                        newAuthPassword !== confirmAuthPassword
+                      }
+                    >
+                      <RefreshCw className="h-4 w-4 mr-1.5" />
+                      {isRestarting ? "重启中…" : "保存并重启"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setAuthEditMode(null)}
+                      disabled={isRestarting}
+                    >
+                      取消
+                    </Button>
+                  </div>
+                </form>
+              )}
+
+              {authEditMode === "disable" && (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                    <CircleAlert className="h-4 w-4 shrink-0" />
+                    关闭后所有人可无限制访问管理 API，请确认
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      variant="destructive"
+                      onClick={() => void handleAuthSave(false, "", "")}
+                      disabled={isRestarting}
+                    >
+                      <RefreshCw className="h-4 w-4 mr-1.5" />
+                      {isRestarting ? "重启中…" : "确认关闭并重启"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => setAuthEditMode(null)}
+                      disabled={isRestarting}
+                    >
+                      取消
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* ── 运行状态 ─────────────────────────────────── */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -538,42 +696,24 @@ export default function SettingsPage() {
                 )}
               </div>
 
-              {/* 身份认证 */}
-              <div className="space-y-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <p className="text-sm font-medium">身份认证 (auth)</p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      当前支持 Basic Auth，客户端需在请求头中携带凭据
-                    </p>
-                  </div>
-                  <Switch
-                    checked={apiAuthEnabled}
-                    onCheckedChange={setApiAuthEnabled}
-                    aria-label="启用 Basic Auth"
-                  />
+              {/* 身份认证 — 只读，在「账号与安全」中管理 */}
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium">身份认证 (auth)</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    在上方「账号与安全」中设置账号密码
+                  </p>
                 </div>
-                {apiAuthEnabled && (
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <Field>
-                      <FieldLabel>用户名 (username)</FieldLabel>
-                      <Input
-                        value={apiAuthUsername}
-                        onChange={(e) => setApiAuthUsername(e.target.value)}
-                        autoComplete="off"
-                      />
-                    </Field>
-                    <Field>
-                      <FieldLabel>密码 (password)</FieldLabel>
-                      <Input
-                        value={apiAuthPassword}
-                        onChange={(e) => setApiAuthPassword(e.target.value)}
-                        type="password"
-                        autoComplete="new-password"
-                      />
-                    </Field>
-                  </div>
-                )}
+                <Badge
+                  variant="outline"
+                  className={
+                    apiAuthEnabled
+                      ? "bg-primary/10 text-primary border-primary/30"
+                      : "text-muted-foreground"
+                  }
+                >
+                  {apiAuthEnabled ? `已启用 — ${apiAuthUsername}` : "未启用"}
+                </Badge>
               </div>
 
               {/* CORS */}
@@ -759,6 +899,8 @@ export default function SettingsPage() {
               </div>
             </CardContent>
           </Card>
+
+          </>)}
         </div>
       </main>
     </>

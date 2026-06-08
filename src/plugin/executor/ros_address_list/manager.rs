@@ -25,7 +25,7 @@ use tracing::{debug, warn};
 
 use super::api::MikrotikApi;
 use crate::core::app_clock::AppClock;
-use crate::core::error::Result;
+use crate::core::error::{DnsError, Result};
 use crate::core::task_center;
 
 /// Host prefix used for normalized IPv4 single-address entries.
@@ -600,37 +600,61 @@ impl AddressListManager {
             return Ok(());
         }
 
-        // One response can contain duplicate IPs. We already reduced that to one
-        // key with the strongest TTL, so each key below represents at most one
-        // remote write decision for this DNS observation.
+        // Phase 1: collect entries that actually need a remote write, along with
+        // their pre-formatted timeout strings so the borrow checker lets us hand
+        // shared references to the concurrent futures below.
         let comment = self.comment_for_dynamic(domain.as_str());
-        for (key, timeout) in dedup {
-            if !self.should_refresh_dynamic_entry(&key, timeout, now_ms) {
-                continue;
-            }
-            let timeout_value = match timeout {
-                DynamicTimeout::Timed(ttl) => Some(format!("{ttl}s")),
-                DynamicTimeout::Timeless => None,
-            };
-            let upsert_result = self
-                .api
-                .upsert_owned_entry(
-                    &key,
+        let to_refresh: Vec<(AddressListKey, DynamicTimeout, Option<String>)> = dedup
+            .into_iter()
+            .filter_map(|(key, timeout)| {
+                if !self.should_refresh_dynamic_entry(&key, timeout, now_ms) {
+                    return None;
+                }
+                let timeout_value = match timeout {
+                    DynamicTimeout::Timed(ttl) => Some(format!("{ttl}s")),
+                    DynamicTimeout::Timeless => None,
+                };
+                Some((key, timeout, timeout_value))
+            })
+            .collect();
+
+        if to_refresh.is_empty() {
+            return Ok(());
+        }
+
+        // Phase 2: fire all upserts concurrently — one DNS response may carry
+        // many IPs (CDN responses), and each previously-serial write is now
+        // pipelined over the same RouterOS API connection.
+        let api = self.api.as_ref();
+        let comment_str = comment.as_str();
+        let prefix = self.cfg.comment_prefix.as_str();
+        let tag = self.cfg.plugin_tag.as_str();
+
+        let results =
+            futures::future::join_all(to_refresh.iter().map(|(key, timeout, timeout_value)| {
+                api.upsert_owned_entry(
+                    key,
                     timeout_value.as_deref(),
-                    comment.as_str(),
-                    self.cfg.comment_prefix.as_str(),
-                    self.cfg.plugin_tag.as_str(),
+                    comment_str,
+                    prefix,
+                    tag,
                     matches!(timeout, DynamicTimeout::Timed(_)),
                 )
-                .await;
-            match upsert_result {
-                Ok(Some(_)) => {
+            }))
+            .await;
+
+        // Phase 3: update the local suppression cache for every result so that
+        // a single failure does not prevent successful entries from being cached.
+        let mut first_error: Option<DnsError> = None;
+        for ((key, timeout, _), result) in to_refresh.into_iter().zip(results) {
+            match result {
+                Ok(Some(())) => {
                     // Only successful remote writes advance the suppression cache.
                     let state = match timeout {
                         DynamicTimeout::Timed(ttl) => DynamicRefreshState::from_write(now_ms, ttl),
                         DynamicTimeout::Timeless => DynamicRefreshState::timeless(),
                     };
-                    self.dynamic_refresh_cache.insert(key.clone(), state);
+                    self.dynamic_refresh_cache.insert(key, state);
                 }
                 Ok(None) => {
                     // Foreign ownership conflict: drop any local cache so future
@@ -647,11 +671,14 @@ impl AddressListManager {
                     // Error path also drops the local cache so the next
                     // observation retries immediately instead of being suppressed.
                     self.dynamic_refresh_cache.remove(&key);
-                    return Err(err);
+                    first_error.get_or_insert(err);
                 }
             }
         }
 
+        if let Some(err) = first_error {
+            return Err(err);
+        }
         Ok(())
     }
 

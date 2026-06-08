@@ -845,6 +845,10 @@ export async function streamLogs(
     headers: { ...apiHeaders(), Accept: "text/event-stream" },
     signal,
   });
+  if (response.status === 401) {
+    useAuthStore.getState().logout();
+    throw new Error("登录已失效，请重新登录");
+  }
   if (!response.ok || !response.body) {
     throw new Error(`HTTP ${response.status}`);
   }
@@ -918,6 +922,10 @@ export function apiHeaders() {
 }
 
 async function readJsonResponse<T>(response: Response): Promise<T> {
+  if (response.status === 401) {
+    useAuthStore.getState().logout();
+    throw new Error("登录已失效，请重新登录");
+  }
   const text = await response.text();
   const parsed = parseJsonResponseText(text);
   const body = parsed.ok ? parsed.value : undefined;

@@ -10,7 +10,34 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-06
 
 <div className="release-stack">
-   <ReleaseCard version="v1.2.0" badge="Minor Release" date="2026-06-03" defaultOpen>
+   <ReleaseCard version="v1.2.1" badge="Patch Release" date="2026-06-08" defaultOpen>
+       **版本定位**
+
+       - Patch Release，包含 WebUI Basic Auth 登录流程与统一鉴权管理、插件画布可拖拽布局，以及多项 WebUI 交互修复（未应用插件警告、select 字段数值类型保留、查询记录流程图显示全部序列规则）。同时修复上游连接池在网络中断后的死锁问题、`${VAR}` 替换的 YAML 引号感知逻辑，并提升 `ros_address_list` 并发写入性能。不引入破坏性配置变更。
+
+       **主要变更**
+
+       - `ros_address_list` 性能优化：将 ROS API 写入操作并行流水化，并移除新增条目后的重查询步骤，降低大批量地址列表更新的延迟。
+       - 修复 `upstream` 连接池：网络中断恢复后连接池可能进入死锁状态，本次修复避免了中断后的连接获取阻塞。
+       - `feat(webui)`：新增 Basic Auth 登录流程，统一管理鉴权配置入口；登录态持久化到 `localStorage`，支持登出与会话恢复。
+       - 修复 `webui`：插件未被应用时在 UI 上给出明确警告提示；抑制 404 错误噪音。
+       - 修复 `config`：`${VAR}` 环境变量替换现可正确处理被 YAML 引号包裹的占位符，与裸占位符行为保持一致。
+       - 修复 `webui`：select 字段在保存时保留数值类型（`number`），避免被隐式转换为字符串导致配置校验失败。
+       - `feat(webui)`：插件画布支持按内容键控的拖拽布局，画布位置跟随内容标识持久化。
+       - 修复 `webui`：查询记录流程图（query record flow canvas）现在显示全部序列规则，不再仅展示部分规则。
+       - 依赖：Cargo patch-and-minor 组批量升级（2 个包）。
+       - CI：构建环境升级到 Ubuntu 24.04；新增 release 产物收集步骤。
+
+       **配置与升级说明**
+
+       - 根 crate 版本号升级为 `1.2.1`；本周期 `crates/macros`、`crates/proto`、`crates/ripset`、`crates/zoneparser` 均无改动，无需子 crate 同步升级；release tag 应使用 `v1.2.1`。
+       - `v1.2.0` 配置可直接升级到 `v1.2.1`，未引入新的必填配置字段。
+       - 启用了管理 API 鉴权（`auth`）的部署，WebUI 登录流程会自动使用已配置的 Basic Auth 凭据；无需调整配置，升级后刷新 WebUI 页面即可看到登录界面。
+       - 使用 `ros_address_list` 且有大批量地址写入需求的部署，升级后并发写入性能有所提升，无需修改配置。
+       - 在 `${VAR}` 占位符周围添加了 YAML 引号（如 `value: "${MY_VAR}"`）的部署，升级后展开行为与裸占位符一致；如果此前为绕过解析问题而添加了额外引号，升级后可按需简化写法，但旧写法仍然有效。
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.2.0" badge="Minor Release" date="2026-06-03">
        **版本定位**
 
        - Minor Release，本周期最重要的变更是引入完整的编译期特性体系（`minimal` / `standard` / `full` 三个 bundle + 细粒度 flag），将 DoQ / DoH3、DoT / DoH、`api` / `webui` / `metrics`、可选插件以及 TLS / HTTP 依赖全部改为按需启用，并把"编译进来的能力"暴露给 CLI、API 与 WebUI。同步上线两个新插件 `ip_selector`（响应 IP 选优）与 `dynamic_domain_set` + `learn_domain`（可写动态域名集与在线学习），扩展 `env` 匹配器为多条件表达式，新增 WebUI 插件卡片拖拽排序与 `dynamic_domain_set` 规则管理界面。同时修复缓存大容量场景的内存与持久化问题、DoH/DoH3 启动失败时的监听泄漏、`upgrade` WebUI 路径解析等问题，并完成多个 Cargo 依赖升级。

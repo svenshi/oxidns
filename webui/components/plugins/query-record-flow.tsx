@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Background,
   Controls,
@@ -9,6 +9,7 @@ import {
   Panel,
   Position,
   ReactFlow,
+  useNodesState,
   type Edge,
   type Node,
   type NodeProps,
@@ -20,6 +21,7 @@ import {
   CornerDownRight,
   GitBranch,
   Play,
+  RotateCcw,
   X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -89,6 +91,9 @@ type FlowModel =
     };
 
 interface QuerySequenceNodeData extends Record<string, unknown> {
+  // Content-derived storage key. Shared across records that exercise the same
+  // sequence so a layout the user tunes on one query carries over to others.
+  positionKey: string;
   sequence: SequenceRuntime;
   runtime: RuntimeIndexes;
   pluginByTag: Map<string, PluginInstance>;
@@ -96,6 +101,7 @@ interface QuerySequenceNodeData extends Record<string, unknown> {
 }
 
 interface QueryStepNodeData extends Record<string, unknown> {
+  positionKey: string;
   step: QueryRecorderStep;
 }
 
@@ -110,6 +116,13 @@ const queryRecordNodeTypes = {
   queryStep: QueryStepNode,
 };
 
+type NodePositions = Record<string, { x: number; y: number }>;
+
+// Single global store, content-keyed: positions persist across query records
+// that exercise the same sequence / step layout instead of being trapped per
+// record id. See `sequenceNodeKey` / `stepNodeKey` for the key derivation.
+const QRF_STORAGE_KEY = "oxidns_qrf_positions";
+
 export function QueryRecordFlowCanvas({
   record,
   dependencyGraph,
@@ -119,10 +132,69 @@ export function QueryRecordFlowCanvas({
   dependencyGraph: DependencyGraphReport | null;
   plugins: PluginInstance[];
 }) {
+  const positionStorageKey = QRF_STORAGE_KEY;
+  const [savedPositions, setSavedPositions] = useState<NodePositions>(() => {
+    try {
+      return (
+        (JSON.parse(
+          localStorage.getItem(positionStorageKey) ?? "null",
+        ) as NodePositions | null) ?? {}
+      );
+    } catch {
+      return {};
+    }
+  });
+
+  const handlePositionChange = (
+    nodeId: string,
+    pos: { x: number; y: number },
+  ) => {
+    setSavedPositions((prev) => {
+      const next = { ...prev, [nodeId]: pos };
+      localStorage.setItem(positionStorageKey, JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const resetPositions = () => {
+    setSavedPositions({});
+    localStorage.removeItem(positionStorageKey);
+  };
+
   const model = useMemo(
     () => buildFlowModel(record, dependencyGraph, plugins),
     [dependencyGraph, plugins, record],
   );
+
+  // Compute nodes/edges (memoised on model + savedPositions) so the reference
+  // is stable across renders and the useEffect below only re-syncs when the
+  // source data actually changes. Empty mode collapses to an empty graph so
+  // the hooks below run unconditionally.
+  const derived = useMemo<{ nodes: Node[]; edges: Edge[] }>(() => {
+    if (model.mode === "empty") return { nodes: [], edges: [] };
+    const baseNodes =
+      model.mode === "flow"
+        ? buildSequenceNodes(model)
+        : buildFallbackNodes(model);
+    const edges =
+      model.mode === "flow"
+        ? buildSequenceEdges(model)
+        : buildFallbackEdges(model);
+    const nodes = baseNodes.map((node) => {
+      const key = (node.data as { positionKey?: string }).positionKey;
+      return key && savedPositions[key]
+        ? { ...node, position: savedPositions[key] }
+        : node;
+    });
+    return { nodes, edges };
+  }, [model, savedPositions]);
+
+  // Hold nodes in state + funnel d3-drag updates through onNodesChange so the
+  // node follows the cursor during a drag (controlled-mode requirement).
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>(derived.nodes);
+  useEffect(() => {
+    setNodes(derived.nodes);
+  }, [derived.nodes, setNodes]);
 
   if (model.mode === "empty") {
     return (
@@ -132,14 +204,8 @@ export function QueryRecordFlowCanvas({
     );
   }
 
-  const nodes: Node[] =
-    model.mode === "flow"
-      ? buildSequenceNodes(model)
-      : buildFallbackNodes(model);
-  const edges: Edge[] =
-    model.mode === "flow"
-      ? buildSequenceEdges(model)
-      : buildFallbackEdges(model);
+  const edges = derived.edges;
+  const hasCustomPositions = Object.keys(savedPositions).length > 0;
 
   return (
     <div className="space-y-2">
@@ -174,18 +240,38 @@ export function QueryRecordFlowCanvas({
         <ReactFlow
           nodes={nodes}
           edges={edges}
+          onNodesChange={onNodesChange}
           nodeTypes={queryRecordNodeTypes}
-          fitView
+          fitView={!hasCustomPositions}
           fitViewOptions={{ padding: 0.18 }}
           minZoom={0.2}
           maxZoom={2}
-          nodesDraggable={false}
+          nodesDraggable
+          onNodeDragStop={(_event, node) => {
+            // Persist by the content-derived key, not the React Flow id, so
+            // dragging a sequence node in one record carries over to other
+            // records that exercise the same sequence.
+            const key = (node.data as { positionKey?: string }).positionKey;
+            if (key) handlePositionChange(key, node.position);
+          }}
         >
           <Background gap={20} size={1} className="opacity-30" />
           <Controls showInteractive={false} />
           <Panel position="bottom-left">
             <QueryRecordFlowLegend fallback={model.mode === "fallback"} />
           </Panel>
+          {hasCustomPositions && (
+            <Panel position="top-right">
+              <button
+                type="button"
+                title="重置布局"
+                className="rounded border bg-card/90 p-1.5 text-muted-foreground shadow-sm backdrop-blur-sm hover:text-foreground"
+                onClick={resetPositions}
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+              </button>
+            </Panel>
+          )}
         </ReactFlow>
       </div>
     </div>
@@ -311,8 +397,10 @@ function buildSequenceNodes(model: Extract<FlowModel, { mode: "flow" }>) {
     },
     sourcePosition: Position.Right,
     targetPosition: Position.Left,
-    draggable: false,
     data: {
+      // sequence tag uniquely identifies a sequence node within the flow;
+      // it's also the natural cross-record identity.
+      positionKey: `seq:${sequence.flow.tag}`,
       sequence,
       runtime: model.runtime,
       pluginByTag: model.pluginByTag,
@@ -349,15 +437,23 @@ function buildSequenceEdges(model: Extract<FlowModel, { mode: "flow" }>) {
 }
 
 function buildFallbackNodes(model: Extract<FlowModel, { mode: "fallback" }>) {
-  return model.steps.map<QueryStepFlowNode>((step, index) => ({
-    id: `step:${step.event_index}`,
-    type: "queryStep",
-    position: { x: 0, y: index * 116 },
-    sourcePosition: Position.Bottom,
-    targetPosition: Position.Top,
-    draggable: false,
-    data: { step },
-  }));
+  // Fallback steps in different records can repeat the same kind:tag pair.
+  // Use occurrence counting so duplicates each keep an independent slot.
+  const keyCounts = new Map<string, number>();
+  return model.steps.map<QueryStepFlowNode>((step, index) => {
+    const base = `step:${step.kind}:${step.tag}`;
+    const occ = keyCounts.get(base) ?? 0;
+    keyCounts.set(base, occ + 1);
+    const positionKey = occ === 0 ? base : `${base}#${occ}`;
+    return {
+      id: `step:${step.event_index}`,
+      type: "queryStep",
+      position: { x: 0, y: index * 116 },
+      sourcePosition: Position.Bottom,
+      targetPosition: Position.Top,
+      data: { positionKey, step },
+    };
+  });
 }
 
 function buildFallbackEdges(model: Extract<FlowModel, { mode: "fallback" }>) {
@@ -417,7 +513,7 @@ function QuerySequenceNode({ data }: NodeProps<QuerySequenceFlowNode>) {
         </Badge>
       </div>
 
-      <div className="max-h-[390px] overflow-x-hidden overflow-y-auto border-t">
+      <div className="border-t">
         {flow.rules.map((rule, index) => (
           <SequenceRuleRow
             key={rule.index}

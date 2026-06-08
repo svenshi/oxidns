@@ -86,7 +86,7 @@ export interface ConfigField {
   default?: unknown;
   options?: {
     label: string;
-    value: string;
+    value: string | number;
   }[];
   referenceTypes?: PluginType[];
   referencePlugins?: string[];
