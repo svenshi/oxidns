@@ -35,7 +35,7 @@
 //! - Connection reuse to amortize handshake costs
 
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -137,6 +137,19 @@ pub trait ConnectionPool<C: Connection>: Send + Sync + Debug + 'static {
 pub trait ManagedMaintenanceTask {
     fn maintenance_task_id(&self) -> &Mutex<Option<u64>>;
     fn maintenance_task_name(&self) -> String;
+}
+
+/// RAII guard that decrements a connection's in-flight query counter on drop.
+///
+/// Ensures `using_count` is always decremented even when the query future is
+/// cancelled by an outer timeout, preventing the pool from permanently
+/// deadlocking due to a leaked counter.
+pub(crate) struct UsingCountGuard<'a>(pub(crate) &'a AtomicU16);
+
+impl Drop for UsingCountGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 /// Maintenance interval for pool cleanup

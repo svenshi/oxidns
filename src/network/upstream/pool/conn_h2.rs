@@ -15,6 +15,7 @@ use tokio::sync::Notify;
 use tokio::time::timeout;
 use tracing::{debug, trace, warn};
 
+use super::UsingCountGuard;
 use crate::core::app_clock::AppClock;
 use crate::core::error::{DnsError, Result};
 use crate::network::buffer_pool::wire_buffer_pool;
@@ -58,12 +59,12 @@ impl Connection for H2Connection {
             return Err(DnsError::protocol("DoH connection closed"));
         }
         self.using_count.fetch_add(1, Ordering::Relaxed);
+        // Guard ensures using_count is decremented even if this future is
+        // cancelled by an outer timeout (cancel-safety).
+        let _guard = UsingCountGuard(&self.using_count);
         self.last_used
             .store(AppClock::elapsed_millis(), Ordering::Relaxed);
-
-        let result = self.query_inner(request).await;
-        self.using_count.fetch_sub(1, Ordering::Relaxed);
-        result
+        self.query_inner(request).await
     }
 
     fn using_count(&self) -> u16 {
