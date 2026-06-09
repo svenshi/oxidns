@@ -59,9 +59,7 @@ pub fn validate_file(path: &Path) -> Result<ConfigValidationSummary> {
 
 /// Validate configuration from YAML text.
 pub fn validate_text(text: &str) -> Result<ConfigValidationSummary> {
-    let expanded = env_expand::expand_env(text)
-        .map_err(|err| DnsError::config(format!("env expansion failed: {err}")))?;
-    let config: Config = serde_yaml_ng::from_str(&expanded)?;
+    let config = parse_config_text(text)?;
     if !config.include.is_empty() {
         return Err(DnsError::config(
             "include is only supported when validating configuration from a file",
@@ -73,6 +71,18 @@ pub fn validate_text(text: &str) -> Result<ConfigValidationSummary> {
         plugin_count: config.plugins.len(),
         dependency_graph,
     })
+}
+
+/// Parse YAML text into a [`Config`], expanding `${VAR}` placeholders in the
+/// parsed value tree rather than the raw text. The post-parse expansion order
+/// is what makes env values containing YAML-special characters (e.g. a
+/// password with `*` or `:`) safe — the YAML parser never sees the env value.
+fn parse_config_text(text: &str) -> Result<Config> {
+    let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_str(text)?;
+    env_expand::expand_env_in_value(&mut value)
+        .map_err(|err| DnsError::config(format!("env expansion failed: {err}")))?;
+    let config: Config = serde_yaml_ng::from_value(value)?;
+    Ok(config)
 }
 
 fn load_config_with_includes(path: &Path, depth: usize) -> Result<Config> {
@@ -110,16 +120,23 @@ fn read_config(path: &Path) -> Result<Config> {
     let string = fs::read_to_string(path).map_err(|err| {
         DnsError::config(format!("failed to read config {}: {}", path.display(), err))
     })?;
-    let expanded = env_expand::expand_env(&string).map_err(|err| {
+    let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&string).map_err(|err| {
+        DnsError::config(format!(
+            "failed to parse config {}: {}",
+            path.display(),
+            err
+        ))
+    })?;
+    env_expand::expand_env_in_value(&mut value).map_err(|err| {
         DnsError::config(format!(
             "env expansion failed in {}: {}",
             path.display(),
             err
         ))
     })?;
-    serde_yaml_ng::from_str(&expanded).map_err(|err| {
+    serde_yaml_ng::from_value(value).map_err(|err| {
         DnsError::config(format!(
-            "failed to parse config {}: {}",
+            "failed to deserialize config {}: {}",
             path.display(),
             err
         ))
@@ -235,6 +252,45 @@ plugins:
         assert_eq!(
             summary.dependency_graph.init_order,
             vec!["debug_main".to_string()]
+        );
+    }
+
+    /// End-to-end regression for the user-reported MikroTik password case:
+    /// an env value containing `*` (plus `"`, `\`, and a newline for good
+    /// measure) used to fail YAML parsing because text-level substitution
+    /// would inject a `*foo` plain scalar that the parser read as an alias
+    /// reference. Post-parse substitution feeds the value straight into the
+    /// `Value` tree, so the whole `validate_text` chain accepts it.
+    #[test]
+    fn validate_text_accepts_env_value_with_yaml_specials() {
+        // Unique name — no other test or production code reads this, which
+        // is what makes the `set_var` race tolerable in the multi-threaded
+        // test runner (edition 2024 marks `set_var` unsafe purely because
+        // simultaneous mutators / readers across threads can tear data; here
+        // only this test touches the variable).
+        const VAR: &str = "OXIDNS_TEST_PW_YAML_SPECIALS_3F7A22C4";
+        const PW: &str = "p@ss*w0rd!\"\\'\nlast";
+
+        // SAFETY: the variable name above is unique to this test; no other
+        // thread can race on a read or write of it.
+        unsafe { std::env::set_var(VAR, PW) };
+        let result = validate_text(&format!(
+            r#"
+plugins:
+  - tag: pw_holder
+    type: debug_print
+    args:
+      msg: ${{{VAR}}}
+"#
+        ));
+        // SAFETY: same as above — exclusive ownership of this variable name.
+        unsafe { std::env::remove_var(VAR) };
+
+        let summary = result.expect("env value with YAML specials must pass validation");
+        assert_eq!(summary.plugin_count, 1);
+        assert_eq!(
+            summary.dependency_graph.init_order,
+            vec!["pw_holder".to_string()]
         );
     }
 

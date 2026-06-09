@@ -255,16 +255,23 @@ fn read_config_webui_root(config_path: &Path) -> Result<Option<String>> {
             err
         ))
     })?;
-    let expanded = crate::config::env_expand::expand_env(&string).map_err(|err| {
+    let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&string).map_err(|err| {
+        DnsError::config(format!(
+            "failed to parse upgrade config {}: {}",
+            config_path.display(),
+            err
+        ))
+    })?;
+    crate::config::env_expand::expand_env_in_value(&mut value).map_err(|err| {
         DnsError::config(format!(
             "env expansion failed in upgrade config {}: {}",
             config_path.display(),
             err
         ))
     })?;
-    let config: UpgradeRuntimeConfig = serde_yaml_ng::from_str(&expanded).map_err(|err| {
+    let config: UpgradeRuntimeConfig = serde_yaml_ng::from_value(value).map_err(|err| {
         DnsError::config(format!(
-            "failed to parse upgrade config {}: {}",
+            "failed to deserialize upgrade config {}: {}",
             config_path.display(),
             err
         ))
