@@ -297,7 +297,20 @@ fn recover_scalar(original: &str, expanded: String) -> Value {
     if expanded.contains('\n') || expanded.contains('\r') {
         return Value::String(expanded);
     }
-    match serde_yaml_ng::from_str::<Value>(&expanded) {
+    // The re-parse step is what lets `timeout: ${T}` with `T=30` land in a
+    // numeric field, but a naive `from_str` would also honor YAML *comments*
+    // and *document markers* inside the env value. `PW="true # keep-this"`
+    // would parse as `Bool(true)` and silently drop the comment; `T="30 #x"`
+    // would parse as `Number(30)`. Reject any expansion that contains an
+    // internal whitespace character or `#` before attempting recovery so
+    // the env value is opaque to YAML grammar in every position except a
+    // single bare scalar literal. (Surrounding whitespace is trimmed first
+    // because YAML scalar parsing already ignores it.)
+    let trimmed = expanded.trim();
+    if trimmed.chars().any(|c| c.is_whitespace() || c == '#') {
+        return Value::String(expanded);
+    }
+    match serde_yaml_ng::from_str::<Value>(trimmed) {
         Ok(Value::Number(n)) => Value::Number(n),
         Ok(Value::Bool(b)) => Value::Bool(b),
         Ok(Value::Null) => Value::Null,
@@ -394,6 +407,10 @@ mod tests {
             "TRUTH" => Some(OsString::from("true")),
             "NULLISH" => Some(OsString::from("null")),
             "WITH_NEWLINE" => Some(OsString::from("line1\nline2")),
+            "TRUE_WITH_COMMENT" => Some(OsString::from("true # keep-this")),
+            "NUM_WITH_COMMENT" => Some(OsString::from("30 #abc")),
+            "BOOL_WITH_TRAILING_TEXT" => Some(OsString::from("true keep")),
+            "JUST_HASH" => Some(OsString::from("#hash")),
             "PATHY" => Some(OsString::from("/etc/oxidns")),
             "SECTION" => Some(OsString::from("settings")),
             _ => None,
@@ -630,6 +647,42 @@ mod tests {
     fn yaml_alias_looking_env_value_stays_string() {
         let v = run("password: ${STAR_PW}").expect("expand");
         assert_eq!(v.get("password"), Some(&Value::String("*foo".to_string())));
+    }
+
+    /// Regression for the type-recovery reviewer note: `PW=true # keep-this`
+    /// must NOT recover as `Bool(true)` with the trailing comment silently
+    /// dropped. YAML comment / structure semantics are excluded from type
+    /// recovery — anything with internal whitespace or a `#` falls back to
+    /// the verbatim string.
+    #[test]
+    fn env_value_with_yaml_comment_after_bool_stays_string() {
+        let v = run("flag: ${TRUE_WITH_COMMENT}").expect("expand");
+        assert_eq!(
+            v.get("flag"),
+            Some(&Value::String("true # keep-this".to_string()))
+        );
+    }
+
+    #[test]
+    fn env_value_with_yaml_comment_after_number_stays_string() {
+        let v = run("token: ${NUM_WITH_COMMENT}").expect("expand");
+        assert_eq!(v.get("token"), Some(&Value::String("30 #abc".to_string())));
+    }
+
+    /// A bare value followed by other tokens (no `#`) should also stay a
+    /// string — re-parse would either fail or, worse, parse just the prefix.
+    #[test]
+    fn env_value_with_trailing_text_after_bool_stays_string() {
+        let v = run("flag: ${BOOL_WITH_TRAILING_TEXT}").expect("expand");
+        assert_eq!(v.get("flag"), Some(&Value::String("true keep".to_string())));
+    }
+
+    /// Env value that starts with `#` would re-parse as YAML null (the whole
+    /// thing is a comment); must stay a string.
+    #[test]
+    fn env_value_that_is_only_comment_stays_string() {
+        let v = run("note: ${JUST_HASH}").expect("expand");
+        assert_eq!(v.get("note"), Some(&Value::String("#hash".to_string())));
     }
 
     /// Sequence walking.
