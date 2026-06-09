@@ -4,6 +4,48 @@ import { parseDocument, stringify, isSeq, isMap } from "yaml";
 import { getPluginKindDefinition } from "@/lib/plugin-definitions";
 import type { PluginInstance, PluginType } from "@/lib/types";
 
+// Matches `${VAR}`, `${VAR:-default}`, `${env:VAR}` placeholders. The backend
+// runs env expansion after YAML parsing, so we no longer need to coerce these
+// strings into a particular scalar style — the YAML parser sees the literal
+// placeholder text, expansion replaces it inside the typed value, and any
+// special characters in the env value never touch the YAML grammar.
+//
+// The one thing we still have to clean up before serialization is the user's
+// muscle-memory wrapping: form fields are plain text, so users who hit prior
+// breakage often type `"${pw}"` or `'${pw}'` trying to "escape" the
+// placeholder. Those quotes become part of the literal value, and the YAML
+// stringifier adds its own wrapper around them — the runtime value then
+// carries a stray pair of quotes. Stripping a single layer of matching ASCII
+// quotes around a body that contains a placeholder removes that footgun.
+const ENV_PLACEHOLDER_RE = /\$\{[^}]+\}/;
+
+function stripStrayQuoteWrap(value: string): string {
+  if (value.length < 2) return value;
+  const first = value[0];
+  if ((first !== '"' && first !== "'") || value[value.length - 1] !== first) {
+    return value;
+  }
+  const inner = value.slice(1, -1);
+  if (inner.includes(first)) return value;
+  if (!ENV_PLACEHOLDER_RE.test(inner)) return value;
+  return inner;
+}
+
+// Walk a JSON-ish value tree and strip the stray-quote wrapping from any
+// string that carries an env-var placeholder.
+function preserveEnvPlaceholders(value: unknown): unknown {
+  if (typeof value === "string") return stripStrayQuoteWrap(value);
+  if (Array.isArray(value)) return value.map(preserveEnvPlaceholders);
+  if (value && typeof value === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      result[k] = preserveEnvPlaceholders(v);
+    }
+    return result;
+  }
+  return value;
+}
+
 export interface OxiDnsConfig {
   include?: string[];
   runtime?: Record<string, unknown>;
@@ -70,7 +112,7 @@ export function parseOxiDnsYaml(text: string): OxiDnsParseResult {
 }
 
 export function stringifyOxiDnsConfig(config: OxiDnsConfig): string {
-  return stringify(cleanUndefined(config), {
+  return stringify(preserveEnvPlaceholders(cleanUndefined(config)), {
     indent: 2,
     lineWidth: 0,
     nullStr: "null",
@@ -116,10 +158,12 @@ export function serializePluginsPreserving(
     const items = newPlugins.map((p) => {
       const node = p.tag ? oldNodeByTag.get(p.tag) : undefined;
       if (node && isMap(node) && !changedTags.has(p.tag)) return node;
-      return doc.createNode(cleanUndefined(p));
+      return doc.createNode(preserveEnvPlaceholders(cleanUndefined(p)));
     });
 
-    const seq = doc.createNode(newPlugins.map((p) => cleanUndefined(p)));
+    const seq = doc.createNode(
+      newPlugins.map((p) => preserveEnvPlaceholders(cleanUndefined(p))),
+    );
     if (isSeq(seq)) seq.items = items as typeof seq.items;
     doc.set("plugins", seq);
     return doc.toString({ lineWidth: 0 });
@@ -166,7 +210,7 @@ export function configFromPlugins(
 }
 
 export function pluginConfigToYaml(config: unknown): string {
-  return stringify(cleanUndefined(config ?? {}), {
+  return stringify(preserveEnvPlaceholders(cleanUndefined(config ?? {})), {
     indent: 2,
     lineWidth: 0,
     nullStr: "null",

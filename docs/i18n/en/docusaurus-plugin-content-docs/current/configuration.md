@@ -58,7 +58,7 @@ When the plugin composition is still undecided, start from [Common Scenarios](sc
 
 ## Environment Variable Substitution
 
-During startup, `oxidns check`, management API validation, and validation before saving a config, OxiDNS expands environment variables in the YAML text before parsing it. Expansion happens only in memory. The `config.yaml` file itself is not rewritten, so the WebUI still reads and saves the original placeholders.
+During startup, `oxidns check`, management API validation, and validation before saving a config, OxiDNS first **parses the YAML into a data structure** and then expands `${VAR}` placeholders inside string scalars. The `config.yaml` file itself is not rewritten, so the WebUI still reads and saves the original placeholders.
 
 Supported syntax:
 
@@ -72,28 +72,28 @@ Supported syntax:
 
 Runtime placeholders used by executors such as `script` and `http_request` are preserved until request execution, so values like `${qname}`, `${client_ip}`, and `${resp_ip}` are not treated as process environment variables during config loading. Use the explicit form, such as `${env:qname}`, if you really need to read an environment variable with the same name.
 
-Undefined variables fail fast, and the error includes the variable name, line, and column so empty passwords or certificate paths do not silently pass validation.
+Undefined variables fail fast, and the error includes the variable name and the YAML path of the offending scalar (for example `plugins[0].args.password`) so empty passwords or certificate paths do not silently pass validation.
 
 Example:
 
 ```yaml
 api:
   http:
-    listen: "${API_LISTEN:-0.0.0.0:8080}"
+    listen: ${API_LISTEN:-0.0.0.0:8080}
     ssl:
-      cert: "${API_TLS_CERT}"
-      key: "${API_TLS_KEY}"
+      cert: ${API_TLS_CERT}
+      key: ${API_TLS_KEY}
     auth:
       type: basic
-      username: "${ADMIN_USER}"
-      password: "${ADMIN_PASS}"
+      username: ${ADMIN_USER}
+      password: ${ADMIN_PASS}
 ```
 
-Because expansion happens at the YAML text layer, quote placeholders when the environment value may contain YAML-sensitive characters such as `:`, `#`, or newlines. `include` paths can also use placeholders:
+Because substitution happens after YAML parsing, an environment value may contain any characters — `*`, `&`, `:`, `#`, `'`, `"`, `\`, newlines, even binary bytes — without breaking the config syntax. You do not need to manually quote values that contain special characters. When the entire scalar is exactly one placeholder (e.g. `timeout: ${CACHE_TTL}`), the expanded value is re-parsed once against the YAML 1.2 scalar rules, so number / boolean / `null`-shaped environment values still match numeric / boolean / null fields; everywhere else the value lands as a plain string. `include` paths support placeholders too:
 
 ```yaml
 include:
-  - "${OXIDNS_CONF_DIR}/plugins/common.yaml"
+  - ${OXIDNS_CONF_DIR}/plugins/common.yaml
 ```
 
 ## Top-Level Fields
