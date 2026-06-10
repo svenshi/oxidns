@@ -267,13 +267,13 @@ Sends DNS queries to upstreams.
 
 #### `upstreams[].idle_timeout`
 
-- Type: `integer`; Required: no
+- Type: `integer`; Required: no; Default: `10`
 - Unit: seconds
 - Purpose: Idle pooled connection lifetime.
 
 #### `upstreams[].max_conns`
 
-- Type: `integer`; Required: no
+- Type: `integer`; Required: no; Default: `64`
 - Purpose: Maximum pooled connections.
 
 #### `upstreams[].insecure_skip_verify`
@@ -288,8 +288,9 @@ Sends DNS queries to upstreams.
 
 #### `upstreams[].enable_pipeline`
 
-- Type: `boolean`; Required: no
+- Type: `boolean`; Required: no; Default: `false`
 - Purpose: Enable pipelining for TCP or DoT.
+- Notes: `tcp+pipeline://` and `tls+pipeline://` force this on.
 
 #### `upstreams[].enable_http3`
 
@@ -395,7 +396,7 @@ Provides TTL-aware response caching with negative cache support and persistence.
 
 #### `size`
 
-- Type: `integer`; Required: no; Default: implementation default
+- Type: `integer`; Required: no; Default: `1024`
 - Purpose: Cache capacity.
 
 #### `lazy_cache_ttl`
@@ -415,7 +416,7 @@ Provides TTL-aware response caching with negative cache support and persistence.
 
 #### `dump_interval`
 
-- Type: `duration`; Required: no
+- Type: `duration`; Required: no; Default: `600s`
 - Purpose: Periodic dump interval.
 
 #### `short_circuit`
@@ -428,17 +429,17 @@ Provides TTL-aware response caching with negative cache support and persistence.
 
 #### `cache_negative`
 
-- Type: `boolean`; Required: no; Default: `false`
+- Type: `boolean`; Required: no; Default: `true`
 - Purpose: Cache negative responses.
 
 #### `max_negative_ttl`
 
-- Type: `duration`; Required: no
+- Type: `duration`; Required: no; Default: `300s`
 - Purpose: Cap negative-cache TTL.
 
 #### `negative_ttl_without_soa`
 
-- Type: `duration`; Required: no
+- Type: `duration`; Required: no; Default: `60s`
 - Purpose: Fallback TTL for negative answers without SOA.
 
 #### `max_positive_ttl`
@@ -448,7 +449,7 @@ Provides TTL-aware response caching with negative cache support and persistence.
 
 #### `ecs_in_key`
 
-- Type: `boolean`; Required: no
+- Type: `boolean`; Required: no; Default: `false`
 - Purpose: Include ECS information in the cache key.
 
 ### quick setup
@@ -2216,7 +2217,7 @@ Compatibility form:
 
 #### `mask4` / `mask6`
 
-- Type: `integer`; Required: no; Default: implementation-defined
+- Type: `integer`; Required: no; Default: `24` for `mask4`, `48` for `mask6`
 - Purpose: In the compatibility form, defines the prefix length for IPv4 / IPv6 respectively.
 
 ### quick setup

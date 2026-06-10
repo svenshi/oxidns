@@ -16,7 +16,7 @@ feature 开关。需要小体积 / 特定平台 / 特定插件组合的二进制
 | [本地 `cargo build`](#方式二本地-cargo-build) | 手头有 Rust 环境,只需要一次性产出一个定制二进制 | ✅ |
 | [fork 整个项目](#方式三fork-项目) | 需要持续修改源码 / 长期偏离上游 | ✅ |
 
-<Admonition type="tip" title="默认行为">
+<Admonition type="tip" title="Cargo 默认 feature">
 
 `cargo build` 默认启用 `full` 组合,产出与官方发布物完全等价的二进制。
 只有显式 `--no-default-features` 才进入裁剪模式。

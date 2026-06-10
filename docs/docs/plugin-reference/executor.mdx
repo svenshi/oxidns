@@ -308,14 +308,14 @@ import Admonition from "@theme/Admonition";
 
 #### `upstreams[].idle_timeout`
 
-- 类型：`integer`；必填：否；默认值：无
+- 类型：`integer`；必填：否；默认值：`10`
 - 单位：秒
 - 作用：定义连接池空闲连接保留时间。
 - 示例：`idle_timeout: 30`
 
 #### `upstreams[].max_conns`
 
-- 类型：`integer`；必填：否；默认值：实现默认值
+- 类型：`integer`；必填：否；默认值：`64`
 - 作用：定义连接池连接上限。
 - 示例：`max_conns: 256`
 
@@ -334,7 +334,7 @@ import Admonition from "@theme/Admonition";
 
 #### `upstreams[].enable_pipeline`
 
-- 类型：`boolean`；必填：否；默认值：协议默认行为
+- 类型：`boolean`；必填：否；默认值：`false`
 - 作用：控制 TCP 或 DoT 流水线。
 - 示例：`enable_pipeline: true`
 - 说明：也可直接通过 `tcp+pipeline://` 或 `tls+pipeline://` 在 `addr` 中启用。
@@ -479,7 +479,7 @@ import Admonition from "@theme/Admonition";
 
 #### `short_circuit`
 
-- 类型：`boolean`；必填：否；默认值：实现默认行为
+- 类型：`boolean`；必填：否；默认值：`false`
 - 作用：控制缓存命中后是否立即结束后续执行。
 - 说明：
   - 设为 `false` 时，即使 cache 已经写入 response，后续执行链仍会继续。
@@ -487,7 +487,7 @@ import Admonition from "@theme/Admonition";
 
 #### `cache_negative`
 
-- 类型：`boolean`；必填：否；默认值：实现默认行为
+- 类型：`boolean`；必填：否；默认值：`true`
 - 作用：控制是否缓存 NXDOMAIN 与 NODATA。
 
 #### `max_negative_ttl`
@@ -2313,7 +2313,7 @@ old-static.example.com static.example.net
 
 #### `mask4` / `mask6`
 
-- 类型：`integer`；必填：否；默认值：由实现确定
+- 类型：`integer`；必填：否；默认值：`mask4` 为 `24`，`mask6` 为 `48`
 - 作用：兼容写法下分别定义 IPv4 / IPv6 前缀长度。
 
 ### quick setup
