@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#![cfg(feature = "plugin-upgrade")]
 //! HTTP handlers for the upgrade check and apply endpoints.
 
 use std::sync::Arc;
