@@ -10,7 +10,7 @@ use bytes::{BufMut, Bytes};
 use futures::future::poll_fn;
 use h3::client::{RequestStream, SendRequest};
 use h3_quinn::{BidiStream, OpenStreams};
-use http::Version;
+use http::{Request, Version};
 use tokio::select;
 use tokio::sync::Notify;
 use tokio::time::timeout;
@@ -91,16 +91,34 @@ impl H3Connection {
         let mut body_bytes = wire_buffer_pool().acquire();
         request.append_to_with_id(0, &mut body_bytes)?;
 
-        let request = build_dns_get_request(
+        let http_request = build_dns_get_request(
             self.request_uri.clone(),
             body_bytes.as_slice(),
             Version::HTTP_3,
         );
 
+        // Cover send_request + finish + recv under a single timeout so that a
+        // zombie QUIC connection (server stops responding but never sends
+        // CONNECTION_CLOSE) cannot leave a live-looking connection in the pool
+        // forever. Previously only recv() was timed out; send_request().await
+        // could block indefinitely on a zombie, which the outer Upstream::query
+        // timeout would cancel without calling self.close(), permanently stalling
+        // the pool (max_size = 1 for BootstrapUpstream).
+        match timeout(self.timeout, self.do_request(http_request, raw_id)).await {
+            Ok(result) => result,
+            Err(_) => {
+                self.close();
+                warn!(conn_id = self.id, raw_id, "H3 request timeout");
+                Err(DnsError::protocol("dns query timeout"))
+            }
+        }
+    }
+
+    async fn do_request(&self, http_request: Request<()>, raw_id: u16) -> Result<Message> {
         let mut request_stream = self
             .sender
             .clone()
-            .send_request(request)
+            .send_request(http_request)
             .await
             .map_err(|e| {
                 self.close();
@@ -112,24 +130,19 @@ impl H3Connection {
             DnsError::protocol(format!("H3 received a stream error: {err}"))
         })?;
 
-        match timeout(self.timeout, recv(request_stream)).await {
-            Ok(Ok(bytes)) => {
+        match recv(request_stream).await {
+            Ok(bytes) => {
                 let mut resp = Message::from_bytes(&bytes)?;
                 resp.set_id(raw_id);
                 trace!(conn_id = self.id, raw_id, "Received H3 response");
                 Ok(resp)
             }
-            Ok(Err(H3RecvError::Transport(e))) => {
+            Err(H3RecvError::Transport(e)) => {
                 self.close();
                 warn!(conn_id = self.id, raw_id, ?e, "H3 request error");
                 Err(e)
             }
-            Ok(Err(H3RecvError::HttpStatus(e))) => Err(e),
-            Err(_) => {
-                self.close();
-                warn!(conn_id = self.id, raw_id, "H3 request timeout");
-                Err(DnsError::protocol("dns query timeout"))
-            }
+            Err(H3RecvError::HttpStatus(e)) => Err(e),
         }
     }
 }

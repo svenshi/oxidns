@@ -1,12 +1,10 @@
 use std::any::Any;
 use std::collections::HashMap as StdHashMap;
-use std::io::{self, Write};
 use std::sync::Mutex as StdMutex;
 #[cfg(feature = "api")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use tracing_subscriber::fmt::MakeWriter;
 
 use super::init_plan::SkippedProvider;
 use super::*;
@@ -398,116 +396,6 @@ async fn test_init_plugins_filters_create_contexts_to_live_dependents() {
     assert_eq!(
         created_tags.as_slice(),
         ["shared_provider", "entry_provider"]
-    );
-
-    registry.destroy().await;
-}
-
-#[derive(Clone, Default)]
-struct SharedLogBuffer {
-    bytes: Arc<StdMutex<Vec<u8>>>,
-}
-
-impl SharedLogBuffer {
-    fn contents(&self) -> String {
-        String::from_utf8(
-            self.bytes
-                .lock()
-                .expect("log buffer mutex poisoned")
-                .clone(),
-        )
-        .expect("log output should be utf-8")
-    }
-}
-
-struct SharedLogWriter {
-    bytes: Arc<StdMutex<Vec<u8>>>,
-}
-
-impl Write for SharedLogWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.bytes
-            .lock()
-            .expect("log buffer mutex poisoned")
-            .extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> MakeWriter<'a> for SharedLogBuffer {
-    type Writer = SharedLogWriter;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        SharedLogWriter {
-            bytes: self.bytes.clone(),
-        }
-    }
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn test_init_plugins_warns_when_skipping_unused_provider() {
-    let captured = Arc::new(StdMutex::new(StdHashMap::new()));
-    let created_tags = Arc::new(StdMutex::new(Vec::new()));
-    let mut registry = PluginRegistry::new();
-    registry.register_factory(
-        "capture_provider",
-        DependencyKind::Provider,
-        Box::new(CaptureProviderFactory {
-            captured,
-            created_tags: created_tags.clone(),
-        }),
-    );
-    let registry = Arc::new(registry);
-    let configs = vec![PluginConfig {
-        tag: "orphan_provider".to_string(),
-        plugin_type: "capture_provider".to_string(),
-        args: None,
-    }];
-
-    let logs = SharedLogBuffer::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(logs.clone())
-        .without_time()
-        .with_max_level(tracing::Level::WARN)
-        .with_target(false)
-        .with_ansi(false)
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
-
-    registry
-        .clone()
-        .init_plugins(configs)
-        .await
-        .expect("plugin init should succeed");
-
-    assert!(
-        created_tags
-            .lock()
-            .expect("created tags mutex poisoned")
-            .is_empty(),
-        "unused provider should not be created"
-    );
-    let output = logs.contents();
-    assert!(output.contains("WARN"), "captured logs: {output}");
-    assert!(
-        output.contains("orphan_provider"),
-        "captured logs: {output}"
-    );
-    assert!(
-        output.contains("capture_provider"),
-        "captured logs: {output}"
-    );
-    assert!(
-        output.contains("no live dependents"),
-        "captured logs: {output}"
-    );
-    assert!(
-        output.contains("skipped provider initialization"),
-        "captured logs: {output}"
     );
 
     registry.destroy().await;

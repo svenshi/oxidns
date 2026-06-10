@@ -887,6 +887,69 @@ export async function fetchPrometheusMetrics(): Promise<string> {
   return response.text();
 }
 
+// --- Upgrade API ---
+
+export interface UpgradeCheckOptions {
+  repository?: string;
+  bundle?: string;
+  socks5?: string;
+  allowPrerelease?: boolean;
+  target?: string;
+  githubToken?: string;
+}
+
+export interface UpgradeCheckResponse {
+  ok: boolean;
+  current_version: string;
+  latest_version: string;
+  update_available: boolean;
+  asset_name: string;
+  release_url: string;
+}
+
+export interface UpgradeApplyResponse {
+  ok: boolean;
+  action: string;
+  status: string;
+  message: string;
+}
+
+export async function fetchUpgradeCheck(
+  options: UpgradeCheckOptions = {},
+): Promise<UpgradeCheckResponse> {
+  const body: Record<string, unknown> = {};
+  if (options.repository) body.repository = options.repository;
+  if (options.bundle) body.bundle = options.bundle;
+  if (options.socks5) body.socks5 = options.socks5;
+  if (options.allowPrerelease) body.allow_prerelease = true;
+  if (options.target) body.target = options.target;
+  if (options.githubToken) body.github_token = options.githubToken;
+  const response = await fetch(apiUrl("/upgrade/check"), {
+    method: "POST",
+    headers: { ...apiHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return readJsonResponse<UpgradeCheckResponse>(response);
+}
+
+export async function triggerUpgradeApply(
+  options: UpgradeCheckOptions = {},
+): Promise<UpgradeApplyResponse> {
+  const body: Record<string, unknown> = {};
+  if (options.repository) body.repository = options.repository;
+  if (options.bundle) body.bundle = options.bundle;
+  if (options.socks5) body.socks5 = options.socks5;
+  if (options.allowPrerelease) body.allow_prerelease = true;
+  if (options.target) body.target = options.target;
+  if (options.githubToken) body.github_token = options.githubToken;
+  const response = await fetch(apiUrl("/upgrade/apply"), {
+    method: "POST",
+    headers: { ...apiHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return readJsonResponse<UpgradeApplyResponse>(response);
+}
+
 export function apiUrl(path: string) {
   const baseUrl = useAuthStore.getState().serverConfig.url.trim();
   return `${baseUrl.replace(/\/$/, "")}${path}`;

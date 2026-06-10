@@ -33,7 +33,7 @@ use http::{HeaderValue, Method, Request, Response, Version, header};
 #[cfg(any(feature = "upstream-doq", feature = "upstream-doh3"))]
 use quinn::crypto::rustls::QuicClientConfig;
 #[cfg(any(feature = "upstream-doq", feature = "upstream-doh3"))]
-use quinn::{ClientConfig, Endpoint, EndpointConfig, TokioRuntime};
+use quinn::{ClientConfig, Endpoint, EndpointConfig, TokioRuntime, TransportConfig, VarInt};
 #[cfg(feature = "_tls-client")]
 use rustls::pki_types::ServerName;
 use socket2::{Domain, Protocol, Socket, Type};
@@ -153,7 +153,17 @@ pub(crate) async fn connect_quic(
     };
     client_config.alpn_protocols = alpn;
 
-    let client_config = ClientConfig::new(Arc::new(QuicClientConfig::try_from(client_config)?));
+    // Set QUIC idle timeout to 3× the query timeout. Without this, zombie
+    // connections (server stops responding but never sends CONNECTION_CLOSE)
+    // are never detected by the QUIC layer, and send_request() / open_bi()
+    // block forever. With idle timeout, the QUIC stack closes the connection
+    // and the H3/DoQ driver task calls conn.close(), letting the pool replace it.
+    let idle_ms = (conn_timeout.as_millis() * 3).min(u32::MAX as u128) as u32;
+    let mut transport = TransportConfig::default();
+    transport.max_idle_timeout(Some(VarInt::from_u32(idle_ms).into()));
+
+    let mut client_config = ClientConfig::new(Arc::new(QuicClientConfig::try_from(client_config)?));
+    client_config.transport_config(Arc::new(transport));
 
     endpoint.set_default_client_config(client_config);
 

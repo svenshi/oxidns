@@ -10,7 +10,34 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-06
 
 <div className="release-stack">
-   <ReleaseCard version="v1.2.1" badge="Patch Release" date="2026-06-08" defaultOpen>
+   <ReleaseCard version="v1.2.2" badge="Patch Release" date="2026-06-10" defaultOpen>
+       **版本定位**
+
+       - Patch Release，核心变更为新增 HTTP 升级 API（`plugin-upgrade` feature）与 WebUI 实时更新通知，支持在 WebUI 内检测可用更新、比较版本并触发升级流程。同时修复 `${VAR}` 环境变量展开的 YAML 解析顺序问题（先解析 YAML 再展开占位符，防止 YAML 注释干扰展开），修复 WebUI 对 `${VAR}` 表单值的引号包裹处理，以及 H2/H3/DoQ 连接在远端关闭后的僵尸连接清理。不引入破坏性配置变更。
+
+       **主要变更**
+
+       - `feat(upgrade)`：新增 HTTP 升级 API（受 `plugin-upgrade` feature 保护），WebUI 新增更新通知横幅，可检测 GitHub 最新版本、展示当前/可用版本对比，并在 WebUI 内触发升级流程。
+       - `feat(webui)`：WebUI 升级面板适配后端 plugin-upgrade 能力，整合更新检测、升级状态展示与操作入口。
+       - `fix(upgrade)`：修复 apply 状态生命周期管理，并改为通过 POST body 传递所有升级参数，提升参数传递的可靠性。
+       - `fix(api)`：将 upgrade 模块路由注册限定在 `plugin-upgrade` feature 开启时，避免未编译升级能力的构建暴露相关接口。
+       - `fix(config)`：`${VAR}` 占位符展开改为在 YAML 解析后进行（而非之前），修复 YAML 特殊字符和注释可能干扰展开逻辑的问题；同时防止 YAML 注释文本被误作展开内容处理。
+       - `fix(config)`：将 `expand_env_in_value_with_lookup` 函数提升为公开可见，供外部代码复用。
+       - `fix(webui)`：修复 WebUI 在 `${VAR}` 表单字段值两端错误剥除/保留引号包裹的问题（两处相关修复）。
+       - `fix(upstream)`：修复 H2（DoH）、H3（DoH3）、DoQ 连接在远端关闭后未可靠释放的僵尸连接问题，防止连接泄漏。
+       - `fix(tests)`：将集成测试中的固定 sleep 等待替换为轮询等待，提升测试可靠性。
+       - `fix(doc)`：修正 `${qname}` 文档注释格式。
+
+       **配置与升级说明**
+
+       - 根 crate 版本号升级为 `1.2.2`；本周期 `crates/macros`、`crates/proto`、`crates/ripset`、`crates/zoneparser` 均无改动，无需子 crate 同步升级；release tag 应使用 `v1.2.2`。
+       - `v1.2.1` 配置可直接升级到 `v1.2.2`，未引入新的必填配置字段。
+       - HTTP 升级 API 受 `plugin-upgrade` feature 保护，仅在 `standard` / `full` bundle 中可用；`minimal` 构建不受影响。
+       - 部署中使用 `${VAR}` 占位符且配置文件含 YAML 注释的场景，建议升级以确保展开行为正确；旧写法无需修改，升级后行为自动改善。
+       - 使用 H2/H3/DoQ 上游且长期运行的部署，建议升级以修复僵尸连接可能导致的连接泄漏。
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.2.1" badge="Patch Release" date="2026-06-08">
        **版本定位**
 
        - Patch Release，包含 WebUI Basic Auth 登录流程与统一鉴权管理、插件画布可拖拽布局，以及多项 WebUI 交互修复（未应用插件警告、select 字段数值类型保留、查询记录流程图显示全部序列规则）。同时修复上游连接池在网络中断后的死锁问题、`${VAR}` 替换的 YAML 引号感知逻辑，并提升 `ros_address_list` 并发写入性能。不引入破坏性配置变更。

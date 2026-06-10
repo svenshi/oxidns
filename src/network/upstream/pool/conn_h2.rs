@@ -178,10 +178,13 @@ impl ConnectionBuilder<H2Connection> for H2ConnectionBuilder {
         )
         .await?;
 
-        let (sender, connection) = h2::client::Builder::new()
-            .handshake(tls_stream)
-            .await
-            .map_err(|e| DnsError::protocol(format!("H2 handshake error: {}", e)))?;
+        let (sender, connection) = timeout(
+            self.timeout,
+            h2::client::Builder::new().handshake(tls_stream),
+        )
+        .await
+        .map_err(|_| DnsError::protocol("H2 handshake timeout"))?
+        .map_err(|e| DnsError::protocol(format!("H2 handshake error: {}", e)))?;
 
         let h2_conn = Arc::new(H2Connection {
             id: conn_id,

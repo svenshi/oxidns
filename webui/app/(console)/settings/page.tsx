@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { AppHeader } from "@/components/shell/app-header";
 import { useAppStore } from "@/lib/store";
 import { useAuthStore } from "@/lib/auth-store";
+import { useUpdateStore, DEFAULT_UPGRADE_CONFIG, type UpgradeBundle } from "@/lib/update-store";
 import { stringifyOxiDnsConfig, type OxiDnsConfig } from "@/lib/oxidns-config";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,8 +27,10 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import {
+  ArrowUpCircle,
   CheckCircle2,
   CircleAlert,
+  Copy,
   Cpu,
   FileCode2,
   Globe,
@@ -48,6 +51,18 @@ export default function SettingsPage() {
   const isConnecting = useAuthStore((s) => s.isConnecting);
   const connectionError = useAuthStore((s) => s.connectionError);
 
+  const upgradeConfig = useUpdateStore((s) => s.upgradeConfig);
+  const setUpgradeConfig = useUpdateStore((s) => s.setUpgradeConfig);
+  const updateInfo = useUpdateStore((s) => s.updateInfo);
+  const isChecking = useUpdateStore((s) => s.isChecking);
+  const isApplying = useUpdateStore((s) => s.isApplying);
+  const lastCheckedAt = useUpdateStore((s) => s.lastCheckedAt);
+  const checkError = useUpdateStore((s) => s.checkError);
+  const applyError = useUpdateStore((s) => s.applyError);
+  const checkForUpdates = useUpdateStore((s) => s.checkForUpdates);
+  const triggerUpgrade = useUpdateStore((s) => s.triggerUpgrade);
+  const [copiedCmd, setCopiedCmd] = useState(false);
+
   const configModel = useAppStore((s) => s.configModel);
   const configPath = useAppStore((s) => s.configPath);
   const configVersion = useAppStore((s) => s.configVersion);
@@ -55,6 +70,7 @@ export default function SettingsPage() {
   const dependencyGraph = useAppStore((s) => s.dependencyGraph);
   const health = useAppStore((s) => s.health);
   const system = useAppStore((s) => s.system);
+  const buildInfo = useAppStore((s) => s.buildInfo);
   const reloadStatus = useAppStore((s) => s.reloadStatus);
   const setYamlConfig = useAppStore((s) => s.setYamlConfig);
   const saveConfig = useAppStore((s) => s.saveConfig);
@@ -136,6 +152,50 @@ export default function SettingsPage() {
 
   const handleSaveConnection = () => {
     setServerConfig({ ...serverConfig, url: backendUrl.trim() });
+  };
+
+  const runtimeVersionForCheck =
+    system?.build
+      ? `${system.build.version}`
+      : (system?.version ?? health?.version ?? "");
+
+  // null = build info not yet loaded; true/false = feature presence known
+  const backendSupportsUpgrade =
+    buildInfo != null
+      ? buildInfo.enabled_features.includes("plugin-upgrade")
+      : null;
+
+  const handleCheckUpdates = () => {
+    if (runtimeVersionForCheck) {
+      void checkForUpdates(runtimeVersionForCheck);
+    }
+  };
+
+  const buildUpgradeCliCommand = () => {
+    const parts = ["oxidns", "upgrade", "apply"];
+    if (upgradeConfig.repository !== DEFAULT_UPGRADE_CONFIG.repository) {
+      parts.push("--repository", upgradeConfig.repository);
+    }
+    if (upgradeConfig.bundle !== "auto") {
+      parts.push("--bundle", upgradeConfig.bundle);
+    }
+    if (upgradeConfig.socks5.trim()) {
+      parts.push("--socks5", upgradeConfig.socks5.trim());
+    }
+    if (upgradeConfig.allowPrerelease) {
+      parts.push("--allow-prerelease");
+    }
+    return parts.join(" ");
+  };
+
+  const handleCopyCommand = async () => {
+    try {
+      await navigator.clipboard.writeText(buildUpgradeCliCommand());
+      setCopiedCmd(true);
+      setTimeout(() => setCopiedCmd(false), 2000);
+    } catch {
+      // ignore
+    }
   };
 
   const handleConnect = async () => {
@@ -897,6 +957,217 @@ export default function SettingsPage() {
                   {isRestarting ? "重启中…" : "保存并重启"}
                 </Button>
               </div>
+            </CardContent>
+          </Card>
+
+          {/* ── 软件升级 ─────────────────────────────────── */}
+          <Card id="upgrade">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <ArrowUpCircle className="h-5 w-5" />
+                软件升级
+              </CardTitle>
+              <CardDescription>
+                {backendSupportsUpgrade === false
+                  ? "当前后端编译时未启用升级插件，在线检查和自动升级不可用；可使用下方 CLI 命令手动升级"
+                  : "检查版本更新并触发后端自升级，升级完成后服务将自动重启"}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+
+              {/* 后端不支持升级时的提示 */}
+              {backendSupportsUpgrade === false && (
+                <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+                  <CircleAlert className="h-4 w-4 shrink-0" />
+                  后端未编译 <span className="mx-1 font-mono font-semibold">plugin-upgrade</span> 特性，在线升级功能不可用
+                </div>
+              )}
+
+              {/* 版本信息（仅在后端支持时展示检查结果） */}
+              {backendSupportsUpgrade !== false && (
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <InfoTile label="当前版本" value={runtimeVersionForCheck || "-"} />
+                  <InfoTile
+                    label="最新版本"
+                    value={updateInfo ? updateInfo.latestVersion : (lastCheckedAt ? "-" : "尚未检查")}
+                  />
+                  <InfoTile
+                    label="上次检查"
+                    value={
+                      lastCheckedAt
+                        ? new Date(lastCheckedAt).toLocaleTimeString()
+                        : "-"
+                    }
+                  />
+                </div>
+              )}
+
+              {updateInfo?.updateAvailable && (
+                <div className="flex items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2">
+                  <div className="flex items-center gap-2 text-sm text-primary">
+                    <ArrowUpCircle className="h-4 w-4 shrink-0" />
+                    <span>
+                      发现新版本 <span className="font-semibold">{updateInfo.latestVersion}</span>，当前运行
+                      <span className="font-semibold"> {updateInfo.currentVersion}</span>
+                    </span>
+                  </div>
+                  <a
+                    href={updateInfo.releaseUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="shrink-0 text-xs text-primary underline-offset-2 hover:underline"
+                  >
+                    发布说明
+                  </a>
+                </div>
+              )}
+
+              {updateInfo && !updateInfo.updateAvailable && (
+                <div className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground">
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />
+                  已是最新版本 {updateInfo.latestVersion}
+                </div>
+              )}
+
+              {checkError && (
+                <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  <CircleAlert className="h-4 w-4 shrink-0" />
+                  {checkError}
+                </div>
+              )}
+
+              {applyError && (
+                <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  <CircleAlert className="h-4 w-4 shrink-0" />
+                  启动升级失败：{applyError}
+                </div>
+              )}
+
+              {backendSupportsUpgrade !== false && (
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={handleCheckUpdates}
+                    disabled={isChecking || !runtimeVersionForCheck || backendSupportsUpgrade === null}
+                  >
+                    <RefreshCw className={`h-4 w-4 mr-1.5 ${isChecking ? "animate-spin" : ""}`} />
+                    {isChecking ? "检查中…" : "检查更新"}
+                  </Button>
+                  {updateInfo?.updateAvailable && (
+                    <Button
+                      onClick={() => void triggerUpgrade()}
+                      disabled={isApplying || isRestarting}
+                    >
+                      <ArrowUpCircle className="h-4 w-4 mr-1.5" />
+                      {isApplying ? "升级中…" : "立即升级"}
+                    </Button>
+                  )}
+                </div>
+              )}
+
+              {/* 升级配置 */}
+              <div className="space-y-4">
+                <p className="text-sm font-medium">升级配置</p>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field>
+                    <FieldLabel>GitHub 仓库</FieldLabel>
+                    <p className="text-xs text-muted-foreground mb-2">
+                      格式 <span className="font-mono">owner/repo</span>，默认 {DEFAULT_UPGRADE_CONFIG.repository}
+                    </p>
+                    <Input
+                      value={upgradeConfig.repository}
+                      onChange={(e) => setUpgradeConfig({ repository: e.target.value })}
+                      placeholder={DEFAULT_UPGRADE_CONFIG.repository}
+                      className="font-mono"
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel>Bundle 类型</FieldLabel>
+                    <p className="text-xs text-muted-foreground mb-2">
+                      auto 自动匹配当前编译 bundle
+                    </p>
+                    <Select
+                      value={upgradeConfig.bundle}
+                      onValueChange={(v) => setUpgradeConfig({ bundle: v as UpgradeBundle })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">auto — 自动</SelectItem>
+                        <SelectItem value="full">full — 完整版</SelectItem>
+                        <SelectItem value="standard">standard — 标准版</SelectItem>
+                        <SelectItem value="minimal">minimal — 精简版</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field>
+                    <FieldLabel>Socks5 代理</FieldLabel>
+                    <p className="text-xs text-muted-foreground mb-2">
+                      下载时使用的 SOCKS5 代理，留空不使用
+                    </p>
+                    <Input
+                      value={upgradeConfig.socks5}
+                      onChange={(e) => setUpgradeConfig({ socks5: e.target.value })}
+                      placeholder="socks5://127.0.0.1:1080"
+                      className="font-mono"
+                    />
+                  </Field>
+                </div>
+                <div className="flex flex-wrap gap-6">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-medium">允许预发布版本</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        包含 alpha/beta/rc 等预发布标签
+                      </p>
+                    </div>
+                    <Switch
+                      checked={upgradeConfig.allowPrerelease}
+                      onCheckedChange={(v) => setUpgradeConfig({ allowPrerelease: v })}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-medium">自动检查更新</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        每次连接后台时自动查询最新版本
+                      </p>
+                    </div>
+                    <Switch
+                      checked={upgradeConfig.autoCheck}
+                      onCheckedChange={(v) => setUpgradeConfig({ autoCheck: v })}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* CLI 升级命令 */}
+              <div className="space-y-2">
+                <p className="text-sm font-medium">等效 CLI 命令</p>
+                <p className="text-xs text-muted-foreground">
+                  在服务器上以 root 或有权限的用户执行，将自动下载并替换当前二进制文件
+                </p>
+                <div className="flex items-center gap-2 rounded-lg border bg-muted/50 px-3 py-2">
+                  <code className="flex-1 truncate font-mono text-xs">
+                    {buildUpgradeCliCommand()}
+                  </code>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="shrink-0"
+                    onClick={() => void handleCopyCommand()}
+                  >
+                    {copiedCmd ? (
+                      <CheckCircle2 className="h-4 w-4 text-primary" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )}
+                    <span className="sr-only">复制命令</span>
+                  </Button>
+                </div>
+              </div>
+
             </CardContent>
           </Card>
 

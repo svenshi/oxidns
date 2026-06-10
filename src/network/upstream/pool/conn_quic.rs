@@ -92,6 +92,9 @@ impl Connection for QuicConnection {
                 )));
             }
             Err(_) => {
+                // Timeout opening a stream indicates the connection is in a
+                // bad/zombie state; close it so the pool can replace it.
+                self.close();
                 return Err(DnsError::protocol(
                     "Timeout opening QUIC bidirectional stream",
                 ));
@@ -129,15 +132,23 @@ impl Connection for QuicConnection {
                         conn_id = self.id,
                         query_id = raw_id,
                         error = ?e,
-                        "Failed to convert Message to DnsResponse"
+                        "Failed to read DNS response from QUIC stream"
                     );
                     Err(DnsError::protocol(format!(
-                        "Failed to convert Message: {}",
+                        "Failed to read QUIC DNS response: {}",
                         e
                     )))
                 }
             },
             Err(_) => {
+                // Close the connection on read timeout, not just the stream.
+                // If the QUIC transport is alive but the server isn't responding
+                // at the DNS layer (server ACKs our packets so loss detection
+                // won't fire), read timeouts repeat indefinitely and last_used
+                // stays fresh, keeping a useless connection in the pool forever.
+                // Closing forces the pool to create a fresh connection on the
+                // next query. This matches H3's behavior on recv timeout.
+                self.close();
                 warn!(
                     conn_id = self.id,
                     query_id = raw_id,
@@ -249,6 +260,10 @@ impl ConnectionBuilder<QuicConnection> for QuicConnectionBuilder {
         tokio::spawn(async move {
             select! {
                 _ = _conn.transport.closed() => {
+                    // Mark the QuicConnection as unavailable so the pool removes
+                    // it on the next query or maintenance cycle instead of
+                    // continuing to try open_bi() on a dead transport.
+                    _conn.close();
                     debug!(
                         conn_id,
                         "QUIC connection closed by remote peer or network error"

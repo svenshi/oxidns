@@ -762,7 +762,20 @@ async fn seed_demo_records(backend: &std::sync::Arc<super::backend::RecorderBack
         None,
         &[],
     ));
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Poll until all 5 records appear in the in-memory tail rather than
+    // sleeping for a fixed duration. A fixed sleep is unreliable on Windows
+    // where SQLite WAL writes and thread scheduling can exceed 50 ms.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if backend.tail.lock().unwrap().len() >= 5 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "seed_demo_records: writer thread did not flush 5 records within 10 s"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
 }
 
 #[tokio::test]

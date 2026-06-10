@@ -10,6 +10,7 @@ import { OfflineConfigImport } from "@/components/config/offline-config-import";
 import { ConfigHistorySheet } from "@/components/config/config-history-sheet";
 import { useAppStore } from "@/lib/store";
 import { useAuthStore } from "@/lib/auth-store";
+import { useUpdateStore } from "@/lib/update-store";
 import { AppHeader } from "@/components/shell/app-header";
 import {
   ConnectionRequired,
@@ -41,9 +42,14 @@ export default function ConsoleLayout({
   const attemptAutoConnect = useAuthStore((s) => s.attemptAutoConnect);
   const isAuthHydrated = useAuthStore((s) => s.isHydrated);
   const pathname = usePathname();
+  const checkForUpdates = useUpdateStore((s) => s.checkForUpdates);
+  const resetApplyState = useUpdateStore((s) => s.resetApplyState);
+  const upgradeAutoCheck = useUpdateStore((s) => s.upgradeConfig.autoCheck);
+  const buildInfo = useAppStore((s) => s.buildInfo);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const sidebarStateBeforeEditor = useRef(sidebarOpen);
   const previousEditorMode = useRef(editorMode);
+  const hasCheckedUpdates = useRef(false);
 
   // Once the store has hydrated, eagerly probe the configured backend (default
   // `/api`). Only fall back to the connection prompt if that attempt fails.
@@ -64,6 +70,27 @@ export default function ConsoleLayout({
   useEffect(() => {
     if (isConnected) void loadConfig();
   }, [isConnected, loadConfig]);
+
+  const health = useAppStore((s) => s.health);
+  const system = useAppStore((s) => s.system);
+
+  useEffect(() => {
+    if (!isConnected || hasCheckedUpdates.current || !upgradeAutoCheck) return;
+    if (!buildInfo?.enabled_features.includes("plugin-upgrade")) return;
+    const version = system?.version ?? health?.version;
+    if (!version) return;
+    hasCheckedUpdates.current = true;
+    void checkForUpdates(version);
+  }, [isConnected, upgradeAutoCheck, health, system, buildInfo, checkForUpdates]);
+
+  // On disconnect: allow auto-check to re-fire on the next reconnect, and
+  // clear any in-progress upgrade state (the server restarted or the apply failed).
+  useEffect(() => {
+    if (!isConnected) {
+      hasCheckedUpdates.current = false;
+      resetApplyState();
+    }
+  }, [isConnected, resetApplyState]);
 
   // On reconnect, drop offline mode so loadConfig's authoritative state wins.
   useEffect(() => {

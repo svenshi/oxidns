@@ -10,7 +10,34 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-06
 
 <div className="release-stack">
-   <ReleaseCard version="v1.2.1" badge="Patch Release" date="2026-06-08" defaultOpen>
+   <ReleaseCard version="v1.2.2" badge="Patch Release" date="2026-06-10" defaultOpen>
+       **Release Scope**
+
+       - Patch Release. The headline addition is an HTTP upgrade API (gated on the `plugin-upgrade` feature) with a WebUI real-time update-available notification, enabling users to detect new releases, compare versions, and trigger the upgrade flow directly from the WebUI. Also fixes the `${VAR}` env-var expansion order (expand after YAML parse, not before) to prevent YAML comment and special-character interference, repairs two WebUI quote-wrap handling issues around `${VAR}` form values, and reliably cleans up zombie connections on H2/H3/DoQ upstreams after the remote peer closes. No breaking configuration changes.
+
+       **Changes**
+
+       - `feat(upgrade)`: Added the HTTP upgrade API (behind the `plugin-upgrade` feature flag). The WebUI gains an update-notification banner that detects available GitHub releases, displays the current vs. latest version comparison, and provides an in-WebUI upgrade entry point.
+       - `feat(webui)`: The WebUI upgrade panel now uses the backend plugin-upgrade capability, integrating update detection, upgrade status display, and the upgrade action.
+       - `fix(upgrade)`: Fixed the apply state lifecycle and switched to sending all upgrade parameters through the POST body, improving reliability and parameter-passing safety.
+       - `fix(api)`: Scoped the upgrade module route registration behind the `plugin-upgrade` feature, preventing builds without the upgrade capability from exposing related endpoints.
+       - `fix(config)`: `${VAR}` placeholder expansion now runs after YAML parsing instead of before, fixing interactions where YAML special characters or comment text could interfere with expansion. Also prevents YAML comment content from being treated as expandable text.
+       - `fix(config)`: Made `expand_env_in_value_with_lookup` public so external code can use it directly.
+       - `fix(webui)`: Fixed two related bugs where the WebUI was incorrectly stripping or preserving quote-wrapping around `${VAR}` placeholder form values.
+       - `fix(upstream)`: Zombie H2 (DoH), H3 (DoH3), and DoQ connections are now reliably closed after the remote peer disconnects, preventing connection leaks on long-running deployments.
+       - `fix(tests)`: Replaced fixed-duration sleeps with polling in integration tests to reduce spurious flakiness.
+       - `fix(doc)`: Corrected the doc-comment formatting for `${qname}`.
+
+       **Compatibility and Upgrade Notes**
+
+       - Root crate version bumped to `1.2.2`; no workspace crate under `crates/` changed this cycle (`crates/macros`, `crates/proto`, `crates/ripset`, `crates/zoneparser`), so none need a version bump; the release tag should use `v1.2.2`.
+       - `v1.2.1` configs upgrade directly to `v1.2.2` with no new required fields.
+       - The HTTP upgrade API is gated on the `plugin-upgrade` feature and is available only in `standard` / `full` builds; `minimal` builds are unaffected.
+       - Deployments using `${VAR}` placeholders in configs where YAML comments appear near the placeholder should upgrade; no config changes are needed and behavior improves automatically.
+       - Long-running deployments with H2/H3/DoQ upstreams should upgrade to fix potential connection leaks from zombie connections.
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.2.1" badge="Patch Release" date="2026-06-08">
        **Release Scope**
 
        - Patch Release delivering a WebUI Basic Auth login flow with unified auth management, draggable plugin canvases, and several WebUI interaction fixes (unapplied-plugin warning, numeric type preservation for select fields, all sequence rules visible in the query record flow canvas). Also fixes an upstream connection-pool deadlock after network outage, makes `${VAR}` expansion YAML-quote-aware, and improves `ros_address_list` concurrent write throughput. No breaking configuration changes.
