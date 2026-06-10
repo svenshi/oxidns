@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#![cfg(feature = "plugin-upgrade")]
 //! HTTP handlers for the upgrade check and apply endpoints.
 
 use std::sync::Arc;
@@ -46,22 +45,6 @@ fn build_upgrade_config(opts: UpgradeApiBody) -> std::result::Result<UpgradeConf
     Ok(config)
 }
 
-fn parse_query_params(query: Option<&str>) -> UpgradeApiBody {
-    let mut body = UpgradeApiBody::default();
-    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
-        match key.as_ref() {
-            "repository" => body.repository = Some(value.into_owned()),
-            "bundle" => body.bundle = Some(value.into_owned()),
-            "socks5" => body.socks5 = Some(value.into_owned()),
-            "allow_prerelease" => body.allow_prerelease = value.parse().ok(),
-            "target" => body.target = Some(value.into_owned()),
-            "github_token" => body.github_token = Some(value.into_owned()),
-            _ => {}
-        }
-    }
-    body
-}
-
 #[derive(Debug, Serialize)]
 struct UpgradeCheckResponse {
     ok: bool,
@@ -93,7 +76,7 @@ struct UpgradeCheckHandler;
 impl ApiHandler for UpgradeCheckHandler {
     async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
         let opts = if request.body().is_empty() {
-            parse_query_params(request.uri().query())
+            UpgradeApiBody::default()
         } else {
             match serde_json::from_slice::<UpgradeApiBody>(request.body()) {
                 Ok(b) => b,
@@ -202,7 +185,7 @@ impl ApiHandler for UpgradeApplyHandler {
 
 pub fn register_upgrade_routes(register: &ApiRegister) -> Result<()> {
     let apply_semaphore = Arc::new(Semaphore::new(1));
-    register.register_get("/upgrade/check", Arc::new(UpgradeCheckHandler))?;
+    register.register_post("/upgrade/check", Arc::new(UpgradeCheckHandler))?;
     register.register_post(
         "/upgrade/apply",
         Arc::new(UpgradeApplyHandler { apply_semaphore }),

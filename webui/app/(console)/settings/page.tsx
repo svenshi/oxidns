@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { AppHeader } from "@/components/shell/app-header";
 import { useAppStore } from "@/lib/store";
 import { useAuthStore } from "@/lib/auth-store";
-import { useUpdateStore, type UpgradeBundle } from "@/lib/update-store";
+import { useUpdateStore, DEFAULT_UPGRADE_CONFIG, type UpgradeBundle } from "@/lib/update-store";
 import { stringifyOxiDnsConfig, type OxiDnsConfig } from "@/lib/oxidns-config";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -173,7 +173,7 @@ export default function SettingsPage() {
 
   const buildUpgradeCliCommand = () => {
     const parts = ["oxidns", "upgrade", "apply"];
-    if (upgradeConfig.repository !== "svenshi/oxidns") {
+    if (upgradeConfig.repository !== DEFAULT_UPGRADE_CONFIG.repository) {
       parts.push("--repository", upgradeConfig.repository);
     }
     if (upgradeConfig.bundle !== "auto") {
@@ -1072,12 +1072,12 @@ export default function SettingsPage() {
                   <Field>
                     <FieldLabel>GitHub 仓库</FieldLabel>
                     <p className="text-xs text-muted-foreground mb-2">
-                      格式 <span className="font-mono">owner/repo</span>，默认 svenshi/oxidns
+                      格式 <span className="font-mono">owner/repo</span>，默认 {DEFAULT_UPGRADE_CONFIG.repository}
                     </p>
                     <Input
                       value={upgradeConfig.repository}
                       onChange={(e) => setUpgradeConfig({ repository: e.target.value })}
-                      placeholder="svenshi/oxidns"
+                      placeholder={DEFAULT_UPGRADE_CONFIG.repository}
                       className="font-mono"
                     />
                   </Field>

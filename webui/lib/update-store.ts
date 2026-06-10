@@ -1,6 +1,7 @@
 "use client";
 
 import { create } from "zustand";
+import { fetchUpgradeCheck, triggerUpgradeApply } from "./oxidns-api";
 
 const STORAGE_KEY = "oxidns:upgrade-config";
 
@@ -14,7 +15,7 @@ export interface UpgradeConfig {
   autoCheck: boolean;
 }
 
-const DEFAULT_UPGRADE_CONFIG: UpgradeConfig = {
+export const DEFAULT_UPGRADE_CONFIG: UpgradeConfig = {
   repository: "svenshi/oxidns",
   bundle: "auto",
   socks5: "",
@@ -42,6 +43,7 @@ interface UpdateState {
   setUpgradeConfig: (config: Partial<UpgradeConfig>) => void;
   checkForUpdates: (currentVersion: string) => Promise<void>;
   triggerUpgrade: () => Promise<void>;
+  resetApplyState: () => void;
 }
 
 function loadUpgradeConfig(): UpgradeConfig {
@@ -84,7 +86,6 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
     const { upgradeConfig } = get();
     set({ isChecking: true, checkError: null });
     try {
-      const { fetchUpgradeCheck } = await import("./oxidns-api");
       const result = await fetchUpgradeCheck({
         repository: upgradeConfig.repository,
         bundle: upgradeConfig.bundle,
@@ -115,14 +116,14 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
     const { upgradeConfig } = get();
     set({ isApplying: true, applyError: null });
     try {
-      const { triggerUpgradeApply } = await import("./oxidns-api");
       await triggerUpgradeApply({
         repository: upgradeConfig.repository,
         bundle: upgradeConfig.bundle,
         socks5: upgradeConfig.socks5 || undefined,
         allowPrerelease: upgradeConfig.allowPrerelease,
       });
-      set({ isApplying: false });
+      // 服务端升级在后台运行，202 到达后服务即将重启。
+      // 保持 isApplying=true 直到连接断开，由 resetApplyState 在断连时重置。
     } catch (error) {
       set({
         applyError: error instanceof Error ? error.message : "启动升级失败",
@@ -130,4 +131,6 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       });
     }
   },
+
+  resetApplyState: () => set({ isApplying: false, applyError: null }),
 }));

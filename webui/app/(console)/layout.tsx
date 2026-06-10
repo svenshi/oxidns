@@ -43,6 +43,7 @@ export default function ConsoleLayout({
   const isAuthHydrated = useAuthStore((s) => s.isHydrated);
   const pathname = usePathname();
   const checkForUpdates = useUpdateStore((s) => s.checkForUpdates);
+  const resetApplyState = useUpdateStore((s) => s.resetApplyState);
   const upgradeAutoCheck = useUpdateStore((s) => s.upgradeConfig.autoCheck);
   const buildInfo = useAppStore((s) => s.buildInfo);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -81,6 +82,15 @@ export default function ConsoleLayout({
     hasCheckedUpdates.current = true;
     void checkForUpdates(version);
   }, [isConnected, upgradeAutoCheck, health, system, buildInfo, checkForUpdates]);
+
+  // On disconnect: allow auto-check to re-fire on the next reconnect, and
+  // clear any in-progress upgrade state (the server restarted or the apply failed).
+  useEffect(() => {
+    if (!isConnected) {
+      hasCheckedUpdates.current = false;
+      resetApplyState();
+    }
+  }, [isConnected, resetApplyState]);
 
   // On reconnect, drop offline mode so loadConfig's authoritative state wins.
   useEffect(() => {

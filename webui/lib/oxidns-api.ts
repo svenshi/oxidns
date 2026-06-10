@@ -917,17 +917,17 @@ export interface UpgradeApplyResponse {
 export async function fetchUpgradeCheck(
   options: UpgradeCheckOptions = {},
 ): Promise<UpgradeCheckResponse> {
-  const params = new URLSearchParams();
-  if (options.repository) params.set("repository", options.repository);
-  if (options.bundle) params.set("bundle", options.bundle);
-  if (options.socks5) params.set("socks5", options.socks5);
-  if (options.allowPrerelease) params.set("allow_prerelease", "true");
-  if (options.target) params.set("target", options.target);
-  if (options.githubToken) params.set("github_token", options.githubToken);
-  const suffix = params.size > 0 ? `?${params.toString()}` : "";
-  const response = await fetch(apiUrl(`/upgrade/check${suffix}`), {
-    method: "GET",
-    headers: apiHeaders(),
+  const body: Record<string, unknown> = {};
+  if (options.repository) body.repository = options.repository;
+  if (options.bundle) body.bundle = options.bundle;
+  if (options.socks5) body.socks5 = options.socks5;
+  if (options.allowPrerelease) body.allow_prerelease = true;
+  if (options.target) body.target = options.target;
+  if (options.githubToken) body.github_token = options.githubToken;
+  const response = await fetch(apiUrl("/upgrade/check"), {
+    method: "POST",
+    headers: { ...apiHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
   return readJsonResponse<UpgradeCheckResponse>(response);
 }
