@@ -1386,6 +1386,19 @@ mod tests {
         DNSClass, Edns, EdnsOption, Message, Name, Question, RData, Record, RecordType,
     };
 
+    async fn wait_until<F>(description: &str, condition: F)
+    where
+        F: Fn() -> bool,
+    {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !condition() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect(description);
+    }
+
     fn test_cache(config: CacheConfig) -> Cache {
         let cache_negative = config.cache_negative.unwrap_or(true);
         let max_negative_ttl = config.max_negative_ttl.unwrap_or(DEFAULT_MAX_NEGATIVE_TTL);
@@ -2057,7 +2070,14 @@ mod tests {
             .await
             .unwrap();
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        wait_until("lazy refresh should complete", || {
+            cache
+                .metrics
+                .lazy_refresh_success_total
+                .load(AtomicOrdering::Relaxed)
+                == 1
+        })
+        .await;
 
         assert_eq!(calls.load(AtomicOrdering::Relaxed), 1);
         assert_eq!(
@@ -2130,7 +2150,14 @@ mod tests {
             .execute_with_next(&mut context, Some(next))
             .await
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        wait_until("lazy refresh failure should be recorded", || {
+            cache
+                .metrics
+                .lazy_refresh_failed_total
+                .load(AtomicOrdering::Relaxed)
+                == 1
+        })
+        .await;
 
         assert_eq!(
             cache

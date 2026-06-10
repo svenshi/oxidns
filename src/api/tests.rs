@@ -17,7 +17,6 @@ use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use serde::Serialize;
-use tokio::time::{Duration, sleep};
 
 use super::cors::{add_cors_headers, infer_cors_config_from_listen, resolve_cors_config};
 #[cfg(feature = "webui")]
@@ -101,7 +100,6 @@ fn test_api_hub_with_options(
 
 async fn start_test_api_hub(hub: &Arc<ApiHub>) {
     hub.start().await.expect("api hub should start");
-    sleep(Duration::from_millis(50)).await;
 }
 
 fn http1_client() -> Client<HttpConnector, Empty<Bytes>> {

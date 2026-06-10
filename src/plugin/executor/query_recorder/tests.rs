@@ -3,7 +3,6 @@
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use tempfile::NamedTempFile;
 
@@ -60,6 +59,14 @@ fn filtered_record_ids(
         .into_iter()
         .map(|record| record.request_id)
         .collect()
+}
+
+async fn flush_backend(backend: &std::sync::Arc<super::backend::RecorderBackend>) {
+    let flush_backend = backend.clone();
+    tokio::task::spawn_blocking(move || flush_backend.flush_for_test())
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -246,8 +253,8 @@ async fn test_query_recorder_execute_enqueues_record() {
     let step = plugin.execute_with_next(&mut ctx, None).await.unwrap();
     assert_eq!(step, ExecStep::Next);
 
-    tokio::time::sleep(Duration::from_millis(30)).await;
     let backend = plugin.backend.as_ref().unwrap().clone();
+    flush_backend(&backend).await;
     let records = tokio::task::spawn_blocking(move || {
         query_records(
             backend,
@@ -298,8 +305,8 @@ async fn test_query_recorder_list_cursor_only_when_more_records_exist() {
         plugin.execute_with_next(&mut ctx, None).await.unwrap();
     }
 
-    tokio::time::sleep(Duration::from_millis(30)).await;
     let backend = plugin.backend.as_ref().unwrap().clone();
+    flush_backend(&backend).await;
     let (first_page, first_cursor) = tokio::task::spawn_blocking(move || {
         query_records(
             backend,
@@ -465,7 +472,7 @@ async fn test_query_recorder_query_records_support_common_filters() {
         None,
         &[],
     ));
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    flush_backend(&backend).await;
 
     assert_eq!(
         filtered_record_ids(
@@ -623,7 +630,7 @@ async fn test_query_recorder_matcher_stats_use_record_filters() {
         Some("boom"),
         &[("ads", "not_matched")],
     ));
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    flush_backend(&backend).await;
 
     let (query_total, stats) = load_plugin_stats(
         backend,
@@ -689,7 +696,7 @@ async fn test_query_recorder_plugin_stats_preserve_total_without_steps() {
         None,
         &[],
     ));
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    flush_backend(&backend).await;
 
     let (query_total, stats) = load_plugin_stats(
         backend,
@@ -762,20 +769,7 @@ async fn seed_demo_records(backend: &std::sync::Arc<super::backend::RecorderBack
         None,
         &[],
     ));
-    // Poll until all 5 records appear in the in-memory tail rather than
-    // sleeping for a fixed duration. A fixed sleep is unreliable on Windows
-    // where SQLite WAL writes and thread scheduling can exceed 50 ms.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        if backend.tail.lock().unwrap().len() >= 5 {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "seed_demo_records: writer thread did not flush 5 records within 10 s"
-        );
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    flush_backend(backend).await;
 }
 
 #[tokio::test]
@@ -838,11 +832,7 @@ async fn test_load_top_clients_allows_limit_above_200() {
             &[],
         ));
     }
-    let flush_backend = backend.clone();
-    tokio::task::spawn_blocking(move || flush_backend.flush_for_test())
-        .await
-        .unwrap()
-        .unwrap();
+    flush_backend(&backend).await;
     assert_eq!(backend.dropped_total.load(Ordering::Relaxed), 0);
 
     let response = load_top_clients(
@@ -1017,7 +1007,7 @@ async fn test_timeseries_buckets_records_by_minute() {
         None,
         &[],
     ));
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    flush_backend(&backend).await;
 
     let response = load_timeseries(
         backend,

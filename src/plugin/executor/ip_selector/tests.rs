@@ -9,6 +9,7 @@ use std::time::Duration;
 use ahash::AHashMap;
 use async_trait::async_trait;
 use serde_yaml_ng::Value;
+use tokio::sync::Notify;
 
 use super::config::{
     DnssecPolicy, IpSelectorCacheConfig, IpSelectorConfig, IpSelectorSettings, ProbeMethod,
@@ -16,7 +17,7 @@ use super::config::{
 };
 use super::metrics::IpSelectorMetrics;
 use super::probe::{
-    ProbeKey, ProbeObservation, ProbeRunner, cached_observation, probe_with_runtime,
+    ProbeKey, ProbeObservation, ProbeRunner, ProbeRuntime, cached_observation, probe_with_runtime,
 };
 use super::*;
 use crate::core::app_clock::AppClock;
@@ -31,6 +32,7 @@ use crate::proto::{DNSClass, Message, Name, Question, RData, Rcode, Record, Reco
 struct FakeProbeRunner {
     scores: AHashMap<ProbeKey, ProbeObservation>,
     calls: AtomicUsize,
+    call_notify: Notify,
     delay: Duration,
 }
 
@@ -43,6 +45,7 @@ impl ProbeRunner for FakeProbeRunner {
         _metrics: &IpSelectorMetrics,
     ) -> ProbeObservation {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.call_notify.notify_waiters();
         if !self.delay.is_zero() {
             tokio::time::sleep(self.delay).await;
         }
@@ -58,6 +61,7 @@ impl FakeProbeRunner {
         Self {
             scores,
             calls: AtomicUsize::new(0),
+            call_notify: Notify::new(),
             delay: Duration::ZERO,
         }
     }
@@ -66,6 +70,7 @@ impl FakeProbeRunner {
         Self {
             scores,
             calls: AtomicUsize::new(0),
+            call_notify: Notify::new(),
             delay,
         }
     }
@@ -158,13 +163,29 @@ fn score_key(ip: [u8; 4], latency_ms: u64) -> (ProbeKey, ProbeObservation) {
 }
 
 async fn wait_for_call_count(runner: &FakeProbeRunner, expected: usize) {
-    for _ in 0..50 {
+    tokio::time::timeout(Duration::from_secs(1), async {
         if runner.calls.load(Ordering::SeqCst) >= expected {
             return;
         }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    panic!("probe runner did not reach {expected} calls");
+        loop {
+            runner.call_notify.notified().await;
+            if runner.calls.load(Ordering::SeqCst) >= expected {
+                return;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("probe runner did not reach {expected} calls"));
+}
+
+async fn wait_for_cached_observation(runtime: &Arc<ProbeRuntime>, key: &ProbeKey) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while cached_observation(runtime, key).is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cached observation should appear");
 }
 
 #[test]
@@ -457,7 +478,7 @@ async fn background_mode_returns_original_and_warms_cache() {
         answer_ips(&ctx),
         vec![IpAddr::from([1, 1, 1, 1]), IpAddr::from([2, 2, 2, 2])]
     );
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    wait_for_cached_observation(&selector.runtime, &fast_key).await;
     assert!(cached_observation(&selector.runtime, &fast_key).is_some());
 }
 
