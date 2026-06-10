@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import {
   Breadcrumb,
@@ -11,9 +12,11 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
-import { Moon, Sun, Code2, LayoutDashboard } from "lucide-react";
+import { Moon, Sun, Code2, LayoutDashboard, ArrowUpCircle } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useAppStore } from "@/lib/store";
+import { useAuthStore } from "@/lib/auth-store";
+import { useUpdateStore } from "@/lib/update-store";
 import { ConfigSyncControl } from "@/components/config/config-sync-status";
 import {
   Tooltip,
@@ -28,8 +31,11 @@ interface AppHeaderProps {
 
 export function AppHeader({ title, breadcrumbs = [] }: AppHeaderProps) {
   const { theme, setTheme } = useTheme();
+  const router = useRouter();
   const editorMode = useAppStore((s) => s.editorMode);
   const setEditorMode = useAppStore((s) => s.setEditorMode);
+  const isConnected = useAuthStore((s) => s.isConnected);
+  const updateInfo = useUpdateStore((s) => s.updateInfo);
   const showNavigation = !editorMode;
 
   return (
@@ -75,6 +81,29 @@ export function AppHeader({ title, breadcrumbs = [] }: AppHeaderProps) {
 
       <div className="ml-auto flex items-center gap-2">
         <ConfigSyncControl />
+        {isConnected && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="relative rounded-md text-muted-foreground hover:text-foreground"
+                onClick={() => router.push("/settings#upgrade")}
+              >
+                <ArrowUpCircle className="h-4 w-4" />
+                {updateInfo?.updateAvailable && (
+                  <span className="absolute right-0.5 top-0.5 h-2 w-2 rounded-full bg-destructive" />
+                )}
+                <span className="sr-only">软件升级</span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {updateInfo?.updateAvailable
+                ? `有新版本 ${updateInfo.latestVersion} 可用`
+                : "软件升级设置"}
+            </TooltipContent>
+          </Tooltip>
+        )}
         <div className="flex items-center rounded-lg border border-border/60 bg-background/80 p-0.5 shadow-sm">
           <Tooltip>
             <TooltipTrigger asChild>

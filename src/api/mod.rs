@@ -37,6 +37,7 @@ mod route;
 mod server;
 #[cfg(feature = "webui")]
 mod static_files;
+mod upgrade;
 
 use std::sync::Arc;
 
@@ -70,6 +71,7 @@ pub fn register_builtin_routes() -> Result<()> {
         metrics::register_builtin_routes(&register)?;
         logs::register_log_routes(&register)?;
         build::register_builtin_routes(&register)?;
+        upgrade::register_upgrade_routes(&register)?;
     }
     Ok(())
 }
