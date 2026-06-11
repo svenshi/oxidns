@@ -10,7 +10,32 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-06
 
 <div className="release-stack">
-   <ReleaseCard version="v1.2.2" badge="Patch Release" date="2026-06-10" defaultOpen>
+   <ReleaseCard version="v1.2.3" badge="Patch Release" date="2026-06-11" defaultOpen>
+       **版本定位**
+
+       - Patch Release，核心变更为修复 `/api/reload` 后 TCP / DoT 写响应任务可能空转导致的高 CPU 问题，并降低上游连接池在上游不可用或重启期间的忙等重试开销。同时补齐 WebUI 英文界面 i18n，新增升级流程中的 GitHub token 控制，并继续收敛测试与 CLI / 插件文档细节。不引入破坏性配置变更。
+
+       **主要变更**
+
+       - `fix(server)`：TCP / DoT 响应写入任务在连接响应通道关闭时立即退出，避免 `/api/reload` 取消连接 handler 后遗留 writer 任务持续空转；新增回归测试覆盖该路径。
+       - `fix(upstream)`：pipeline / reuse 上游连接池在创建替代连接失败时加入短暂退避，避免上游故障或服务重启期间只 yield 不等待的重试循环造成 CPU 尖峰。
+       - `fix(upstream)`：保持 pipeline 池仅饱和时的即时让出调度重试，避免把退避错误套用到有连接槽位即将释放的正常高并发路径。
+       - `feat(webui)`：新增英文 i18n 资源与本地化 provider，控制台页面、插件定义、帮助文档和主要组件文案接入中英文资源。
+       - `feat(webui)`：升级检查和应用请求支持可选 GitHub token；WebUI 新增 token 持久化控制与风险提示，并在 CLI 预览中避免暴露 token。
+       - `fix(webui)`：升级入口在空闲状态下不再显示无意义的 header action。
+       - `docs(cli)`：补充 `build-info` 命令文档，说明 JSON 输出、能力矩阵字段与发布排查用途。
+       - `docs(plugin)`：修正插件文档中的默认值说明，保持中英文文档一致。
+       - `test`：替换固定等待为确定性同步；修复 cron Windows 计时波动；在 query recorder top clients 断言前刷新 writer，降低测试偶发失败。
+
+       **配置与升级说明**
+
+       - 根 crate 版本号升级为 `1.2.3`；本周期 `crates/macros`、`crates/proto`、`crates/ripset`、`crates/zoneparser` 均无改动，无需子 crate 同步升级；release tag 应使用 `v1.2.3`。
+       - `v1.2.2` 配置可直接升级到 `v1.2.3`，未引入新的必填配置字段或 YAML 配置迁移。
+       - 长期运行且依赖 TCP / DoT 入站、频繁使用 `/api/reload`，或在上游 DNS 重启 / 不可用时观察到高 CPU 的部署，建议升级。
+       - WebUI 的 GitHub token 仅用于升级检查 / 应用流程的 GitHub 请求，可选择仅本次使用或持久化保存；不配置 token 时仍沿用匿名请求行为。
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.2.2" badge="Patch Release" date="2026-06-10">
        **版本定位**
 
        - Patch Release，核心变更为新增 HTTP 升级 API（`plugin-upgrade` feature）与 WebUI 实时更新通知，支持在 WebUI 内检测可用更新、比较版本并触发升级流程。同时修复 `${VAR}` 环境变量展开的 YAML 解析顺序问题（先解析 YAML 再展开占位符，防止 YAML 注释干扰展开），修复 WebUI 对 `${VAR}` 表单值的引号包裹处理，以及 H2/H3/DoQ 连接在远端关闭后的僵尸连接清理。不引入破坏性配置变更。

@@ -10,7 +10,32 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-06
 
 <div className="release-stack">
-   <ReleaseCard version="v1.2.2" badge="Patch Release" date="2026-06-10" defaultOpen>
+   <ReleaseCard version="v1.2.3" badge="Patch Release" date="2026-06-11" defaultOpen>
+       **Release Scope**
+
+       - Patch Release focused on fixing a high-CPU path where TCP / DoT response writer tasks could spin after `/api/reload`, and on reducing busy retry loops in upstream pools while upstreams are unavailable or restarting. It also adds English WebUI i18n, GitHub token controls for the WebUI upgrade flow, and additional test plus CLI / plugin documentation hardening. No breaking configuration changes.
+
+       **Changes**
+
+       - `fix(server)`: TCP / DoT response writer tasks now exit when the per-connection response channel closes, preventing orphaned writers from spinning after `/api/reload` cancels connection handlers. A regression test covers the closed-channel path.
+       - `fix(upstream)`: Pipeline and reuse upstream pools now apply a short backoff when creating a replacement connection fails, avoiding yield-only retry loops during upstream outages or service restarts.
+       - `fix(upstream)`: Saturated pipeline pools still retry responsively with scheduler yielding only, so the new backoff stays limited to failed expansion paths.
+       - `feat(webui)`: Added English i18n resources and a localization provider for console pages, plugin definitions, help text, and primary WebUI components.
+       - `feat(webui)`: Upgrade checks and apply requests can include an optional GitHub token. The WebUI adds explicit persistence controls and risk guidance, while CLI previews avoid exposing tokens.
+       - `fix(webui)`: Hide the upgrade header action when the upgrade state is idle.
+       - `docs(cli)`: Documented the `build-info` command, including JSON output, capability-matrix fields, and release troubleshooting usage.
+       - `docs(plugin)`: Corrected documented default values and kept the Chinese and English plugin docs aligned.
+       - `test`: Replaced fixed waits with deterministic synchronization, avoided a Windows cron timer flake, and flushed the query recorder writer before top-clients assertions.
+
+       **Compatibility and Upgrade Notes**
+
+       - Root crate version bumped to `1.2.3`; no workspace crate under `crates/` changed this cycle (`crates/macros`, `crates/proto`, `crates/ripset`, `crates/zoneparser`), so none need a version bump; the release tag should use `v1.2.3`.
+       - `v1.2.2` configs upgrade directly to `v1.2.3` with no new required fields or YAML migration.
+       - Long-running deployments that use TCP / DoT inbound servers, frequently call `/api/reload`, or observe high CPU while upstream DNS services are restarting or unavailable should upgrade.
+       - The WebUI GitHub token is used only for GitHub requests in the upgrade check / apply flow. It can be used for a single session or persisted explicitly; leaving it unset preserves the anonymous-request behavior.
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.2.2" badge="Patch Release" date="2026-06-10">
        **Release Scope**
 
        - Patch Release. The headline addition is an HTTP upgrade API (gated on the `plugin-upgrade` feature) with a WebUI real-time update-available notification, enabling users to detect new releases, compare versions, and trigger the upgrade flow directly from the WebUI. Also fixes the `${VAR}` env-var expansion order (expand after YAML parse, not before) to prevent YAML comment and special-character interference, repairs two WebUI quote-wrap handling issues around `${VAR}` form values, and reliably cleans up zombie connections on H2/H3/DoQ upstreams after the remote peer closes. No breaking configuration changes.
