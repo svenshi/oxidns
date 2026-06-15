@@ -8,7 +8,9 @@
 // are lossy (comments / key order), so anything we want to faithfully restore
 // must keep the original text rather than a re-serialized model.
 
+import { createSnapshotId } from "./config-identity";
 import { useAuthStore } from "./auth-store";
+import type { WebUiMode } from "./webui-config-header";
 
 export type ApplyStatus =
   | "not-applied"
@@ -21,20 +23,31 @@ export interface ConfigSnapshot {
   createdAt: number;
   content: string;
   version: string;
-  source: "server" | "save";
+  source: ConfigSnapshotSource;
   pluginCount: number;
   size: number;
   applyStatus: ApplyStatus;
   applyError?: string;
   appliedAt?: number;
+  mode?: WebUiMode;
 }
 
+export type ConfigSnapshotSource =
+  | "server"
+  | "save"
+  | "apply"
+  | "rollback"
+  | "import"
+  | "standard-settings";
+
 export interface RecordSnapshotInput {
+  id?: string;
   content: string;
   version: string;
   source: ConfigSnapshot["source"];
   pluginCount: number;
   applyStatus: ApplyStatus;
+  mode?: WebUiMode;
 }
 
 const KEY_PREFIX = "oxidns:config-history:";
@@ -111,7 +124,7 @@ export function recordSnapshot(
   const list = listSnapshots(scope).filter((s) => s.version !== input.version);
   const createdAt = Date.now();
   const entry: ConfigSnapshot = {
-    id: `${createdAt}-${input.version.slice(0, 8)}`,
+    id: input.id ?? createSnapshotId(),
     createdAt,
     content: input.content,
     version: input.version,
@@ -120,6 +133,7 @@ export function recordSnapshot(
     size: input.content.length,
     applyStatus: input.applyStatus,
     appliedAt: input.applyStatus === "applied" ? createdAt : undefined,
+    mode: input.mode,
   };
   return persist(scope, trim([entry, ...list]));
 }

@@ -19,6 +19,7 @@ import {
 } from "@/components/shell/connection-required";
 import { RestartingOverlay } from "@/components/shell/restarting-overlay";
 import { UpgradeOverlay } from "@/components/shell/upgrade-overlay";
+import { ModeSelection } from "@/components/standard/mode-selection";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
@@ -42,6 +43,9 @@ export default function ConsoleLayout({
   const refreshMetrics = useAppStore((s) => s.refreshMetrics);
   const isOfflineMode = useAppStore((s) => s.isOfflineMode);
   const exitOfflineMode = useAppStore((s) => s.exitOfflineMode);
+  const isConfigLoading = useAppStore((s) => s.isConfigLoading);
+  const modeHeaderPresent = useAppStore((s) => s.modeHeaderPresent);
+  const modeSelectionDismissed = useAppStore((s) => s.modeSelectionDismissed);
   const isConnected = useAuthStore((s) => s.isConnected);
   const connectionEpoch = useAuthStore((s) => s.connectionEpoch);
   const isConnecting = useAuthStore((s) => s.isConnecting);
@@ -88,7 +92,17 @@ export default function ConsoleLayout({
     !isConnected &&
     (!hasAttemptedAutoConnect || (isConnecting && !connectionError));
   const canUseBackendPages =
-    !isAuthHydrated || isConnected || pathname === "/settings";
+    !isAuthHydrated ||
+    isConnected ||
+    pathname === "/settings" ||
+    pathname === "/standard/system";
+  const showModeSelection =
+    !editorMode &&
+    isConnected &&
+    !isOfflineMode &&
+    !isConfigLoading &&
+    !modeHeaderPresent &&
+    !modeSelectionDismissed;
 
   useEffect(() => {
     if (isConnected) void loadConfig();
@@ -191,7 +205,11 @@ export default function ConsoleLayout({
               )}
             </div>
           ) : canUseBackendPages ? (
-            children
+            showModeSelection ? (
+              <ModeSelection />
+            ) : (
+              children
+            )
           ) : isAutoConnectPending ? (
             <>
               <AppHeader title={t(WEBUI.shell.connectBackend)} />
