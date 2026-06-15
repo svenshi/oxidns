@@ -24,15 +24,19 @@ import { useAuthStore } from "@/lib/auth-store";
 import {
   BookOpen,
   GitBranch,
+  Gauge,
   LayoutDashboard,
   LogOut,
+  Network,
   Puzzle,
   ScrollText,
   Settings,
+  ShieldCheck,
   User,
 } from "lucide-react";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
+import { useAppStore } from "@/lib/store";
 
 const navItems = [
   {
@@ -57,9 +61,38 @@ const navItems = [
   },
 ];
 
+const standardNavItems = [
+  {
+    title: "概览",
+    href: "/standard",
+    icon: Gauge,
+  },
+  {
+    title: "DNS 设置",
+    href: "/standard/dns",
+    icon: Network,
+  },
+  {
+    title: "过滤与分流",
+    href: "/standard/filtering",
+    icon: ShieldCheck,
+  },
+  {
+    title: "查询日志",
+    href: "/standard/queries",
+    icon: ScrollText,
+  },
+  {
+    title: "系统",
+    href: "/standard/system",
+    icon: Settings,
+  },
+];
+
 export function AppSidebar() {
   const { t } = useI18n();
   const pathname = usePathname();
+  const webUiMode = useAppStore((s) => s.webUiMode);
   const isConnected = useAuthStore((s) => s.isConnected);
   const serverConfig = useAuthStore((s) => s.serverConfig);
   const logout = useAuthStore((s) => s.logout);
@@ -70,7 +103,7 @@ export function AppSidebar() {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton asChild className="h-9 rounded-md px-2">
-              <Link href="/">
+              <Link href={webUiMode === "standard" ? "/standard" : "/"}>
                 <div className="relative size-8 shrink-0">
                   <Image
                     src="/logo-light.png"
@@ -92,7 +125,9 @@ export function AppSidebar() {
                 <div className="flex flex-col gap-0.5 leading-none">
                   <span className="font-semibold">OxiDNS</span>
                   <span className="text-xs text-muted-foreground">
-                    {t(WEBUI.shell.console)}
+                    {webUiMode === "standard"
+                      ? t(WEBUI.shell.standardMode)
+                      : t(WEBUI.shell.expertMode)}
                   </span>
                 </div>
               </Link>
@@ -106,16 +141,33 @@ export function AppSidebar() {
           <SidebarGroupLabel>{t(WEBUI.shell.navigation)}</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {navItems.map((item) => (
-                <SidebarMenuItem key={item.href}>
-                  <SidebarMenuButton asChild isActive={pathname === item.href}>
-                    <Link href={item.href}>
-                      <item.icon className="size-4" />
-                      <span>{t(item.titleKey)}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
+              {webUiMode === "standard"
+                ? standardNavItems.map((item) => (
+                    <SidebarMenuItem key={item.href}>
+                      <SidebarMenuButton
+                        asChild
+                        isActive={pathname === item.href}
+                      >
+                        <Link href={item.href}>
+                          <item.icon className="size-4" />
+                          <span>{item.title}</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))
+                : navItems.map((item) => (
+                    <SidebarMenuItem key={item.href}>
+                      <SidebarMenuButton
+                        asChild
+                        isActive={pathname === item.href}
+                      >
+                        <Link href={item.href}>
+                          <item.icon className="size-4" />
+                          <span>{t(item.titleKey)}</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>

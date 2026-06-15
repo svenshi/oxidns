@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { AppHeader } from "@/components/shell/app-header";
 import { useAppStore } from "@/lib/store";
-import { useAuthStore } from "@/lib/auth-store";
+import { isSameServerIdentity, useAuthStore } from "@/lib/auth-store";
 import {
   useUpdateStore,
   DEFAULT_UPGRADE_CONFIG,
@@ -43,12 +44,14 @@ import {
   ScrollText,
   Server,
   ShieldCheck,
+  SlidersHorizontal,
 } from "lucide-react";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
 
 export default function SettingsPage() {
   const { t } = useI18n();
+  const router = useRouter();
   const serverConfig = useAuthStore((s) => s.serverConfig);
   const setServerConfig = useAuthStore((s) => s.setServerConfig);
   const connect = useAuthStore((s) => s.connect);
@@ -82,9 +85,12 @@ export default function SettingsPage() {
   const setYamlConfig = useAppStore((s) => s.setYamlConfig);
   const saveConfig = useAppStore((s) => s.saveConfig);
   const loadConfig = useAppStore((s) => s.loadConfig);
+  const resetBackendSession = useAppStore((s) => s.resetBackendSession);
   const isConfigSaving = useAppStore((s) => s.isConfigSaving);
   const isRestarting = useAppStore((s) => s.isRestarting);
   const restartApp = useAppStore((s) => s.restartApp);
+  const webUiMode = useAppStore((s) => s.webUiMode);
+  const setWebUiMode = useAppStore((s) => s.setWebUiMode);
 
   const [backendUrl, setBackendUrl] = useState(serverConfig.url);
   const [workerThreads, setWorkerThreads] = useState("");
@@ -159,8 +165,14 @@ export default function SettingsPage() {
       ? `${health.version} (${health.build_bundle})`
       : (system?.version ?? health?.version ?? "-");
 
+  const applyServerConfig = (nextConfig: typeof serverConfig) => {
+    const backendChanged = !isSameServerIdentity(serverConfig, nextConfig);
+    setServerConfig(nextConfig);
+    if (backendChanged) resetBackendSession();
+  };
+
   const handleSaveConnection = () => {
-    setServerConfig({ ...serverConfig, url: backendUrl.trim() });
+    applyServerConfig({ ...serverConfig, url: backendUrl.trim() });
   };
 
   const runtimeVersionForCheck = system?.build
@@ -211,9 +223,21 @@ export default function SettingsPage() {
 
   const handleConnect = async () => {
     const nextConfig = { ...serverConfig, url: backendUrl.trim() };
-    setServerConfig(nextConfig);
+    applyServerConfig(nextConfig);
     const ok = await connect(nextConfig);
     if (ok) await loadConfig();
+  };
+
+  const enterStandardMode = () => {
+    if (webUiMode === "standard") return;
+    setWebUiMode("standard", { dismissSelection: true });
+    router.push("/standard");
+  };
+
+  const enterExpertMode = () => {
+    if (webUiMode === "expert") return;
+    setWebUiMode("expert", { dismissSelection: true });
+    router.push("/");
   };
 
   type AuthOverride = { enabled: boolean; username: string; password: string };
@@ -329,14 +353,14 @@ export default function SettingsPage() {
     setYamlConfig(stringifyOxiDnsConfig(buildTopLevelConfig(override)));
 
     if (enabled && uname.trim()) {
-      setServerConfig({
+      applyServerConfig({
         ...serverConfig,
         requiresAuth: true,
         username: uname.trim(),
         password: pwd,
       });
     } else {
-      setServerConfig({
+      applyServerConfig({
         ...serverConfig,
         requiresAuth: false,
         username: "",
@@ -413,6 +437,64 @@ export default function SettingsPage() {
                   {isConnecting
                     ? t(WEBUI.settings.connecting)
                     : t(WEBUI.settings.reconnect)}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <SlidersHorizontal className="h-5 w-5" />
+                    工作模式
+                  </CardTitle>
+                  <CardDescription className="mt-1.5">
+                    标准模式使用表单读写 YAML；专家模式保留完整插件中心和 YAML
+                    控制台。
+                  </CardDescription>
+                </div>
+                <Badge variant="secondary">
+                  {webUiMode === "standard" ? "标准模式" : "专家模式"}
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="grid gap-3 md:grid-cols-2">
+              <div className="flex flex-col justify-between gap-4 rounded-lg border p-4">
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2 font-medium">
+                    <SlidersHorizontal className="h-4 w-4" />
+                    标准模式
+                  </div>
+                  <p className="text-sm leading-6 text-muted-foreground">
+                    适合日常 DNS 管理，通过开关和输入框生成标准配置。
+                  </p>
+                </div>
+                <Button
+                  variant={webUiMode === "standard" ? "secondary" : "default"}
+                  onClick={enterStandardMode}
+                  disabled={webUiMode === "standard"}
+                >
+                  {webUiMode === "standard" ? "当前模式" : "切换到标准模式"}
+                </Button>
+              </div>
+              <div className="flex flex-col justify-between gap-4 rounded-lg border p-4">
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2 font-medium">
+                    <FileCode2 className="h-4 w-4" />
+                    专家模式
+                  </div>
+                  <p className="text-sm leading-6 text-muted-foreground">
+                    适合直接管理插件、拓扑、历史版本和完整 YAML 配置。
+                  </p>
+                </div>
+                <Button
+                  variant={webUiMode === "expert" ? "secondary" : "outline"}
+                  onClick={enterExpertMode}
+                  disabled={webUiMode === "expert"}
+                >
+                  {webUiMode === "expert" ? "当前模式" : "切换到专家模式"}
                 </Button>
               </div>
             </CardContent>

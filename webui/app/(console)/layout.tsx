@@ -9,7 +9,7 @@ import { ConfigEditorView } from "@/components/config/config-editor-view";
 import { OfflineConfigImport } from "@/components/config/offline-config-import";
 import { ConfigHistorySheet } from "@/components/config/config-history-sheet";
 import { useAppStore } from "@/lib/store";
-import { useAuthStore } from "@/lib/auth-store";
+import { normalizeServerUrl, useAuthStore } from "@/lib/auth-store";
 import { useUpdateStore } from "@/lib/update-store";
 import { AppHeader } from "@/components/shell/app-header";
 import {
@@ -18,6 +18,7 @@ import {
   LoginRequired,
 } from "@/components/shell/connection-required";
 import { RestartingOverlay } from "@/components/shell/restarting-overlay";
+import { ModeSelection } from "@/components/standard/mode-selection";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
@@ -33,9 +34,15 @@ export default function ConsoleLayout({
   const setHistoryOpen = useAppStore((s) => s.setHistoryOpen);
   const loadConfig = useAppStore((s) => s.loadConfig);
   const refreshMetrics = useAppStore((s) => s.refreshMetrics);
+  const resetBackendSession = useAppStore((s) => s.resetBackendSession);
+  const backendSessionUrl = useAppStore((s) => s.backendSessionUrl);
   const isOfflineMode = useAppStore((s) => s.isOfflineMode);
   const exitOfflineMode = useAppStore((s) => s.exitOfflineMode);
+  const isConfigLoading = useAppStore((s) => s.isConfigLoading);
+  const modeHeaderPresent = useAppStore((s) => s.modeHeaderPresent);
+  const modeSelectionDismissed = useAppStore((s) => s.modeSelectionDismissed);
   const isConnected = useAuthStore((s) => s.isConnected);
+  const serverUrl = useAuthStore((s) => s.serverConfig.url);
   const isConnecting = useAuthStore((s) => s.isConnecting);
   const connectionError = useAuthStore((s) => s.connectionError);
   const needsCredentials = useAuthStore((s) => s.needsCredentials);
@@ -52,7 +59,9 @@ export default function ConsoleLayout({
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const sidebarStateBeforeEditor = useRef(sidebarOpen);
   const previousEditorMode = useRef(editorMode);
+  const previousBackendUrl = useRef<string | null>(null);
   const hasCheckedUpdates = useRef(false);
+  const backendUrl = normalizeServerUrl(serverUrl);
 
   // Once the store has hydrated, eagerly probe the configured backend (default
   // `/api`). Only fall back to the connection prompt if that attempt fails.
@@ -61,6 +70,20 @@ export default function ConsoleLayout({
     void attemptAutoConnect();
   }, [isAuthHydrated, attemptAutoConnect]);
 
+  useEffect(() => {
+    if (!isAuthHydrated) return;
+    if (previousBackendUrl.current === null) {
+      previousBackendUrl.current = backendUrl;
+      return;
+    }
+    if (previousBackendUrl.current === backendUrl) return;
+    previousBackendUrl.current = backendUrl;
+    hasCheckedUpdates.current = false;
+    if (backendSessionUrl !== backendUrl) {
+      resetBackendSession();
+    }
+  }, [backendSessionUrl, backendUrl, isAuthHydrated, resetBackendSession]);
+
   // While the initial auto-connect is still in flight, neither render
   // backend-dependent pages nor the connection-required prompt; show a pending state.
   const isAutoConnectPending =
@@ -68,7 +91,17 @@ export default function ConsoleLayout({
     !isConnected &&
     (!hasAttemptedAutoConnect || (isConnecting && !connectionError));
   const canUseBackendPages =
-    !isAuthHydrated || isConnected || pathname === "/settings";
+    !isAuthHydrated ||
+    isConnected ||
+    pathname === "/settings" ||
+    pathname === "/standard/system";
+  const showModeSelection =
+    !editorMode &&
+    isConnected &&
+    !isOfflineMode &&
+    !isConfigLoading &&
+    !modeHeaderPresent &&
+    !modeSelectionDismissed;
 
   useEffect(() => {
     if (isConnected) void loadConfig();
@@ -165,7 +198,11 @@ export default function ConsoleLayout({
               )}
             </div>
           ) : canUseBackendPages ? (
-            children
+            showModeSelection ? (
+              <ModeSelection />
+            ) : (
+              children
+            )
           ) : isAutoConnectPending ? (
             <>
               <AppHeader title={t(WEBUI.shell.connectBackend)} />

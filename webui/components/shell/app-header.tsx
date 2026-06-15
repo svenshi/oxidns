@@ -44,6 +44,7 @@ export function AppHeader({ title, breadcrumbs = [] }: AppHeaderProps) {
   const router = useRouter();
   const editorMode = useAppStore((s) => s.editorMode);
   const setEditorMode = useAppStore((s) => s.setEditorMode);
+  const webUiMode = useAppStore((s) => s.webUiMode);
   const isConnected = useAuthStore((s) => s.isConnected);
   const updateInfo = useUpdateStore((s) => s.updateInfo);
   const buildInfo = useAppStore((s) => s.buildInfo);
@@ -56,6 +57,21 @@ export function AppHeader({ title, breadcrumbs = [] }: AppHeaderProps) {
     backendSupportsUpgrade === true &&
     updateInfo?.updateAvailable === true;
   const showNavigation = !editorMode;
+  const showEditorToggle = webUiMode !== "standard" || editorMode;
+  const editorTooltip = editorMode
+    ? t(WEBUI.shell.switchToConsole)
+    : t(WEBUI.shell.switchToEditor);
+
+  const handleEditorToggle = () => {
+    if (editorMode) {
+      setEditorMode(false);
+      return;
+    }
+    if (webUiMode === "standard") {
+      return;
+    }
+    setEditorMode(true);
+  };
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b px-4">
@@ -154,32 +170,30 @@ export function AppHeader({ title, breadcrumbs = [] }: AppHeaderProps) {
             </TooltipContent>
           </Tooltip>
 
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant={editorMode ? "secondary" : "ghost"}
-                size="icon-sm"
-                className="rounded-md"
-                onClick={() => setEditorMode(!editorMode)}
-              >
-                {editorMode ? (
-                  <LayoutDashboard className="h-4 w-4" />
-                ) : (
-                  <Code2 className="h-4 w-4" />
-                )}
-                <span className="sr-only">
-                  {editorMode
-                    ? t(WEBUI.shell.consoleMode)
-                    : t(WEBUI.shell.editorMode)}
-                </span>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              {editorMode
-                ? t(WEBUI.shell.switchToConsole)
-                : t(WEBUI.shell.switchToEditor)}
-            </TooltipContent>
-          </Tooltip>
+          {showEditorToggle && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={editorMode ? "secondary" : "ghost"}
+                  size="icon-sm"
+                  className="rounded-md"
+                  onClick={handleEditorToggle}
+                >
+                  {editorMode ? (
+                    <LayoutDashboard className="h-4 w-4" />
+                  ) : (
+                    <Code2 className="h-4 w-4" />
+                  )}
+                  <span className="sr-only">
+                    {editorMode
+                      ? t(WEBUI.shell.consoleMode)
+                      : t(WEBUI.shell.editorMode)}
+                  </span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{editorTooltip}</TooltipContent>
+            </Tooltip>
+          )}
 
           <Tooltip>
             <TooltipTrigger asChild>

@@ -35,6 +35,8 @@ export function LoginRequired() {
   const setRememberLogin = useAuthStore((s) => s.setRememberLogin);
   const loadConfig = useAppStore((s) => s.loadConfig);
   const setEditorMode = useAppStore((s) => s.setEditorMode);
+  const webUiMode = useAppStore((s) => s.webUiMode);
+  const editorDisabledInStandardMode = webUiMode === "standard";
 
   const [username, setUsername] = useState(serverConfig.username);
   const [password, setPassword] = useState("");
@@ -132,6 +134,12 @@ export function LoginRequired() {
             <Button
               variant="ghost"
               size="sm"
+              disabled={editorDisabledInStandardMode}
+              title={
+                editorDisabledInStandardMode
+                  ? t(WEBUI.shell.editorDisabledInStandardMode)
+                  : undefined
+              }
               onClick={() => setEditorMode(true)}
             >
               <FileCode2 className="h-3.5 w-3.5 mr-1.5" />
@@ -164,6 +172,8 @@ export function ConnectionPending() {
 export function ConnectionRequired() {
   const { t } = useI18n();
   const setEditorMode = useAppStore((s) => s.setEditorMode);
+  const webUiMode = useAppStore((s) => s.webUiMode);
+  const editorDisabledInStandardMode = webUiMode === "standard";
   return (
     <main className="oxidns-dialog-scrollbar min-h-0 flex-1 overflow-auto p-6">
       <Card className="max-w-xl">
@@ -178,7 +188,16 @@ export function ConnectionRequired() {
           <Button asChild>
             <Link href="/settings">{t(WEBUI.connection.goSettings)}</Link>
           </Button>
-          <Button variant="outline" onClick={() => setEditorMode(true)}>
+          <Button
+            variant="outline"
+            disabled={editorDisabledInStandardMode}
+            title={
+              editorDisabledInStandardMode
+                ? t(WEBUI.shell.editorDisabledInStandardMode)
+                : undefined
+            }
+            onClick={() => setEditorMode(true)}
+          >
             <FileCode2 className="h-4 w-4 mr-1.5" />
             {t(WEBUI.connection.offlineEditConfigFile)}
           </Button>

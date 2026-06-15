@@ -11,6 +11,15 @@ export interface ServerConfig {
   password: string;
 }
 
+export function normalizeServerUrl(url: string): string {
+  const trimmed = url.trim();
+  return trimmed ? trimmed.replace(/\/+$/, "") : "/api";
+}
+
+export function isSameServerIdentity(left: ServerConfig, right: ServerConfig) {
+  return normalizeServerUrl(left.url) === normalizeServerUrl(right.url);
+}
+
 export interface AuthState {
   serverConfig: ServerConfig;
   isAuthenticated: boolean;
@@ -182,7 +191,7 @@ export const useAuthStore = create<AuthState>()(
 
 function isSameServerConfig(left: ServerConfig, right: ServerConfig) {
   return (
-    left.url === right.url &&
+    normalizeServerUrl(left.url) === normalizeServerUrl(right.url) &&
     left.requiresAuth === right.requiresAuth &&
     left.username === right.username &&
     left.password === right.password

@@ -1,6 +1,7 @@
 "use client";
 
 import { create } from "zustand";
+import { normalizeServerUrl, useAuthStore } from "./auth-store";
 import type { PluginInstance } from "./types";
 import {
   configFromPlugins,
@@ -50,8 +51,20 @@ import {
   listSnapshots,
   recordSnapshot,
   type ConfigSnapshot,
+  type ConfigSnapshotSource,
 } from "./config-history";
+import { createSnapshotId } from "./config-identity";
 import { WEBUI, tClient } from "./i18n";
+import {
+  parseWebUiConfigHeader,
+  stripWebUiConfigHeader,
+  writeWebUiConfigHeader,
+  type WebUiMode,
+} from "./webui-config-header";
+import { createDefaultStandardSettings } from "./standard-mode/defaults";
+import { generateStandardConfig } from "./standard-mode/generator";
+import { parseStandardSettingsFromYaml } from "./standard-mode/selectors";
+import type { StandardModeSettings } from "./standard-mode/types";
 
 type StoreSet = (
   partial: Partial<AppState> | ((state: AppState) => Partial<AppState>),
@@ -93,6 +106,11 @@ interface AppState {
   dependencyGraph: DependencyGraphReport | null;
   configDiagnostics: string[];
   configHistory: ConfigSnapshot[];
+  backendSessionUrl: string;
+  webUiMode: WebUiMode;
+  modeHeaderPresent: boolean;
+  modeSelectionDismissed: boolean;
+  standardSettings: StandardModeSettings;
   selectedPlugin: PluginInstance | null;
   detailOpen: boolean;
   editorMode: boolean;
@@ -130,7 +148,15 @@ interface AppState {
   refreshRuntimeState: () => Promise<void>;
   refreshMetrics: () => Promise<void>;
   validateCurrentConfig: () => Promise<void>;
-  saveConfig: () => Promise<void>;
+  setWebUiMode: (
+    mode: WebUiMode,
+    options?: { dismissSelection?: boolean },
+  ) => void;
+  dismissModeSelection: () => void;
+  resetBackendSession: () => void;
+  updateStandardSettings: (settings: StandardModeSettings) => void;
+  saveStandardSettings: (settings?: StandardModeSettings) => Promise<void>;
+  saveConfig: (options?: SaveConfigOptions) => Promise<void>;
   applyConfig: () => Promise<void>;
   restartApp: () => Promise<void>;
   restoreSnapshot: (id: string) => void;
@@ -159,6 +185,10 @@ interface AppState {
 let queuedConfigSave: Promise<void> = Promise.resolve();
 let pendingConfigSaveCount = 0;
 
+interface SaveConfigOptions {
+  source?: ConfigSnapshotSource;
+}
+
 function enqueueConfigSave(
   set: StoreSet,
   task: () => Promise<void>,
@@ -179,6 +209,54 @@ function enqueueConfigSave(
 const initialConfigModel = createDefaultOxiDnsConfig();
 const initialConfigText = stringifyOxiDnsConfig(initialConfigModel);
 
+function currentBackendUrl(): string {
+  return normalizeServerUrl(useAuthStore.getState().serverConfig.url);
+}
+
+function isCurrentBackendUrl(url: string): boolean {
+  return currentBackendUrl() === url;
+}
+
+function createBackendSessionResetState(): Partial<AppState> {
+  const configModel = createDefaultOxiDnsConfig();
+  const configText = stringifyOxiDnsConfig(configModel);
+  return {
+    plugins: [],
+    health: null,
+    buildInfo: null,
+    control: null,
+    system: null,
+    reloadStatus: null,
+    pluginMetrics: {},
+    dependencyGraph: null,
+    configDiagnostics: [],
+    configHistory: [],
+    backendSessionUrl: currentBackendUrl(),
+    webUiMode: "expert",
+    modeHeaderPresent: false,
+    modeSelectionDismissed: false,
+    standardSettings: createDefaultStandardSettings(),
+    selectedPlugin: null,
+    detailOpen: false,
+    editorMode: false,
+    historyOpen: false,
+    isConfigLoading: false,
+    isConfigSaving: false,
+    isApplying: false,
+    isRestarting: false,
+    restartPhase: null,
+    configModel,
+    configText,
+    configVersion: null,
+    runningVersion: null,
+    configPath: "/etc/oxidns/config.yaml",
+    configError: null,
+    yamlConfig: configText,
+    isOfflineMode: false,
+    offlineFileName: null,
+  };
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   plugins: [],
   health: null,
@@ -190,6 +268,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   dependencyGraph: null,
   configDiagnostics: [],
   configHistory: [],
+  backendSessionUrl: currentBackendUrl(),
+  webUiMode: "expert",
+  modeHeaderPresent: false,
+  modeSelectionDismissed: false,
+  standardSettings: createDefaultStandardSettings(),
   selectedPlugin: null,
   detailOpen: false,
   editorMode: false,
@@ -211,14 +294,53 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setSelectedPlugin: (plugin) => set({ selectedPlugin: plugin }),
   setDetailOpen: (open) => set({ detailOpen: open }),
-  setEditorMode: (mode) => set({ editorMode: mode }),
+  setEditorMode: (mode) =>
+    set((state) => ({
+      editorMode: mode && state.webUiMode === "standard" ? false : mode,
+    })),
   setHistoryOpen: (open) => set({ historyOpen: open }),
+  setWebUiMode: (mode, options) =>
+    set((state) => ({
+      webUiMode: mode,
+      editorMode: mode === "standard" ? false : state.editorMode,
+      modeSelectionDismissed: options?.dismissSelection ?? true,
+    })),
+  dismissModeSelection: () => set({ modeSelectionDismissed: true }),
+  resetBackendSession: () => set(createBackendSessionResetState()),
+  updateStandardSettings: (settings) => set({ standardSettings: settings }),
+  saveStandardSettings: async (settings) => {
+    const state = get();
+    const nextSettings = settings ?? state.standardSettings;
+    const generated = generateStandardConfig(
+      nextSettings,
+      state.buildInfo,
+      state.configModel,
+    );
+    const generatedText = stringifyOxiDnsConfig(generated.config);
+    const content = writeWebUiConfigHeader(generatedText, {
+      mode: "standard",
+      modeHeaderPresent: true,
+    });
+    get().setYamlConfig(content);
+    set({
+      webUiMode: "standard",
+      modeHeaderPresent: true,
+      modeSelectionDismissed: true,
+      standardSettings: nextSettings,
+      editorMode: false,
+    });
+    await get().saveConfig({
+      source: "standard-settings",
+    });
+  },
   setYamlConfig: (config) => {
     const parsed = parseOxiDnsYaml(config);
+    const headerState = headerStateFromText(config);
     if (!parsed.config) {
       set({
         configText: config,
         yamlConfig: config,
+        ...headerState,
         configError:
           parsed.diagnostics[0] ?? tClient(WEBUI.storeErrors.configParseFailed),
         configDiagnostics: parsed.diagnostics,
@@ -231,6 +353,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       configModel: parsed.config,
       configText: config,
       yamlConfig: config,
+      ...headerState,
+      standardSettings: parseStandardSettingsFromYaml(parsed.config),
       plugins,
       selectedPlugin: syncSelectedPlugin(get().selectedPlugin, plugins),
       configError: parsed.diagnostics[0] ?? null,
@@ -258,6 +382,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       buildInfo: null,
       control: null,
       system: null,
+      webUiMode: "expert",
+      modeHeaderPresent: false,
+      modeSelectionDismissed: false,
+      standardSettings: createDefaultStandardSettings(),
     });
     get().setYamlConfig(text);
   },
@@ -268,10 +396,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   exitOfflineMode: () => set({ isOfflineMode: false, offlineFileName: null }),
 
   loadConfig: async () => {
+    const requestBackendUrl = currentBackendUrl();
     set({ isConfigLoading: true, configError: null });
     try {
       const response = await fetchConfigFile();
+      if (!isCurrentBackendUrl(requestBackendUrl)) return;
       applyConfigFileResponse(response, set);
+      const header = parseWebUiConfigHeader(response.content);
       const scope = getScopeKey(response.path);
       recordSnapshot(scope, {
         content: response.content,
@@ -279,27 +410,36 @@ export const useAppStore = create<AppState>((set, get) => ({
         source: "server",
         pluginCount: pluginCountOf(response.content),
         applyStatus: "applied",
+        mode: header.mode,
       });
       // The backend is running exactly what it just served us from disk.
       set({
         configHistory: listSnapshots(scope),
+        backendSessionUrl: requestBackendUrl,
         runningVersion: response.version,
       });
+      if (!isCurrentBackendUrl(requestBackendUrl)) return;
       await get().validateCurrentConfig();
+      if (!isCurrentBackendUrl(requestBackendUrl)) return;
       await get().refreshRuntimeState();
     } catch (error) {
-      set({
-        configError:
-          error instanceof Error
-            ? error.message
-            : tClient(WEBUI.storeErrors.readConfigFailed),
-      });
+      if (isCurrentBackendUrl(requestBackendUrl)) {
+        set({
+          configError:
+            error instanceof Error
+              ? error.message
+              : tClient(WEBUI.storeErrors.readConfigFailed),
+        });
+      }
     } finally {
-      set({ isConfigLoading: false });
+      if (isCurrentBackendUrl(requestBackendUrl)) {
+        set({ isConfigLoading: false });
+      }
     }
   },
 
   refreshRuntimeState: async () => {
+    const requestBackendUrl = currentBackendUrl();
     const results = await Promise.allSettled([
       fetchHealth(),
       fetchControl(),
@@ -307,6 +447,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       fetchReloadStatus(),
       fetchBuildInfo(),
     ]);
+    if (!isCurrentBackendUrl(requestBackendUrl)) return;
     const [health, control, system, reloadStatus, buildInfo] = results;
     const nextReload =
       reloadStatus.status === "fulfilled"
@@ -337,8 +478,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   refreshMetrics: async () => {
+    const requestBackendUrl = currentBackendUrl();
     try {
       const text = await fetchPrometheusMetrics();
+      if (!isCurrentBackendUrl(requestBackendUrl)) return;
       set({ pluginMetrics: parsePrometheusMetrics(text).byTag });
     } catch {
       // Metrics are best-effort observability; keep the last snapshot on
@@ -347,12 +490,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   validateCurrentConfig: async () => {
+    const requestBackendUrl = currentBackendUrl();
     const state = get();
     if (state.configError) return;
     try {
       const response = await validateConfigText(state.configText);
+      if (!isCurrentBackendUrl(requestBackendUrl)) return;
       applyConfigValidationResponse(response, set);
     } catch (error) {
+      if (!isCurrentBackendUrl(requestBackendUrl)) return;
       const message =
         error instanceof Error
           ? error.message
@@ -368,38 +514,57 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // Save only. Hot-reload is a separate explicit step (applyConfig) so the
   // disk write and the running-config swap are never coupled.
-  saveConfig: () =>
+  saveConfig: (options) =>
     enqueueConfigSave(set, async () => {
+      const requestBackendUrl = currentBackendUrl();
       const state = get();
       if (state.configError) throw new Error(state.configError);
 
       set({ configError: null });
       try {
-        const validation = await validateConfigText(state.configText);
+        const snapshotId = createSnapshotId();
+        const prepared = prepareConfigTextForSave(state);
+        if (!isCurrentBackendUrl(requestBackendUrl)) return;
+        const validation = await validateConfigText(prepared.content);
+        if (!isCurrentBackendUrl(requestBackendUrl)) return;
         applyConfigValidationResponse(validation, set);
-        const content = state.configText;
+        const content = prepared.content;
+        if (!isCurrentBackendUrl(requestBackendUrl)) return;
         const response = await saveConfigFile({
           content,
           baseVersion: state.configVersion,
           validate: true,
           reload: false,
         });
+        if (!isCurrentBackendUrl(requestBackendUrl)) return;
         const scope = getScopeKey(response.path);
         recordSnapshot(scope, {
+          id: snapshotId,
           content,
           version: response.version,
-          source: "save",
+          source: options?.source ?? "save",
           pluginCount: pluginCountOf(content),
           applyStatus: "not-applied",
+          mode: prepared.header.mode,
         });
+        const nextHeaderState = headerStateFromText(content);
+        const parsed = parseOxiDnsYaml(content);
         set({
+          configText: content,
+          yamlConfig: content,
           configVersion: response.version,
           configPath: response.path,
           reloadStatus: response.reload ?? get().reloadStatus,
           configHistory: listSnapshots(scope),
+          ...(parsed.config
+            ? { standardSettings: parseStandardSettingsFromYaml(parsed.config) }
+            : {}),
+          ...nextHeaderState,
         });
+        if (!isCurrentBackendUrl(requestBackendUrl)) return;
         await get().refreshRuntimeState();
       } catch (error) {
+        if (!isCurrentBackendUrl(requestBackendUrl)) return;
         const message =
           error instanceof Error
             ? error.message
@@ -545,7 +710,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       running && topLevelConfigChanged(entry.content, running.content),
     );
     get().setYamlConfig(entry.content);
-    await get().saveConfig();
+    await get().saveConfig({ source: "rollback" });
     if (requiresRestart) {
       await get().restartApp();
     } else {
@@ -733,7 +898,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().saveConfig();
   },
 
-  enterEditorForPluginReferences: () => set({ editorMode: true }),
+  enterEditorForPluginReferences: () =>
+    set((state) => ({
+      editorMode: state.webUiMode === "standard" ? false : true,
+    })),
 
   addPlugin: (plugin) =>
     set((state) =>
@@ -817,10 +985,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
 function applyConfigFileResponse(response: ConfigFileResponse, set: StoreSet) {
   const parsed = parseOxiDnsYaml(response.content);
+  const headerState = headerStateFromText(response.content);
   if (!parsed.config) {
     set({
       configText: response.content,
       yamlConfig: response.content,
+      ...headerState,
       configVersion: response.version,
       configPath: response.path,
       configError:
@@ -834,12 +1004,54 @@ function applyConfigFileResponse(response: ConfigFileResponse, set: StoreSet) {
     configModel: parsed.config,
     configText: response.content,
     yamlConfig: response.content,
+    ...headerState,
     configVersion: response.version,
     configPath: response.path,
     plugins: restorePinnedState(pluginsFromConfig(parsed.config)),
+    standardSettings: parseStandardSettingsFromYaml(parsed.config),
     configError: parsed.diagnostics[0] ?? null,
     configDiagnostics: parsed.diagnostics,
   });
+}
+
+function headerStateFromText(
+  text: string,
+): Pick<AppState, "webUiMode" | "modeHeaderPresent"> {
+  const header = parseWebUiConfigHeader(text);
+  return {
+    webUiMode: header.mode,
+    modeHeaderPresent: header.modeHeaderPresent,
+  };
+}
+
+function prepareConfigTextForSave(state: AppState): {
+  content: string;
+  header: { mode: WebUiMode };
+} {
+  const existingHeader = parseWebUiConfigHeader(state.configText);
+  const mode = state.webUiMode ?? existingHeader.mode;
+  const header = {
+    mode,
+  };
+  const strippedConfigText = stripWebUiConfigHeader(state.configText);
+  const hasAnyManagedHeader = strippedConfigText !== state.configText;
+  const content =
+    mode === "standard"
+      ? writeWebUiConfigHeader(state.configText, {
+          mode,
+          modeHeaderPresent: true,
+        })
+      : state.modeHeaderPresent || hasAnyManagedHeader
+        ? writeWebUiConfigHeader(state.configText, {
+            mode,
+            modeHeaderPresent: true,
+          })
+        : state.configText;
+
+  return {
+    content,
+    header,
+  };
 }
 
 function applyConfigValidationResponse(
@@ -872,6 +1084,7 @@ function syncPluginsToConfig(
     configModel,
     configText,
     yamlConfig: configText,
+    standardSettings: parseStandardSettingsFromYaml(configModel),
     selectedPlugin: syncSelectedPlugin(state.selectedPlugin, plugins),
     configError: null,
     configDiagnostics: [],
@@ -895,6 +1108,7 @@ function applyConfigModelToState(
     configModel,
     configText,
     yamlConfig: configText,
+    standardSettings: parseStandardSettingsFromYaml(configModel),
     selectedPlugin:
       selectedTag === null
         ? null
