@@ -7,7 +7,8 @@
 - `components/` contains feature components, while `components/ui/` contains shadcn/Radix-style primitives. Prefer composing existing primitives before adding new low-level UI.
 - `components/plugins/` contains plugin-center rendering. Generic card/detail templates live there, and per-plugin overrides live under `components/plugins/kinds/`.
 - `lib/plugin-definitions/` is the source of truth for WebUI plugin kinds, labels, icons, descriptions, and config schemas. Each category has its own file (`executor.ts`, `matcher.ts`, `provider.ts`, `server.ts`); `lib/plugin-definitions.ts` aggregates and exports them all as `pluginKindDefinitions`.
-- `lib/plugin-definitions/docs.ts` holds field-level documentation keyed by plugin kind; it is merged automatically via `withFieldDocs()` and does not need manual wiring.
+- `lib/plugin-definitions/docs.ts` holds fallback field-level documentation keyed by plugin kind; it is merged automatically via `withFieldDocs()`. Localized user-facing docs live under `lib/i18n/locales/*/docs.ts`.
+- `lib/i18n/` contains locale state, translation keys, localized WebUI copy, localized plugin definitions, and localized plugin field docs. Keep it aligned whenever adding user-facing UI text or plugin metadata.
 - `lib/store.ts` contains the current client state model with Zustand. Backend API wiring should replace mock actions behind this store shape where possible instead of scattering fetch logic through views.
 - `pnpm dev` runs the WebUI development server with Turbopack.
 - `pnpm build` builds the WebUI for production.
@@ -21,22 +22,35 @@
 - Prefer named exports for shared WebUI components and helpers.
 - Use the `@/` path alias for WebUI imports instead of deep relative paths.
 - Keep WebUI files client/server explicit: add `"use client"` only for components that need hooks, browser state, event handlers, Zustand, or theme APIs.
-- Keep user-facing WebUI copy in Chinese unless the surrounding UI is already intentionally English, while plugin type names such as `Server`, `Executor`, `Matcher`, and `Provider` may remain as canonical labels.
+- Do not hard-code user-facing copy in components, stores, API helpers, or plugin views. Add translation keys and locale resources instead, while canonical protocol/config tokens such as plugin kinds, YAML keys, DNS record types, metric names, and plugin type labels like `Server`, `Executor`, `Matcher`, and `Provider` may remain literal when they are part of the domain model.
 - Use `lucide-react` icons for toolbar actions, navigation, and plugin visuals when an icon exists.
+
+## Internationalization
+
+- Default locale is `zh-CN`, with `en-US` support. When adding or changing WebUI text, update `lib/i18n/keys.ts`, `lib/i18n/locales/zh-CN/webui.ts`, and `lib/i18n/locales/en-US/webui.ts` in the same change.
+- Use `useI18n()` inside React components and read `t`, `locale`, `formatNumber`, and `formatDateTime` from that hook. Use `tClient()` only in non-component code that cannot access the provider, such as Zustand store actions, API helpers, or pure utility paths.
+- Keep interpolation placeholders stable across locales (`{name}`, `{count}`, `{version}`, etc.) and pass values through `t(key, params)`. Do not build translated sentences by concatenating fragments in JSX.
+- Use `formatNumber()` and `formatDateTime()` for user-visible numbers and timestamps when the active locale matters. Avoid direct `toLocaleString()` calls unless the locale is explicitly supplied.
+- Keep plugin config schemas in `lib/plugin-definitions/` domain-focused and language-neutral where possible. Put localized plugin names, descriptions, field labels, placeholders, option labels, metric labels/help, derived metric labels, and quick-setup placeholders in `lib/i18n/locales/*/plugin-defined.ts`.
+- Put localized field-level documentation in `lib/i18n/locales/*/docs.ts`. When a plugin kind, config field, metric, or docs entry is added/renamed, update both `zh-CN` and `en-US` resources together.
+- Use locale-aware plugin helpers such as `getLocalizedPluginKindDefinitions()`, `getLocalizedPluginKindDefinition()`, `pluginTypeLabel()`, `pluginStatusLabel()`, and `getPluginSearchText()` for catalogs, forms, search, Monaco completions, cards, and detail views.
+- Search indexes, placeholders, empty states, validation messages, toast/dialog copy, accessibility labels, `sr-only` text, tooltips, document title, and meta description are all user-facing and should be localized.
+- Leave machine-readable values unlocalized: YAML field names, plugin `kind` values, tags, API payload keys, route paths, enum values sent to the backend, Prometheus metric identifiers, DNS qtypes/rcodes, and configuration examples that users must paste verbatim.
 
 ## Architecture & Extension Principles
 
 - Preserve the console shell flow: `app/(console)/layout.tsx -> AppSidebar/AppHeader -> page content -> PluginDetailSheet`, with `ConfigEditorView` taking over the main area when `editorMode` is enabled.
 - Keep global UI state in `useAppStore` until backend integration introduces a clearer API boundary. Avoid duplicating selected plugin, drawer state, editor mode, or restart/save flags in page-local stores.
 - Treat `PluginInstance` in `lib/types.ts` as the UI model for live plugin instances. Keep its `type` aligned with OxiDNS plugin categories: `server`, `executor`, `matcher`, and `provider`.
-- **Adding a new plugin kind requires only one file change.** Add the definition to the appropriate category file in `lib/plugin-definitions/` (`executor.ts`, `matcher.ts`, `provider.ts`, or `server.ts`). Everything below auto-derives from that definition with no further registration:
+- **Adding a new plugin kind to the schema registry requires one definition-file change.** Add the definition to the appropriate category file in `lib/plugin-definitions/` (`executor.ts`, `matcher.ts`, `provider.ts`, or `server.ts`). Everything below auto-derives from that definition with no further registration:
   - Plugin catalog and type-filtered lists (`pluginCatalog`, `getPluginCatalogItemsByType`)
   - Create-plugin dialog (search, listing, schema-driven form)
   - Default card and detail drawer (`PluginCardTemplate`, `PluginDetailTemplate`)
   - Plugin index panel (kind-to-category mapping)
   - Sequence composer and quick-setup insertion
   - YAML editor completions and inline validation
-- Two optional follow-up steps exist for richer UI: (1) create `components/plugins/kinds/<kind>.tsx` with custom `Card`/`Detail` components and register it in `components/plugins/registry.ts`; (2) add field-level docs to `lib/plugin-definitions/docs.ts`. Both fall back gracefully if omitted.
+- New or changed plugin definitions still need i18n resources for user-facing labels, descriptions, field text, metric text, and docs. Update `lib/i18n/locales/zh-CN/` and `lib/i18n/locales/en-US/` alongside the schema change.
+- Two optional follow-up steps exist for richer UI: (1) create `components/plugins/kinds/<kind>.tsx` with custom `Card`/`Detail` components and register it in `components/plugins/registry.ts`; (2) add fallback field-level docs to `lib/plugin-definitions/docs.ts` when a non-localized fallback is useful. Both fall back gracefully if omitted.
 - Use `ConfigField` schemas for plugin configuration instead of hand-built one-off forms whenever possible. This keeps create/edit behavior consistent and preserves YAML/plugin concepts like references, arrays, objects, records, durations, and JSON fields.
 - Use `referenceTypes`, `referencePrefix`, and `allowInvert` for fields that point to other plugins or matcher expressions. Do not encode `$tag` and `!$tag` handling in individual plugin components unless the schema editor cannot represent the shape.
 - Put optional custom plugin visuals in `components/plugins/kinds/<kind>.tsx` and register them in `components/plugins/registry.ts`. If a custom component does not add meaningful clarity, rely on `PluginCardTemplate` and `PluginDetailTemplate`.
@@ -61,5 +75,5 @@
 
 - For WebUI behavior changes, run at least `pnpm typecheck`. Also run `pnpm lint` when changing shared components, route layouts, or plugin form logic.
 - For visual WebUI changes, verify the affected route in both light and dark themes, and check narrow and desktop widths for overflow, clipped labels, and broken grid/card layouts.
-- If a Rust plugin is added, renamed, or its config shape changes, update the appropriate file in `lib/plugin-definitions/` (and optionally `lib/plugin-definitions/docs.ts`) in the same change so the console stays aligned with runtime behavior. Custom kind components under `components/plugins/kinds/` only need updating if they reference removed or renamed fields.
+- If a Rust plugin is added, renamed, or its config shape changes, update the appropriate file in `lib/plugin-definitions/`, the matching i18n resources under `lib/i18n/locales/*/plugin-defined.ts` and `lib/i18n/locales/*/docs.ts`, and optionally `lib/plugin-definitions/docs.ts` in the same change so the console stays aligned with runtime behavior. Custom kind components under `components/plugins/kinds/` only need updating if they reference removed or renamed fields.
 - If WebUI architecture, styling tokens, plugin schema conventions, or console workflows change, update this `AGENTS.md`.

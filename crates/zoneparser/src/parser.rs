@@ -486,6 +486,32 @@ fn parse_record_rdata(
         return Ok(rdata);
     }
 
+    if let Some(rdata) = parse_address_rdata(rr_type, fields)? {
+        return Ok(rdata);
+    }
+    if let Some(rdata) = parse_name_rdata(rr_type, fields, origin)? {
+        return Ok(rdata);
+    }
+    if let Some(rdata) = parse_pair_rdata(rr_type, fields, origin)? {
+        return Ok(rdata);
+    }
+    if let Some(rdata) = parse_text_rdata(rr_type, fields)? {
+        return Ok(rdata);
+    }
+    if let Some(rdata) = parse_soa_rdata(rr_type, fields, origin)? {
+        return Ok(rdata);
+    }
+    if let Some(rdata) = parse_service_rdata(rr_type, fields, origin)? {
+        return Ok(rdata);
+    }
+
+    Err(format!(
+        "record type '{}' requires RFC3597 generic syntax ('\\# <len> <hex>') in zoneparser",
+        <&str>::from(rr_type)
+    ))
+}
+
+fn parse_address_rdata(rr_type: RecordType, fields: &[Token]) -> Result<Option<RData>, String> {
     match rr_type {
         RecordType::A => {
             let field = require_exact_fields(fields, 1, "A")?;
@@ -509,50 +535,96 @@ fn parse_record_rdata(
                 IpAddr::V4(_) => Err("AAAA record requires an IPv6 address".to_string()),
             }
         }
-        RecordType::CNAME => Ok(RData::CNAME(CNAME(parse_name_token(&fields[0], origin)?))),
-        RecordType::NS => Ok(RData::NS(NS(parse_name_token(&fields[0], origin)?))),
-        RecordType::PTR => Ok(RData::PTR(PTR(parse_name_token(&fields[0], origin)?))),
-        RecordType::DNAME => Ok(RData::DNAME(DNAME(parse_name_token(&fields[0], origin)?))),
-        RecordType::ANAME => Ok(RData::ANAME(ANAME(parse_name_token(&fields[0], origin)?))),
-        RecordType::MD => Ok(RData::MD(MD(parse_name_token(&fields[0], origin)?))),
-        RecordType::MF => Ok(RData::MF(MF(parse_name_token(&fields[0], origin)?))),
-        RecordType::MB => Ok(RData::MB(MB(parse_name_token(&fields[0], origin)?))),
-        RecordType::MG => Ok(RData::MG(MG(parse_name_token(&fields[0], origin)?))),
-        RecordType::MR => Ok(RData::MR(MR(parse_name_token(&fields[0], origin)?))),
-        RecordType::NSAPPTR => Ok(RData::NSAPPTR(NSAPPTR(parse_name_token(
-            &fields[0], origin,
-        )?))),
-        RecordType::MX => parse_u16_name_pair(fields, origin, "MX")
-            .map(|value| RData::MX(MX::new(value.0, value.1))),
-        RecordType::RT => parse_u16_name_pair(fields, origin, "RT")
-            .map(|value| RData::RT(RT::new(value.0, value.1))),
-        RecordType::AFSDB => parse_u16_name_pair(fields, origin, "AFSDB")
-            .map(|value| RData::AFSDB(AFSDB::new(value.0, value.1))),
+        _ => return Ok(None),
+    }
+    .map(Some)
+}
+
+fn parse_name_rdata(
+    rr_type: RecordType,
+    fields: &[Token],
+    origin: Option<&Name>,
+) -> Result<Option<RData>, String> {
+    let rdata = match rr_type {
+        RecordType::CNAME => RData::CNAME(CNAME(parse_single_name(fields, origin, "CNAME")?)),
+        RecordType::NS => RData::NS(NS(parse_single_name(fields, origin, "NS")?)),
+        RecordType::PTR => RData::PTR(PTR(parse_single_name(fields, origin, "PTR")?)),
+        RecordType::DNAME => RData::DNAME(DNAME(parse_single_name(fields, origin, "DNAME")?)),
+        RecordType::ANAME => RData::ANAME(ANAME(parse_single_name(fields, origin, "ANAME")?)),
+        RecordType::MD => RData::MD(MD(parse_single_name(fields, origin, "MD")?)),
+        RecordType::MF => RData::MF(MF(parse_single_name(fields, origin, "MF")?)),
+        RecordType::MB => RData::MB(MB(parse_single_name(fields, origin, "MB")?)),
+        RecordType::MG => RData::MG(MG(parse_single_name(fields, origin, "MG")?)),
+        RecordType::MR => RData::MR(MR(parse_single_name(fields, origin, "MR")?)),
+        RecordType::NSAPPTR => {
+            RData::NSAPPTR(NSAPPTR(parse_single_name(fields, origin, "NSAPPTR")?))
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(rdata))
+}
+
+fn parse_pair_rdata(
+    rr_type: RecordType,
+    fields: &[Token],
+    origin: Option<&Name>,
+) -> Result<Option<RData>, String> {
+    let rdata = match rr_type {
+        RecordType::MX => {
+            let (preference, exchange) = parse_u16_name_pair(fields, origin, "MX")?;
+            RData::MX(MX::new(preference, exchange))
+        }
+        RecordType::RT => {
+            let (preference, host) = parse_u16_name_pair(fields, origin, "RT")?;
+            RData::RT(RT::new(preference, host))
+        }
+        RecordType::AFSDB => {
+            let (subtype, hostname) = parse_u16_name_pair(fields, origin, "AFSDB")?;
+            RData::AFSDB(AFSDB::new(subtype, hostname))
+        }
         RecordType::RP => {
             let fields = require_exact_fields(fields, 2, "RP")?;
-            Ok(RData::RP(RP::new(
+            RData::RP(RP::new(
                 parse_name_token(&fields[0], origin)?,
                 parse_name_token(&fields[1], origin)?,
-            )))
+            ))
         }
         RecordType::MINFO => {
             let fields = require_exact_fields(fields, 2, "MINFO")?;
-            Ok(RData::MINFO(MINFO::new(
+            RData::MINFO(MINFO::new(
                 parse_name_token(&fields[0], origin)?,
                 parse_name_token(&fields[1], origin)?,
-            )))
+            ))
         }
         RecordType::HINFO => {
             let fields = require_exact_fields(fields, 2, "HINFO")?;
-            Ok(RData::HINFO(HINFO::new(
+            RData::HINFO(HINFO::new(
                 fields[0].decode_text_bytes()?.into_boxed_slice(),
                 fields[1].decode_text_bytes()?.into_boxed_slice(),
-            )))
+            ))
         }
+        _ => return Ok(None),
+    };
+    Ok(Some(rdata))
+}
+
+fn parse_text_rdata(rr_type: RecordType, fields: &[Token]) -> Result<Option<RData>, String> {
+    match rr_type {
         RecordType::TXT => parse_txt_like(fields).map(RData::TXT),
         RecordType::SPF => parse_txt_like(fields).map(|value| RData::SPF(SPF(value))),
         RecordType::AVC => parse_txt_like(fields).map(|value| RData::AVC(AVC(value))),
         RecordType::RESINFO => parse_txt_like(fields).map(|value| RData::RESINFO(RESINFO(value))),
+        _ => return Ok(None),
+    }
+    .map(Some)
+}
+
+fn parse_soa_rdata(
+    rr_type: RecordType,
+    fields: &[Token],
+    origin: Option<&Name>,
+) -> Result<Option<RData>, String> {
+    match rr_type {
         RecordType::SOA => {
             let fields = require_exact_fields(fields, 7, "SOA")?;
             Ok(RData::SOA(SOA::new(
@@ -565,6 +637,17 @@ fn parse_record_rdata(
                 parse_u32(&fields[6].raw, "SOA minimum")?,
             )))
         }
+        _ => return Ok(None),
+    }
+    .map(Some)
+}
+
+fn parse_service_rdata(
+    rr_type: RecordType,
+    fields: &[Token],
+    origin: Option<&Name>,
+) -> Result<Option<RData>, String> {
+    match rr_type {
         RecordType::SRV => {
             let fields = require_exact_fields(fields, 4, "SRV")?;
             Ok(RData::SRV(SRV::new(
@@ -593,11 +676,9 @@ fn parse_record_rdata(
                 fields[2].decode_text_bytes()?.into_boxed_slice(),
             )))
         }
-        _ => Err(format!(
-            "record type '{}' requires RFC3597 generic syntax ('\\# <len> <hex>') in zoneparser",
-            <&str>::from(rr_type)
-        )),
+        _ => return Ok(None),
     }
+    .map(Some)
 }
 
 fn try_parse_generic_rdata(rr_type: RecordType, fields: &[Token]) -> Result<Option<RData>, String> {
@@ -656,6 +737,11 @@ fn parse_u16_name_pair(
         parse_u16(&fields[0].raw, &format!("{} preference", kind))?,
         parse_name_token(&fields[1], origin)?,
     ))
+}
+
+fn parse_single_name(fields: &[Token], origin: Option<&Name>, kind: &str) -> Result<Name, String> {
+    let fields = require_exact_fields(fields, 1, kind)?;
+    parse_name_token(&fields[0], origin)
 }
 
 fn require_exact_fields<'a>(
@@ -1451,6 +1537,67 @@ mod tests {
             records[1].data(),
             RData::Unknown { rr_type: 65534, data } if data == &vec![0x01, 0x02, 0x03, 0x04, 0xAB, 0xCD]
         ));
+    }
+
+    #[test]
+    fn parses_representative_rdata_families_from_inline_zone() {
+        let records = parse_str(
+            r#"
+$ORIGIN example.test.
+@ SOA ns hostmaster 1 2 3 4 5
+www A 192.0.2.1
+v6 AAAA 2001:db8::1
+alias CNAME www
+@ MX 10 mail
+_https._tcp SRV 1 2 443 svc
+@ TXT "hello" world
+@ CAA 0 issue "letsencrypt.org"
+"#,
+            &ParseOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.rr_type())
+                .collect::<Vec<_>>(),
+            vec![
+                RecordType::SOA,
+                RecordType::A,
+                RecordType::AAAA,
+                RecordType::CNAME,
+                RecordType::MX,
+                RecordType::SRV,
+                RecordType::TXT,
+                RecordType::CAA,
+            ]
+        );
+        assert_eq!(txt_chunks(&records[6]), vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn rejects_malformed_rdata_field_counts() {
+        for (zone, expected) in [
+            (
+                "$ORIGIN example.test.\nalias CNAME\n",
+                "CNAME record requires 1 field(s), got 0",
+            ),
+            (
+                "$ORIGIN example.test.\nalias CNAME target extra\n",
+                "CNAME record requires 1 field(s), got 2",
+            ),
+            (
+                "$ORIGIN example.test.\n_https._tcp SRV 1 2 svc\n",
+                "SRV record requires 4 field(s), got 3",
+            ),
+        ] {
+            let err = parse_str(zone, &ParseOptions::default()).unwrap_err();
+            assert!(
+                err.to_string().contains(expected),
+                "expected '{expected}' in '{err}'"
+            );
+        }
     }
 
     #[test]

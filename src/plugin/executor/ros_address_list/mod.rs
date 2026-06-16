@@ -42,7 +42,10 @@ use serde_yaml_ng::Value;
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 
-use self::api::{MikrotikApi, MikrotikRsClient};
+use self::api::{
+    DEFAULT_CONNECT_TIMEOUT_SECS, DEFAULT_RECEIVE_TIMEOUT_SECS, DEFAULT_SEND_TIMEOUT_SECS,
+    MikrotikApi, MikrotikApiTimeouts, MikrotikRsClient,
+};
 use self::manager::{
     AddressListFamily, AddressListKey, AddressListManager, AddressListManagerConfig,
     AddressListManagerRuntime, ManagerCommand, ObservedAddr,
@@ -84,6 +87,12 @@ struct MikrotikConfigArgs {
     username: Option<String>,
     /// RouterOS login password.
     password: Option<String>,
+    /// RouterOS API connection timeout in seconds.
+    connect_timeout: Option<u64>,
+    /// RouterOS API command send timeout in seconds.
+    send_timeout: Option<u64>,
+    /// RouterOS API response receive timeout in seconds.
+    receive_timeout: Option<u64>,
     /// Whether post stage waits RouterOS writes (`false`) or queues work
     /// (`true`).
     #[serde(rename = "async")]
@@ -125,6 +134,8 @@ struct MikrotikConfig {
     username: String,
     /// Login password for RouterOS API.
     password: String,
+    /// RouterOS API operation timeouts.
+    api_timeouts: MikrotikApiTimeouts,
     /// Async mode switch for post stage writes.
     async_mode: bool,
     /// IPv4 address-list name managed by this plugin.
@@ -156,6 +167,19 @@ impl MikrotikConfigArgs {
         let address = required_non_empty(self.address, "address")?;
         let username = required_non_empty(self.username, "username")?;
         let password = required_non_empty(self.password, "password")?;
+        let api_timeouts = MikrotikApiTimeouts::from_secs(
+            timeout_secs(
+                self.connect_timeout,
+                "connect_timeout",
+                DEFAULT_CONNECT_TIMEOUT_SECS,
+            )?,
+            timeout_secs(self.send_timeout, "send_timeout", DEFAULT_SEND_TIMEOUT_SECS)?,
+            timeout_secs(
+                self.receive_timeout,
+                "receive_timeout",
+                DEFAULT_RECEIVE_TIMEOUT_SECS,
+            )?,
+        );
         let address_list4 = optional_non_empty(self.address_list4);
         let address_list6 = optional_non_empty(self.address_list6);
         if address_list4.is_none() && address_list6.is_none() {
@@ -193,6 +217,7 @@ impl MikrotikConfigArgs {
             address,
             username,
             password,
+            api_timeouts,
             async_mode: self.async_mode.unwrap_or(DEFAULT_ASYNC_MODE),
             address_list4,
             address_list6,
@@ -297,10 +322,6 @@ impl Plugin for MikrotikExecutor {
         // Keep it idempotent and only build the runtime once.
         if self.manager.is_none() || self.command_tx.is_some() {
             return Ok(());
-        }
-
-        if let Some(manager) = self.manager.as_mut() {
-            manager.initialize_on_startup().await?;
         }
 
         let Some(manager) = self.manager.take() else {
@@ -474,6 +495,7 @@ impl PluginFactory for MikrotikFactory {
             config.address.clone(),
             config.username.clone(),
             config.password.clone(),
+            config.api_timeouts,
         )) as Arc<dyn MikrotikApi>;
 
         let manager_cfg = AddressListManagerConfig {
@@ -576,6 +598,16 @@ fn optional_non_empty(value: Option<String>) -> Option<String> {
     value
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
+}
+
+fn timeout_secs(value: Option<u64>, field: &str, default_secs: u64) -> Result<u64> {
+    match value {
+        Some(0) => Err(DnsError::plugin(format!(
+            "ros_address_list '{field}' must be greater than 0 seconds"
+        ))),
+        Some(value) => Ok(value),
+        None => Ok(default_secs),
+    }
 }
 
 #[inline]
@@ -784,6 +816,7 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
     use super::*;
+    use crate::core::app_clock::AppClock;
     use crate::plugin::executor::ros_address_list::api::RouterListEntry;
     use crate::plugin::executor::ros_address_list::manager::{
         OwnedCommentKind, decode_owned_comment, encode_comment,
@@ -797,6 +830,8 @@ mod tests {
         next_id: u64,
         fail_next_upsert: bool,
         fail_healthcheck: bool,
+        list_entries_delay: Option<Duration>,
+        convert_persistent_to_dynamic_after_list: bool,
         upsert_v4: u64,
         upsert_v6: u64,
         update_ops: u64,
@@ -841,6 +876,53 @@ mod tests {
             list4: Option<&str>,
             list6: Option<&str>,
         ) -> Result<Vec<RouterListEntry>> {
+            let delay = self
+                .state
+                .lock()
+                .map_err(|_| DnsError::plugin("mock api lock poisoned"))?
+                .list_entries_delay;
+            if let Some(delay) = delay {
+                tokio::time::sleep(delay).await;
+            }
+
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| DnsError::plugin("mock api lock poisoned"))?;
+            let entries = state
+                .entries
+                .values()
+                .filter(|entry| match entry.key.family {
+                    AddressListFamily::Ipv4 => list4 == Some(entry.key.list.as_str()),
+                    AddressListFamily::Ipv6 => list6 == Some(entry.key.list.as_str()),
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            drop(state);
+
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| DnsError::plugin("mock api lock poisoned"))?;
+            if state.convert_persistent_to_dynamic_after_list {
+                state.convert_persistent_to_dynamic_after_list = false;
+                if let Some(entry) = state.entries.values_mut().find(|entry| {
+                    decode_owned_comment("oxidns", "mk", entry.comment.as_deref())
+                        .is_some_and(|meta| meta.kind == OwnedCommentKind::Persistent)
+                }) {
+                    entry.comment = Some(encode_comment(
+                        "oxidns",
+                        "mk",
+                        OwnedCommentKind::Dynamic,
+                        Some("race.example"),
+                    ));
+                }
+            }
+
+            Ok(entries)
+        }
+
+        async fn list_entries_by_key(&self, key: &AddressListKey) -> Result<Vec<RouterListEntry>> {
             let state = self
                 .state
                 .lock()
@@ -848,10 +930,7 @@ mod tests {
             Ok(state
                 .entries
                 .values()
-                .filter(|entry| match entry.key.family {
-                    AddressListFamily::Ipv4 => list4 == Some(entry.key.list.as_str()),
-                    AddressListFamily::Ipv6 => list6 == Some(entry.key.list.as_str()),
-                })
+                .filter(|entry| entry.key == *key)
                 .cloned()
                 .collect())
         }
@@ -952,6 +1031,7 @@ mod tests {
     }
 
     fn default_cfg(tag: &str) -> AddressListManagerConfig {
+        AppClock::start();
         AddressListManagerConfig {
             plugin_tag: tag.to_string(),
             address_list4: Some("oxidns_ipv4".to_string()),
@@ -1007,10 +1087,12 @@ mod tests {
         address_list6: Option<&str>,
         api: Arc<dyn MikrotikApi>,
     ) -> MikrotikExecutor {
+        AppClock::start();
         let config = MikrotikConfig {
             address: "127.0.0.1:8728".to_string(),
             username: "u".to_string(),
             password: "p".to_string(),
+            api_timeouts: MikrotikApiTimeouts::default(),
             async_mode,
             address_list4: address_list4.map(|v| v.to_string()),
             address_list6: address_list6.map(|v| v.to_string()),
@@ -1112,6 +1194,44 @@ address_list4: "oxidns_ipv4"
         .unwrap();
         let parsed = parse_plugin_config(Some(cfg), false).unwrap();
         assert_eq!(parsed.comment_prefix, DEFAULT_COMMENT_PREFIX);
+        assert_eq!(parsed.api_timeouts, MikrotikApiTimeouts::default());
+    }
+
+    #[test]
+    fn config_validation_accepts_routeros_api_timeouts() {
+        let cfg = serde_yaml_ng::from_str::<Value>(
+            r#"
+address: "1.1.1.1:8728"
+username: "user"
+password: "pass"
+connect_timeout: 10
+send_timeout: 11
+receive_timeout: 60
+address_list4: "oxidns_ipv4"
+"#,
+        )
+        .unwrap();
+        let parsed = parse_plugin_config(Some(cfg), false).unwrap();
+        assert_eq!(
+            parsed.api_timeouts,
+            MikrotikApiTimeouts::from_secs(10, 11, 60)
+        );
+    }
+
+    #[test]
+    fn config_validation_rejects_zero_routeros_api_timeout() {
+        let cfg = serde_yaml_ng::from_str::<Value>(
+            r#"
+address: "1.1.1.1:8728"
+username: "user"
+password: "pass"
+receive_timeout: 0
+address_list4: "oxidns_ipv4"
+"#,
+        )
+        .unwrap();
+        let err = parse_plugin_config(Some(cfg), false).unwrap_err();
+        assert!(err.to_string().contains("receive_timeout"));
     }
 
     #[test]
@@ -1423,6 +1543,43 @@ persistent:
     }
 
     #[tokio::test]
+    async fn reconcile_revalidates_stale_persistent_before_delete() {
+        let api = Arc::new(MockMikrotikApi::default());
+        let key = AddressListKey::new(
+            IpAddr::V4(Ipv4Addr::new(15, 15, 15, 15)),
+            "oxidns_ipv4".to_string(),
+        );
+        api.seed_entry(RouterListEntry {
+            id: "*401".to_string(),
+            key: key.clone(),
+            timeout: None,
+            comment: Some(encode_comment(
+                "oxidns",
+                "mk",
+                OwnedCommentKind::Persistent,
+                None,
+            )),
+        });
+        {
+            let mut state = api.state.lock().unwrap();
+            state.convert_persistent_to_dynamic_after_list = true;
+        }
+
+        let mut manager = AddressListManager::new(api.clone(), default_cfg("mk"));
+        manager.reconcile().await.unwrap();
+
+        let state = api.state.lock().unwrap();
+        let entry = state
+            .entries
+            .get(&MockMikrotikApi::storage_key(&key))
+            .unwrap();
+        let meta = decode_owned_comment("oxidns", "mk", entry.comment.as_deref()).unwrap();
+        assert_eq!(entry.id, "*401");
+        assert_eq!(entry.timeout, None);
+        assert_eq!(meta.kind, OwnedCommentKind::Dynamic);
+    }
+
+    #[tokio::test]
     async fn persistent_entry_wins_over_dynamic_timeout() {
         let api = Arc::new(MockMikrotikApi::default());
         let key = AddressListKey::new(
@@ -1604,6 +1761,75 @@ persistent:
         })
         .await;
         assert!(api.entry_count() > 0);
+        let _ = executor.destroy().await;
+    }
+
+    #[tokio::test]
+    async fn startup_reconcile_failure_does_not_block_dns_execution() {
+        let api = Arc::new(MockMikrotikApi::default());
+        {
+            let mut state = api.state.lock().unwrap();
+            state.fail_healthcheck = true;
+        }
+        let mut executor = build_executor_for_test(
+            "mk_startup",
+            true,
+            false,
+            Some("oxidns_ipv4"),
+            None,
+            api.clone() as Arc<dyn MikrotikApi>,
+        );
+        executor.init_for_test().await.unwrap();
+
+        let mut ctx = make_context();
+        ctx.set_response(response_with_records(vec![a_record(
+            Ipv4Addr::new(13, 13, 13, 13),
+            300,
+        )]));
+        executor.execute_with_next(&mut ctx, None).await.unwrap();
+        assert!(ctx.response().is_some());
+
+        yield_until("dynamic write after startup reconcile failure", || {
+            api.entry_count() > 0
+        })
+        .await;
+        let _ = executor.destroy().await;
+    }
+
+    #[tokio::test]
+    async fn startup_reconcile_scan_does_not_delay_sync_observation() {
+        let api = Arc::new(MockMikrotikApi::default());
+        {
+            let mut state = api.state.lock().unwrap();
+            state.list_entries_delay = Some(Duration::from_secs(1));
+        }
+        let mut executor = build_executor_for_test(
+            "mk_sync_startup",
+            false,
+            false,
+            Some("oxidns_ipv4"),
+            None,
+            api.clone() as Arc<dyn MikrotikApi>,
+        );
+        executor.init_for_test().await.unwrap();
+
+        let mut ctx = make_context();
+        ctx.set_response(response_with_records(vec![a_record(
+            Ipv4Addr::new(14, 14, 14, 14),
+            300,
+        )]));
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            executor.execute_with_next(&mut ctx, None),
+        )
+        .await
+        .expect("sync observation should not wait for startup reconcile scan")
+        .unwrap();
+
+        {
+            let state = api.state.lock().unwrap();
+            assert!(state.upsert_v4 >= 1);
+        }
         let _ = executor.destroy().await;
     }
 

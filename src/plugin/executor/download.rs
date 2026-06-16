@@ -35,7 +35,7 @@ use crate::core::metrics::{
 };
 use crate::core::system_utils::deserialize_duration_option;
 use crate::network::http_client::{HttpClient, HttpClientOptions, HttpRequestOptions};
-use crate::network::upstream::{Socks5Opt, parse_socks5_opt};
+use crate::network::proxy::{Socks5Opt, parse_socks5_opt};
 use crate::plugin::executor::{ExecStep, Executor};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;

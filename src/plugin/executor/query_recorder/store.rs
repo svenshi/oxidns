@@ -26,6 +26,35 @@ use crate::core::error::{DnsError, Result};
 const SCHEMA_VERSION: &str = "v1";
 const CLEANUP_BATCH_SIZE: usize = 1_000;
 const PLUGIN_STATS_SAMPLE_LIMIT: usize = 10_000;
+const RECORD_ROW_COLUMNS: [&str; 27] = [
+    "id",
+    "created_at_ms",
+    "elapsed_ms",
+    "request_id",
+    "client_ip",
+    "questions_json",
+    "req_rd",
+    "req_cd",
+    "req_ad",
+    "req_opcode",
+    "req_edns_json",
+    "error",
+    "has_response",
+    "rcode",
+    "resp_aa",
+    "resp_tc",
+    "resp_ra",
+    "resp_ad",
+    "resp_cd",
+    "answer_count",
+    "authority_count",
+    "additional_count",
+    "answers_json",
+    "authorities_json",
+    "additionals_json",
+    "signature_json",
+    "resp_edns_json",
+];
 
 pub(super) fn open_database(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
@@ -62,6 +91,17 @@ pub(super) fn table_names(tag: &str) -> TableNames {
         records: format!("{prefix}_records"),
         steps: format!("{prefix}_steps"),
     }
+}
+
+fn record_row_select_columns(alias: Option<&str>) -> String {
+    RECORD_ROW_COLUMNS
+        .iter()
+        .map(|column| match alias {
+            Some(alias) => format!("{alias}.{column}"),
+            None => (*column).to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(",\n            ")
 }
 
 fn sanitize_tag(tag: &str) -> String {
@@ -473,35 +513,10 @@ pub(super) fn query_records(
     let where_sql = join_clauses(&clauses);
     params.push(Value::Integer(query.limit.saturating_add(1) as i64));
 
+    let row_columns = record_row_select_columns(Some("r"));
     let sql = format!(
         "SELECT
-            r.id,
-            r.created_at_ms,
-            r.elapsed_ms,
-            r.request_id,
-            r.client_ip,
-            r.questions_json,
-            r.req_rd,
-            r.req_cd,
-            r.req_ad,
-            r.req_opcode,
-            r.req_edns_json,
-            r.error,
-            r.has_response,
-            r.rcode,
-            r.resp_aa,
-            r.resp_tc,
-            r.resp_ra,
-            r.resp_ad,
-            r.resp_cd,
-            r.answer_count,
-            r.authority_count,
-            r.additional_count,
-            r.answers_json,
-            r.authorities_json,
-            r.additionals_json,
-            r.signature_json,
-            r.resp_edns_json
+            {row_columns}
          FROM {records} r
          WHERE {where_sql}
          ORDER BY r.created_at_ms DESC, r.id DESC
@@ -539,35 +554,10 @@ pub(super) fn load_record_detail(
     record_id: i64,
 ) -> std::result::Result<Option<RecordDetail>, DnsError> {
     let conn = open_database(&backend.path)?;
+    let row_columns = record_row_select_columns(None);
     let record_sql = format!(
         "SELECT
-            id,
-            created_at_ms,
-            elapsed_ms,
-            request_id,
-            client_ip,
-            questions_json,
-            req_rd,
-            req_cd,
-            req_ad,
-            req_opcode,
-            req_edns_json,
-            error,
-            has_response,
-            rcode,
-            resp_aa,
-            resp_tc,
-            resp_ra,
-            resp_ad,
-            resp_cd,
-            answer_count,
-            authority_count,
-            additional_count,
-            answers_json,
-            authorities_json,
-            additionals_json,
-            signature_json,
-            resp_edns_json
+            {row_columns}
          FROM {records}
          WHERE id = ?1",
         records = backend.tables.records
@@ -1450,4 +1440,110 @@ fn non_negative_u16(value: i64) -> rusqlite::Result<u16> {
 
 fn non_negative_usize(value: i64) -> rusqlite::Result<usize> {
     usize::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, value))
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::{Connection, params};
+    use serde_json::json;
+
+    use super::super::model::{EdnsJson, EdnsOptionJson, QuestionJson, RecordJson};
+    use super::*;
+
+    #[test]
+    fn test_read_record_row_matches_insert_and_select_column_order() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        let tables = TableNames {
+            records: "records".to_string(),
+            steps: "steps".to_string(),
+        };
+        create_schema(&mut conn, &tables).unwrap();
+
+        let expected = sample_record_row();
+        let tx = conn.transaction().unwrap();
+        let detail = insert_record(&tx, &tables, expected.clone(), Vec::new()).unwrap();
+        tx.commit().unwrap();
+
+        let row_columns = record_row_select_columns(None);
+        let sql = format!(
+            "SELECT
+                {row_columns}
+             FROM {}
+             WHERE id = ?1",
+            tables.records
+        );
+        let actual = conn
+            .query_row(&sql, params![detail.record.id], read_record_row)
+            .unwrap();
+
+        let expected = RecordRow {
+            id: detail.record.id,
+            ..expected
+        };
+        assert_eq!(actual, expected);
+    }
+
+    fn sample_record_row() -> RecordRow {
+        let question = QuestionJson {
+            name: "example.com.".to_string(),
+            qtype: "A".to_string(),
+            qclass: "IN".to_string(),
+        };
+        let answer = RecordJson {
+            name: "example.com.".to_string(),
+            class: "IN".to_string(),
+            ttl: 300,
+            rr_type: "A".to_string(),
+            payload_kind: "A".to_string(),
+            payload_text: "192.0.2.10".to_string(),
+            payload: json!({ "ip": "192.0.2.10" }),
+        };
+        let edns = EdnsJson {
+            udp_payload_size: 1232,
+            ext_rcode: 0,
+            version: 0,
+            dnssec_ok: true,
+            z: 0,
+            options: vec![EdnsOptionJson {
+                code: 8,
+                name: "Subnet".to_string(),
+                payload_kind: "Subnet".to_string(),
+                payload: json!({
+                    "addr": "192.0.2.0",
+                    "source_prefix": 24,
+                    "scope_prefix": 0,
+                }),
+            }],
+        };
+
+        RecordRow {
+            id: 0,
+            created_at_ms: 1_700_000_000_123,
+            elapsed_ms: 37,
+            request_id: 42,
+            client_ip: "127.0.0.1".to_string(),
+            questions_json: vec![question],
+            req_rd: true,
+            req_cd: false,
+            req_ad: true,
+            req_opcode: "Query".to_string(),
+            req_edns_json: Some(edns.clone()),
+            error: None,
+            has_response: true,
+            rcode: Some("NoError".to_string()),
+            resp_aa: Some(false),
+            resp_tc: Some(false),
+            resp_ra: Some(true),
+            resp_ad: Some(false),
+            resp_cd: Some(false),
+            answer_count: 1,
+            authority_count: 0,
+            additional_count: 0,
+            answers_json: vec![answer],
+            authorities_json: Vec::new(),
+            additionals_json: Vec::new(),
+            signature_json: Vec::new(),
+            resp_edns_json: Some(edns),
+        }
+    }
 }

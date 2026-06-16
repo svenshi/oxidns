@@ -967,6 +967,79 @@ mod tests {
     }
 
     #[test]
+    fn test_compiled_v4_page_inline1_boundaries() {
+        let mut matcher = IpPrefixMatcher::default();
+        matcher.add_rule("10.0.0.10").unwrap();
+        matcher.finalize();
+
+        assert_v4_page_kind(&matcher, Ipv4Addr::new(10, 0, 0, 10), V4_KIND_INLINE1, 1);
+        assert!(matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 10))));
+        assert!(!matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9))));
+        assert!(!matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 11))));
+    }
+
+    #[test]
+    fn test_compiled_v4_page_inline2_boundaries() {
+        let mut matcher = IpPrefixMatcher::default();
+        matcher.add_rule("10.0.0.10").unwrap();
+        matcher.add_rule("10.0.0.20").unwrap();
+        matcher.finalize();
+
+        assert_v4_page_kind(&matcher, Ipv4Addr::new(10, 0, 0, 10), V4_KIND_INLINE2, 2);
+        assert!(matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 10))));
+        assert!(matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 20))));
+        assert!(!matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 15))));
+    }
+
+    #[test]
+    fn test_compiled_v4_page_inline4_len3_and_len4_boundaries() {
+        let mut three = IpPrefixMatcher::default();
+        three.add_rule("10.0.0.10").unwrap();
+        three.add_rule("10.0.0.20").unwrap();
+        three.add_rule("10.0.0.30").unwrap();
+        three.finalize();
+
+        assert_v4_page_kind(&three, Ipv4Addr::new(10, 0, 0, 10), V4_KIND_INLINE4, 3);
+        assert!(three.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 30))));
+        assert!(!three.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 25))));
+
+        let mut four = IpPrefixMatcher::default();
+        four.add_rule("10.0.1.10").unwrap();
+        four.add_rule("10.0.1.20").unwrap();
+        four.add_rule("10.0.1.30").unwrap();
+        four.add_rule("10.0.1.40").unwrap();
+        four.finalize();
+
+        assert_v4_page_kind(&four, Ipv4Addr::new(10, 0, 1, 10), V4_KIND_INLINE4, 4);
+        assert!(four.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 1, 40))));
+        assert!(!four.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 1, 35))));
+    }
+
+    #[test]
+    fn test_compiled_v4_page_full_and_bitmap_boundaries() {
+        let mut full = IpPrefixMatcher::default();
+        full.add_rule("10.0.0.0/16").unwrap();
+        full.finalize();
+
+        assert_v4_page_kind(&full, Ipv4Addr::new(10, 0, 0, 0), V4_KIND_FULL, 0);
+        assert!(full.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0))));
+        assert!(full.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 255, 255))));
+        assert!(!full.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 1, 0, 0))));
+
+        let mut bitmap = IpPrefixMatcher::default();
+        for host in [10, 20, 30, 40, 50] {
+            bitmap
+                .add_rule(&format!("10.2.0.{host}"))
+                .expect("host rule must parse");
+        }
+        bitmap.finalize();
+
+        assert_v4_page_kind(&bitmap, Ipv4Addr::new(10, 2, 0, 10), V4_KIND_BITMAP, 0);
+        assert!(bitmap.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 2, 0, 50))));
+        assert!(!bitmap.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 2, 0, 45))));
+    }
+
+    #[test]
     fn test_add_v4_network_matches_textual_rule() {
         let mut bytes = IpPrefixMatcher::default();
         bytes
@@ -1012,5 +1085,18 @@ mod tests {
         assert!(matcher.v6_rules.is_empty());
         assert!(matcher.contains_ip(IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3))));
         assert!(matcher.contains_ip(IpAddr::V6("2001:db8::1".parse().unwrap())));
+    }
+
+    fn assert_v4_page_kind(
+        matcher: &IpPrefixMatcher,
+        ip: Ipv4Addr,
+        expected_kind: u8,
+        expected_len: u8,
+    ) {
+        let page = (u32::from(ip) >> V4_PAGE_BITS) as usize;
+        let compiled = matcher.v4.as_ref().expect("matcher must be compiled");
+        let meta = compiled.pages[page];
+        assert_eq!(meta.kind, expected_kind);
+        assert_eq!(meta.len, expected_len);
     }
 }

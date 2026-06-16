@@ -574,7 +574,7 @@ upstreams:
 - `port`
   - 覆盖端口。
 - `bootstrap`
-  - 当上游地址是域名时，用于解析上游域名的引导 DNS。
+  - 当上游地址是域名时，用于解析上游域名的引导 DNS，必须写为 `IP:port`。
 - `bootstrap_version`
   - `4` 或 `6`。
 - `socks5`
@@ -583,8 +583,10 @@ upstreams:
   - IPv6 需写成 `[addr]:port`。
 - `idle_timeout`
   - 空闲连接超时，单位秒。
+- `min_conns`
+  - 连接池最小预热连接数，默认 `0`，范围 `0..4096`，且不能大于 `max_conns`。
 - `max_conns`
-  - 连接池最大连接数。
+  - 连接池最大连接数，范围 `1..4096`。
 - `insecure_skip_verify`
   - 跳过 TLS 证书校验，仅建议测试环境使用。
 - `timeout`

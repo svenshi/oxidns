@@ -10,5 +10,5 @@ full:exact-only.test
 # Keyword rule.
 keyword:analytics
 
-# Regular expression rule.
-regexp:^api[0-9]+\.service\.test$
+# Regular expression rule with a comma in the quantifier.
+regexp:^api[0-9]{1,2}\.service\.test$

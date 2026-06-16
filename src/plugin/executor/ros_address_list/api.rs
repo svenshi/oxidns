@@ -49,12 +49,39 @@ const COMMAND_IPV6_ADDRESS_LIST_SET: &str = "/ipv6/firewall/address-list/set";
 /// RouterOS command for deleting IPv6 firewall address-list rows.
 const COMMAND_IPV6_ADDRESS_LIST_REMOVE: &str = "/ipv6/firewall/address-list/remove";
 
-/// Timeout for establishing a RouterOS API connection.
-const CONNECT_TIMEOUT_SECS: u64 = 5;
-/// Timeout for sending one RouterOS API command.
-const SEND_TIMEOUT_SECS: u64 = 5;
-/// Timeout for receiving one chunk of RouterOS API response data.
-const RECV_TIMEOUT_SECS: u64 = 5;
+/// Default timeout for establishing a RouterOS API connection.
+pub(super) const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 5;
+/// Default timeout for sending one RouterOS API command.
+pub(super) const DEFAULT_SEND_TIMEOUT_SECS: u64 = 5;
+/// Default timeout for receiving one chunk of RouterOS API response data.
+pub(super) const DEFAULT_RECEIVE_TIMEOUT_SECS: u64 = 5;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(super) struct MikrotikApiTimeouts {
+    connect: Duration,
+    send: Duration,
+    receive: Duration,
+}
+
+impl MikrotikApiTimeouts {
+    pub(super) fn from_secs(connect_secs: u64, send_secs: u64, receive_secs: u64) -> Self {
+        Self {
+            connect: Duration::from_secs(connect_secs),
+            send: Duration::from_secs(send_secs),
+            receive: Duration::from_secs(receive_secs),
+        }
+    }
+}
+
+impl Default for MikrotikApiTimeouts {
+    fn default() -> Self {
+        Self::from_secs(
+            DEFAULT_CONNECT_TIMEOUT_SECS,
+            DEFAULT_SEND_TIMEOUT_SECS,
+            DEFAULT_RECEIVE_TIMEOUT_SECS,
+        )
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct RouterListEntry {
@@ -76,6 +103,8 @@ pub(super) trait MikrotikApi: Debug + Send + Sync {
         list4: Option<&str>,
         list6: Option<&str>,
     ) -> Result<Vec<RouterListEntry>>;
+    /// List entries matching one exact normalized key.
+    async fn list_entries_by_key(&self, key: &AddressListKey) -> Result<Vec<RouterListEntry>>;
     /// Upsert one plugin-owned address-list entry.
     ///
     /// Returning `Ok(None)` means a foreign entry already occupies the same
@@ -122,6 +151,8 @@ pub(super) struct MikrotikRsClient {
     username: String,
     /// Login password.
     password: String,
+    /// RouterOS API operation timeouts.
+    timeouts: MikrotikApiTimeouts,
     /// Lazily initialized shared connection reused across commands.
     connection: tokio::sync::Mutex<Option<MikrotikDevice>>,
 }
@@ -131,16 +162,23 @@ impl Debug for MikrotikRsClient {
         f.debug_struct("MikrotikRsClient")
             .field("address", &self.address)
             .field("username", &self.username)
+            .field("timeouts", &self.timeouts)
             .finish_non_exhaustive()
     }
 }
 
 impl MikrotikRsClient {
-    pub(super) fn new(address: String, username: String, password: String) -> Self {
+    pub(super) fn new(
+        address: String,
+        username: String,
+        password: String,
+        timeouts: MikrotikApiTimeouts,
+    ) -> Self {
         Self {
             address,
             username,
             password,
+            timeouts,
             connection: tokio::sync::Mutex::new(None),
         }
     }
@@ -169,7 +207,7 @@ impl MikrotikRsClient {
         };
 
         let connect_result = tokio::time::timeout(
-            Duration::from_secs(CONNECT_TIMEOUT_SECS),
+            self.timeouts.connect,
             MikrotikDevice::connect(self.address.as_str(), &self.username, password),
         )
         .await;
@@ -184,7 +222,8 @@ impl MikrotikRsClient {
             Err(_) => {
                 return Err(DnsError::plugin(format!(
                     "ros_address_list connect timeout after {}s to {}",
-                    CONNECT_TIMEOUT_SECS, self.address
+                    self.timeouts.connect.as_secs(),
+                    self.address
                 )));
             }
         };
@@ -198,11 +237,8 @@ impl MikrotikRsClient {
         // All network/protocol details are normalized into `DnsError::plugin`
         // here so the manager only sees semantic success/failure.
         let device = self.get_or_connect().await?;
-        let send_result = tokio::time::timeout(
-            Duration::from_secs(SEND_TIMEOUT_SECS),
-            device.send_command(command),
-        )
-        .await;
+        let send_result =
+            tokio::time::timeout(self.timeouts.send, device.send_command(command)).await;
         let mut rx = match send_result {
             Ok(Ok(rx)) => rx,
             Ok(Err(e)) => {
@@ -215,22 +251,21 @@ impl MikrotikRsClient {
                 self.invalidate_connection().await;
                 return Err(DnsError::plugin(format!(
                     "ros_address_list {action} send timeout after {}s",
-                    SEND_TIMEOUT_SECS
+                    self.timeouts.send.as_secs()
                 )));
             }
         };
 
         let mut rows = Vec::new();
         loop {
-            let recv_result =
-                tokio::time::timeout(Duration::from_secs(RECV_TIMEOUT_SECS), rx.recv()).await;
+            let recv_result = tokio::time::timeout(self.timeouts.receive, rx.recv()).await;
             let Some(event) = (match recv_result {
                 Ok(item) => item,
                 Err(_) => {
                     self.invalidate_connection().await;
                     return Err(DnsError::plugin(format!(
                         "ros_address_list {action} receive timeout after {}s",
-                        RECV_TIMEOUT_SECS
+                        self.timeouts.receive.as_secs()
                     )));
                 }
             }) else {
@@ -412,6 +447,10 @@ impl MikrotikApi for MikrotikRsClient {
         }
 
         Ok(entries)
+    }
+
+    async fn list_entries_by_key(&self, key: &AddressListKey) -> Result<Vec<RouterListEntry>> {
+        self.find_entries_by_key(key).await
     }
 
     async fn upsert_owned_entry(

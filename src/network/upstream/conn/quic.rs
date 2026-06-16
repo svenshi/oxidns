@@ -8,15 +8,14 @@ use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use async_trait::async_trait;
 use tokio::select;
 use tokio::sync::Notify;
-use tokio::time::timeout;
 use tracing::{debug, trace, warn};
 
 use super::UsingCountGuard;
 use crate::core::app_clock::AppClock;
 use crate::core::error::{DnsError, Result};
 use crate::network::transport::quic_transport::QuicTransport;
-use crate::network::upstream::pool::ConnectionBuilder;
-use crate::network::upstream::utils::{connect_quic, connect_socket};
+use crate::network::upstream::dial::{connect_quic, connect_socket};
+use crate::network::upstream::pool::{ConnectionBuilder, QueryDeadline};
 use crate::network::upstream::{Connection, ConnectionInfo};
 use crate::proto::Message;
 
@@ -26,7 +25,6 @@ pub struct QuicConnection {
     using_count: AtomicU16,
     closed: AtomicBool,
     last_used: AtomicU64,
-    timeout: std::time::Duration,
     close_notify: Notify,
 }
 
@@ -43,7 +41,7 @@ impl Connection for QuicConnection {
     /// Sends QUIC CONNECTION_CLOSE frame to peer and notifies background tasks.
     /// This is idempotent - multiple calls are safe.
     fn close(&self) {
-        if self.closed.swap(true, Ordering::Relaxed) {
+        if self.closed.swap(true, Ordering::AcqRel) {
             return; // Already closed
         }
         debug!(
@@ -72,96 +70,77 @@ impl Connection for QuicConnection {
     /// - Stream is closed after message sent/received
     ///
     /// This follows RFC 9250 (DNS over Dedicated QUIC Connections)
-    async fn query(&self, request: Message) -> Result<Message> {
-        if self.closed.load(Ordering::Relaxed) {
+    async fn query(&self, request: Message, _deadline: QueryDeadline) -> Result<Message> {
+        if self.closed.load(Ordering::Acquire) {
             return Err(DnsError::protocol("Cannot query on closed QUIC connection"));
         }
         self.using_count.fetch_add(1, Ordering::Relaxed);
         // Guard ensures using_count is decremented even if this future is
         // cancelled by an outer timeout (cancel-safety).
         let _guard = UsingCountGuard(&self.using_count);
+        if self.closed.load(Ordering::Acquire) {
+            return Err(DnsError::protocol("Cannot query on closed QUIC connection"));
+        }
 
         // Open a new bidirectional stream (reader/writer) via connection wrapper
-        let (mut reader, mut writer) = match timeout(self.timeout, self.transport.open_bi()).await {
-            Ok(Ok((reader, writer))) => (reader, writer),
-            Ok(Err(e)) => {
+        let (mut reader, mut writer) = match self.transport.open_bi().await {
+            Ok((reader, writer)) => (reader, writer),
+            Err(e) => {
                 self.close();
                 return Err(DnsError::protocol(format!(
                     "Failed to open QUIC bidirectional stream: {}",
                     e
                 )));
             }
-            Err(_) => {
-                // Timeout opening a stream indicates the connection is in a
-                // bad/zombie state; close it so the pool can replace it.
-                self.close();
-                return Err(DnsError::protocol(
-                    "Timeout opening QUIC bidirectional stream",
-                ));
-            }
         };
 
         let raw_id = request.id();
         if let Err(e) = writer.write_message(&request).await {
+            self.close();
             return Err(DnsError::protocol(format!(
                 "Failed to write DNS query to QUIC stream: {}",
                 e
             )));
         }
         if let Err(e) = writer.finish() {
+            self.close();
             warn!(
                 conn_id = self.id,
                 error = ?e,
                 "Failed to finish QUIC send stream (half-close)"
             );
+            return Err(DnsError::protocol(format!(
+                "Failed to finish QUIC send stream: {}",
+                e
+            )));
         }
 
-        let result = match timeout(self.timeout, reader.read_message()).await {
-            Ok(msg) => match msg {
-                Ok(mut resp) => {
-                    resp.set_id(raw_id);
-                    trace!(
-                        conn_id = self.id,
-                        query_id = raw_id,
-                        "Successfully received DNS response over QUIC"
-                    );
-                    Ok(resp)
-                }
-                Err(e) => {
-                    warn!(
-                        conn_id = self.id,
-                        query_id = raw_id,
-                        error = ?e,
-                        "Failed to read DNS response from QUIC stream"
-                    );
-                    Err(DnsError::protocol(format!(
-                        "Failed to read QUIC DNS response: {}",
-                        e
-                    )))
-                }
-            },
-            Err(_) => {
-                // Close the connection on read timeout, not just the stream.
-                // If the QUIC transport is alive but the server isn't responding
-                // at the DNS layer (server ACKs our packets so loss detection
-                // won't fire), read timeouts repeat indefinitely and last_used
-                // stays fresh, keeping a useless connection in the pool forever.
-                // Closing forces the pool to create a fresh connection on the
-                // next query. This matches H3's behavior on recv timeout.
+        match reader.read_message().await {
+            Ok(mut resp) => {
+                resp.set_id(raw_id);
+                self.last_used
+                    .store(AppClock::elapsed_millis(), Ordering::Relaxed);
+                trace!(
+                    conn_id = self.id,
+                    query_id = raw_id,
+                    "Successfully received DNS response over QUIC"
+                );
+                Ok(resp)
+            }
+            Err(e) => {
                 self.close();
                 warn!(
                     conn_id = self.id,
                     query_id = raw_id,
-                    timeout_ms = ?self.timeout.as_millis(),
-                    "QUIC DNS query timeout"
+                    error = ?e,
+                    "Failed to read DNS response from QUIC stream"
                 );
-                Err(DnsError::protocol("dns query timeout"))
+                Err(DnsError::protocol(format!(
+                    "Failed to read QUIC DNS response: {}",
+                    e
+                )))
             }
-        };
-
-        self.last_used
-            .store(AppClock::elapsed_millis(), Ordering::Relaxed);
-        result
+        }
     }
 
     fn using_count(&self) -> u16 {
@@ -169,7 +148,7 @@ impl Connection for QuicConnection {
     }
 
     fn available(&self) -> bool {
-        !self.closed.load(Ordering::Relaxed)
+        !self.closed.load(Ordering::Acquire)
     }
 
     fn last_used(&self) -> u64 {
@@ -182,9 +161,9 @@ impl Connection for QuicConnection {
 pub struct QuicConnectionBuilder {
     remote_ip: Option<IpAddr>,
     port: u16,
-    timeout: std::time::Duration,
     server_name: String,
     insecure_skip_verify: bool,
+    timeout: std::time::Duration,
     so_mark: Option<u32>,
     bind_to_device: Option<String>,
 }
@@ -194,9 +173,9 @@ impl QuicConnectionBuilder {
         Self {
             remote_ip: connection_info.remote_ip,
             port: connection_info.port,
-            timeout: connection_info.timeout,
             server_name: connection_info.server_name.clone(),
             insecure_skip_verify: connection_info.insecure_skip_verify,
+            timeout: connection_info.timeout,
             so_mark: connection_info.so_mark,
             bind_to_device: connection_info.bind_to_device.clone(),
         }
@@ -219,7 +198,11 @@ impl ConnectionBuilder<QuicConnection> for QuicConnectionBuilder {
     /// - 0-RTT support for resumed connections
     /// - Multiplexed streams avoid head-of-line blocking
     /// - Native congestion control and loss recovery
-    async fn create_connection(&self, conn_id: u16) -> Result<Arc<QuicConnection>> {
+    async fn create_connection(
+        &self,
+        conn_id: u16,
+        deadline: QueryDeadline,
+    ) -> Result<Arc<QuicConnection>> {
         let socket = connect_socket(
             self.remote_ip,
             self.server_name.clone(),
@@ -233,6 +216,9 @@ impl ConnectionBuilder<QuicConnection> for QuicConnectionBuilder {
             socket,
             self.insecure_skip_verify,
             self.server_name.clone(),
+            deadline
+                .remaining()
+                .ok_or_else(|| deadline.timeout_error())?,
             self.timeout,
             vec![b"doq".to_vec()],
         )
@@ -251,7 +237,6 @@ impl ConnectionBuilder<QuicConnection> for QuicConnectionBuilder {
             closed: AtomicBool::new(false),
             last_used: AtomicU64::new(AppClock::elapsed_millis()),
             using_count: AtomicU16::new(0),
-            timeout: self.timeout,
             close_notify: Notify::new(),
         });
 
@@ -302,9 +287,9 @@ mod tests {
 
         assert_eq!(connection_info.connection_type, ConnectionType::DoQ);
         assert_eq!(builder.port, 853);
-        assert_eq!(builder.timeout, std::time::Duration::from_secs(3));
         assert_eq!(builder.server_name, "dns.example.com");
         assert!(builder.insecure_skip_verify);
+        assert_eq!(builder.timeout, std::time::Duration::from_secs(3));
         assert_eq!(builder.so_mark, Some(9));
         assert_eq!(builder.bind_to_device.as_deref(), Some("wg0"));
     }

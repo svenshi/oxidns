@@ -4,27 +4,26 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::{Notify, oneshot};
-use tokio::time::timeout;
 use tracing::{debug, error, trace, warn};
 
 use crate::core::app_clock::AppClock;
 use crate::core::error::{DnsError, Result};
+use crate::network::proxy::Socks5Opt;
 #[cfg(feature = "upstream-dot")]
 use crate::network::transport::tcp_transport::TcpTransport;
 use crate::network::transport::tcp_transport::{TcpTransportReader, TcpTransportWriter};
-use crate::network::upstream::pool::request_map::RequestMap;
-use crate::network::upstream::pool::{Connection, ConnectionBuilder};
-use crate::network::upstream::utils::connect_stream;
+use crate::network::upstream::conn::request_map::RequestMap;
+use crate::network::upstream::dial::connect_stream_with_deadline;
 #[cfg(feature = "upstream-dot")]
-use crate::network::upstream::utils::connect_tls;
-use crate::network::upstream::{ConnectionInfo, ConnectionType, Socks5Opt};
+use crate::network::upstream::dial::connect_tls;
+use crate::network::upstream::pool::{Connection, ConnectionBuilder, QueryDeadline};
+use crate::network::upstream::{ConnectionInfo, ConnectionType};
 use crate::proto::Message;
 
 /// Represents a single persistent TCP-based DNS connection.
@@ -40,8 +39,6 @@ pub struct TcpConnection {
     close_notify: Notify,
     /// Map of active DNS queries (query_id → response channel sender).
     request_map: RequestMap,
-    /// Timeout duration for each DNS query.
-    timeout: Duration,
     /// Whether the connection is marked as closed.
     closed: AtomicBool,
     /// Indicates if the connection is currently writable.
@@ -67,7 +64,7 @@ impl Connection for TcpConnection {
     /// once. Background read/write tasks will be notified and gracefully
     /// shut down.
     fn close(&self) {
-        if self.closed.swap(true, Ordering::Relaxed) {
+        if self.closed.swap(true, Ordering::AcqRel) {
             return; // Already closed, no-op
         }
         // Cancel pending requests first so the reader task can terminate without
@@ -94,8 +91,8 @@ impl Connection for TcpConnection {
     /// # Performance
     /// Uses TCP length-prefixed framing (2-byte BE length header) as per RFC
     /// 1035
-    async fn query(&self, request: Message) -> Result<Message> {
-        if self.closed.load(Ordering::Relaxed) {
+    async fn query(&self, request: Message, _deadline: QueryDeadline) -> Result<Message> {
+        if self.closed.load(Ordering::Acquire) {
             return Err(DnsError::protocol(format!(
                 "Cannot query on closed TCP connection (id={})",
                 self.id
@@ -106,6 +103,12 @@ impl Connection for TcpConnection {
         let (tx, rx) = oneshot::channel();
         let mut query_guard = self.request_map.store(tx)?;
         let query_id = query_guard.query_id();
+        if self.closed.load(Ordering::Acquire) {
+            return Err(DnsError::protocol(format!(
+                "Cannot query on closed TCP connection (id={})",
+                self.id
+            )));
+        }
 
         trace!(
             conn_id = self.id,
@@ -122,6 +125,7 @@ impl Connection for TcpConnection {
             query_id,
         }) {
             let _ = query_guard.remove();
+            self.close();
             error!(
                 conn_id = self.id,
                 query_id,
@@ -130,10 +134,15 @@ impl Connection for TcpConnection {
             );
             return Err(DnsError::protocol(e.to_string()));
         }
+        if self.closed.load(Ordering::Acquire) {
+            return Err(DnsError::protocol(format!(
+                "Cannot query on closed TCP connection (id={})",
+                self.id
+            )));
+        }
 
-        // Await response or timeout
-        match timeout(self.timeout, rx).await {
-            Ok(Ok(mut res)) => {
+        match rx.await {
+            Ok(mut res) => {
                 query_guard.disarm();
                 res.set_id(raw_id); // Restore original query ID
                 trace!(
@@ -142,21 +151,12 @@ impl Connection for TcpConnection {
                 );
                 Ok(res)
             }
-            Ok(Err(_)) => {
+            Err(_) => {
                 warn!(
                     conn_id = self.id,
                     query_id, "DNS query canceled (response channel dropped)"
                 );
                 Err(DnsError::protocol("request canceled"))
-            }
-            Err(_) => {
-                warn!(
-                    conn_id = self.id,
-                    query_id,
-                    timeout_ms = ?self.timeout.as_millis(),
-                    "DNS query timeout over TCP"
-                );
-                Err(DnsError::protocol("dns query timeout"))
             }
         }
     }
@@ -166,7 +166,7 @@ impl Connection for TcpConnection {
     }
 
     fn available(&self) -> bool {
-        !self.closed.load(Ordering::Relaxed) && self.writeable.load(Ordering::Relaxed)
+        !self.closed.load(Ordering::Acquire) && self.writeable.load(Ordering::Acquire)
     }
 
     fn last_used(&self) -> u64 {
@@ -180,13 +180,7 @@ impl TcpConnection {
     /// # Arguments
     /// * `conn_id` - Unique connection identifier for logging and debugging
     /// * `sender` - Unbounded channel for queuing outbound DNS messages
-    /// * `timeout` - Maximum time to wait for a DNS response
-    fn new(
-        conn_id: u16,
-        sender: UnboundedSender<QueuedQuery>,
-        timeout: Duration,
-        request_map_capacity: u16,
-    ) -> Self {
+    fn new(conn_id: u16, sender: UnboundedSender<QueuedQuery>, request_map_capacity: u16) -> Self {
         debug!(
             conn_id,
             "Initialized TCP connection wrapper with async I/O tasks"
@@ -196,7 +190,6 @@ impl TcpConnection {
             sender,
             close_notify: Notify::new(),
             request_map: RequestMap::with_capacity(request_map_capacity),
-            timeout,
             closed: AtomicBool::new(false),
             writeable: AtomicBool::new(true),
             last_used: AtomicU64::new(AppClock::elapsed_millis()),
@@ -233,7 +226,7 @@ impl TcpConnection {
                             error = ?e,
                             "TCP write failed, marking connection as non-writable"
                         );
-                        self.writeable.store(false, Ordering::Relaxed);
+                        self.writeable.store(false, Ordering::Release);
                         self.close();
                     }
                 }
@@ -276,7 +269,7 @@ impl TcpConnection {
                 debug!(conn_id = self.id, "TCP listener exiting (no more requests)");
                 break;
             }
-            if self.closed.load(Ordering::Relaxed) {
+            if self.closed.load(Ordering::Acquire) {
                 debug!(conn_id = self.id, "TCP listener detected closed connection");
                 break;
             }
@@ -334,7 +327,6 @@ impl TcpConnection {
 pub struct TcpConnectionBuilder {
     remote_ip: Option<IpAddr>,
     port: u16,
-    timeout: Duration,
     tls_enabled: bool,
     server_name: String,
     #[cfg_attr(not(feature = "upstream-dot"), allow(dead_code))]
@@ -355,7 +347,6 @@ impl TcpConnectionBuilder {
         Self {
             remote_ip: connection_info.remote_ip,
             port: connection_info.port,
-            timeout: connection_info.timeout,
             tls_enabled,
             server_name: connection_info.server_name.clone(),
             insecure_skip_verify: connection_info.insecure_skip_verify,
@@ -379,14 +370,19 @@ impl ConnectionBuilder<TcpConnection> for TcpConnectionBuilder {
     /// - TCP_NODELAY enabled for low-latency queries
     /// - Async I/O with separate reader/writer tasks
     /// - TLS handshake performed asynchronously if enabled
-    async fn create_connection(&self, conn_id: u16) -> Result<Arc<TcpConnection>> {
-        let stream = connect_stream(
+    async fn create_connection(
+        &self,
+        conn_id: u16,
+        deadline: QueryDeadline,
+    ) -> Result<Arc<TcpConnection>> {
+        let stream = connect_stream_with_deadline(
             self.remote_ip,
             self.server_name.clone(),
             self.port,
             self.so_mark,
             self.bind_to_device.clone(),
             self.socks5.clone(),
+            deadline,
         )
         .await?;
 
@@ -399,8 +395,7 @@ impl ConnectionBuilder<TcpConnection> for TcpConnectionBuilder {
         );
 
         let (sender, receiver) = unbounded_channel();
-        let connection =
-            TcpConnection::new(conn_id, sender, self.timeout, self.request_map_capacity);
+        let connection = TcpConnection::new(conn_id, sender, self.request_map_capacity);
         let arc = Arc::new(connection);
 
         if self.tls_enabled {
@@ -410,7 +405,9 @@ impl ConnectionBuilder<TcpConnection> for TcpConnectionBuilder {
                     stream,
                     self.insecure_skip_verify,
                     self.server_name.clone(),
-                    self.timeout,
+                    deadline
+                        .remaining()
+                        .ok_or_else(|| deadline.timeout_error())?,
                     vec![b"dot".to_vec()],
                 )
                 .await?;
@@ -451,6 +448,8 @@ impl ConnectionBuilder<TcpConnection> for TcpConnectionBuilder {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     #[cfg(feature = "upstream-dot")]
     use crate::network::upstream::ConnectionType;
@@ -468,7 +467,6 @@ mod tests {
         assert_eq!(connection_info.connection_type, ConnectionType::DoT);
         assert!(builder.tls_enabled);
         assert_eq!(builder.port, 853);
-        assert_eq!(builder.timeout, Duration::from_secs(9));
         assert_eq!(builder.request_map_capacity, DEFAULT_REQUEST_MAP_CAPACITY);
         assert_eq!(builder.server_name, "dns.example.com");
         assert!(builder.insecure_skip_verify);
@@ -478,18 +476,35 @@ mod tests {
     async fn test_query_returns_error_when_connection_is_closed() {
         AppClock::start();
         let (sender, _receiver) = unbounded_channel();
-        let connection = TcpConnection::new(
-            7,
-            sender,
-            Duration::from_millis(10),
-            DEFAULT_REQUEST_MAP_CAPACITY,
-        );
+        let connection = TcpConnection::new(7, sender, DEFAULT_REQUEST_MAP_CAPACITY);
         connection.close();
 
-        let result = connection.query(Message::new()).await;
+        let result = connection
+            .query(
+                Message::new(),
+                QueryDeadline::new(Duration::from_millis(10)),
+            )
+            .await;
 
         assert!(result.is_err());
         assert_eq!(connection.using_count(), 0);
         assert!(!connection.available());
+    }
+
+    #[tokio::test]
+    async fn test_query_removes_request_when_cancelled() {
+        AppClock::start();
+        let (sender, _receiver) = unbounded_channel();
+        let connection = TcpConnection::new(8, sender, DEFAULT_REQUEST_MAP_CAPACITY);
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(10),
+            connection.query(Message::new(), QueryDeadline::new(Duration::from_secs(1))),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(connection.using_count(), 0);
+        assert!(connection.available());
     }
 }

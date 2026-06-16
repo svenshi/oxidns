@@ -173,6 +173,7 @@ import Admonition from "@theme/Admonition";
         bootstrap_version: 4
         port: 443
         idle_timeout: 30
+        min_conns: 2
         max_conns: 256
         timeout: 5s
         enable_pipeline: false
@@ -186,6 +187,7 @@ import Admonition from "@theme/Admonition";
         dial_addr: "203.0.113.53"
         socks5: "user:pass@127.0.0.1:1080"
         idle_timeout: 60
+        min_conns: 1
         max_conns: 128
         insecure_skip_verify: false
         timeout: 4s
@@ -317,7 +319,16 @@ import Admonition from "@theme/Admonition";
 
 - 类型：`integer`；必填：否；默认值：`64`
 - 作用：定义连接池连接上限。
+- 取值范围：`1..4096`
 - 示例：`max_conns: 256`
+
+#### `upstreams[].min_conns`
+
+- 类型：`integer`；必填：否；默认值：`0`
+- 作用：定义连接池保持预热的最小连接数。
+- 取值范围：`0..4096`，且不能大于当前上游的有效 `max_conns`。
+- 说明：未配置时保持懒加载，不会在启动或 pool 创建时主动预建连接。
+- 示例：`min_conns: 2`
 
 #### `upstreams[].insecure_skip_verify`
 
@@ -1279,24 +1290,9 @@ old-static.example.com static.example.net
 
 ## `black_hole`
 
-<Admonition type="warning" title="行为将在后续版本中改造">
-
-`black_hole` 的语义将在后续版本中被重新定义为**"完整拦截器"**：
-
-- 引入 `mode` 字段（`nxdomain` / `nodata` / `null` / `custom` / `refused`），覆盖**所有** qtype
-- 默认行为可能调整为 `nxdomain`（与 AdGuard Home 一致）
-- `short_circuit` 在任何命中场景下都将一致生效
-- 旧的 `ips` + `short_circuit` 配置将映射为 `mode: custom`，保持向后兼容
-
-**为什么要改造**：
-
-"black hole（黑洞）"的语义本质是**任何查询进来都无法逃逸**，而当前实现仅覆盖 `A` / `AAAA` 两种 qtype，定位更像是"应答合成器"而非"拦截器"。这与名字承载的直觉、与主流方案（Pi-hole / AdGuard Home / Unbound `local-zone` / BIND RPZ）的共识都存在偏差。重新定义后，`black_hole` 将成为一个**策略明确、qtype 全覆盖、行为可预期**的拦截原语。
-
-</Admonition>
-
 ### 作用
 
-对命中的 `A` / `AAAA` 请求直接返回预设地址。
+按指定模式对命中的 DNS 请求生成本地拦截响应，覆盖所有 qtype。
 
 ### 配置示例
 
@@ -1304,42 +1300,67 @@ old-static.example.com static.example.net
 - tag: sinkhole
   type: black_hole
   args:
+    mode: custom
     ips:
       # A 查询时返回
       - "0.0.0.0"
       # AAAA 查询时返回
       - "::"
     short_circuit: true
+
+- tag: block_nxdomain
+  type: black_hole
+  args:
+    mode: nxdomain
+    short_circuit: true
 ```
 
 ### 配置项
 
+#### `mode`
+
+- 类型：`string`；必填：否；默认值：无 `ips` 时为 `nxdomain`，配置了 `ips` 时为 `custom`
+- 可选值：
+  - `nxdomain`：返回 `NXDOMAIN`，并在 authority 区加入用于负缓存的 SOA。
+  - `nodata`：返回 `NOERROR` 空应答，并在 authority 区加入用于负缓存的 SOA。
+  - `null`：`A` 返回 `0.0.0.0`，`AAAA` 返回 `::`，其它 qtype 返回 NODATA。
+  - `custom`：`A` / `AAAA` 返回 `ips` 中对应地址族；缺失地址族或其它 qtype 返回 NODATA。
+  - `refused`：返回 `REFUSED` 空应答。
+- 兼容性：旧的 `ips` + `short_circuit` 配置不需要写 `mode`，会自动按 `custom` 处理。
+
 #### `ips`
 
 - 类型：`array`；必填：否；默认值：空数组
-- 作用：定义本地合成返回地址集合。
+- 作用：定义 `custom` 模式使用的本地合成返回地址集合。
 - 运行影响：
   - IPv4 地址仅用于 A 应答。
   - IPv6 地址仅用于 AAAA 应答。
+  - 仅允许在隐式或显式 `custom` 模式下使用。
 
 #### `short_circuit`
 
 - 类型：`bool`；必填：否；默认值：`false`
-- 作用：命中并生成本地应答后，是否立即停止后续 executor 链。
+- 作用：生成拦截响应后，是否立即停止后续 executor 链。
 
 ### quick setup
 
 ```yaml
+- exec: "black_hole"
+- exec: "black_hole nxdomain short_circuit=true"
+- exec: "black_hole nodata"
+- exec: "black_hole null"
+- exec: "black_hole custom 0.0.0.0 :: short_circuit=true"
+# legacy 写法，等价于 custom
 - exec: "black_hole 0.0.0.0 ::"
-- exec: "black_hole 0.0.0.0 :: short_circuit=true"
 ```
 
 ### 行为说明
 
-- A 查询返回配置中的 IPv4 地址。
-- AAAA 查询返回配置中的 IPv6 地址。
-- 其它类型透传。
-- 命中后默认继续后续执行；开启 `short_circuit` 时会立即返回。
+- 默认无参 `black_hole` 返回 `NXDOMAIN`。
+- `nxdomain`、`nodata`、`refused` 覆盖所有 qtype。
+- `null` 和 `custom` 对 A/AAAA 返回地址，对其它 qtype 返回 NODATA。
+- 请求没有 question 时透传。
+- 命中后默认继续后续执行；开启 `short_circuit` 时会立即停止。
 
 ### Metrics
 
@@ -1349,7 +1370,9 @@ old-static.example.com static.example.net
 
 ### 典型用途
 
-- 拦截、黑洞、占位地址返回。
+- 广告、跟踪、恶意域名拦截。
+- 按策略返回 NXDOMAIN / NODATA / REFUSED。
+- 返回空地址或自定义占位地址。
 
 ---
 
@@ -2364,6 +2387,12 @@ old-static.example.com static.example.net
     username: "api-user"
     # API 密码
     password: "secret"
+    # RouterOS API 连接超时，单位秒
+    connect_timeout: 5
+    # RouterOS API 发送命令超时，单位秒
+    send_timeout: 5
+    # RouterOS API 接收响应超时，单位秒；仅在存量慢查询场景按需调大
+    receive_timeout: 30
     # 异步提交，避免阻塞 DNS 主路径
     async: true
     # A 记录写入的 address-list
@@ -2412,6 +2441,24 @@ old-static.example.com static.example.net
 - 类型：`string`；必填：是；默认值：无
 - 作用：指定 RouterOS API 登录密码。插件初始化、重连和后台同步均依赖该凭据。
 - 注意事项：应避免在公开仓库或共享示例中直接暴露真实口令。
+
+#### `connect_timeout`
+
+- 类型：`u64`；必填：否；默认值：`5`
+- 作用：指定建立 RouterOS API 连接时的等待上限，单位为秒。
+- 注意事项：必须大于 `0`。网络链路较慢或 RouterOS 管理面偶发繁忙时，可按需调大。
+
+#### `send_timeout`
+
+- 类型：`u64`；必填：否；默认值：`5`
+- 作用：指定发送单个 RouterOS API 命令时的等待上限，单位为秒。
+- 注意事项：必须大于 `0`。通常保持默认即可。
+
+#### `receive_timeout`
+
+- 类型：`u64`；必填：否；默认值：`5`
+- 作用：指定等待下一段 RouterOS API 响应数据的上限，单位为秒。
+- 配置建议：建议为 OxiDNS 使用专用且规模可控的 `address-list`，不建议接入已有的大型共享列表。只有在存量环境无法避免慢列表查询或 RouterOS 管理面响应较慢时，才考虑将该值调大，例如 `30` 或 `60`。
 
 #### `async`
 
@@ -2484,13 +2531,14 @@ old-static.example.com static.example.net
 ### 行为说明
 
 - 插件本身不改 DNS 响应。
+- 启动阶段不会等待 RouterOS address-list 扫描完成；初始连通性验证和常驻项同步会交给后台 manager 执行，失败只记录日志，不阻塞 DNS 服务启动或动态观察写入。
 - 正向阶段只透传。
 - 回程阶段：
   - 从 `NOERROR` 响应中提取 A/AAAA。
   - 去重并保留最大 TTL。
   - 根据异步或同步模式投递给后台 manager。
 - manager 负责：
-  - 初始连通性验证
+  - 后台初始连通性验证
   - 动态项刷新
   - 持久项一致性维护
   - 关闭清理
@@ -2504,6 +2552,7 @@ old-static.example.com static.example.net
 <Admonition type="note" title="注意事项">
 
 - 至少需要 `address_list4` 或 `address_list6` 之一。
+- 建议使用 OxiDNS 专用 `address-list`，避免接入大型共享列表，以降低 RouterOS 管理面扫描成本。
 - `comment_prefix` 与插件 `tag` 不能包含 `;` 或 `=`。
 - 同步模式不会改变 DNS 应答本身，即使 RouterOS 写入失败也会保留 DNS 结果。
 

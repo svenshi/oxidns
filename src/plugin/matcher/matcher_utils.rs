@@ -268,7 +268,7 @@ pub(crate) fn provider_dependency_specs(
         .collect()
 }
 
-pub(crate) fn load_rules_from_files(files: &[String], field: &str) -> DnsResult<Vec<String>> {
+fn load_rules_from_files(files: &[String], field: &str) -> DnsResult<Vec<String>> {
     let mut rules = Vec::new();
     for path in files {
         if path.trim().is_empty() {
@@ -299,7 +299,7 @@ pub(crate) fn load_rules_from_files(files: &[String], field: &str) -> DnsResult<
             if raw.is_empty() || raw.starts_with('#') {
                 continue;
             }
-            rules.extend(split_rule_tokens(raw));
+            rules.push(raw.to_string());
         }
     }
     Ok(rules)

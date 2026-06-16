@@ -166,6 +166,7 @@ Sends DNS queries to upstreams.
         bootstrap_version: 4
         port: 443
         idle_timeout: 30
+        min_conns: 2
         max_conns: 256
         timeout: 5s
         enable_pipeline: false
@@ -179,6 +180,7 @@ Sends DNS queries to upstreams.
         dial_addr: "203.0.113.53"
         socks5: "user:pass@127.0.0.1:1080"
         idle_timeout: 60
+        min_conns: 1
         max_conns: 128
         insecure_skip_verify: false
         timeout: 4s
@@ -249,7 +251,7 @@ Sends DNS queries to upstreams.
 
 - Type: `string`; Required: no
 - Purpose: Bootstrap resolver for domain-based upstreams.
-- Notes: Use an `IP:port` address. With bootstrap enabled, OxiDNS resolves the upstream hostname through that resolver and caches it according to DNS TTL. Ignored when `dial_addr` is also configured.
+- Notes: Must use an `IP:port` address. With bootstrap enabled, OxiDNS resolves the upstream hostname through that resolver and caches it according to DNS TTL. Ignored when `dial_addr` is also configured.
 
 #### `upstreams[].bootstrap_version`
 
@@ -275,6 +277,14 @@ Sends DNS queries to upstreams.
 
 - Type: `integer`; Required: no; Default: `64`
 - Purpose: Maximum pooled connections.
+- Range: `1..4096`
+
+#### `upstreams[].min_conns`
+
+- Type: `integer`; Required: no; Default: `0`
+- Purpose: Minimum warmed connections kept by the pool.
+- Range: `0..4096`, and it must not exceed the upstream's effective `max_conns`.
+- Notes: When omitted, connections remain lazy and are not pre-created when the pool is created.
 
 #### `upstreams[].insecure_skip_verify`
 
@@ -1211,24 +1221,9 @@ Biases dual-stack results toward one address family.
 
 ## `black_hole`
 
-<Admonition type="warning" title="Behavior will be redesigned in a future release">
-
-`black_hole` will be redefined as a **complete interceptor** in a future release:
-
-- A new `mode` field will be introduced (`nxdomain` / `nodata` / `null` / `custom` / `refused`) that covers **every** qtype.
-- The default behavior may switch to `nxdomain` (matching AdGuard Home).
-- `short_circuit` will take effect consistently on every match.
-- The legacy `ips` + `short_circuit` configuration will be mapped to `mode: custom`, preserving backward compatibility.
-
-**Why the redesign**:
-
-The essence of a "black hole" is that **no query can escape it**, yet the current implementation only covers `A` / `AAAA`, positioning the plugin more as a "response synthesizer" than an "interceptor". This diverges from the intuition the name carries and from the consensus of mainstream solutions (Pi-hole / AdGuard Home / Unbound `local-zone` / BIND RPZ). After the redesign, `black_hole` will become an interception primitive with **explicit policy, full qtype coverage, and predictable behavior**.
-
-</Admonition>
-
 ### Purpose
 
-Returns sinkhole IPs directly.
+Generates local interception responses for matched DNS queries, covering every qtype.
 
 ### Example Configuration
 
@@ -1236,36 +1231,66 @@ Returns sinkhole IPs directly.
 - tag: sinkhole
   type: black_hole
   args:
+    mode: custom
     ips:
       # Returned for A queries
       - "0.0.0.0"
       # Returned for AAAA queries
       - "::"
     short_circuit: true
+
+- tag: block_nxdomain
+  type: black_hole
+  args:
+    mode: nxdomain
+    short_circuit: true
 ```
 
 ### Configuration Details
 
+#### `mode`
+
+- Type: `string`; Required: no; Default: `nxdomain` when `ips` is empty, `custom` when `ips` is configured
+- Values:
+  - `nxdomain`: returns `NXDOMAIN` and adds an SOA authority record for negative caching.
+  - `nodata`: returns an empty `NOERROR` response and adds an SOA authority record for negative caching.
+  - `null`: returns `0.0.0.0` for `A`, `::` for `AAAA`, and NODATA for other qtypes.
+  - `custom`: returns matching address-family values from `ips` for `A` / `AAAA`; missing families and other qtypes return NODATA.
+  - `refused`: returns an empty `REFUSED` response.
+- Compatibility: legacy `ips` + `short_circuit` config does not need `mode`; it is treated as `custom`.
+
 #### `ips`
 
-- Type: `array`; Required: yes
-- Purpose: Sinkhole addresses to return.
+- Type: `array`; Required: no; Default: empty array
+- Purpose: Local synthetic addresses used by `custom` mode.
+- Operational impact:
+  - IPv4 addresses are used only for A responses.
+  - IPv6 addresses are used only for AAAA responses.
+  - `ips` is allowed only for implicit or explicit `custom` mode.
 
 #### `short_circuit`
 
 - Type: `bool`; Required: no; Default: `false`
-- Purpose: Stops the remaining executor chain after a local answer is generated.
+- Purpose: Stops the remaining executor chain after an interception response is generated.
 
 ### quick setup
 
 ```yaml
+- exec: "black_hole"
+- exec: "black_hole nxdomain short_circuit=true"
+- exec: "black_hole nodata"
+- exec: "black_hole null"
+- exec: "black_hole custom 0.0.0.0 :: short_circuit=true"
+# legacy form, equivalent to custom
 - exec: "black_hole 0.0.0.0 ::"
-- exec: "black_hole 0.0.0.0 :: short_circuit=true"
 ```
 
 ### Behavior
 
-- Generates immediate answers that point to sinkhole addresses.
+- Plain `black_hole` returns `NXDOMAIN`.
+- `nxdomain`, `nodata`, and `refused` cover every qtype.
+- `null` and `custom` return addresses for A/AAAA and NODATA for other qtypes.
+- Requests without a question pass through unchanged.
 - By default it keeps running the remaining chain after a match; enable `short_circuit` to stop immediately.
 
 ### Metrics
@@ -1276,8 +1301,9 @@ Exported through the global `GET /api/metrics` endpoint:
 
 ### Typical Uses
 
-- Blocking domains
-- Safe redirection away from real destinations
+- Blocking ads, trackers, and malicious domains
+- Returning NXDOMAIN / NODATA / REFUSED by policy
+- Returning null or custom placeholder addresses
 
 ---
 
@@ -2268,6 +2294,12 @@ Writes response IPs into MikroTik RouterOS address lists, with dynamic entries, 
     username: "api-user"
     # API password
     password: "secret"
+    # RouterOS API connection timeout, in seconds
+    connect_timeout: 5
+    # RouterOS API command send timeout, in seconds
+    send_timeout: 5
+    # RouterOS API response receive timeout, in seconds; increase only for unavoidable slow legacy scans
+    receive_timeout: 30
     # Use asynchronous writes to avoid blocking the DNS hot path
     async: true
     # Address list used for A records
@@ -2313,6 +2345,24 @@ Writes response IPs into MikroTik RouterOS address lists, with dynamic entries, 
 
 - Type: `string`; Required: yes
 - Purpose: RouterOS password.
+
+#### `connect_timeout`
+
+- Type: `u64`; Required: no; Default: `5`
+- Purpose: Maximum wait time, in seconds, for establishing a RouterOS API connection.
+- Notes: Must be greater than `0`. Increase it if the management network or RouterOS API occasionally responds slowly.
+
+#### `send_timeout`
+
+- Type: `u64`; Required: no; Default: `5`
+- Purpose: Maximum wait time, in seconds, for sending one RouterOS API command.
+- Notes: Must be greater than `0`. The default is usually sufficient.
+
+#### `receive_timeout`
+
+- Type: `u64`; Required: no; Default: `5`
+- Purpose: Maximum wait time, in seconds, for the next chunk of RouterOS API response data.
+- Tuning: Prefer a dedicated, size-controlled `address-list` for OxiDNS. Avoid connecting the plugin to an existing large shared list. Increase this value, for example to `30` or `60`, only when slow legacy list queries or a slow RouterOS management plane cannot be avoided.
 
 #### `async`
 
@@ -2373,13 +2423,14 @@ Writes response IPs into MikroTik RouterOS address lists, with dynamic entries, 
 ### Behavior
 
 - The plugin itself does not modify DNS responses.
+- Startup does not wait for RouterOS address-list scans to finish. Initial connectivity checks and persistent-entry reconciliation run in the background manager; failures are logged without blocking DNS startup or dynamic observations.
 - It only passes through during the forward phase.
 - During the return phase:
   - Extracts A/AAAA records from `NOERROR` responses.
   - Deduplicates them and keeps the largest TTL.
   - Submits them to the background manager according to async or sync mode.
 - The manager is responsible for:
-  - Initial connectivity verification
+  - Background initial connectivity verification
   - Dynamic entry refresh
   - Persistent entry consistency maintenance
   - Cleanup on shutdown
@@ -2392,6 +2443,7 @@ Writes response IPs into MikroTik RouterOS address lists, with dynamic entries, 
 <Admonition type="note" title="Notes">
 
 - At least one of `address_list4` or `address_list6` is required.
+- Prefer dedicated OxiDNS `address-list` targets and avoid large shared lists to reduce RouterOS management-plane scan cost.
 - `comment_prefix` and the plugin `tag` must not contain `;` or `=`.
 - Synchronous mode does not change the DNS response itself. Even if the RouterOS write fails, the DNS result is still preserved.
 

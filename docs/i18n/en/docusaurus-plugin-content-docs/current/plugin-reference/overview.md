@@ -62,7 +62,7 @@ See [Executor Plugins](executor.mdx) for full field reference. Grouped as: polic
 | --- | --- |
 | [`ttl`](executor.mdx#ttl) | Rewrites response TTL values (fixed value or min/max clamp). |
 | [`prefer_ipv4` / `prefer_ipv6`](executor.mdx#prefer_ipv4--prefer_ipv6) | Dual-stack selector: learns presence of the preferred family and suppresses the other. |
-| [`black_hole`](executor.mdx#black_hole) | Returns sinkhole IPs directly for matching `A` / `AAAA` queries. |
+| [`black_hole`](executor.mdx#black_hole) | Generates full-qtype interception responses using `nxdomain`, `nodata`, `null`, `custom`, or `refused` mode. |
 | [`drop_resp`](executor.mdx#drop_resp) | Drops the current response from the context. |
 | [`reverse_lookup`](executor.mdx#reverse_lookup) | Maintains a reverse IP → name cache and optionally answers PTR requests. |
 

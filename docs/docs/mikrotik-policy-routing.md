@@ -150,6 +150,26 @@ address: "172.16.1.1:8728"
 * RouterOS API 地址。
 * OxiDNS 通过它连接 RouterOS 并执行 address-list 管理操作。
 
+### `connect_timeout` / `send_timeout` / `receive_timeout`
+
+```yaml
+connect_timeout: 5
+send_timeout: 5
+receive_timeout: 30
+```
+
+含义：
+
+* 分别控制 RouterOS API 连接、发送命令、接收响应数据的等待上限，单位为秒。
+* 三个值都必须大于 `0`。
+* `receive_timeout` 是等待下一段 RouterOS 响应数据的超时，不是整次扫描的总耗时上限。
+
+配置建议：
+
+* 建议为 OxiDNS 准备专用、规模可控的 `address-list`，不要直接接入已有的大型共享列表。
+* 如果存量环境暂时无法拆分列表，或 RouterOS 管理面响应较慢导致启动 reconcile 扫描经常超过默认 5 秒，可优先调大 `receive_timeout`，例如 `30` 或 `60`。
+* `connect_timeout` 和 `send_timeout` 通常保持默认即可，只有管理网络链路慢或 RouterOS API 偶发繁忙时再调大。
+
 ### `address_list4` / `address_list6`
 
 ```yaml
@@ -187,6 +207,8 @@ async: true
 
 * DNS 响应不应该因为 RouterOS API 延迟而被明显拖慢。
 * `ros_address_list` 的主要职责是联动，而非阻塞主解析路径。
+* 启动阶段的 RouterOS address-list 扫描在后台执行；即使存量列表查询较慢或管理面响应慢，也不应阻塞 DNS 服务启动。
+* 后台化只降低对 DNS 启动和请求路径的影响，不代表推荐接入大型 address-list。
 
 ### `min_ttl` / `max_ttl`
 

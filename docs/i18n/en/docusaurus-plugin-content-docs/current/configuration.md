@@ -575,7 +575,7 @@ Common fields:
 - `port`
   - Overrides the port.
 - `bootstrap`
-  - Bootstrap DNS used to resolve the upstream hostname when `addr` is domain-based.
+  - Bootstrap DNS used to resolve the upstream hostname when `addr` is domain-based. Must be `IP:port`.
 - `bootstrap_version`
   - `4` or `6`.
 - `socks5`
@@ -584,8 +584,10 @@ Common fields:
   - IPv6 must use `[addr]:port`.
 - `idle_timeout`
   - Idle connection timeout in seconds.
+- `min_conns`
+  - Minimum warmed pool connections. Default: `0`; range: `0..4096`; must not exceed `max_conns`.
 - `max_conns`
-  - Maximum pool size.
+  - Maximum pool size, in the range `1..4096`.
 - `insecure_skip_verify`
   - Skips TLS certificate validation. Recommended only for test environments.
 - `timeout`

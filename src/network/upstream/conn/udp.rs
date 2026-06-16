@@ -18,9 +18,9 @@ use crate::core::app_clock::AppClock;
 use crate::core::error::{DnsError, Result};
 use crate::network::transport::udp_transport::UdpTransport;
 use crate::network::upstream::ConnectionInfo;
-use crate::network::upstream::pool::request_map::RequestMap;
-use crate::network::upstream::pool::{Connection, ConnectionBuilder};
-use crate::network::upstream::utils::connect_socket;
+use crate::network::upstream::conn::request_map::RequestMap;
+use crate::network::upstream::dial::connect_socket;
+use crate::network::upstream::pool::{Connection, ConnectionBuilder, QueryDeadline};
 use crate::proto::Message;
 
 const UDP_RECV_BUFFER_SIZE: usize = 8_196;
@@ -38,8 +38,6 @@ pub struct UdpConnection {
     close_notify: Notify,
     /// Mapping between DNS query IDs and response channels
     request_map: RequestMap,
-    /// Timeout duration for a DNS query
-    timeout: Duration,
     /// Timestamp of last activity (milliseconds)
     last_used: AtomicU64,
     /// Connection closed flag (prevents use after closure and ensures
@@ -92,14 +90,29 @@ impl Connection for UdpConnection {
     ///
     /// This two-stage approach improves resilience against UDP packet loss
     /// while maintaining low latency for successful queries.
-    async fn query(&self, request: Message) -> Result<Message> {
+    async fn query(&self, request: Message, deadline: QueryDeadline) -> Result<Message> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(DnsError::protocol("UDP connection is closed"));
+        }
+
         let raw_id = request.id();
-        let mut current_timeout = RETRY_TIMEOUT;
 
         for attempt in 0..2 {
+            let Some(remaining) = deadline.remaining() else {
+                return Err(deadline.timeout_error());
+            };
+            let current_timeout = if attempt == 0 {
+                remaining.min(RETRY_TIMEOUT)
+            } else {
+                remaining
+            };
+
             let (tx, rx) = oneshot::channel();
             let mut query_guard = self.request_map.store(tx)?;
             let query_id = query_guard.query_id();
+            if self.closed.load(Ordering::Acquire) {
+                return Err(DnsError::protocol("UDP connection is closed"));
+            }
 
             trace!(
                 conn_id = self.id,
@@ -118,6 +131,7 @@ impl Connection for UdpConnection {
                 Ok(()) => {}
                 Err(e) => {
                     error!(conn_id = self.id, err = %e, "Failed to send UDP query");
+                    self.close();
                     return Err(e);
                 }
             }
@@ -136,7 +150,6 @@ impl Connection for UdpConnection {
                             conn_id = self.id,
                             query_id, "Listener dropped channel, retrying"
                         );
-                        current_timeout = self.timeout; // escalate timeout for second attempt
                         continue;
                     }
                 },
@@ -147,7 +160,6 @@ impl Connection for UdpConnection {
                         timeout_ms = current_timeout.as_millis(),
                         "UDP response timeout"
                     );
-                    current_timeout = self.timeout; // escalate timeout for second attempt
                     continue;
                 }
             }
@@ -167,7 +179,7 @@ impl Connection for UdpConnection {
     /// Returns false if the connection has been closed (e.g., due to send
     /// failure)
     fn available(&self) -> bool {
-        !self.closed.load(Ordering::Relaxed)
+        !self.closed.load(Ordering::Acquire)
     }
 
     /// Return the timestamp (in ms) of last successful activity.
@@ -182,19 +194,12 @@ impl UdpConnection {
     /// # Arguments
     /// * `conn_id` - Unique connection identifier for logging
     /// * `socket` - Pre-configured UDP socket connected to remote server
-    /// * `timeout` - Query timeout duration
-    fn new(
-        conn_id: u16,
-        socket: UdpSocket,
-        timeout: Duration,
-        request_map_capacity: u16,
-    ) -> UdpConnection {
+    fn new(conn_id: u16, socket: UdpSocket, request_map_capacity: u16) -> UdpConnection {
         Self {
             id: conn_id,
             transport: UdpTransport::new(socket),
             close_notify: Notify::new(),
             request_map: RequestMap::with_capacity(request_map_capacity),
-            timeout,
             last_used: AtomicU64::new(AppClock::elapsed_millis()),
             closed: AtomicBool::new(false), // Initially open
         }
@@ -247,7 +252,7 @@ impl UdpConnection {
                             }
                         }
                         Err(e) => {
-                            if self.closed.load(Ordering::Relaxed) {
+                            if self.closed.load(Ordering::Acquire) {
                                 closing = true; // graceful shutdown path
                                 continue;
                             }
@@ -270,8 +275,6 @@ pub struct UdpConnectionBuilder {
     remote_ip: Option<IpAddr>,
     port: u16,
     server_name: String,
-    /// Query timeout duration.
-    timeout: Duration,
     request_map_capacity: u16,
     so_mark: Option<u32>,
     bind_to_device: Option<String>,
@@ -284,7 +287,6 @@ impl UdpConnectionBuilder {
             remote_ip: connection_info.remote_ip,
             port: connection_info.port,
             server_name: connection_info.server_name.clone(),
-            timeout: connection_info.timeout,
             request_map_capacity,
             so_mark: connection_info.so_mark,
             bind_to_device: connection_info.bind_to_device.clone(),
@@ -304,7 +306,11 @@ impl ConnectionBuilder<UdpConnection> for UdpConnectionBuilder {
     /// - Non-blocking socket I/O
     /// - Single listener task handles all responses for this connection
     /// - Zero-copy where possible (direct socket buffer to DNS parser)
-    async fn create_connection(&self, conn_id: u16) -> Result<Arc<UdpConnection>> {
+    async fn create_connection(
+        &self,
+        conn_id: u16,
+        _deadline: QueryDeadline,
+    ) -> Result<Arc<UdpConnection>> {
         let socket = connect_socket(
             self.remote_ip,
             self.server_name.clone(),
@@ -323,7 +329,6 @@ impl ConnectionBuilder<UdpConnection> for UdpConnectionBuilder {
         let connection = UdpConnection::new(
             conn_id,
             UdpSocket::from_std(socket)?,
-            self.timeout,
             self.request_map_capacity,
         );
         let arc = Arc::new(connection);
@@ -353,7 +358,6 @@ mod tests {
         assert_eq!(connection_info.connection_type, ConnectionType::UDP);
         assert_eq!(builder.remote_ip, connection_info.remote_ip);
         assert_eq!(builder.port, 5300);
-        assert_eq!(builder.timeout, Duration::from_secs(7));
         assert_eq!(builder.request_map_capacity, DEFAULT_REQUEST_MAP_CAPACITY);
         assert_eq!(builder.server_name, "1.1.1.1");
         assert_eq!(builder.so_mark, Some(100));

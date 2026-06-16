@@ -1,16 +1,15 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::net::IpAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use base64::Engine;
-use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bytes::Bytes;
 use http::{Request, StatusCode};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tracing::{info, warn};
 
 use super::key::{CacheKey, EcsScopeDigest, normalize_domain_key};
@@ -19,7 +18,8 @@ use super::{Cache, CacheItem, CacheMap};
 use crate::api::{ApiHandler, json_error, json_ok, simple_response};
 use crate::core::app_clock::AppClock;
 use crate::core::error::Result;
-use crate::proto::{DNSClass, RData, Record, RecordType};
+use crate::plugin::executor::rdata_json::{RDataPayloadMode, rdata_payload};
+use crate::proto::{DNSClass, Record, RecordType};
 use crate::register_plugin_api;
 
 pub(super) fn register(
@@ -476,7 +476,8 @@ fn elapsed_to_unix_ms(elapsed_ms: u64, now_ms: u64, now_unix_ms: u64) -> u64 {
 }
 
 fn cache_record_json(record: &Record) -> CacheRecordJson {
-    let (payload_kind, payload_text, payload) = cache_rdata_payload(record.data());
+    let (payload_kind, payload_text, payload) =
+        rdata_payload(record.data(), RDataPayloadMode::Cache);
     CacheRecordJson {
         name: record.name().to_fqdn(),
         class: dns_class_name(record.class()),
@@ -486,129 +487,6 @@ fn cache_record_json(record: &Record) -> CacheRecordJson {
         payload_text,
         payload,
     }
-}
-
-fn cache_rdata_payload(rdata: &RData) -> (String, String, Value) {
-    match rdata {
-        RData::A(value) => ip_payload("A", IpAddr::V4(value.0)),
-        RData::AAAA(value) => ip_payload("AAAA", IpAddr::V6(value.0)),
-        RData::CNAME(value) => name_payload("CNAME", "target", &value.0),
-        RData::NS(value) => name_payload("NS", "target", &value.0),
-        RData::PTR(value) => name_payload("PTR", "target", &value.0),
-        RData::DNAME(value) => name_payload("DNAME", "target", &value.0),
-        RData::MX(value) => (
-            "MX".to_string(),
-            format!("{} {}", value.preference(), value.exchange().to_fqdn()),
-            json!({
-                "preference": value.preference(),
-                "exchange": value.exchange().to_fqdn(),
-            }),
-        ),
-        RData::SRV(value) => (
-            "SRV".to_string(),
-            format!(
-                "{} {} {} {}",
-                value.priority(),
-                value.weight(),
-                value.port(),
-                value.target().to_fqdn(),
-            ),
-            json!({
-                "priority": value.priority(),
-                "weight": value.weight(),
-                "port": value.port(),
-                "target": value.target().to_fqdn(),
-            }),
-        ),
-        RData::SOA(value) => (
-            "SOA".to_string(),
-            format!("{} {}", value.mname().to_fqdn(), value.rname().to_fqdn()),
-            json!({
-                "mname": value.mname().to_fqdn(),
-                "rname": value.rname().to_fqdn(),
-                "serial": value.serial(),
-                "refresh": value.refresh(),
-                "retry": value.retry(),
-                "expire": value.expire(),
-                "minimum": value.minimum(),
-            }),
-        ),
-        RData::TXT(value) => txt_payload("TXT", value),
-        RData::SVCB(value) => svcb_payload("SVCB", value),
-        RData::HTTPS(value) => svcb_payload("HTTPS", &value.0),
-        RData::NULL(value) => (
-            "NULL".to_string(),
-            "NULL".to_string(),
-            json!({ "data_base64": STANDARD.encode(value.data()) }),
-        ),
-        RData::Unknown { rr_type, data } => (
-            format!("TYPE{rr_type}"),
-            format!("TYPE{rr_type}"),
-            json!({
-                "unknown_rr_type": rr_type,
-                "data_base64": STANDARD.encode(data),
-            }),
-        ),
-        other => (
-            record_type_name(other.rr_type()),
-            format!("{other:?}"),
-            json!({ "display": format!("{other:?}") }),
-        ),
-    }
-}
-
-fn ip_payload(kind: &str, ip: IpAddr) -> (String, String, Value) {
-    let ip = ip.to_string();
-    (kind.to_string(), ip.clone(), json!({ "ip": ip }))
-}
-
-fn name_payload(kind: &str, field: &str, name: &crate::proto::Name) -> (String, String, Value) {
-    let target = name.to_fqdn();
-    (kind.to_string(), target.clone(), json!({ field: target }))
-}
-
-fn txt_payload(kind: &str, value: &crate::proto::TXT) -> (String, String, Value) {
-    let mut strings = Vec::new();
-    let mut parts = Vec::new();
-    let mut all_utf8 = true;
-    for part in value.txt_data() {
-        match std::str::from_utf8(part) {
-            Ok(text) => {
-                strings.push(text.to_string());
-                parts.push(json!({ "text": text }));
-            }
-            Err(_) => {
-                all_utf8 = false;
-                parts.push(json!({ "data_base64": STANDARD.encode(part) }));
-            }
-        }
-    }
-
-    let payload = if all_utf8 {
-        json!({ "strings": strings })
-    } else {
-        json!({ "parts": parts })
-    };
-
-    let payload_text = if strings.is_empty() {
-        kind.to_string()
-    } else {
-        strings.join(" ")
-    };
-
-    (kind.to_string(), payload_text, payload)
-}
-
-fn svcb_payload(kind: &str, value: &crate::proto::SVCB) -> (String, String, Value) {
-    (
-        kind.to_string(),
-        value.target().to_fqdn(),
-        json!({
-            "priority": value.priority(),
-            "target": value.target().to_fqdn(),
-            "params": value.params().len(),
-        }),
-    )
 }
 
 fn dns_class_name(class: DNSClass) -> String {

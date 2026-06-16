@@ -61,6 +61,8 @@ pub mod nftset;
 #[cfg(feature = "plugin-query-recorder")]
 pub mod query_recorder;
 pub mod query_summary;
+#[cfg(feature = "api")]
+pub(crate) mod rdata_json;
 pub mod redirect;
 pub mod reload;
 pub mod reload_provider;

@@ -314,7 +314,7 @@ export const zhCNPluginDefined = {
         "upstreams[].bootstrap": {
           label: "Bootstrap",
           description:
-            "为域名型上游提供引导解析服务器；未配置时会在首次建连时使用系统解析；与 dial_addr 同时配置时会被忽略。",
+            "为域名型上游提供引导解析服务器，必须写为 IP:port；未配置时会在首次建连时使用系统解析；与 dial_addr 同时配置时会被忽略。",
           placeholder: "8.8.8.8:53",
         },
         "upstreams[].bootstrap_version": {
@@ -337,8 +337,14 @@ export const zhCNPluginDefined = {
         },
         "upstreams[].max_conns": {
           label: "最大连接数",
-          description: "定义连接池连接上限。",
+          description: "定义连接池连接上限，范围 1..4096。",
           placeholder: "256",
+        },
+        "upstreams[].min_conns": {
+          label: "最小连接数",
+          description:
+            "定义连接池最小预热连接数，默认 0，范围 0..4096，且不能大于 max_conns。",
+          placeholder: "0",
         },
         "upstreams[].insecure_skip_verify": {
           label: "跳过 TLS 校验",
@@ -823,11 +829,23 @@ export const zhCNPluginDefined = {
     },
     black_hole: {
       name: "Black Hole",
-      description: "对命中的 A / AAAA 请求直接返回预设地址",
+      description: "按模式生成全 qtype 本地拦截响应",
       fields: {
+        mode: {
+          label: "拦截模式",
+          description:
+            "定义拦截响应类型；未配置 ips 时默认 nxdomain，配置 ips 时默认 custom。",
+          options: {
+            nxdomain: "NXDOMAIN",
+            nodata: "NODATA",
+            null: "Null 地址",
+            custom: "自定义地址",
+            refused: "REFUSED",
+          },
+        },
         ips: {
-          label: "返回地址",
-          description: "定义本地合成返回地址集合。",
+          label: "自定义返回地址",
+          description: "定义 custom 模式使用的本地合成返回地址集合。",
           placeholder: "0.0.0.0\n::",
         },
         "ips[]": {
@@ -836,18 +854,18 @@ export const zhCNPluginDefined = {
         },
         short_circuit: {
           label: "命中后停止后续执行",
-          description: "命中并生成本地应答后，是否立即停止后续 executor 链。",
+          description: "生成拦截响应后，是否立即停止后续 executor 链。",
         },
       },
       quickSetup: {
-        paramPlaceholder: "0.0.0.0 :: short_circuit=true",
+        paramPlaceholder: "nxdomain short_circuit=true",
       },
       metrics: {
         labels: {
           blackhole_block_total: "拦截",
         },
         help: {
-          blackhole_block_total: "black_hole 合成本地响应的总次数。",
+          blackhole_block_total: "black_hole 生成拦截响应的总次数。",
         },
       },
     },
@@ -1393,6 +1411,18 @@ export const zhCNPluginDefined = {
         password: {
           label: "密码",
           description: "指定 RouterOS API 登录密码。",
+        },
+        connect_timeout: {
+          label: "连接超时",
+          description: "建立 RouterOS API 连接时的等待上限，单位秒。",
+        },
+        send_timeout: {
+          label: "发送超时",
+          description: "发送单个 RouterOS API 命令时的等待上限，单位秒。",
+        },
+        receive_timeout: {
+          label: "接收超时",
+          description: "等待下一段 RouterOS API 响应数据的上限，单位秒。",
         },
         async: {
           label: "异步提交",

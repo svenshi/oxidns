@@ -31,6 +31,7 @@ pub mod buffer_pool;
 #[cfg(feature = "_http-client")]
 pub mod http_client;
 pub mod listen;
+pub mod proxy;
 #[cfg(any(feature = "_tls-client", feature = "_tls-server"))]
 pub mod tls_config;
 pub mod transport;

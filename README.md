@@ -76,7 +76,7 @@ OxiDNS 不试图替你隐藏复杂性。
 | --- | --- |
 | 协议 | UDP、TCP、DoT、DoQ、DoH |
 | 策略模型 | `sequence`、`matcher`、`executor`、`provider` |
-| 执行器 | `forward`、`cache`、`fallback`、`hosts`、`arbitrary`、`redirect`、`ecs_handler`、`ttl`、`ip_selector`、`download`、`upgrade`、`reload`、`reload_provider`、`script`、`http_request`、`learn_domain`、`query_summary`、`query_recorder`、`metrics_collector` |
+| 执行器 | `forward`、`cache`、`fallback`、`hosts`、`arbitrary`、`redirect`、`ecs_handler`、`ttl`、`black_hole`、`ip_selector`、`download`、`upgrade`、`reload`、`reload_provider`、`script`、`http_request`、`learn_domain`、`query_summary`、`query_recorder`、`metrics_collector` |
 | 匹配器 | `qname`、`question`、`qtype`、`qclass`、`client_ip`、`resp_ip`、`rcode`、`rate_limiter` 等 |
 | 数据集 | `domain_set`、`dynamic_domain_set`、`ip_set`、`geoip`、`geosite`、`adguard_rule` |
 | 系统联动 | `ipset`、`nftset`、`ros_address_list`、`reverse_lookup` |

@@ -37,7 +37,7 @@ use crate::core::metrics::{
 };
 use crate::core::system_utils::parse_simple_duration;
 use crate::network::http_client::{HttpClient, HttpClientOptions, HttpRequestOptions};
-use crate::network::upstream::{Socks5Opt, parse_socks5_opt};
+use crate::network::proxy::{Socks5Opt, parse_socks5_opt};
 use crate::plugin::executor::template::{JsonTemplateValue, Template};
 use crate::plugin::executor::{ExecStep, Executor, ExecutorNext};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};

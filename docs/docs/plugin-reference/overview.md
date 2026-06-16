@@ -62,7 +62,7 @@ server -> sequence
 | --- | --- |
 | [`ttl`](executor.mdx#ttl) | 改写响应 TTL（统一值或上下限裁剪）。 |
 | [`prefer_ipv4` / `prefer_ipv6`](executor.mdx#prefer_ipv4--prefer_ipv6) | 双栈优选器，对偏好类型做学习，对非偏好类型做抑制。 |
-| [`black_hole`](executor.mdx#black_hole) | 对命中的 `A` / `AAAA` 请求直接返回预设地址。 |
+| [`black_hole`](executor.mdx#black_hole) | 按 `nxdomain` / `nodata` / `null` / `custom` / `refused` 模式生成全 qtype 拦截响应。 |
 | [`drop_resp`](executor.mdx#drop_resp) | 清空当前上下文中的响应。 |
 | [`reverse_lookup`](executor.mdx#reverse_lookup) | 缓存应答中的 IP → 域名关系，并可选地处理 PTR 查询。 |
 

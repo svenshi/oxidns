@@ -65,7 +65,7 @@ export const enUSDocs = {
     "upstreams[].port":
       "- Type: `integer`; required: no; default value: protocol default port\n- Function: Override the protocol default port.",
     "upstreams[].bootstrap":
-      "- Type: `string`; Required: No; Default: None\n- Function: Provide guidance resolution server for domain name upstream.\n- Rule description:\n  - Only meaningful when `addr` uses a domain name.\n  - It should be written as `IP:port`, and no domain name can be written.\n  - Typically used for the first resolution of upstream DoT, DoQ, and DoH domain names.",
+      "- Type: `string`; Required: No; Default: None\n- Function: Provide guidance resolution server for domain name upstream.\n- Rule description:\n  - Only meaningful when `addr` uses a domain name.\n  - It must be written as `IP:port`; hostnames are rejected.\n  - Typically used for the first resolution of upstream DoT, DoQ, and DoH domain names.",
     "upstreams[].bootstrap_version":
       "- Type: `integer`; required: no; default value: none\n- Function: Specify bootstrap to give priority to IPv4 or IPv6.\n- Value: `4` or `6`.",
     "upstreams[].socks5":
@@ -73,7 +73,9 @@ export const enUSDocs = {
     "upstreams[].idle_timeout":
       "- Type: `integer`; required: no; default value: none\n- Unit: seconds\n- Function: Define the connection pool idle connection retention time.",
     "upstreams[].max_conns":
-      "- Type: `integer`; Required: No; Default: Automatic\n- Function: Define the upper limit of connection pool connections.",
+      "- Type: `integer`; Required: No; Default: Automatic\n- Function: Define the upper limit of connection pool connections.\n- Range: `1..4096`.",
+    "upstreams[].min_conns":
+      "- Type: `integer`; Required: No; Default: `0`\n- Function: Define the minimum warmed connection count kept by the pool.\n- Range: `0..4096`, and it must not exceed the upstream's effective `max_conns`.\n- Note: When omitted, connections remain lazy and are not pre-created when the pool is created.",
     "upstreams[].insecure_skip_verify":
       "- Type: `boolean`; required: no; default value: `false`\n- Function: Control whether to skip TLS certificate verification.\n- Note: Applies only to self-signed certificates or controlled environments.",
     "upstreams[].timeout":
@@ -203,9 +205,10 @@ export const enUSDocs = {
       "- Type: `integer`; Required: No; Default: `3600`\n- Unit: seconds\n- Function: Define preferred status cache duration.",
   },
   black_hole: {
-    ips: "- Type: `array`; Required: No; Default: empty array\n- Function: Define a set of local synthetic return addresses.\n- Operational impact:\n  - IPv4 address is used only for A replies.\n  - IPv6 addresses are used only for AAAA responses.",
+    mode: "- Type: `string`; Required: No; Default: `nxdomain` when `ips` is empty, `custom` when `ips` is configured\n- Values: `nxdomain`, `nodata`, `null`, `custom`, `refused`\n- Function: Defines the black_hole interception response type and covers every qtype.",
+    ips: "- Type: `array`; Required: No; Default: empty array\n- Function: Define local synthetic return addresses for `custom` mode.\n- Operational impact:\n  - IPv4 addresses are used only for A responses.\n  - IPv6 addresses are used only for AAAA responses.\n  - Non-address qtypes and missing address families return NODATA.",
     short_circuit:
-      "- Type: `bool`; required: no; default value: `false`\n- Function: After hitting and generating a local response, whether to immediately stop the subsequent executor chain.",
+      "- Type: `bool`; Required: No; Default: `false`\n- Function: After generating an interception response, whether to immediately stop the subsequent executor chain.",
   },
   drop_resp: {
     args: "No independent configuration fields.",
@@ -346,6 +349,12 @@ export const enUSDocs = {
       "- Type: `string`; Required: Yes; Default: None\n- Function: Specify the RouterOS API login username. This account needs to have permission to read and maintain the target `address-list`.\n- Configuration suggestions: It is recommended to create a dedicated account for this plug-in to isolate the scope of permissions and audit records.",
     password:
       "- Type: `string`; Required: Yes; Default: None\n- Function: Specify the RouterOS API login password. Plugin initialization, reconnection, and background synchronization all rely on this credential.\n- Note: Direct exposure of real passwords in public repositories or shared samples should be avoided.",
+    connect_timeout:
+      "- Type: `u64`; Required: No; Default: `5`\n- Function: Specify the maximum wait time, in seconds, for establishing a RouterOS API connection.\n- Note: Must be greater than `0`. Increase it if the management network or RouterOS API occasionally responds slowly.",
+    send_timeout:
+      "- Type: `u64`; Required: No; Default: `5`\n- Function: Specify the maximum wait time, in seconds, for sending one RouterOS API command.\n- Note: Must be greater than `0`. The default is usually sufficient.",
+    receive_timeout:
+      "- Type: `u64`; Required: No; Default: `5`\n- Function: Specify the maximum wait time, in seconds, for the next chunk of RouterOS API response data.\n- Configuration recommendation: Prefer a dedicated, size-controlled `address-list` for OxiDNS. Avoid connecting the plugin to an existing large shared list. Increase this value, for example to `30` or `60`, only when slow legacy list queries or a slow RouterOS management plane cannot be avoided.",
     async:
       "- Type: `bool`; required: no; default value: `true`\n- Function: Control whether the address writing behavior is asynchronous. When enabled, the DNS response path is only responsible for delivery tasks, and the background manager completes the interaction with RouterOS.\n- Impact: Asynchronous mode helps reduce the risk of request path blocking; after closing, it will be changed to synchronous submission, which is more suitable for scenarios that require immediate confirmation of submission results.",
     address_list4:

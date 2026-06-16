@@ -62,7 +62,7 @@ export const zhCNDocs = {
     "upstreams[].port":
       "- 类型：`integer`；必填：否；默认值：协议默认端口\n- 作用：覆盖协议默认端口。",
     "upstreams[].bootstrap":
-      "- 类型：`string`；必填：否；默认值：无\n- 作用：为域名型上游提供引导解析服务器。\n- 规则说明：\n  - 仅在 `addr` 使用域名时有意义。\n  - 应写为 `IP:port`，不能再写域名。\n  - 典型用于 DoT、DoQ、DoH 域名上游的首次解析。",
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：为域名型上游提供引导解析服务器。\n- 规则说明：\n  - 仅在 `addr` 使用域名时有意义。\n  - 必须写为 `IP:port`，不能再写域名。\n  - 典型用于 DoT、DoQ、DoH 域名上游的首次解析。",
     "upstreams[].bootstrap_version":
       "- 类型：`integer`；必填：否；默认值：无\n- 作用：指定 bootstrap 优先使用 IPv4 或 IPv6。\n- 取值：`4` 或 `6`。",
     "upstreams[].socks5":
@@ -70,7 +70,9 @@ export const zhCNDocs = {
     "upstreams[].idle_timeout":
       "- 类型：`integer`；必填：否；默认值：无\n- 单位：秒\n- 作用：定义连接池空闲连接保留时间。",
     "upstreams[].max_conns":
-      "- 类型：`integer`；必填：否；默认值：自动\n- 作用：定义连接池连接上限。",
+      "- 类型：`integer`；必填：否；默认值：自动\n- 作用：定义连接池连接上限。\n- 取值范围：`1..4096`。",
+    "upstreams[].min_conns":
+      "- 类型：`integer`；必填：否；默认值：`0`\n- 作用：定义连接池最小预热连接数。\n- 取值范围：`0..4096`，且不能大于当前上游的有效 `max_conns`。\n- 说明：未配置时保持懒加载，不会在 pool 创建时主动预建连接。",
     "upstreams[].insecure_skip_verify":
       "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：控制是否跳过 TLS 证书校验。\n- 注意事项：仅适用于自签证书或受控环境。",
     "upstreams[].timeout":
@@ -199,9 +201,10 @@ export const zhCNDocs = {
       "- 类型：`integer`；必填：否；默认值：`3600`\n- 单位：秒\n- 作用：定义 preferred 状态缓存时长。",
   },
   black_hole: {
-    ips: "- 类型：`array`；必填：否；默认值：空数组\n- 作用：定义本地合成返回地址集合。\n- 运行影响：\n  - IPv4 地址仅用于 A 应答。\n  - IPv6 地址仅用于 AAAA 应答。",
+    mode: "- 类型：`string`；必填：否；默认值：无 `ips` 时为 `nxdomain`，配置了 `ips` 时为 `custom`\n- 可选值：`nxdomain`、`nodata`、`null`、`custom`、`refused`\n- 作用：定义 black_hole 生成的拦截响应类型，覆盖所有 qtype。",
+    ips: "- 类型：`array`；必填：否；默认值：空数组\n- 作用：定义 `custom` 模式使用的本地合成返回地址集合。\n- 运行影响：\n  - IPv4 地址仅用于 A 应答。\n  - IPv6 地址仅用于 AAAA 应答。\n  - 非地址 qtype 或缺失地址族返回 NODATA。",
     short_circuit:
-      "- 类型：`bool`；必填：否；默认值：`false`\n- 作用：命中并生成本地应答后，是否立即停止后续 executor 链。",
+      "- 类型：`bool`；必填：否；默认值：`false`\n- 作用：生成拦截响应后，是否立即停止后续 executor 链。",
   },
   drop_resp: {
     args: "无独立配置字段。",
@@ -342,6 +345,12 @@ export const zhCNDocs = {
       "- 类型：`string`；必填：是；默认值：无\n- 作用：指定 RouterOS API 登录用户名。该账户需要具备读取和维护目标 `address-list` 的权限。\n- 配置建议：建议为本插件单独创建专用账号，以便隔离权限范围和审计记录。",
     password:
       "- 类型：`string`；必填：是；默认值：无\n- 作用：指定 RouterOS API 登录密码。插件初始化、重连和后台同步均依赖该凭据。\n- 注意事项：应避免在公开仓库或共享示例中直接暴露真实口令。",
+    connect_timeout:
+      "- 类型：`u64`；必填：否；默认值：`5`\n- 作用：指定建立 RouterOS API 连接时的等待上限，单位为秒。\n- 注意事项：必须大于 `0`。网络链路较慢或 RouterOS 管理面偶发繁忙时，可按需调大。",
+    send_timeout:
+      "- 类型：`u64`；必填：否；默认值：`5`\n- 作用：指定发送单个 RouterOS API 命令时的等待上限，单位为秒。\n- 注意事项：必须大于 `0`。通常保持默认即可。",
+    receive_timeout:
+      "- 类型：`u64`；必填：否；默认值：`5`\n- 作用：指定等待下一段 RouterOS API 响应数据的上限，单位为秒。\n- 配置建议：建议为 OxiDNS 使用专用且规模可控的 `address-list`，不建议接入已有的大型共享列表。只有在存量环境无法避免慢列表查询或 RouterOS 管理面响应较慢时，才考虑将该值调大，例如 `30` 或 `60`。",
     async:
       "- 类型：`bool`；必填：否；默认值：`true`\n- 作用：控制地址写入行为是否采用异步方式。启用后，DNS 应答路径只负责投递任务，由后台管理器完成与 RouterOS 的交互。\n- 影响：异步模式有助于降低请求路径阻塞风险；关闭后会改为同步提交，更适合需要立即确认提交结果的场景。",
     address_list4:

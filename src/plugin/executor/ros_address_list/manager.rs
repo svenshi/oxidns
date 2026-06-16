@@ -23,7 +23,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
-use super::api::MikrotikApi;
+use super::api::{MikrotikApi, RouterListEntry};
 use crate::core::app_clock::AppClock;
 use crate::core::error::{DnsError, Result};
 use crate::core::task_center;
@@ -278,6 +278,11 @@ impl AddressListManagerRuntime {
             run_manager_worker(worker_tag, manager, rx).await;
         }));
 
+        // Startup reconciliation is deliberately queued onto the manager worker
+        // instead of awaited during plugin init. Slow RouterOS list scans must
+        // not prevent the DNS service from coming up.
+        let _ = tx.try_send(ManagerCommand::Reconcile);
+
         // Pruning is local-memory only. It never talks to RouterOS and exists
         // solely to keep the write-suppression cache bounded.
         let prune_tx = tx.clone();
@@ -375,6 +380,8 @@ pub(super) struct AddressListManager {
     /// Lightweight local cache that suppresses redundant dynamic refresh
     /// writes.
     dynamic_refresh_cache: AHashMap<AddressListKey, DynamicRefreshState>,
+    /// Currently running background reconcile task, if any.
+    reconcile_handle: Option<JoinHandle<()>>,
     /// One-time startup guard.
     initialized: bool,
 }
@@ -385,6 +392,7 @@ impl AddressListManager {
             api,
             persistent_items: cfg.persistent_items.clone(),
             dynamic_refresh_cache: AHashMap::new(),
+            reconcile_handle: None,
             cfg,
             initialized: false,
         }
@@ -395,16 +403,12 @@ impl AddressListManager {
             return Ok(());
         }
 
-        // Startup intentionally validates connectivity and repairs persistent
-        // state before the first observed DNS answer is processed.
+        // Cold remote-state operations validate connectivity once. Dynamic
+        // observations do not need a full address-list scan before they can
+        // submit exact-key upserts.
         self.api.healthcheck().await?;
-        self.reconcile_persistent_inner().await?;
         self.initialized = true;
         Ok(())
-    }
-
-    pub(super) async fn initialize_on_startup(&mut self) -> Result<()> {
-        self.ensure_initialized().await
     }
 
     #[inline]
@@ -558,12 +562,65 @@ impl AddressListManager {
             if self.persistent_items.contains(&entry.key) {
                 continue;
             }
+            if !self
+                .is_stale_persistent_entry_still_deletable(&entry)
+                .await?
+            {
+                continue;
+            }
             self.api
                 .delete_entry_by_id(&entry.id, entry.key.family)
                 .await?;
         }
 
         Ok(())
+    }
+
+    async fn is_stale_persistent_entry_still_deletable(
+        &self,
+        entry: &RouterListEntry,
+    ) -> Result<bool> {
+        let current_entries = self.api.list_entries_by_key(&entry.key).await?;
+        Ok(current_entries.into_iter().any(|current| {
+            current.id == entry.id
+                && !self.persistent_items.contains(&current.key)
+                && decode_owned_comment(
+                    self.cfg.comment_prefix.as_str(),
+                    self.cfg.plugin_tag.as_str(),
+                    current.comment.as_deref(),
+                )
+                .is_some_and(|meta| meta.kind == OwnedCommentKind::Persistent)
+        }))
+    }
+
+    fn spawn_background_reconcile(&mut self, tag: String) {
+        if self
+            .reconcile_handle
+            .as_ref()
+            .is_some_and(|handle| !handle.is_finished())
+        {
+            debug!(
+                plugin = %tag,
+                "ros_address_list reconcile already running, skipping duplicate request"
+            );
+            return;
+        }
+
+        let api = self.api.clone();
+        let mut cfg = self.cfg.clone();
+        cfg.persistent_items = self.persistent_items.clone();
+        self.reconcile_handle = Some(tokio::spawn(async move {
+            let mut manager = AddressListManager::new(api, cfg);
+            if let Err(e) = manager.reconcile().await {
+                warn!(
+                    plugin = %tag,
+                    err = %e,
+                    "ros_address_list background reconcile failed"
+                );
+            } else {
+                debug!(plugin = %tag, "ros_address_list background reconcile completed");
+            }
+        }));
     }
 
     async fn observe_domain_inner(
@@ -687,7 +744,6 @@ impl AddressListManager {
         domain: String,
         addrs: Vec<ObservedAddr>,
     ) -> Result<()> {
-        self.ensure_initialized().await?;
         self.observe_domain_inner(domain, addrs, now_millis()).await
     }
 
@@ -710,12 +766,16 @@ impl AddressListManager {
     }
 
     pub(super) async fn prune_dynamic_cache_now(&mut self) -> Result<()> {
-        self.ensure_initialized().await?;
         self.prune_dynamic_cache(now_millis());
         Ok(())
     }
 
     pub(super) async fn shutdown(&mut self, cleanup: bool) -> Result<()> {
+        if let Some(handle) = self.reconcile_handle.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+
         if !cleanup {
             self.dynamic_refresh_cache.clear();
             return Ok(());
@@ -759,13 +819,11 @@ impl AddressListManager {
         addrs: Vec<ObservedAddr>,
         now_ms: u64,
     ) -> Result<()> {
-        self.ensure_initialized().await?;
         self.observe_domain_inner(domain, addrs, now_ms).await
     }
 
     #[cfg(test)]
     pub(super) async fn prune_dynamic_cache_at_for_test(&mut self, now_ms: u64) -> Result<()> {
-        self.ensure_initialized().await?;
         self.prune_dynamic_cache(now_ms);
         Ok(())
     }
@@ -877,15 +935,7 @@ async fn run_manager_worker(
                 }
             }
             ManagerCommand::Reconcile => {
-                if let Err(e) = manager.reconcile().await {
-                    warn!(
-                        plugin = %tag,
-                        err = %e,
-                        "ros_address_list periodic reconcile failed"
-                    );
-                } else {
-                    debug!(plugin = %tag, "ros_address_list reconcile completed");
-                }
+                manager.spawn_background_reconcile(tag.clone());
             }
             ManagerCommand::PruneDynamicCache => {
                 if let Err(e) = manager.prune_dynamic_cache_now().await {

@@ -150,6 +150,26 @@ Meaning:
 * RouterOS API address.
 * OxiDNS uses it to connect to RouterOS and manage address-list entries.
 
+### `connect_timeout` / `send_timeout` / `receive_timeout`
+
+```yaml
+connect_timeout: 5
+send_timeout: 5
+receive_timeout: 30
+```
+
+Meaning:
+
+* These values control RouterOS API connection, command send, and response receive waits, in seconds.
+* All three values must be greater than `0`.
+* `receive_timeout` is the wait for the next RouterOS response chunk, not a total cap for the whole scan.
+
+Recommended practice:
+
+* Use dedicated, size-controlled `address-list` targets for OxiDNS. Avoid connecting the plugin directly to existing large shared lists.
+* If a legacy deployment cannot split the list yet, or the RouterOS management plane is slow enough that startup reconcile scans often exceed the default 5 seconds, increase `receive_timeout` first, for example to `30` or `60`.
+* `connect_timeout` and `send_timeout` can usually keep their defaults unless the management network is slow or the RouterOS API is occasionally busy.
+
 ### `address_list4` / `address_list6`
 
 ```yaml
@@ -187,6 +207,8 @@ Why:
 
 * DNS responses should not be noticeably delayed by RouterOS API latency.
 * `ros_address_list` is primarily a side-effect and integration plugin, not the main resolution action.
+* Startup-time RouterOS address-list scans run in the background, so slow legacy list queries or a slow management plane should not block DNS service startup.
+* Backgrounding reduces the impact on DNS startup and the request path, but it does not make large address lists a recommended target.
 
 ### `min_ttl` / `max_ttl`
 
