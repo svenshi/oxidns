@@ -249,7 +249,7 @@ Sends DNS queries to upstreams.
 
 - Type: `string`; Required: no
 - Purpose: Bootstrap resolver for domain-based upstreams.
-- Notes: Use an `IP:port` address. With bootstrap enabled, OxiDNS resolves the upstream hostname through that resolver and caches it according to DNS TTL. Ignored when `dial_addr` is also configured.
+- Notes: Must use an `IP:port` address. With bootstrap enabled, OxiDNS resolves the upstream hostname through that resolver and caches it according to DNS TTL. Ignored when `dial_addr` is also configured.
 
 #### `upstreams[].bootstrap_version`
 
@@ -275,6 +275,7 @@ Sends DNS queries to upstreams.
 
 - Type: `integer`; Required: no; Default: `64`
 - Purpose: Maximum pooled connections.
+- Range: `1..4096`
 
 #### `upstreams[].insecure_skip_verify`
 

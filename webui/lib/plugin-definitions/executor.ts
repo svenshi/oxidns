@@ -196,7 +196,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
             },
             {
               key: "max_conns",
-              description: "定义连接池连接上限。",
+              description: "定义连接池连接上限，范围 1..4096。",
               label: "最大连接数",
               type: "number",
               placeholder: "256",

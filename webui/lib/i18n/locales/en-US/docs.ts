@@ -65,7 +65,7 @@ export const enUSDocs = {
     "upstreams[].port":
       "- Type: `integer`; required: no; default value: protocol default port\n- Function: Override the protocol default port.",
     "upstreams[].bootstrap":
-      "- Type: `string`; Required: No; Default: None\n- Function: Provide guidance resolution server for domain name upstream.\n- Rule description:\n  - Only meaningful when `addr` uses a domain name.\n  - It should be written as `IP:port`, and no domain name can be written.\n  - Typically used for the first resolution of upstream DoT, DoQ, and DoH domain names.",
+      "- Type: `string`; Required: No; Default: None\n- Function: Provide guidance resolution server for domain name upstream.\n- Rule description:\n  - Only meaningful when `addr` uses a domain name.\n  - It must be written as `IP:port`; hostnames are rejected.\n  - Typically used for the first resolution of upstream DoT, DoQ, and DoH domain names.",
     "upstreams[].bootstrap_version":
       "- Type: `integer`; required: no; default value: none\n- Function: Specify bootstrap to give priority to IPv4 or IPv6.\n- Value: `4` or `6`.",
     "upstreams[].socks5":
@@ -73,7 +73,7 @@ export const enUSDocs = {
     "upstreams[].idle_timeout":
       "- Type: `integer`; required: no; default value: none\n- Unit: seconds\n- Function: Define the connection pool idle connection retention time.",
     "upstreams[].max_conns":
-      "- Type: `integer`; Required: No; Default: Automatic\n- Function: Define the upper limit of connection pool connections.",
+      "- Type: `integer`; Required: No; Default: Automatic\n- Function: Define the upper limit of connection pool connections.\n- Range: `1..4096`.",
     "upstreams[].insecure_skip_verify":
       "- Type: `boolean`; required: no; default value: `false`\n- Function: Control whether to skip TLS certificate verification.\n- Note: Applies only to self-signed certificates or controlled environments.",
     "upstreams[].timeout":

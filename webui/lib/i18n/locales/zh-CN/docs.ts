@@ -62,7 +62,7 @@ export const zhCNDocs = {
     "upstreams[].port":
       "- 类型：`integer`；必填：否；默认值：协议默认端口\n- 作用：覆盖协议默认端口。",
     "upstreams[].bootstrap":
-      "- 类型：`string`；必填：否；默认值：无\n- 作用：为域名型上游提供引导解析服务器。\n- 规则说明：\n  - 仅在 `addr` 使用域名时有意义。\n  - 应写为 `IP:port`，不能再写域名。\n  - 典型用于 DoT、DoQ、DoH 域名上游的首次解析。",
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：为域名型上游提供引导解析服务器。\n- 规则说明：\n  - 仅在 `addr` 使用域名时有意义。\n  - 必须写为 `IP:port`，不能再写域名。\n  - 典型用于 DoT、DoQ、DoH 域名上游的首次解析。",
     "upstreams[].bootstrap_version":
       "- 类型：`integer`；必填：否；默认值：无\n- 作用：指定 bootstrap 优先使用 IPv4 或 IPv6。\n- 取值：`4` 或 `6`。",
     "upstreams[].socks5":
@@ -70,7 +70,7 @@ export const zhCNDocs = {
     "upstreams[].idle_timeout":
       "- 类型：`integer`；必填：否；默认值：无\n- 单位：秒\n- 作用：定义连接池空闲连接保留时间。",
     "upstreams[].max_conns":
-      "- 类型：`integer`；必填：否；默认值：自动\n- 作用：定义连接池连接上限。",
+      "- 类型：`integer`；必填：否；默认值：自动\n- 作用：定义连接池连接上限。\n- 取值范围：`1..4096`。",
     "upstreams[].insecure_skip_verify":
       "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：控制是否跳过 TLS 证书校验。\n- 注意事项：仅适用于自签证书或受控环境。",
     "upstreams[].timeout":
