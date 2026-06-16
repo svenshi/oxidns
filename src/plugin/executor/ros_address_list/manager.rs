@@ -24,9 +24,9 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use super::api::{MikrotikApi, RouterListEntry};
-use crate::core::app_clock::AppClock;
-use crate::core::error::{DnsError, Result};
-use crate::core::task_center;
+use crate::infra::clock::AppClock;
+use crate::infra::error::{DnsError, Result};
+use crate::infra::task as task_center;
 
 /// Host prefix used for normalized IPv4 single-address entries.
 const HOST_PREFIX_V4: u8 = 32;

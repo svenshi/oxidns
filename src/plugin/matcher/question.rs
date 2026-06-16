@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde_yaml_ng::Value;
 
 use crate::config::types::PluginConfig;
-use crate::core::error::{DnsError, Result as DnsResult};
+use crate::infra::error::{DnsError, Result as DnsResult};
 use crate::plugin::dependency::DependencySpec;
 use crate::plugin::matcher::Matcher;
 use crate::plugin::matcher::matcher_utils::{

@@ -14,9 +14,9 @@ use serde::Deserialize;
 use tracing::info;
 
 use crate::config::types::PluginConfig;
-use crate::core::app_clock::AppClock;
-use crate::core::error::{DnsError, Result as DnsResult};
 use crate::core::rule_matcher::DomainRuleMatcher;
+use crate::infra::clock::AppClock;
+use crate::infra::error::{DnsError, Result as DnsResult};
 use crate::plugin::provider::Provider;
 use crate::plugin::provider::v2ray_dat::{
     GeoSiteList, geosite_code, geosite_domain_expression, geosite_domain_matches_selectors,

@@ -8,20 +8,22 @@
 
 ## Project Structure & Module Organization
 
-- `src/main.rs` boots the Tokio runtime, parses CLI options, loads config, initializes logging, starts the application, and handles graceful shutdown.
-- `src/lib.rs` exposes the library surface used by tests and embedding scenarios, including `api`, `app`, `config`, `core`, `message`, `network`, `plugin`, and `service`.
-- `src/app/` contains bootstrap and logging setup for wiring the runtime from config to live services.
-- `src/api/` contains the management/control and health HTTP endpoints.
+- `src/main.rs` parses top-level CLI options, dispatches foreground startup or service mode, and keeps binary-only entry concerns thin.
+- `src/lib.rs` exposes the library surface used by tests and embedding scenarios, including `api`, `app`, `cli`, `config`, `core`, `infra`, `message`, and `plugin`.
+- `src/cli/` contains command definitions, parsing, command dispatch, CLI output, and option-to-runtime adapter code.
+- `src/app/` contains foreground startup orchestration for wiring config, runtime, API, plugins, and graceful shutdown/reload flows.
+- `src/api/` contains the management/control and health HTTP endpoints plus API route macros under `src/api/macros.rs`.
 - `src/message/` contains OxiDNS's DNS message model and wire codec implementation.
-- `src/core/` contains shared runtime types such as `DnsContext`, errors, rule matching helpers, task orchestration, and TTL cache primitives.
+- `src/core/` is the DNS execution core and should stay focused on `DnsContext`, request lifecycle state, and reusable rule matching primitives.
+- `src/infra/` contains project infrastructure shared by CLI, API, app, and plugins: errors, clocks, environment helpers, service management, task orchestration, TTL cache primitives, observability/logging/metrics, build info, upgrade support, and networking.
 - `src/config/` defines the YAML schema and validation for runtime configuration.
-- `src/network/` contains listeners, protocol transports, TLS setup, upstream resolution, bootstrap logic, pooling, and Linux-specific networking helpers.
+- `src/infra/network/` contains listeners, protocol transports, TLS setup, upstream resolution, bootstrap logic, pooling, and networking helpers.
 - `src/plugin/` is the main extension surface and is split into server, executor, matcher, and provider categories.
 - `src/plugin/server/` handles inbound DNS protocols, including UDP, TCP, QUIC, and HTTP-based DNS with dedicated HTTP/2 and HTTP/3 support under `src/plugin/server/http/`.
 - `src/plugin/executor/` contains request processors such as `sequence`, `forward`, `cache`, `fallback`, `hosts`, `arbitrary`, `redirect`, `ecs_handler`, `ttl`, `dual_selector`, observability plugins, and system-integration plugins.
 - `src/plugin/matcher/` contains rule matchers for qname/qtype/qclass, client IP, response IP, CNAME, response presence, RCODE, marks, env, random rollout, rate limits, and related predicates.
 - `src/plugin/provider/` contains reusable domain/IP datasets consumed by matchers and executors.
-- `src/service.rs` contains service-management integration for installing or controlling OxiDNS as a system service.
+- Service-management implementation lives in `src/infra/service.rs`; `src/cli/service.rs` only adapts CLI service options.
 - `crates/macros/` provides proc-macros used by the plugin registration system (`register_plugin_factory!` and related derives).
 - `crates/ripset/` is a pure-Rust Linux netlink implementation for ipset/nftset operations, used by the ipset and nftset executor plugins.
 - `crates/proto/` contains the low-level DNS wire protocol types (header, name, question, record, rdata) that back `src/message/`.

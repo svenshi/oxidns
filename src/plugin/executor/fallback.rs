@@ -29,8 +29,8 @@ use tokio::task::JoinSet;
 
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
-use crate::core::error::{DnsError, Result};
-use crate::core::metrics::{
+use crate::infra::error::{DnsError, Result};
+use crate::infra::observability::metrics::{
     MetricLabel, MetricSample, MetricSink, MetricSource, register_metric_source,
     unregister_metric_source,
 };

@@ -14,7 +14,7 @@ use tracing::{error, warn};
 
 use super::model::{PendingRecord, RecordDetail, ResolvedRecorderConfig, TableNames};
 use super::store::{create_schema, open_database, run_writer_thread, table_names};
-use crate::core::error::{DnsError, Result};
+use crate::infra::error::{DnsError, Result};
 
 #[derive(Debug)]
 pub(super) struct RecorderBackend {

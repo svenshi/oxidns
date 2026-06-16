@@ -23,7 +23,7 @@ use super::store::{
     load_record_detail, load_timeseries, load_top_clients, load_top_qnames, query_records,
 };
 use crate::api::{ApiHandler, json_error, json_ok, simple_response, streaming_response};
-use crate::core::error::Result;
+use crate::infra::error::Result;
 use crate::register_plugin_api;
 
 const DEFAULT_LIST_LIMIT: usize = 100;

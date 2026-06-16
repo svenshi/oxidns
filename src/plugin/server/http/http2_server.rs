@@ -384,7 +384,7 @@ mod tests {
 
     use super::*;
     use crate::core::context::DnsContext;
-    use crate::core::error::Result;
+    use crate::infra::error::Result;
     use crate::plugin::Plugin;
     use crate::plugin::executor::{ExecStep, Executor};
     use crate::plugin::server::RequestHandle;

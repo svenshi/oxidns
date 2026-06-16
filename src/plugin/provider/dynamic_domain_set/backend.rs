@@ -15,9 +15,9 @@ use super::api::{RulesListResponse, register_api};
 use super::config::DynamicDomainSetConfig;
 use super::rules::{DynamicDomainMutation, DynamicDomainRuleKind, canonicalize_rules};
 use super::storage::{append_rule_file, read_rule_file, rewrite_rule_file};
-use crate::core::app_clock::AppClock;
-use crate::core::error::{DnsError, Result as DnsResult};
 use crate::core::rule_matcher::DomainRuleMatcher;
+use crate::infra::clock::AppClock;
+use crate::infra::error::{DnsError, Result as DnsResult};
 use crate::proto::{Name, Question};
 
 /// Immutable state published to matchers.

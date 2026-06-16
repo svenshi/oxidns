@@ -25,7 +25,7 @@ use super::*;
 use crate::config::types::{
     ApiAuthConfig, ApiConfig, ApiCorsConfig, ApiHttpConfig, ApiHttpDetailedConfig, ApiWebUiConfig,
 };
-use crate::core::app_clock::AppClock;
+use crate::infra::clock::AppClock;
 use crate::{register_api_route, register_plugin_api};
 
 #[derive(Debug)]
@@ -614,7 +614,7 @@ async fn test_hyper_serves_build_info_route() {
         .expect("collect body")
         .to_bytes();
     let value: serde_json::Value = serde_json::from_slice(&body).expect("json body");
-    assert_eq!(value["build"]["version"], crate::core::VERSION);
+    assert_eq!(value["build"]["version"], crate::infra::VERSION);
     assert!(
         value["build"]["supported_plugins"]["executors"]
             .as_array()

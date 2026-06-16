@@ -28,9 +28,9 @@ use crate::api::route::{PrefixRoute, RouteKey, lookup_handler};
 use crate::api::static_files::StaticFileServer;
 use crate::api::{ApiHandler, ApiResponse, simple_response};
 use crate::config::types::{ApiAuthConfig, ApiCorsConfig, ResolvedApiHttpConfig};
-use crate::core::error::{DnsError, Result};
-use crate::network::listen;
-use crate::network::tls_config::load_server_tls_config;
+use crate::infra::error::{DnsError, Result};
+use crate::infra::network::listen;
+use crate::infra::network::tls_config::load_server_tls_config;
 
 pub(super) struct ApiServerContext {
     pub(super) listen: SocketAddr,

@@ -22,7 +22,7 @@ use zoneparser::{ParseOptions, parse_file as parse_zone_file, parse_str as parse
 
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
-use crate::core::error::{DnsError, Result};
+use crate::infra::error::{DnsError, Result};
 use crate::plugin::executor::{ExecStep, Executor};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;

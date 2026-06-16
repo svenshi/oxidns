@@ -8,8 +8,8 @@ use serde::Deserialize;
 use serde_yaml_ng::Value;
 
 use crate::config::types::PluginConfig;
-use crate::core::error::{DnsError, Result};
-use crate::core::system_utils::parse_simple_duration;
+use crate::infra::error::{DnsError, Result};
+use crate::infra::system::parse_simple_duration;
 use crate::plugin::matcher::matcher_utils::parse_rr_type;
 use crate::plugin::provider::dynamic_domain_set::DynamicDomainRuleKind;
 

@@ -13,10 +13,10 @@ use wincode::{SchemaRead, SchemaWrite};
 
 use super::key::{CacheKey, EcsScopeDigest, normalize_domain_key};
 use super::{CacheItem, CacheMap};
-use crate::core::app_clock::AppClock;
-use crate::core::error::Result;
-use crate::core::system_utils::file_len_if_exists;
-use crate::core::ttl_cache::TtlCacheEntry;
+use crate::infra::cache::ttl::TtlCacheEntry;
+use crate::infra::clock::AppClock;
+use crate::infra::error::Result;
+use crate::infra::system::file_len_if_exists;
 use crate::proto::{DNSClass, Message, RecordType};
 
 #[derive(Debug, SchemaRead, SchemaWrite)]

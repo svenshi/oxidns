@@ -48,7 +48,7 @@ pub use registry::{reset_runtime_for_test, set_current_runtime_for_test};
 use serde_yaml_ng::Value;
 
 use crate::config::types::{Config, PluginConfig};
-use crate::core::error::{DnsError, Result};
+use crate::infra::error::{DnsError, Result};
 use crate::plugin::executor::Executor;
 use crate::plugin::matcher::Matcher;
 use crate::plugin::provider::Provider;

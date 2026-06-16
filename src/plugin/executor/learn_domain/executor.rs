@@ -13,7 +13,7 @@ use super::config::{
 };
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
-use crate::core::error::{DnsError, Result};
+use crate::infra::error::{DnsError, Result};
 use crate::plugin::dependency::DependencySpec;
 use crate::plugin::executor::{ExecStep, Executor, ExecutorNext};
 use crate::plugin::provider::Provider;

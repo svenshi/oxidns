@@ -19,9 +19,9 @@ use serde::Deserialize;
 use tracing::{debug, info};
 
 use crate::config::types::PluginConfig;
-use crate::core::app_clock::AppClock;
-use crate::core::error::{DnsError, Result as DnsResult};
 use crate::core::rule_matcher::IpPrefixMatcher;
+use crate::infra::clock::AppClock;
+use crate::infra::error::{DnsError, Result as DnsResult};
 use crate::plugin::dependency::DependencySpec;
 use crate::plugin::provider::Provider;
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};

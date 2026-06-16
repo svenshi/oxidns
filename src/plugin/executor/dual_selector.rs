@@ -21,11 +21,11 @@ use serde_yaml_ng::Value;
 use tokio::task::{JoinError, JoinHandle};
 
 use crate::config::types::PluginConfig;
-use crate::core::app_clock::AppClock;
 use crate::core::context::DnsContext;
-use crate::core::error::{DnsError, Result};
-use crate::core::task_center;
-use crate::core::ttl_cache::TtlCache;
+use crate::infra::cache::ttl::TtlCache;
+use crate::infra::clock::AppClock;
+use crate::infra::error::{DnsError, Result};
+use crate::infra::task as task_center;
 use crate::plugin::executor::{ExecStep, Executor, ExecutorNext};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::proto::{Rcode, RecordType};

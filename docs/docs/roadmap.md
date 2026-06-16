@@ -51,7 +51,7 @@ import RoadmapTimeline, { RoadmapItem } from '@site/src/components/RoadmapTimeli
 
 按功能模块拆分编译，用户 fork 仓库后可自由组合所需插件，构建精简的定制版本。
 
-`minimal` / `standard` / `full` 三档落地；所有协议栈与管理面已 feature 化——`api` / `webui` / `metrics`、`server-dot/doh/doq/doh3`、`upstream-dot/doh/doq/doh3`，以及 MikroTik、query_recorder、ipset/nftset、cron、script、upgrade、download、http_request、reverse_lookup、geo provider、adguard_rule 均可单独裁剪。`AppController` / `LogBuffer` 下沉至 `src/core/`，`minimal` 排除 hyper / rustls / quinn，release 二进制约为 `full` 的 40%（≈ 8.9 MB vs 21 MB）。
+`minimal` / `standard` / `full` 三档落地；所有协议栈与管理面已 feature 化——`api` / `webui` / `metrics`、`server-dot/doh/doq/doh3`、`upstream-dot/doh/doq/doh3`，以及 MikroTik、query_recorder、ipset/nftset、cron、script、upgrade、download、http_request、reverse_lookup、geo provider、adguard_rule 均可单独裁剪。`AppController` / `LogBuffer` 作为运行基础设施位于 `src/infra/`，`minimal` 排除 hyper / rustls / quinn，release 二进制约为 `full` 的 40%（≈ 8.9 MB vs 21 MB）。
 
 </RoadmapItem>
 

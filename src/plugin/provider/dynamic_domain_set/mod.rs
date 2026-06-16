@@ -19,7 +19,7 @@ use self::backend::DynamicDomainSetBackend;
 use self::config::DynamicDomainSetConfig;
 pub(crate) use self::rules::{DynamicDomainRuleKind, learned_rule_for_domain};
 use crate::config::types::PluginConfig;
-use crate::core::error::Result as DnsResult;
+use crate::infra::error::Result as DnsResult;
 use crate::plugin::provider::Provider;
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;

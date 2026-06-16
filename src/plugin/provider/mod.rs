@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::core::error::{DnsError, Result as DnsResult};
+use crate::infra::error::{DnsError, Result as DnsResult};
 #[cfg(not(feature = "api"))]
 use crate::plugin;
 use crate::plugin::Plugin;
@@ -96,7 +96,7 @@ mod api_routes {
     use serde::Serialize;
 
     use crate::api::{ApiHandler, json_error, json_ok};
-    use crate::core::error::Result as DnsResult;
+    use crate::infra::error::Result as DnsResult;
     use crate::plugin::{self, PluginRegistry};
     use crate::register_plugin_api;
 
@@ -175,7 +175,7 @@ mod tests {
     use super::*;
     use crate::api::{ApiHub, clear_global_api, global_api_test_guard, install_global_api};
     use crate::config::types::{ApiConfig, ApiHttpConfig, PluginConfig};
-    use crate::core::app_clock::AppClock;
+    use crate::infra::clock::AppClock;
     use crate::plugin::dependency::DependencyKind;
     use crate::plugin::matcher::qname::QnameFactory;
     use crate::plugin::{self, PluginFactory, PluginRegistry, UninitializedPlugin};

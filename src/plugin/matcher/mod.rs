@@ -19,7 +19,7 @@
 use std::sync::Arc;
 
 use crate::core::context::DnsContext;
-use crate::core::error::{DnsError, Result};
+use crate::infra::error::{DnsError, Result};
 use crate::plugin::Plugin;
 
 pub mod any_match;

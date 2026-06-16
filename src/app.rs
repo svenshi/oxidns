@@ -5,22 +5,17 @@
 //!
 //! This module owns the non-service startup path:
 //!
-//! - applies CLI overrides such as working directory and log level;
+//! - applies startup overrides such as working directory and log level;
 //! - loads and validates configuration;
 //! - builds the Tokio runtime;
 //! - assembles the API hub and plugin registry; and
 //! - coordinates shutdown and reload flows for the live process.
 //!
 //! The goal is to keep process-level concerns here so the lower-level modules
-//! (`config`, `plugin`, `network`, `api`) stay focused on their own domains.
+//! (`config`, `plugin`, `infra`, `api`) stay focused on their own domains.
 
 mod banner;
 pub mod bootstrap;
-pub mod cli;
-#[cfg(feature = "provider-protobuf")]
-pub mod export_dat;
-mod graph;
-mod logging;
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -38,16 +33,23 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info};
 
 use crate::app::bootstrap::AppAssembly;
-use crate::app::cli::{CheckOptions, StartOptions};
-use crate::config::ConfigValidationSummary;
+use crate::config;
 use crate::config::types::Config;
-use crate::core::app_clock::AppClock;
-use crate::core::app_controller::{AppController, ControlCommand};
-use crate::core::error::{DnsError, Result};
-use crate::{config, core};
+use crate::infra::clock::AppClock;
+use crate::infra::control::{AppController, ControlCommand};
+use crate::infra::error::{DnsError, Result};
+use crate::infra::observability::logging;
+use crate::infra::task;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartConfig {
+    pub config: PathBuf,
+    pub working_dir: Option<PathBuf>,
+    pub log_level: Option<String>,
+}
 
 /// Start OxiDNS in the foreground using the provided CLI options.
-pub fn run(start: StartOptions) -> Result<()> {
+pub fn run(start: StartConfig) -> Result<()> {
     // Capture the exe path before any binary replacement can invalidate it.
     ORIGINAL_EXE.get_or_init(|| std::env::current_exe().unwrap_or_default());
     AppClock::start();
@@ -60,50 +62,6 @@ pub fn run(start: StartOptions) -> Result<()> {
     banner::print_startup_banner()?;
     let config = load_config(&start)?;
     init_runtime(start, config)
-}
-
-/// Validate a configuration file from the CLI without starting runtime
-/// services.
-pub fn check(options: CheckOptions) -> Result<()> {
-    match run_check(&options) {
-        Ok(summary) => {
-            println!(
-                "Configuration is valid: {} (plugins: {})",
-                options.config.display(),
-                summary.plugin_count
-            );
-            if options.graph {
-                print_dependency_graph(&summary);
-            }
-            Ok(())
-        }
-        Err(err) => {
-            let message = err.to_string();
-            let location = std::fs::read_to_string(&options.config)
-                .ok()
-                .and_then(|text| config::diagnostic::locate_in_config(&text, &message));
-            match location {
-                Some(loc) => eprintln!(
-                    "{}:{}:{}: error: {}",
-                    options.config.display(),
-                    loc.line,
-                    loc.column,
-                    message
-                ),
-                None => eprintln!("error: {message}"),
-            }
-            Err(err)
-        }
-    }
-}
-
-/// Print compiled feature and plugin support information as JSON.
-pub fn print_build_info() -> Result<()> {
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&crate::build_info::snapshot()?)?
-    );
-    Ok(())
 }
 
 fn prepare_working_dir(working_dir: Option<&std::path::PathBuf>) -> Result<()> {
@@ -119,26 +77,7 @@ fn prepare_working_dir(working_dir: Option<&std::path::PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn run_check(options: &CheckOptions) -> Result<ConfigValidationSummary> {
-    prepare_working_dir(options.working_dir.as_ref())?;
-    config::validate_file(&options.config).map_err(|err| {
-        DnsError::config(format!(
-            "Configuration initialization failed for {}: {}",
-            options.config.display(),
-            err
-        ))
-    })
-}
-
-fn print_dependency_graph(summary: &ConfigValidationSummary) {
-    println!("{}", render_dependency_graph(summary));
-}
-
-fn render_dependency_graph(summary: &ConfigValidationSummary) -> String {
-    graph::render_dependency_graph(&summary.dependency_graph)
-}
-
-fn init_runtime(options: StartOptions, config: Config) -> Result<()> {
+fn init_runtime(options: StartConfig, config: Config) -> Result<()> {
     let worker_threads = config.runtime.effective_worker_threads();
     let mut tokio_runtime = runtime::Builder::new_multi_thread();
     tokio_runtime
@@ -229,7 +168,7 @@ fn windows_running_as_service() -> bool {
         })
 }
 
-fn load_config(options: &StartOptions) -> Result<Config> {
+fn load_config(options: &StartConfig) -> Result<Config> {
     config::init(&options.config).map_err(|err| {
         DnsError::config(format!(
             "Configuration initialization failed for {}: {}",
@@ -237,211 +176,6 @@ fn load_config(options: &StartOptions) -> Result<Config> {
             err
         ))
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use tempfile::TempDir;
-
-    use super::*;
-
-    fn write_config(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
-        let path = dir.join(name);
-        std::fs::write(&path, body).expect("write config");
-        path
-    }
-
-    #[test]
-    fn run_check_accepts_valid_config() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_path = write_config(
-            temp.path(),
-            "config.yaml",
-            r#"
-plugins:
-  - tag: debug_main
-    type: debug_print
-"#,
-        );
-
-        let summary = run_check(&CheckOptions {
-            config: config_path,
-            working_dir: None,
-            graph: false,
-        })
-        .expect("valid config should pass");
-
-        assert_eq!(summary.plugin_count, 1);
-    }
-
-    #[test]
-    fn print_dependency_graph_renders_tree_from_top_level_plugins() {
-        let summary = config::validate_text(
-            r#"
-plugins:
-  - tag: forward
-    type: forward
-  - tag: seq
-    type: sequence
-    args:
-      - exec: $forward
-      - exec: accept
-  - tag: udp_server
-    type: udp_server
-    args:
-      entry: seq
-  - tag: tcp_server
-    type: tcp_server
-    args:
-      entry: seq
-"#,
-        )
-        .expect("config should validate");
-
-        let graph = render_dependency_graph(&summary);
-        assert!(graph.contains("udp_server [server:udp_server]"));
-        assert!(graph.contains("tcp_server [server:tcp_server]"));
-        assert!(
-            graph.contains("udp_server [server:udp_server]\n\n")
-                || graph.contains("tcp_server [server:tcp_server]\n\n")
-        );
-        assert!(graph.contains("#0 IF always"));
-        assert!(graph.contains("THEN $forward [args[0].exec]"));
-        assert!(graph.contains("#1 IF always"));
-        assert!(graph.contains("THEN accept [args[1].exec]"));
-        assert!(!graph.contains("no dependencies"));
-    }
-
-    #[test]
-    fn print_dependency_graph_expands_nested_sequence_targets() {
-        let summary = config::validate_text(
-            r#"
-plugins:
-  - tag: cache
-    type: cache
-  - tag: child_seq
-    type: sequence
-    args:
-      - exec: $cache
-  - tag: main_seq
-    type: sequence
-    args:
-      - exec: jump child_seq
-  - tag: udp_server
-    type: udp_server
-    args:
-      entry: main_seq
-"#,
-        )
-        .expect("config should validate");
-
-        let graph = render_dependency_graph(&summary);
-        assert!(graph.contains("main_seq [executor:sequence]"));
-        assert!(graph.contains("THEN jump child_seq [args[0].exec]"));
-        assert!(graph.contains("child_seq [executor:sequence]"));
-        assert!(graph.contains("THEN $cache [args[0].exec]"));
-        assert!(graph.contains("cache [executor:cache]"));
-    }
-
-    #[test]
-    fn print_dependency_graph_shows_quick_setup_provider_deps_under_rule() {
-        let summary = config::validate_text(
-            r#"
-plugins:
-  - tag: seq
-    type: sequence
-    args:
-      - matches:
-          - qname $domain_rules
-        exec: accept
-  - tag: domain_rules
-    type: domain_set
-    args:
-      exps:
-        - example.com
-  - tag: udp_server
-    type: udp_server
-    args:
-      entry: seq
-"#,
-        )
-        .expect("config should validate");
-
-        let graph = render_dependency_graph(&summary);
-        assert!(graph.contains("quick_setup(qname) $domain_rules"));
-        assert!(graph.contains("deps:"));
-        assert!(graph.contains("domain_rules [provider:domain_set]"));
-    }
-
-    #[test]
-    fn dependency_graph_serializes_sequence_flows_without_dropping_legacy_fields() {
-        let summary = config::validate_text(
-            r#"
-plugins:
-  - tag: forward
-    type: forward
-  - tag: seq
-    type: sequence
-    args:
-      - matches:
-          - qname domain:example.com
-        exec: $forward
-"#,
-        )
-        .expect("config should validate");
-
-        let value =
-            serde_json::to_value(&summary.dependency_graph).expect("graph should serialize");
-        assert!(value.get("nodes").is_some());
-        assert!(value.get("edges").is_some());
-        assert!(value.get("init_order").is_some());
-
-        let flows = value
-            .get("sequence_flows")
-            .and_then(|flows| flows.as_array())
-            .expect("sequence_flows should serialize as an array");
-        assert_eq!(flows.len(), 1);
-        assert_eq!(
-            flows[0].get("tag").and_then(|tag| tag.as_str()),
-            Some("seq")
-        );
-        assert_eq!(
-            flows[0]
-                .get("rules")
-                .and_then(|rules| rules.as_array())
-                .and_then(|rules| rules.first())
-                .and_then(|rule| rule.get("matches"))
-                .and_then(|matches| matches.as_array())
-                .and_then(|matches| matches.first())
-                .and_then(|expr| expr.get("kind"))
-                .and_then(|kind| kind.as_str()),
-            Some("quick_setup")
-        );
-    }
-
-    #[test]
-    fn run_check_supports_working_directory_for_relative_paths() {
-        let temp = TempDir::new().expect("temp dir");
-        write_config(
-            temp.path(),
-            "config.yaml",
-            r#"
-plugins:
-  - tag: debug_main
-    type: debug_print
-"#,
-        );
-
-        let original_dir = std::env::current_dir().expect("current dir");
-        let result = run_check(&CheckOptions {
-            config: std::path::PathBuf::from("config.yaml"),
-            working_dir: Some(temp.path().to_path_buf()),
-            graph: false,
-        });
-        std::env::set_current_dir(&original_dir).expect("restore current dir");
-
-        assert!(result.is_ok());
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -544,7 +278,7 @@ async fn wait_for_shutdown_signal() -> Result<ShutdownSignal> {
 }
 
 #[hotpath::main]
-async fn run_async_main(options: StartOptions, config: Config) -> Result<ShutdownSignal> {
+async fn run_async_main(options: StartConfig, config: Config) -> Result<ShutdownSignal> {
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<Result<ShutdownSignal>>();
     tokio::spawn(async move {
         let _ = shutdown_tx.send(wait_for_shutdown_signal().await);
@@ -586,7 +320,7 @@ async fn run_async_main(options: StartOptions, config: Config) -> Result<Shutdow
         match bootstrap::assemble(&current_config, Some(app_controller.clone())).await {
             Ok(assembly) => {
                 app_controller.set_running_config_version(
-                    crate::core::app_controller::config_file_version(app_controller.config_path()),
+                    crate::infra::control::config_file_version(app_controller.config_path()),
                 );
                 info!("OxiDNS server started successfully");
                 assembly
@@ -610,7 +344,7 @@ async fn run_async_main(options: StartOptions, config: Config) -> Result<Shutdow
         "Destroying plugins for shutdown"
     );
     bootstrap::stop(&assembly).await;
-    core::task_center::stop_all().await;
+    task::stop_all().await;
     info!(
         signal = shutdown_signal.as_str(),
         "Graceful shutdown complete"
@@ -661,7 +395,7 @@ async fn handle_reload_command(
     current_config: &mut Config,
     controller: std::sync::Arc<AppController>,
 ) -> Result<()> {
-    controller.mark_reload_started(crate::core::app_controller::config_file_version(
+    controller.mark_reload_started(crate::infra::control::config_file_version(
         controller.config_path(),
     ));
 
@@ -680,7 +414,7 @@ async fn handle_reload_command(
     );
 
     bootstrap::stop(assembly).await;
-    core::task_center::stop_all().await;
+    task::stop_all().await;
 
     match bootstrap::assemble(&candidate_config, Some(controller.clone())).await {
         Ok(new_assembly) => {

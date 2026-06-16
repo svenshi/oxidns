@@ -10,7 +10,7 @@ use tokio::sync::OnceCell;
 
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
-use crate::core::error::{DnsError, Result as DnsResult};
+use crate::infra::error::{DnsError, Result as DnsResult};
 use crate::plugin::dependency::{
     DependencySpec, SequenceFlowExpression, SequenceFlowExpressionKind, SequenceFlowReport,
     SequenceFlowRule,

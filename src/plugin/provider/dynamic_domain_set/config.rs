@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 use crate::config::types::PluginConfig;
-use crate::core::error::{DnsError, Result as DnsResult};
+use crate::infra::error::{DnsError, Result as DnsResult};
 
 const DEFAULT_QUEUE_SIZE: usize = 1024;
 const DEFAULT_BATCH_SIZE: usize = 256;

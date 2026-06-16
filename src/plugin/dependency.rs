@@ -11,7 +11,7 @@ use std::fmt::Display;
 use serde::Serialize;
 
 use crate::config::types::PluginConfig;
-use crate::core::error::{DnsError, Result};
+use crate::infra::error::{DnsError, Result};
 
 /// Expected dependency kind used during startup structural validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

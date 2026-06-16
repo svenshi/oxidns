@@ -26,10 +26,10 @@ use std::time::Duration;
 
 use tracing::{Level, debug, event_enabled, warn};
 
-use crate::core::app_clock::AppClock;
 use crate::core::context::DnsContext;
-use crate::core::metrics::{MetricLabel, MetricSample, MetricSink, MetricSource};
-pub(crate) use crate::network::listen::parse_listen_addr;
+use crate::infra::clock::AppClock;
+pub(crate) use crate::infra::network::listen::parse_listen_addr;
+use crate::infra::observability::metrics::{MetricLabel, MetricSample, MetricSink, MetricSource};
 use crate::plugin::Plugin;
 use crate::plugin::executor::{ExecStep, Executor};
 use crate::proto::{Edns, Message, Rcode};
@@ -380,7 +380,7 @@ mod tests {
 
     use super::*;
     use crate::continue_next;
-    use crate::core::error::Result;
+    use crate::infra::error::Result;
     use crate::proto::{Name, Question, RecordType};
 
     #[test]

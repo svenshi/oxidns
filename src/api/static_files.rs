@@ -7,7 +7,7 @@ use tracing::warn;
 
 use crate::api::{ApiResponse, simple_response};
 use crate::config::types::ApiWebUiConfig;
-use crate::core::error::{DnsError, Result};
+use crate::infra::error::{DnsError, Result};
 
 #[derive(Debug)]
 pub(super) struct StaticFileServer {

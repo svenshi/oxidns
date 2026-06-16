@@ -24,7 +24,7 @@ use serde_yaml_ng::Value;
 
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
-use crate::core::error::{DnsError, Result};
+use crate::infra::error::{DnsError, Result};
 use crate::plugin::executor::{ExecStep, Executor, ExecutorNext};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::proto::{EdnsCode, EdnsOption};

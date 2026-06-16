@@ -16,12 +16,12 @@ use tracing::info;
 
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
-use crate::core::error::{DnsError, Result};
-use crate::core::system_utils::parse_simple_duration;
+use crate::infra::error::{DnsError, Result};
+use crate::infra::system::parse_simple_duration;
+use crate::infra::upgrade::{self, UpgradeBundle, UpgradeConfig};
 use crate::plugin::executor::{ExecStep, Executor};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;
-use crate::upgrade::{self, UpgradeBundle, UpgradeConfig};
 
 #[derive(Debug)]
 struct UpgradeExecutor {

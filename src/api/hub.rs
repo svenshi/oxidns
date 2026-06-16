@@ -17,8 +17,8 @@ use crate::api::server::{ApiServerContext, build_tls_acceptor, run_api_server};
 #[cfg(feature = "webui")]
 use crate::api::static_files::StaticFileServer;
 use crate::config::types::{ApiConfig, ResolvedApiHttpConfig};
-use crate::core::error::{DnsError, Result};
-use crate::network::listen::parse_listen_addr;
+use crate::infra::error::{DnsError, Result};
+use crate::infra::network::listen::parse_listen_addr;
 
 #[derive(Clone)]
 pub struct ApiRegister {

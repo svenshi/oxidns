@@ -14,7 +14,7 @@ use ahash::AHashSet;
 use serde::{Deserialize, Deserializer};
 use serde_yaml_ng::Value;
 
-use crate::core::error::{DnsError, Result};
+use crate::infra::error::{DnsError, Result};
 
 const DEFAULT_SELECTION_MODE: SelectionMode = SelectionMode::FirstSuccess;
 const DEFAULT_PROBE_STAGGER_MS: u64 = 200;

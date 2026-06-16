@@ -13,7 +13,7 @@ use dashmap::DashMap;
 use tracing::{debug, error, info, warn};
 
 use crate::config::types::PluginConfig;
-use crate::core::error::{DnsError, Result};
+use crate::infra::error::{DnsError, Result};
 use crate::plugin::dependency::DependencyKind;
 use crate::plugin::executor::Executor;
 use crate::plugin::matcher::Matcher;

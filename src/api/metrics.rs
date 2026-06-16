@@ -10,8 +10,8 @@ use bytes::Bytes;
 use http::{Request, StatusCode};
 
 use crate::api::{ApiHandler, ApiRegister, simple_response};
-use crate::core::error::Result;
-use crate::core::metrics::render_prometheus_metrics;
+use crate::infra::error::Result;
+use crate::infra::observability::metrics::render_prometheus_metrics;
 
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 

@@ -57,7 +57,7 @@ pub use response::{json_error, json_ok, json_response, simple_response, streamin
 #[cfg(test)]
 pub(super) use route::build_plugin_route_path;
 
-use crate::core::error::Result;
+use crate::infra::error::Result;
 
 /// Register process-wide API routes that do not depend on application control
 /// state.
@@ -80,7 +80,7 @@ pub fn register_builtin_routes() -> Result<()> {
 
 /// Register process-wide control routes that need the application controller.
 pub fn register_control_routes(
-    controller: Arc<crate::core::app_controller::AppController>,
+    controller: Arc<crate::infra::control::AppController>,
 ) -> Result<()> {
     if let Some(register) = global_api_register() {
         control::register_builtin_routes(&register, controller)?;

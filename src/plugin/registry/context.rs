@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::core::error::Result;
+use crate::infra::error::Result;
 use crate::plugin::executor::Executor;
 use crate::plugin::matcher::Matcher;
 use crate::plugin::provider::Provider;

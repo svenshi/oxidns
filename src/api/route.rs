@@ -9,7 +9,7 @@ use ahash::AHashMap;
 use http::Method;
 
 use crate::api::ApiHandler;
-use crate::core::error::{DnsError, Result};
+use crate::infra::error::{DnsError, Result};
 
 #[derive(Clone, Debug)]
 pub(super) struct RouteKey {

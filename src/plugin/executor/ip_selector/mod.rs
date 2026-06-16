@@ -53,11 +53,11 @@ use self::probe::{
     evict_probe_cache_if_needed, probe_with_runtime,
 };
 use crate::config::types::PluginConfig;
-use crate::core::app_clock::AppClock;
 use crate::core::context::DnsContext;
-use crate::core::error::Result;
-use crate::core::metrics::{register_metric_source, unregister_metric_source};
-use crate::core::task_center;
+use crate::infra::clock::AppClock;
+use crate::infra::error::Result;
+use crate::infra::observability::metrics::{register_metric_source, unregister_metric_source};
+use crate::infra::task as task_center;
 use crate::plugin::executor::{ExecStep, Executor, ExecutorNext};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::proto::RecordType;

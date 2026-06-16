@@ -6,7 +6,7 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
-use crate::core::error::{DnsError, Result as DnsResult};
+use crate::infra::error::{DnsError, Result as DnsResult};
 
 fn for_each_nonempty_rule_line_reader<R, F, G>(
     mut reader: R,

@@ -13,8 +13,8 @@ use tokio::sync::Semaphore;
 use tracing::error;
 
 use crate::api::{ApiHandler, ApiRegister, json_error, json_ok, json_response};
-use crate::core::error::Result;
-use crate::upgrade::{UpgradeBundle, UpgradeConfig, UpgradeContext};
+use crate::infra::error::Result;
+use crate::infra::upgrade::{UpgradeBundle, UpgradeConfig, UpgradeContext};
 
 #[derive(Debug, Deserialize, Default)]
 struct UpgradeApiBody {
@@ -97,7 +97,7 @@ impl ApiHandler for UpgradeCheckHandler {
             }
         };
 
-        match crate::upgrade::check(&config).await {
+        match crate::infra::upgrade::check(&config).await {
             Ok(check) => json_ok(
                 StatusCode::OK,
                 &UpgradeCheckResponse {
@@ -163,7 +163,7 @@ impl ApiHandler for UpgradeApplyHandler {
 
         tokio::spawn(async move {
             let _permit = permit;
-            match crate::upgrade::apply(&config, UpgradeContext::Plugin).await {
+            match crate::infra::upgrade::apply(&config, UpgradeContext::Plugin).await {
                 Ok(_) => {}
                 Err(err) => {
                     error!(error = %err, "upgrade apply failed");

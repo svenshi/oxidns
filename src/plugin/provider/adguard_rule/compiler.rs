@@ -6,7 +6,7 @@ use tracing::info;
 
 use super::model::{AdGuardRuleConfig, BuildStats, CompiledRule, CompiledRuleSet, ParsedRule};
 use super::parser::{load_rule_inputs, parse_rule};
-use crate::core::error::{DnsError, Result as DnsResult};
+use crate::infra::error::{DnsError, Result as DnsResult};
 
 pub(super) fn build_rule_buckets(
     tag: &str,

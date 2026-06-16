@@ -349,7 +349,7 @@ mod tests {
     }
 
     fn dummy_server_config() -> ServerConfig {
-        crate::network::tls_config::install_default_provider();
+        crate::infra::network::tls_config::install_default_provider();
         ServerConfig::builder()
             .with_no_client_auth()
             .with_cert_resolver(Arc::new(RejectingResolver))

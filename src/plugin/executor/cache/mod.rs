@@ -21,15 +21,15 @@ use tracing::{Level, debug, event_enabled, warn};
 use self::key::{CacheKey, build_cache_key as build_cache_key_internal};
 use self::persistence::{dump_cache_to_file, load_cache_from_file};
 use crate::config::types::PluginConfig;
-use crate::core::app_clock::AppClock;
 use crate::core::context::DnsContext;
-use crate::core::error::{DnsError, Result};
-use crate::core::metrics::{
+use crate::infra::cache::ttl::{TtlCache, TtlCacheLookup};
+use crate::infra::clock::AppClock;
+use crate::infra::error::{DnsError, Result};
+use crate::infra::observability::metrics::{
     MetricLabel, MetricSample, MetricSink, MetricSource, register_metric_source,
     unregister_metric_source,
 };
-use crate::core::task_center;
-use crate::core::ttl_cache::{TtlCache, TtlCacheLookup};
+use crate::infra::task as task_center;
 use crate::plugin::executor::{ExecStep, Executor, ExecutorNext};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::proto::{Message, Rcode};

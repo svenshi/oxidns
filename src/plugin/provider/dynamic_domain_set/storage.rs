@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use fs2::FileExt;
 
 use super::rules::{DynamicDomainRuleKind, canonicalize_rule};
-use crate::core::error::{DnsError, Result as DnsResult};
+use crate::infra::error::{DnsError, Result as DnsResult};
 
 pub(super) fn read_rule_file(path: &Path) -> DnsResult<Vec<String>> {
     if !path.exists() {

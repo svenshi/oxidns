@@ -10,7 +10,7 @@ use serde_json::{Number as JsonNumber, Value as JsonValue};
 
 use crate::config::env_expand::BUILTIN_KEYS;
 use crate::core::context::DnsContext;
-use crate::core::error::{DnsError, Result};
+use crate::infra::error::{DnsError, Result};
 
 const CRON_ATTR_PLUGIN_TAG: &str = "cron.plugin_tag";
 const CRON_ATTR_JOB_NAME: &str = "cron.job_name";

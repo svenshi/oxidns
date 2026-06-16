@@ -11,7 +11,7 @@ use serde_yaml_ng::Value;
 use tracing::warn;
 
 use super::model::{AdGuardRuleConfig, DnsTypeConstraint, ParsedRule, PatternMatcher, RuleInput};
-use crate::core::error::{DnsError, Result as DnsResult};
+use crate::infra::error::{DnsError, Result as DnsResult};
 use crate::proto::RecordType;
 
 pub(super) fn parse_config(args: Option<Value>) -> DnsResult<AdGuardRuleConfig> {

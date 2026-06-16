@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use super::backend::DynamicDomainSetBackend;
 use super::rules::{DynamicDomainMutation, DynamicDomainRuleKind};
 use crate::api::{ApiHandler, json_error, json_ok};
-use crate::core::error::Result as DnsResult;
+use crate::infra::error::Result as DnsResult;
 use crate::register_plugin_api;
 
 const DEFAULT_LIST_LIMIT: usize = 500;

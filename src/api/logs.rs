@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! HTTP / SSE adapter over the always-on
-//! [`crate::core::log_buffer::LogBuffer`].
+//! [`crate::infra::observability::log_buffer::LogBuffer`].
 //!
 //! Two endpoints are exposed:
 //!
@@ -21,8 +21,10 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::api::{ApiHandler, ApiRegister, json_error, json_ok, streaming_response};
-use crate::core::error::Result;
-use crate::core::log_buffer::{LevelFilter, LogBuffer, LogEntry, global_log_buffer, level_passes};
+use crate::infra::error::Result;
+use crate::infra::observability::log_buffer::{
+    LevelFilter, LogBuffer, LogEntry, global_log_buffer, level_passes,
+};
 
 const SSE_HEARTBEAT_SECS: u64 = 15;
 const DEFAULT_FETCH_LIMIT: usize = 200;

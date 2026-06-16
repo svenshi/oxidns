@@ -16,7 +16,7 @@ use std::time::Duration;
 use quinn::{Endpoint, EndpointConfig, IdleTimeout, TransportConfig};
 use rustls::ServerConfig;
 
-use crate::core::error::Result;
+use crate::infra::error::Result;
 use crate::plugin::server::udp;
 
 /// Bind a QUIC [`Endpoint`] on `addr` using the provided rustls server config.

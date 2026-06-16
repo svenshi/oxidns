@@ -19,7 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::config::types::Config;
-use crate::core::error::{DnsError, Result};
+use crate::infra::error::{DnsError, Result};
 use crate::plugin::DependencyGraphReport;
 
 pub mod diagnostic;
@@ -174,7 +174,7 @@ plugins:
 
     fn existing_env_path_root() -> (&'static str, PathBuf) {
         for name in ["TMPDIR", "HOME", "USERPROFILE"] {
-            if let Some(value) = crate::core::env::var_os(name) {
+            if let Some(value) = crate::infra::env::var_os(name) {
                 let path = PathBuf::from(value);
                 if path.is_dir() {
                     return (name, path);
@@ -223,7 +223,7 @@ plugins:
     #[test]
     fn validate_text_expands_env_vars() {
         let expected_path =
-            crate::core::env::var_lossy("PATH").expect("PATH should exist in test environment");
+            crate::infra::env::var_lossy("PATH").expect("PATH should exist in test environment");
         let summary = validate_text(
             r#"
 plugins:

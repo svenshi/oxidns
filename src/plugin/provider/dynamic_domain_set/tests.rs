@@ -18,8 +18,8 @@ use super::config::DynamicDomainSetConfig;
 use super::rules::{DynamicDomainRuleKind, canonicalize_rule};
 use super::storage::read_rule_file;
 use crate::api::ApiHandler;
-use crate::core::app_clock::AppClock;
 use crate::core::rule_matcher::DomainRuleMatcher;
+use crate::infra::clock::AppClock;
 use crate::plugin::provider::Provider;
 use crate::proto::{DNSClass, Message, Name, Question, RecordType};
 

@@ -27,7 +27,7 @@ use serde_yaml_ng::Value;
 
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
-use crate::core::error::{DnsError, Result};
+use crate::infra::error::{DnsError, Result};
 use crate::plugin::executor::{ExecStep, Executor, ExecutorNext};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::proto::{CNAME, DNSClass, Name, Question, RData, Record};
@@ -411,7 +411,7 @@ mod tests {
 
     use super::*;
     use crate::core::context::DnsContext;
-    use crate::core::error::DnsError;
+    use crate::infra::error::DnsError;
     use crate::proto::rdata::A;
     use crate::proto::{Message, RData, RecordType};
 
