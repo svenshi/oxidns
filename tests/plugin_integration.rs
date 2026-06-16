@@ -1990,6 +1990,39 @@ plugins:
     Ok(())
 }
 
+#[tokio::test]
+async fn test_qname_matcher_loads_regex_rule_with_comma_from_file() -> Result<()> {
+    let domain_rules = test_rule_path("domain_set_1.txt");
+    let yaml = format!(
+        r#"
+log:
+  level: info
+plugins:
+  - tag: domain_match
+    type: qname
+    args:
+      - "&{domain_rules}"
+"#
+    );
+
+    let config = parse_config(&yaml)?;
+    let registry = plugin::init(config).await?;
+
+    let matcher = registry
+        .get_plugin("domain_match")
+        .expect("domain matcher should exist")
+        .to_matcher();
+
+    let mut matching_ctx = make_context(registry.clone(), "api12.service.test.");
+    assert!(matcher.is_match(&mut matching_ctx));
+
+    let mut non_matching_ctx = make_context(registry.clone(), "api123.service.test.");
+    assert!(!matcher.is_match(&mut non_matching_ctx));
+
+    registry.destroy().await;
+    Ok(())
+}
+
 #[cfg(feature = "plugin-dynamic-domain")]
 #[tokio::test]
 async fn test_dynamic_domain_set_learns_through_sequence_and_parent_domain_set() -> Result<()> {

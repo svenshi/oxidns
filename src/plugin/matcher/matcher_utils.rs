@@ -151,7 +151,7 @@ pub(crate) fn parse_domain_rules_and_set_tags(
     // - '$tag'      => provider tag
     // - '&path'     => external rule file
     let (mut inline_rules, set_tags, files) = split_rule_sources(raw_rules);
-    let file_rules = load_rules_from_files(&files, field)?;
+    let file_rules = load_rule_lines_from_files(&files, field)?;
     inline_rules.extend(file_rules);
 
     let mut domain_rules = DomainRuleMatcher::default();
@@ -300,6 +300,43 @@ pub(crate) fn load_rules_from_files(files: &[String], field: &str) -> DnsResult<
                 continue;
             }
             rules.extend(split_rule_tokens(raw));
+        }
+    }
+    Ok(rules)
+}
+
+pub(crate) fn load_rule_lines_from_files(files: &[String], field: &str) -> DnsResult<Vec<String>> {
+    let mut rules = Vec::new();
+    for path in files {
+        if path.trim().is_empty() {
+            continue;
+        }
+        let file = File::open(path).map_err(|e| {
+            DnsError::plugin(format!("failed to open {} file '{}': {}", field, path, e))
+        })?;
+        let mut reader = BufReader::new(file);
+        let mut line = String::new();
+        let mut line_no = 0usize;
+        loop {
+            line.clear();
+            let n = reader.read_line(&mut line).map_err(|e| {
+                DnsError::plugin(format!(
+                    "failed to read {} file '{}' at line {}: {}",
+                    field,
+                    path,
+                    line_no + 1,
+                    e
+                ))
+            })?;
+            if n == 0 {
+                break;
+            }
+            line_no += 1;
+            let raw = line.trim();
+            if raw.is_empty() || raw.starts_with('#') {
+                continue;
+            }
+            rules.push(raw.to_string());
         }
     }
     Ok(rules)
