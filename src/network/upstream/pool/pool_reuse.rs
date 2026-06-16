@@ -14,11 +14,11 @@ use tracing::{debug, info, warn};
 use crate::core::app_clock::AppClock;
 use crate::core::error::Result;
 use crate::core::task_center;
+use crate::network::upstream::dial::close_conns;
 use crate::network::upstream::pool::{
     Connection, ConnectionBuilder, ConnectionPool, DeadlineOutcome, ManagedMaintenanceTask,
     QueryDeadline, QueryTimeoutPolicy, start_maintenance,
 };
-use crate::network::upstream::utils::close_conns;
 use crate::proto::Message;
 
 const POOL_RETRY_BACKOFF: Duration = Duration::from_millis(10);

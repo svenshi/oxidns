@@ -15,15 +15,15 @@ use tokio::select;
 use tokio::sync::Notify;
 use tracing::{debug, trace, warn};
 
-use super::{QueryDeadline, UsingCountGuard};
+use super::UsingCountGuard;
 use crate::core::app_clock::AppClock;
 use crate::core::error::{DnsError, Result};
 use crate::network::buffer_pool::wire_buffer_pool;
-use crate::network::upstream::pool::ConnectionBuilder;
-use crate::network::upstream::utils::{
-    build_dns_get_request, build_doh_request_uri, connect_quic, connect_socket,
-    get_cap_buf_with_context_len,
+use crate::network::upstream::conn::doh::{
+    build_dns_get_request, build_doh_request_uri, get_cap_buf_with_context_len,
 };
+use crate::network::upstream::dial::{connect_quic, connect_socket};
+use crate::network::upstream::pool::{ConnectionBuilder, DeadlineOutcome, QueryDeadline};
 use crate::network::upstream::{Connection, ConnectionInfo};
 use crate::proto::Message;
 
@@ -192,11 +192,11 @@ impl ConnectionBuilder<H3Connection> for H3ConnectionBuilder {
         let h3_conn = h3_quinn::Connection::new(quic_conn);
 
         let (mut driver, send_request) = match deadline.run(h3::client::new(h3_conn)).await {
-            super::DeadlineOutcome::Completed(Ok(value)) => value,
-            super::DeadlineOutcome::Completed(Err(e)) => {
+            DeadlineOutcome::Completed(Ok(value)) => value,
+            DeadlineOutcome::Completed(Err(e)) => {
                 return Err(DnsError::protocol(format!("h3 connection failed: {e}")));
             }
-            super::DeadlineOutcome::Expired => return Err(deadline.timeout_error()),
+            DeadlineOutcome::Expired => return Err(deadline.timeout_error()),
         };
 
         let h3_conn = Arc::new(H3Connection {

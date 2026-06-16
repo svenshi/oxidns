@@ -14,15 +14,16 @@ use tracing::{debug, error, trace, warn};
 
 use crate::core::app_clock::AppClock;
 use crate::core::error::{DnsError, Result};
+use crate::network::proxy::Socks5Opt;
 #[cfg(feature = "upstream-dot")]
 use crate::network::transport::tcp_transport::TcpTransport;
 use crate::network::transport::tcp_transport::{TcpTransportReader, TcpTransportWriter};
-use crate::network::upstream::pool::request_map::RequestMap;
-use crate::network::upstream::pool::{Connection, ConnectionBuilder, QueryDeadline};
-use crate::network::upstream::utils::connect_stream_with_deadline;
+use crate::network::upstream::conn::request_map::RequestMap;
+use crate::network::upstream::dial::connect_stream_with_deadline;
 #[cfg(feature = "upstream-dot")]
-use crate::network::upstream::utils::connect_tls;
-use crate::network::upstream::{ConnectionInfo, ConnectionType, Socks5Opt};
+use crate::network::upstream::dial::connect_tls;
+use crate::network::upstream::pool::{Connection, ConnectionBuilder, QueryDeadline};
+use crate::network::upstream::{ConnectionInfo, ConnectionType};
 use crate::proto::Message;
 
 /// Represents a single persistent TCP-based DNS connection.

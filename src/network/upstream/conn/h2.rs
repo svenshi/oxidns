@@ -13,16 +13,17 @@ use tokio::select;
 use tokio::sync::Notify;
 use tracing::{debug, trace, warn};
 
-use super::{DeadlineOutcome, QueryDeadline, UsingCountGuard};
+use super::UsingCountGuard;
 use crate::core::app_clock::AppClock;
 use crate::core::error::{DnsError, Result};
 use crate::network::buffer_pool::wire_buffer_pool;
-use crate::network::upstream::pool::ConnectionBuilder;
-use crate::network::upstream::utils::{
-    build_dns_get_request, build_doh_request_uri, connect_stream_with_deadline, connect_tls,
-    get_cap_buf_with_context_len,
+use crate::network::proxy::Socks5Opt;
+use crate::network::upstream::conn::doh::{
+    build_dns_get_request, build_doh_request_uri, get_cap_buf_with_context_len,
 };
-use crate::network::upstream::{Connection, ConnectionInfo, Socks5Opt};
+use crate::network::upstream::dial::{connect_stream_with_deadline, connect_tls};
+use crate::network::upstream::pool::{ConnectionBuilder, DeadlineOutcome, QueryDeadline};
+use crate::network::upstream::{Connection, ConnectionInfo};
 use crate::proto::Message;
 
 enum H2RecvError {

@@ -22,7 +22,7 @@ use crate::core::error::{DnsError, Result};
 use crate::network::http_client::{
     DownloadProgress, HttpClient, HttpClientOptions, HttpRequestOptions,
 };
-use crate::network::upstream::parse_socks5_opt;
+use crate::network::proxy::parse_socks5_opt;
 use crate::service;
 
 const DEFAULT_REPOSITORY: &str = "svenshi/oxidns";

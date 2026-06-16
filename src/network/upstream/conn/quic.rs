@@ -10,12 +10,12 @@ use tokio::select;
 use tokio::sync::Notify;
 use tracing::{debug, trace, warn};
 
-use super::{QueryDeadline, UsingCountGuard};
+use super::UsingCountGuard;
 use crate::core::app_clock::AppClock;
 use crate::core::error::{DnsError, Result};
 use crate::network::transport::quic_transport::QuicTransport;
-use crate::network::upstream::pool::ConnectionBuilder;
-use crate::network::upstream::utils::{connect_quic, connect_socket};
+use crate::network::upstream::dial::{connect_quic, connect_socket};
+use crate::network::upstream::pool::{ConnectionBuilder, QueryDeadline};
 use crate::network::upstream::{Connection, ConnectionInfo};
 use crate::proto::Message;
 

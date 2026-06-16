@@ -18,9 +18,9 @@ use crate::core::app_clock::AppClock;
 use crate::core::error::{DnsError, Result};
 use crate::network::transport::udp_transport::UdpTransport;
 use crate::network::upstream::ConnectionInfo;
-use crate::network::upstream::pool::request_map::RequestMap;
+use crate::network::upstream::conn::request_map::RequestMap;
+use crate::network::upstream::dial::connect_socket;
 use crate::network::upstream::pool::{Connection, ConnectionBuilder, QueryDeadline};
-use crate::network::upstream::utils::connect_socket;
 use crate::proto::Message;
 
 const UDP_RECV_BUFFER_SIZE: usize = 8_196;

@@ -29,8 +29,9 @@ use tower_service::Service;
 use url::Url;
 
 use crate::core::error::{DnsError, Result};
+use crate::network::proxy::Socks5Opt;
 use crate::network::tls_config::{insecure_client_config, secure_client_config};
-use crate::network::upstream::{Socks5Opt, connect_tcp_stream};
+use crate::network::upstream::connect_tcp_stream;
 
 pub const DEFAULT_MAX_REDIRECTS: usize = 5;
 
