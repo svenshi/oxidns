@@ -20,9 +20,9 @@ use super::probe::{
     ProbeKey, ProbeObservation, ProbeRunner, ProbeRuntime, cached_observation, probe_with_runtime,
 };
 use super::*;
-use crate::core::app_clock::AppClock;
 use crate::core::context::DnsContext;
-use crate::core::error::Result;
+use crate::infra::clock::AppClock;
+use crate::infra::error::Result;
 use crate::plugin::executor::sequence::chain::ChainProgram;
 use crate::plugin::test_utils::{create_plugin_for_test, plugin_config};
 use crate::proto::rdata::{A, AAAA, CNAME, Edns};

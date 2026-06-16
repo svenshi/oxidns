@@ -17,9 +17,9 @@ use super::store::{
     query_records, table_names,
 };
 use super::{QueryRecorder, QueryRecorderFactory, resolve_config};
-use crate::core::app_clock::AppClock;
 use crate::core::context::{DnsContext, ExecutionPathEvent};
-use crate::core::error::DnsError;
+use crate::infra::clock::AppClock;
+use crate::infra::error::DnsError;
 use crate::plugin::executor::{ExecStep, Executor};
 use crate::plugin::test_utils::test_context;
 use crate::plugin::{Plugin, PluginFactory};

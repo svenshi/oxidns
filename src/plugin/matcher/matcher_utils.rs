@@ -11,8 +11,8 @@ use std::sync::Arc;
 use ahash::AHashSet;
 use serde_yaml_ng::{Number, Value};
 
-use crate::core::error::{DnsError, Result as DnsResult};
 use crate::core::rule_matcher::{DomainRuleMatcher, IpPrefixMatcher};
+use crate::infra::error::{DnsError, Result as DnsResult};
 use crate::plugin::PluginInitContext;
 use crate::plugin::dependency::DependencySpec;
 use crate::plugin::provider::Provider;

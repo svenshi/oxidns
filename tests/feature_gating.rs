@@ -20,7 +20,7 @@
 //! `plugin::destroy_runtime`.
 
 use oxidns::config::types::Config;
-use oxidns::core::app_clock::AppClock;
+use oxidns::infra::clock::AppClock;
 
 /// Parse + validate + initialize a config, returning the error string from
 /// whichever stage rejects it. Panics if the config unexpectedly succeeds.

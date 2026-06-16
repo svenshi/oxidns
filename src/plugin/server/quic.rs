@@ -21,14 +21,14 @@ use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 
 use crate::config::types::PluginConfig;
-use crate::core::error::{DnsError, Result};
-use crate::core::metrics::{register_metric_source, unregister_metric_source};
-use crate::core::system_utils::deserialize_duration_option;
-use crate::network::listen::parse_listen_addr;
-use crate::network::tls_config::load_tls_config;
-use crate::network::transport::quic_transport::{
+use crate::infra::error::{DnsError, Result};
+use crate::infra::network::listen::parse_listen_addr;
+use crate::infra::network::tls_config::load_tls_config;
+use crate::infra::network::transport::quic_transport::{
     QuicTransport, QuicTransportReader, QuicTransportWriter,
 };
+use crate::infra::observability::metrics::{register_metric_source, unregister_metric_source};
+use crate::infra::system::deserialize_duration_option;
 use crate::plugin::dependency::DependencySpec;
 use crate::plugin::server::{
     ConnectionGuard, DEFAULT_SERVER_IDLE_TIMEOUT, RequestHandle, RequestMeta, Server,

@@ -28,14 +28,14 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
 use crate::config::types::PluginConfig;
-use crate::core::app_clock::AppClock;
 use crate::core::context::DnsContext;
-use crate::core::error::{DnsError, Result};
-use crate::core::metrics::{
+use crate::infra::clock::AppClock;
+use crate::infra::error::{DnsError, Result};
+use crate::infra::observability::metrics::{
     MetricLabel, MetricSample, MetricSink, MetricSource, register_metric_source,
     unregister_metric_source,
 };
-use crate::core::system_utils::{parse_simple_duration, system_timezone_name};
+use crate::infra::system::{parse_simple_duration, system_timezone_name};
 use crate::plugin::dependency::DependencySpec;
 use crate::plugin::executor::{ExecStep, Executor};
 use crate::plugin::{

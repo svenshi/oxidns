@@ -29,8 +29,8 @@ use tokio::sync::{OnceCell, Semaphore};
 use super::config::{IpSelectorSettings, ProbeMethod};
 use super::metrics::IpSelectorMetrics;
 use super::policy::{IpScore, ScoreSource};
-use crate::core::app_clock::AppClock;
-use crate::core::ttl_cache::TtlCache;
+use crate::infra::cache::ttl::TtlCache;
+use crate::infra::clock::AppClock;
 
 pub(super) const LAST_ACCESS_TOUCH_INTERVAL_MS: u64 = 1000;
 pub(super) const CLEANUP_INTERVAL_SECS: u64 = 30;

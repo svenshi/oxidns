@@ -8,8 +8,8 @@ use std::sync::Arc;
 #[cfg(feature = "api")]
 use crate::api::{self, ApiHub, clear_global_api, install_global_api};
 use crate::config::types::Config;
-use crate::core::app_controller::AppController;
-use crate::core::error::Result;
+use crate::infra::control::AppController;
+use crate::infra::error::Result;
 use crate::plugin;
 
 #[derive(Debug, Default)]
@@ -105,7 +105,7 @@ mod tests {
         set_global_api_register_for_test,
     };
     use crate::config::types::{ApiConfig, ApiHttpConfig, LogConfig, RuntimeConfig};
-    use crate::core::app_clock::AppClock;
+    use crate::infra::clock::AppClock;
 
     #[tokio::test]
     async fn assemble_without_api_config_does_not_register_api() {
@@ -142,7 +142,7 @@ mod tests {
 mod tests {
     use super::*;
     use crate::config::types::{ApiConfig, ApiHttpConfig, LogConfig, RuntimeConfig};
-    use crate::core::app_clock::AppClock;
+    use crate::infra::clock::AppClock;
 
     /// Without the `api` feature, a config that still sets `api.http` is a
     /// version/feature mismatch that does not prevent the server from running:

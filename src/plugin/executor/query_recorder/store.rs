@@ -21,7 +21,7 @@ use super::model::{
     RecordRow, StepJson, TableNames, TimeseriesPoint, TimeseriesQuery, TimeseriesResponse,
     TopBucketRow, TopBucketsResponse, TopQuery,
 };
-use crate::core::error::{DnsError, Result};
+use crate::infra::error::{DnsError, Result};
 
 const SCHEMA_VERSION: &str = "v1";
 const CLEANUP_BATCH_SIZE: usize = 1_000;

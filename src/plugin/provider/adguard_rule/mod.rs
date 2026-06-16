@@ -27,7 +27,7 @@ use self::compiler::build_rule_buckets;
 use self::model::{AdGuardRuleConfig, CompiledRuleSet};
 use self::parser::parse_config;
 use crate::config::types::PluginConfig;
-use crate::core::error::Result as DnsResult;
+use crate::infra::error::Result as DnsResult;
 use crate::plugin::provider::Provider;
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;

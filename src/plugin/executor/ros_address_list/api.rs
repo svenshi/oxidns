@@ -15,7 +15,7 @@ use mikrotik_rs::{Command, CommandBuilder, Event, MikrotikDevice};
 use super::manager::{
     AddressListFamily, AddressListKey, decode_owned_comment, parse_router_address,
 };
-use crate::core::error::{DnsError, Result};
+use crate::infra::error::{DnsError, Result};
 
 /// RouterOS field containing the internal row id.
 const ADDRESS_ID_FIELD: &str = ".id";

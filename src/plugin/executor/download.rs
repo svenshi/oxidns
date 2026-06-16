@@ -28,14 +28,14 @@ use url::Url;
 
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
-use crate::core::error::{DnsError, Result};
-use crate::core::metrics::{
+use crate::infra::error::{DnsError, Result};
+use crate::infra::network::http_client::{HttpClient, HttpClientOptions, HttpRequestOptions};
+use crate::infra::network::proxy::{Socks5Opt, parse_socks5_opt};
+use crate::infra::observability::metrics::{
     MetricLabel, MetricSample, MetricSink, MetricSource, register_metric_source,
     unregister_metric_source,
 };
-use crate::core::system_utils::deserialize_duration_option;
-use crate::network::http_client::{HttpClient, HttpClientOptions, HttpRequestOptions};
-use crate::network::proxy::{Socks5Opt, parse_socks5_opt};
+use crate::infra::system::deserialize_duration_option;
 use crate::plugin::executor::{ExecStep, Executor};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;

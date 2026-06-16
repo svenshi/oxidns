@@ -30,7 +30,7 @@ use std::fmt::{self, Write as _};
 
 use serde_yaml_ng::{Mapping, Value};
 
-use crate::core::env;
+use crate::infra::env;
 
 /// The stable set of per-request context keys used by executor template
 /// plugins. Config-time env expansion preserves `${key}` for any name in this

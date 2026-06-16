@@ -19,9 +19,9 @@ use serde_yaml_ng::Value;
 use tracing::info;
 
 use crate::config::types::PluginConfig;
-use crate::core::app_clock::AppClock;
 use crate::core::context::DnsContext;
-use crate::core::error::Result;
+use crate::infra::clock::AppClock;
+use crate::infra::error::Result;
 use crate::plugin::executor::{ExecStep, Executor, ExecutorNext};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::{continue_next, plugin_factory};
@@ -172,7 +172,7 @@ mod tests {
     use tracing_subscriber::fmt::MakeWriter;
 
     use super::*;
-    use crate::core::error::DnsError;
+    use crate::infra::error::DnsError;
     use crate::plugin::executor::ExecStep;
     use crate::plugin::test_utils::test_context;
     use crate::proto::Message;

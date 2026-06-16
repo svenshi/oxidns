@@ -24,9 +24,9 @@ use serde::Deserialize;
 use tracing::{debug, info};
 
 use crate::config::types::PluginConfig;
-use crate::core::app_clock::AppClock;
-use crate::core::error::{DnsError, Result as DnsResult};
 use crate::core::rule_matcher::DomainRuleMatcher;
+use crate::infra::clock::AppClock;
+use crate::infra::error::{DnsError, Result as DnsResult};
 use crate::plugin::dependency::DependencySpec;
 use crate::plugin::provider::Provider;
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
@@ -323,11 +323,11 @@ mod tests {
         async fn init(
             &mut self,
             _context: &crate::plugin::PluginInitContext<'_>,
-        ) -> crate::core::error::Result<()> {
+        ) -> crate::infra::error::Result<()> {
             Ok(())
         }
 
-        async fn destroy(&self) -> crate::core::error::Result<()> {
+        async fn destroy(&self) -> crate::infra::error::Result<()> {
             Ok(())
         }
     }

@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 
-use crate::core::error::{DnsError, Result as DnsResult};
+use crate::infra::error::{DnsError, Result as DnsResult};
 
 /// Rule kind used when the caller supplies a bare domain instead of an
 /// explicit `full:` or `domain:` expression.

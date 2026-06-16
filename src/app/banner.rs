@@ -5,8 +5,8 @@
 
 use std::io::{self, Write};
 
-use crate::core::VERSION;
-use crate::core::error::{DnsError, Result};
+use crate::infra::VERSION;
+use crate::infra::error::{DnsError, Result};
 
 const STARTUP_BANNER_REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 const STARTUP_BANNER_MIN_INNER_WIDTH: usize = 67;

@@ -26,7 +26,7 @@
 use async_trait::async_trait;
 
 use crate::core::context::DnsContext;
-use crate::core::error::Result;
+use crate::infra::error::Result;
 use crate::plugin::Plugin;
 pub use crate::plugin::executor::sequence::chain::ExecutorNext;
 

@@ -27,12 +27,12 @@ use hyper::{Request, Response, StatusCode};
 #[cfg(any(feature = "plugin-download", feature = "plugin-http-request"))]
 use hyper_util::rt::TokioIo;
 use oxidns::config::types::Config;
-use oxidns::core::app_clock::AppClock;
 use oxidns::core::context::DnsContext;
 #[cfg(feature = "plugin-script")]
 use oxidns::core::context::RequestMeta;
-use oxidns::core::error::{DnsError, Result};
-use oxidns::network::transport::udp_transport::UdpTransport;
+use oxidns::infra::clock::AppClock;
+use oxidns::infra::error::{DnsError, Result};
+use oxidns::infra::network::transport::udp_transport::UdpTransport;
 use oxidns::plugin;
 use oxidns::plugin::executor::ExecStep;
 use oxidns::plugin::{PluginRegistry, PluginType};
@@ -519,7 +519,7 @@ async fn handle_test_socks5_client(mut client: TcpStream) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn linux_system_plugin_tests_enabled() -> bool {
-    oxidns::core::env::exists("TEST_LINUX_SYSTEM_PLUGINS")
+    oxidns::infra::env::exists("TEST_LINUX_SYSTEM_PLUGINS")
 }
 
 #[cfg(target_os = "linux")]

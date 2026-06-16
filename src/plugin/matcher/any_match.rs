@@ -18,7 +18,7 @@ use serde_yaml_ng::Value;
 
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
-use crate::core::error::{DnsError, Result as DnsResult};
+use crate::infra::error::{DnsError, Result as DnsResult};
 use crate::plugin::dependency::DependencySpec;
 use crate::plugin::matcher::matcher_utils::validate_non_empty_rules;
 use crate::plugin::matcher::{Matcher, MatcherRef, parse_matcher_expr};

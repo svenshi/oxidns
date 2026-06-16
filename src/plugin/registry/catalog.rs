@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-use crate::core::error::{DnsError, Result};
+use crate::infra::error::{DnsError, Result};
 use crate::plugin::dependency::DependencyKind;
 use crate::plugin::{FactoryRegistration, PluginFactory, dependency_kind_from_module_path};
 

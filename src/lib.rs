@@ -13,29 +13,26 @@
 //! Top-level modules:
 //!
 //! - [`api`]: management and health HTTP endpoints.
-//! - [`app`]: foreground runtime bootstrap, CLI parsing, and logging setup.
-//! - [`build_info`]: compiled feature bundle and plugin capability reporting.
+//! - [`app`]: foreground runtime bootstrap and process orchestration.
+//! - [`cli`]: command-line definitions and option parsing.
 //! - [`config`]: YAML configuration schema, loading, and validation.
-//! - [`core`]: shared runtime primitives such as errors, request context, task
-//!   coordination, and TTL cache helpers.
-//! - [`network`]: socket, TLS, transport, and outbound upstream infrastructure.
+//! - [`core`]: DNS request execution context and policy matching primitives.
+//! - [`infra`]: process, network, service, observability, and shared runtime
+//!   infrastructure.
 //! - [`plugin`]: plugin registry plus server, executor, matcher, and provider
 //!   extension points.
 //! - [`proto`]: owned DNS protocol model and wire codec.
-//! - [`service`]: operating-system service install/start/stop/restart helpers.
 
 #[cfg(feature = "api")]
 pub mod api;
+#[path = "api/macros.rs"]
 mod api_macros;
 pub mod app;
-pub mod build_info;
+pub mod cli;
 pub mod config;
 pub mod core;
-pub mod network;
+pub mod infra;
 pub mod plugin;
-pub mod service;
-#[cfg(feature = "plugin-upgrade")]
-pub mod upgrade;
 
 pub use oxidns_macros::plugin_factory;
 pub use oxidns_proto as proto;

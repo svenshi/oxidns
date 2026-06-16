@@ -6,30 +6,14 @@
 //! The binary is intentionally thin: it parses CLI arguments and delegates to
 //! either foreground runtime startup or operating-system service management.
 
-use oxidns::app::cli::{self, Command};
-use oxidns::core::error::Result;
-#[cfg(feature = "plugin-upgrade")]
-use oxidns::upgrade;
-use oxidns::{app, service};
+use oxidns::cli;
+use oxidns::infra::error::Result;
 
 fn main() -> Result<()> {
     #[cfg(windows)]
-    if service::try_dispatch_windows_service()? {
+    if oxidns::infra::service::try_dispatch_windows_service()? {
         return Ok(());
     }
 
-    match cli::parse_cli().command {
-        Command::Start(start) => app::run(start),
-        Command::Check(check) => app::check(check),
-        Command::BuildInfo => app::print_build_info(),
-        #[cfg(feature = "provider-protobuf")]
-        Command::ExportDat(export) => app::export_dat::run(export),
-        Command::Service(service_opts) => service::run(service_opts),
-        #[cfg(feature = "plugin-upgrade")]
-        Command::Upgrade(upgrade_opts) => {
-            let action = upgrade_opts.action.unwrap_or(cli::UpgradeAction::Apply);
-            let config = upgrade::UpgradeConfig::from_cli(&upgrade_opts)?;
-            upgrade::run_cli(action, config)
-        }
-    }
+    cli::run()
 }

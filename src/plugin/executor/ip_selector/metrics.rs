@@ -15,7 +15,7 @@ use ahash::{AHashMap, AHashSet};
 use super::config::ProbeMethod;
 use super::policy::SelectionSource;
 use super::probe::{ProbeCache, ProbeObservation};
-use crate::core::metrics::{MetricLabel, MetricSample, MetricSink, MetricSource};
+use crate::infra::observability::metrics::{MetricLabel, MetricSample, MetricSink, MetricSource};
 
 /// Per-method counters exposed through the OxiDNS metrics registry.
 #[derive(Debug)]

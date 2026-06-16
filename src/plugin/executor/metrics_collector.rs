@@ -26,10 +26,10 @@ use serde_yaml_ng::Value;
 use tracing::debug;
 
 use crate::config::types::PluginConfig;
-use crate::core::app_clock::AppClock;
 use crate::core::context::DnsContext;
-use crate::core::error::Result;
-use crate::core::metrics::{
+use crate::infra::clock::AppClock;
+use crate::infra::error::Result;
+use crate::infra::observability::metrics::{
     MetricLabel, MetricSample, MetricSink, MetricSource, register_metric_source,
     unregister_metric_source,
 };
@@ -311,8 +311,8 @@ mod tests {
 
     #[test]
     fn test_render_prometheus_metrics_includes_labels_and_values() {
-        let _guard = crate::core::metrics::metrics_test_guard();
-        crate::core::metrics::reset_metrics_for_tests();
+        let _guard = crate::infra::observability::metrics::metrics_test_guard();
+        crate::infra::observability::metrics::reset_metrics_for_tests();
         let stats = Arc::new(MetricsCollectorStats::new(
             "metrics_main".to_string(),
             "default".to_string(),
@@ -324,12 +324,12 @@ mod tests {
         stats.latency_sum_ms.store(15, Ordering::Relaxed);
         register_metric_source(stats).expect("metric source should register");
 
-        let output = crate::core::metrics::render_prometheus_metrics();
+        let output = crate::infra::observability::metrics::render_prometheus_metrics();
         assert!(output.contains("query_total{plugin_tag=\"metrics_main\",name=\"default\"} 3"));
         assert!(
             output.contains("query_error_total{plugin_tag=\"metrics_main\",name=\"default\"} 1")
         );
         assert!(output.contains("query_inflight{plugin_tag=\"metrics_main\",name=\"default\"} 2"));
-        crate::core::metrics::reset_metrics_for_tests();
+        crate::infra::observability::metrics::reset_metrics_for_tests();
     }
 }

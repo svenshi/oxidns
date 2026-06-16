@@ -16,7 +16,7 @@ use async_trait::async_trait;
 
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
-use crate::core::error::Result as DnsResult;
+use crate::infra::error::Result as DnsResult;
 use crate::plugin::matcher::Matcher;
 use crate::plugin::matcher::matcher_utils::{
     parse_enum_rules_from_value, parse_quick_setup_rules, parse_rcode, parse_u16_rules,

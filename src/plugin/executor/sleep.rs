@@ -17,8 +17,8 @@ use serde::Deserialize;
 
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
-use crate::core::error::{DnsError, Result};
-use crate::core::system_utils::parse_simple_duration;
+use crate::infra::error::{DnsError, Result};
+use crate::infra::system::parse_simple_duration;
 use crate::plugin::executor::{ExecStep, Executor};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;

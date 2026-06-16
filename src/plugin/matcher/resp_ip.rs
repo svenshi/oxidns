@@ -13,8 +13,8 @@ use async_trait::async_trait;
 
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
-use crate::core::error::Result as DnsResult;
 use crate::core::rule_matcher::IpPrefixMatcher;
+use crate::infra::error::Result as DnsResult;
 use crate::plugin::dependency::DependencySpec;
 use crate::plugin::matcher::Matcher;
 #[cfg(test)]

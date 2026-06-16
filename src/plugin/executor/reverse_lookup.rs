@@ -28,15 +28,15 @@ use serde::Deserialize;
 
 use crate::api::{ApiHandler, simple_response};
 use crate::config::types::PluginConfig;
-use crate::core::app_clock::AppClock;
 use crate::core::context::DnsContext;
-use crate::core::error::{DnsError, Result};
-use crate::core::metrics::{
+use crate::infra::cache::ttl::TtlCache;
+use crate::infra::clock::AppClock;
+use crate::infra::error::{DnsError, Result};
+use crate::infra::observability::metrics::{
     MetricLabel, MetricSample, MetricSink, MetricSource, register_metric_source,
     unregister_metric_source,
 };
-use crate::core::task_center;
-use crate::core::ttl_cache::TtlCache;
+use crate::infra::task as task_center;
 use crate::plugin::executor::{ExecStep, Executor, ExecutorNext};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::proto::{Name, PTR, RData, Rcode, Record, RecordType};

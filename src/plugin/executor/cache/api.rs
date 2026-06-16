@@ -16,8 +16,8 @@ use super::key::{CacheKey, EcsScopeDigest, normalize_domain_key};
 use super::persistence::{dump_cache_to_bytes, load_cache_from_bytes};
 use super::{Cache, CacheItem, CacheMap};
 use crate::api::{ApiHandler, json_error, json_ok, simple_response};
-use crate::core::app_clock::AppClock;
-use crate::core::error::Result;
+use crate::infra::clock::AppClock;
+use crate::infra::error::Result;
 use crate::plugin::executor::rdata_json::{RDataPayloadMode, rdata_payload};
 use crate::proto::{DNSClass, Record, RecordType};
 use crate::register_plugin_api;
@@ -408,7 +408,7 @@ fn cache_entry_matches_query(key: &CacheKey, query: &CacheEntriesQuery) -> bool 
 
 fn cache_entry_row(
     key: &CacheKey,
-    entry: &crate::core::ttl_cache::TtlCacheEntry<Arc<CacheItem>>,
+    entry: &crate::infra::cache::ttl::TtlCacheEntry<Arc<CacheItem>>,
     now: u64,
     now_unix_ms: u64,
 ) -> std::result::Result<CacheEntryRow, String> {

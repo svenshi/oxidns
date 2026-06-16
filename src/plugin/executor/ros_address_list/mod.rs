@@ -52,8 +52,8 @@ use self::manager::{
 };
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
-use crate::core::error::{DnsError, Result};
-use crate::core::metrics::{
+use crate::infra::error::{DnsError, Result};
+use crate::infra::observability::metrics::{
     MetricLabel, MetricSample, MetricSink, MetricSource, register_metric_source,
     unregister_metric_source,
 };
@@ -816,7 +816,7 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
     use super::*;
-    use crate::core::app_clock::AppClock;
+    use crate::infra::clock::AppClock;
     use crate::plugin::executor::ros_address_list::api::RouterListEntry;
     use crate::plugin::executor::ros_address_list::manager::{
         OwnedCommentKind, decode_owned_comment, encode_comment,

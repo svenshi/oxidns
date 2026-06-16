@@ -51,7 +51,7 @@ A new `learn_domain` executor paired with the `dynamic_domain_set` provider: the
 
 Split compilation by plugin module — users fork the repo, pick only the plugins they need, and produce a lean custom binary.
 
-`minimal` / `standard` / `full` presets are live. Every protocol stack and management surface is feature-gated — `api` / `webui` / `metrics`, `server-dot/doh/doq/doh3`, `upstream-dot/doh/doq/doh3`, plus MikroTik, query_recorder, ipset/nftset, cron, script, upgrade, download, http_request, reverse_lookup, geo providers, and adguard_rule. `AppController` / `LogBuffer` moved into `src/core/`, so `minimal` excludes hyper / rustls / quinn and lands at ~40% of `full` (≈ 8.9 MB vs 21 MB).
+`minimal` / `standard` / `full` presets are live. Every protocol stack and management surface is feature-gated — `api` / `webui` / `metrics`, `server-dot/doh/doq/doh3`, `upstream-dot/doh/doq/doh3`, plus MikroTik, query_recorder, ipset/nftset, cron, script, upgrade, download, http_request, reverse_lookup, geo providers, and adguard_rule. `AppController` / `LogBuffer` now live under `src/infra/` as runtime infrastructure, so `minimal` excludes hyper / rustls / quinn and lands at ~40% of `full` (≈ 8.9 MB vs 21 MB).
 
 </RoadmapItem>
 

@@ -11,7 +11,7 @@ use serde_yaml_ng::Value;
 
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
-use crate::core::error::Result;
+use crate::infra::error::Result;
 use crate::plugin::{
     PluginCreateContext, PluginFactory, PluginInitContext, PluginRegistry, UninitializedPlugin,
 };

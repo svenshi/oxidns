@@ -9,7 +9,7 @@ use tracing::debug;
 use crate::core::context::DnsContext;
 #[cfg(feature = "_sequence-step-recording")]
 use crate::core::context::ExecutionPathEvent;
-use crate::core::error::{DnsError, Result};
+use crate::infra::error::{DnsError, Result};
 use crate::plugin::executor::sequence::{
     PluginRef, Rule, parse_control_flow_sequence_tag, parse_matcher_expr,
 };

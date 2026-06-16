@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! HTTP adapter around the always-on [`crate::core::app_controller`] state.
+//! HTTP adapter around the always-on [`crate::infra::control`] state.
 //!
 //! This module only contains the HTTP handlers, request / response shapes,
 //! and validation glue that the management API needs. All shared state and
 //! the always-on `AppController` itself live in
-//! [`crate::core::app_controller`].
+//! [`crate::infra::control`].
 
 use std::fs;
 use std::path::Path;
@@ -19,13 +19,11 @@ use http::{Method, Request, StatusCode};
 use serde::{Deserialize, Serialize};
 
 use crate::api::{ApiHandler, ApiRegister, json_error, json_ok, json_response};
-use crate::build_info::BuildInfo;
 use crate::config;
-use crate::core::VERSION;
-use crate::core::app_controller::{
-    AppController, ControlRequestError, ReloadSnapshot, config_version,
-};
-use crate::core::error::Result;
+use crate::infra::VERSION;
+use crate::infra::build_info::BuildInfo;
+use crate::infra::control::{AppController, ControlRequestError, ReloadSnapshot, config_version};
+use crate::infra::error::Result;
 
 #[derive(Debug, Serialize)]
 struct ActionAcceptedResponse {
@@ -228,7 +226,7 @@ impl ApiHandler for SystemHandler {
     async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
         let snapshot = self.controller.snapshot();
         let metrics = self.controller.sample_process_metrics();
-        let build = match crate::build_info::snapshot() {
+        let build = match crate::infra::build_info::snapshot() {
             Ok(build) => build,
             Err(err) => {
                 return json_error(
@@ -645,8 +643,8 @@ mod tests {
 
     use super::*;
     use crate::api::ApiHandler;
-    use crate::core::app_clock::AppClock;
-    use crate::core::app_controller::ControlCommand;
+    use crate::infra::clock::AppClock;
+    use crate::infra::control::ControlCommand;
 
     fn valid_config_yaml() -> &'static str {
         r#"
@@ -730,7 +728,10 @@ plugins:
         let value: serde_json::Value = serde_json::from_slice(&body).expect("body should be json");
         assert_eq!(value["version"], VERSION);
         assert_eq!(value["build"]["version"], VERSION);
-        assert_eq!(value["build"]["bundle"], crate::build_info::PRIMARY_BUNDLE);
+        assert_eq!(
+            value["build"]["bundle"],
+            crate::infra::build_info::PRIMARY_BUNDLE
+        );
         assert!(
             value["build"]["supported_plugins"]["executors"]
                 .as_array()
