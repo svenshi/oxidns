@@ -520,21 +520,26 @@ pub(crate) async fn connect_tcp_stream(
     socks5_opt: Option<Socks5Opt>,
 ) -> Result<TcpStream> {
     if remote_ip.is_none() && socks5_opt.is_none() {
-        let mut addrs = tokio::net::lookup_host((server_name.as_str(), port))
-            .await
-            .map_err(|err| {
-                DnsError::protocol(format!(
-                    "Async DNS resolution failed for '{}': {}",
-                    server_name, err
-                ))
-            })?;
-        let addr = addrs.next().ok_or_else(|| {
-            DnsError::protocol(format!(
-                "Async DNS returned no addresses for '{}'",
-                server_name
-            ))
-        })?;
-        return connect_stream(Some(addr.ip()), server_name, port, None, None, None).await;
+        let remote_ip = {
+            let mut addrs = tokio::net::lookup_host((server_name.as_str(), port))
+                .await
+                .map_err(|err| {
+                    DnsError::protocol(format!(
+                        "Async DNS resolution failed for '{}': {}",
+                        server_name, err
+                    ))
+                })?;
+            addrs
+                .next()
+                .map(|addr| addr.ip())
+                .ok_or_else(|| {
+                    DnsError::protocol(format!(
+                        "Async DNS returned no addresses for '{}'",
+                        server_name
+                    ))
+                })?
+        };
+        return connect_stream(Some(remote_ip), server_name, port, None, None, None).await;
     }
 
     connect_stream(remote_ip, server_name, port, None, None, socks5_opt).await
