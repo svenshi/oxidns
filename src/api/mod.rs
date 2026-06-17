@@ -39,6 +39,7 @@ mod server;
 mod static_files;
 #[cfg(feature = "plugin-upgrade")]
 mod upgrade;
+mod webui_config;
 
 use std::sync::Arc;
 
@@ -83,7 +84,8 @@ pub fn register_control_routes(
     controller: Arc<crate::infra::control::AppController>,
 ) -> Result<()> {
     if let Some(register) = global_api_register() {
-        control::register_builtin_routes(&register, controller)?;
+        control::register_builtin_routes(&register, controller.clone())?;
+        webui_config::register_builtin_routes(&register, controller)?;
     }
     Ok(())
 }

@@ -21,8 +21,8 @@ export function ModeSelection() {
               选择 OxiDNS WebUI 工作模式
             </h1>
             <p className="max-w-3xl text-sm text-muted-foreground">
-              现有配置默认按专家模式打开，不会自动写入 WebUI
-              元数据。标准模式会从 YAML 读取配置，首次保存时只写入最小模式标记。
+              现有配置默认按专家模式打开。模式偏好会保存到后端 WebUI
+              状态文件，标准模式保存时仍会生成完整 YAML 配置。
             </p>
           </div>
           <div className="grid gap-4 md:grid-cols-2">

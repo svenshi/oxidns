@@ -21,6 +21,8 @@ import {
   fetchPrometheusMetrics,
   fetchReloadStatus,
   fetchSystem,
+  fetchWebUiConfig,
+  patchWebUiConfig,
   requestReload,
   requestRestart,
   saveConfigFile,
@@ -31,8 +33,11 @@ import {
   type ControlResponse,
   type DependencyGraphReport,
   type HealthResponse,
+  type JsonObject,
+  type JsonValue,
   type ReloadSnapshot,
   type SystemResponse,
+  type WebUiConfigResponse,
 } from "./oxidns-api";
 import { parsePrometheusMetrics, type PluginMetricsMap } from "./metrics";
 import {
@@ -69,6 +74,17 @@ import type { StandardModeSettings } from "./standard-mode/types";
 type StoreSet = (
   partial: Partial<AppState> | ((state: AppState) => Partial<AppState>),
 ) => void;
+
+type StoreGet = () => AppState;
+
+type WebUiConfigDocument = JsonObject & {
+  schema: number;
+  mode: WebUiMode;
+  standard: JsonObject;
+  ui: JsonObject & {
+    modeSelectionDismissed: boolean;
+  };
+};
 
 export type RestartPhase =
   | "saving"
@@ -108,6 +124,10 @@ interface AppState {
   configHistory: ConfigSnapshot[];
   backendSessionUrl: string;
   webUiMode: WebUiMode;
+  webUiConfig: WebUiConfigDocument;
+  webUiConfigVersion: string | null;
+  webUiConfigPath: string | null;
+  webUiConfigError: string | null;
   modeHeaderPresent: boolean;
   modeSelectionDismissed: boolean;
   standardSettings: StandardModeSettings;
@@ -117,6 +137,8 @@ interface AppState {
   historyOpen: boolean;
   isConfigLoading: boolean;
   isConfigSaving: boolean;
+  isWebUiConfigLoading: boolean;
+  isWebUiConfigSaving: boolean;
   isApplying: boolean;
   isRestarting: boolean;
   /**
@@ -145,6 +167,7 @@ interface AppState {
   enterOfflineConfig: (text: string, fileName?: string) => void;
   exitOfflineMode: () => void;
   loadConfig: () => Promise<void>;
+  loadWebUiConfig: () => Promise<void>;
   refreshRuntimeState: () => Promise<void>;
   refreshMetrics: () => Promise<void>;
   validateCurrentConfig: () => Promise<void>;
@@ -184,6 +207,8 @@ interface AppState {
 
 let queuedConfigSave: Promise<void> = Promise.resolve();
 let pendingConfigSaveCount = 0;
+let queuedWebUiConfigSave: Promise<void> = Promise.resolve();
+let pendingWebUiConfigSaveCount = 0;
 
 interface SaveConfigOptions {
   source?: ConfigSnapshotSource;
@@ -206,8 +231,28 @@ function enqueueConfigSave(
   });
 }
 
+function enqueueWebUiConfigSave(
+  set: StoreSet,
+  task: () => Promise<void>,
+): Promise<void> {
+  pendingWebUiConfigSaveCount += 1;
+  set({ isWebUiConfigSaving: true });
+
+  const run = () => task();
+  const current = queuedWebUiConfigSave.then(run, run);
+  queuedWebUiConfigSave = current.catch(() => {});
+
+  return current.finally(() => {
+    pendingWebUiConfigSaveCount -= 1;
+    if (pendingWebUiConfigSaveCount === 0) {
+      set({ isWebUiConfigSaving: false });
+    }
+  });
+}
+
 const initialConfigModel = createDefaultOxiDnsConfig();
 const initialConfigText = stringifyOxiDnsConfig(initialConfigModel);
+const initialWebUiConfig = createDefaultWebUiConfig();
 
 function currentBackendUrl(): string {
   return normalizeServerUrl(useAuthStore.getState().serverConfig.url);
@@ -233,6 +278,10 @@ function createBackendSessionResetState(): Partial<AppState> {
     configHistory: [],
     backendSessionUrl: currentBackendUrl(),
     webUiMode: "expert",
+    webUiConfig: createDefaultWebUiConfig(),
+    webUiConfigVersion: null,
+    webUiConfigPath: null,
+    webUiConfigError: null,
     modeHeaderPresent: false,
     modeSelectionDismissed: false,
     standardSettings: createDefaultStandardSettings(),
@@ -242,6 +291,8 @@ function createBackendSessionResetState(): Partial<AppState> {
     historyOpen: false,
     isConfigLoading: false,
     isConfigSaving: false,
+    isWebUiConfigLoading: false,
+    isWebUiConfigSaving: false,
     isApplying: false,
     isRestarting: false,
     restartPhase: null,
@@ -270,6 +321,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   configHistory: [],
   backendSessionUrl: currentBackendUrl(),
   webUiMode: "expert",
+  webUiConfig: initialWebUiConfig,
+  webUiConfigVersion: null,
+  webUiConfigPath: null,
+  webUiConfigError: null,
   modeHeaderPresent: false,
   modeSelectionDismissed: false,
   standardSettings: createDefaultStandardSettings(),
@@ -279,6 +334,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   historyOpen: false,
   isConfigLoading: false,
   isConfigSaving: false,
+  isWebUiConfigLoading: false,
+  isWebUiConfigSaving: false,
   isApplying: false,
   isRestarting: false,
   restartPhase: null,
@@ -299,13 +356,32 @@ export const useAppStore = create<AppState>((set, get) => ({
       editorMode: mode && state.webUiMode === "standard" ? false : mode,
     })),
   setHistoryOpen: (open) => set({ historyOpen: open }),
-  setWebUiMode: (mode, options) =>
+  setWebUiMode: (mode, options) => {
+    const modeSelectionDismissed = options?.dismissSelection ?? true;
+    const patch: JsonObject = {
+      mode,
+      ui: { modeSelectionDismissed },
+    };
     set((state) => ({
       webUiMode: mode,
+      webUiConfig: applyWebUiConfigPatch(state.webUiConfig, patch),
       editorMode: mode === "standard" ? false : state.editorMode,
-      modeSelectionDismissed: options?.dismissSelection ?? true,
-    })),
-  dismissModeSelection: () => set({ modeSelectionDismissed: true }),
+      modeSelectionDismissed,
+    }));
+    if (!get().isOfflineMode) {
+      void persistWebUiConfigPatch(set, get, patch).catch(() => {});
+    }
+  },
+  dismissModeSelection: () => {
+    const patch: JsonObject = { ui: { modeSelectionDismissed: true } };
+    set((state) => ({
+      modeSelectionDismissed: true,
+      webUiConfig: applyWebUiConfigPatch(state.webUiConfig, patch),
+    }));
+    if (!get().isOfflineMode) {
+      void persistWebUiConfigPatch(set, get, patch).catch(() => {});
+    }
+  },
   resetBackendSession: () => set(createBackendSessionResetState()),
   updateStandardSettings: (settings) => set({ standardSettings: settings }),
   saveStandardSettings: async (settings) => {
@@ -322,16 +398,27 @@ export const useAppStore = create<AppState>((set, get) => ({
       modeHeaderPresent: true,
     });
     get().setYamlConfig(content);
-    set({
+    const webUiPatch: JsonObject = {
+      mode: "standard",
+      standard: {
+        settings: nextSettings as unknown as JsonValue,
+      },
+      ui: { modeSelectionDismissed: true },
+    };
+    set((current) => ({
       webUiMode: "standard",
+      webUiConfig: applyWebUiConfigPatch(current.webUiConfig, webUiPatch),
       modeHeaderPresent: true,
       modeSelectionDismissed: true,
       standardSettings: nextSettings,
       editorMode: false,
-    });
+    }));
     await get().saveConfig({
       source: "standard-settings",
     });
+    if (!get().isOfflineMode) {
+      await persistWebUiConfigPatch(set, get, webUiPatch);
+    }
   },
   setYamlConfig: (config) => {
     const parsed = parseOxiDnsYaml(config);
@@ -383,6 +470,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       control: null,
       system: null,
       webUiMode: "expert",
+      webUiConfig: createDefaultWebUiConfig(),
+      webUiConfigVersion: null,
+      webUiConfigPath: null,
+      webUiConfigError: null,
       modeHeaderPresent: false,
       modeSelectionDismissed: false,
       standardSettings: createDefaultStandardSettings(),
@@ -397,10 +488,32 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   loadConfig: async () => {
     const requestBackendUrl = currentBackendUrl();
-    set({ isConfigLoading: true, configError: null });
+    set({
+      isConfigLoading: true,
+      isWebUiConfigLoading: true,
+      configError: null,
+      webUiConfigError: null,
+    });
     try {
-      const response = await fetchConfigFile();
+      const [configResult, webUiConfigResult] = await Promise.allSettled([
+        fetchConfigFile(),
+        fetchWebUiConfig(),
+      ]);
       if (!isCurrentBackendUrl(requestBackendUrl)) return;
+      if (webUiConfigResult.status === "fulfilled") {
+        applyWebUiConfigResponse(webUiConfigResult.value, set);
+      } else {
+        set({
+          webUiConfigError:
+            webUiConfigResult.reason instanceof Error
+              ? webUiConfigResult.reason.message
+              : tClient(WEBUI.storeErrors.readConfigFailed),
+        });
+      }
+      if (configResult.status === "rejected") {
+        throw configResult.reason;
+      }
+      const response = configResult.value;
       applyConfigFileResponse(response, set);
       const header = parseWebUiConfigHeader(response.content);
       const scope = getScopeKey(response.path);
@@ -433,7 +546,29 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } finally {
       if (isCurrentBackendUrl(requestBackendUrl)) {
-        set({ isConfigLoading: false });
+        set({ isConfigLoading: false, isWebUiConfigLoading: false });
+      }
+    }
+  },
+
+  loadWebUiConfig: async () => {
+    const requestBackendUrl = currentBackendUrl();
+    set({ isWebUiConfigLoading: true, webUiConfigError: null });
+    try {
+      const response = await fetchWebUiConfig();
+      if (!isCurrentBackendUrl(requestBackendUrl)) return;
+      applyWebUiConfigResponse(response, set);
+    } catch (error) {
+      if (!isCurrentBackendUrl(requestBackendUrl)) return;
+      set({
+        webUiConfigError:
+          error instanceof Error
+            ? error.message
+            : tClient(WEBUI.storeErrors.readConfigFailed),
+      });
+    } finally {
+      if (isCurrentBackendUrl(requestBackendUrl)) {
+        set({ isWebUiConfigLoading: false });
       }
     }
   },
@@ -1014,12 +1149,135 @@ function applyConfigFileResponse(response: ConfigFileResponse, set: StoreSet) {
   });
 }
 
+function createDefaultWebUiConfig(): WebUiConfigDocument {
+  return {
+    schema: 1,
+    mode: "expert",
+    standard: {},
+    ui: { modeSelectionDismissed: false },
+  };
+}
+
+function normalizeWebUiConfig(value: unknown): WebUiConfigDocument {
+  const source = isJsonObject(value) ? value : {};
+  const ui = isJsonObject(source.ui) ? source.ui : {};
+  const standard = isJsonObject(source.standard) ? source.standard : {};
+  return {
+    ...source,
+    schema: typeof source.schema === "number" ? source.schema : 1,
+    mode: source.mode === "standard" ? "standard" : "expert",
+    standard,
+    ui: {
+      ...ui,
+      modeSelectionDismissed: ui.modeSelectionDismissed === true,
+    },
+  };
+}
+
+function applyWebUiConfigResponse(
+  response: WebUiConfigResponse,
+  set: StoreSet,
+) {
+  const webUiConfig = normalizeWebUiConfig(response.config);
+  const standardSettings = standardSettingsDraftFromWebUiConfig(webUiConfig);
+  set((state) => ({
+    webUiConfig,
+    webUiConfigVersion: response.version,
+    webUiConfigPath: response.path,
+    webUiConfigError: null,
+    webUiMode: webUiConfig.mode,
+    modeSelectionDismissed: webUiConfig.ui.modeSelectionDismissed,
+    editorMode: webUiConfig.mode === "standard" ? false : state.editorMode,
+    ...(standardSettings ? { standardSettings } : {}),
+  }));
+}
+
+function applyWebUiConfigPatch(
+  config: WebUiConfigDocument,
+  patch: JsonObject,
+): WebUiConfigDocument {
+  return normalizeWebUiConfig(applyJsonMergePatch(config, patch));
+}
+
+function applyJsonMergePatch(
+  target: JsonValue | undefined,
+  patch: JsonValue,
+): JsonValue {
+  if (!isJsonObject(patch)) return patch;
+  const merged: JsonObject = isJsonObject(target) ? { ...target } : {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) {
+      delete merged[key];
+    } else {
+      merged[key] = applyJsonMergePatch(merged[key], value);
+    }
+  }
+  return merged;
+}
+
+async function persistWebUiConfigPatch(
+  set: StoreSet,
+  get: StoreGet,
+  patch: JsonObject,
+): Promise<void> {
+  await enqueueWebUiConfigSave(set, async () => {
+    const requestBackendUrl = currentBackendUrl();
+    const state = get();
+    if (state.isOfflineMode) return;
+    set({ webUiConfigError: null });
+    try {
+      const response = await patchWebUiConfig({
+        patch,
+        baseVersion: state.webUiConfigVersion,
+      });
+      if (!isCurrentBackendUrl(requestBackendUrl)) return;
+      applyWebUiConfigResponse(response, set);
+    } catch (error) {
+      if (!isCurrentBackendUrl(requestBackendUrl)) return;
+      set({
+        webUiConfigError:
+          error instanceof Error
+            ? error.message
+            : tClient(WEBUI.storeErrors.saveConfigFailed),
+      });
+      throw error;
+    }
+  });
+}
+
+function standardSettingsDraftFromWebUiConfig(
+  config: WebUiConfigDocument,
+): StandardModeSettings | null {
+  const settings = config.standard.settings;
+  if (!isJsonObject(settings)) return null;
+  const candidate = settings as unknown as Partial<StandardModeSettings>;
+  if (
+    candidate.schema !== 1 ||
+    !candidate.listen ||
+    !Array.isArray(candidate.upstreams) ||
+    !candidate.cache ||
+    !candidate.queryLog ||
+    !candidate.adBlock ||
+    !candidate.split ||
+    !candidate.dualStack ||
+    !candidate.ipSelection ||
+    !candidate.ecs ||
+    !candidate.system
+  ) {
+    return null;
+  }
+  return candidate as StandardModeSettings;
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function headerStateFromText(
   text: string,
-): Pick<AppState, "webUiMode" | "modeHeaderPresent"> {
+): Pick<AppState, "modeHeaderPresent"> {
   const header = parseWebUiConfigHeader(text);
   return {
-    webUiMode: header.mode,
     modeHeaderPresent: header.modeHeaderPresent,
   };
 }

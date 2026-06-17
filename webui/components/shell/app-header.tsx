@@ -58,6 +58,7 @@ export function AppHeader({ title, breadcrumbs = [] }: AppHeaderProps) {
     updateInfo?.updateAvailable === true;
   const showNavigation = !editorMode;
   const showEditorToggle = webUiMode !== "standard" || editorMode;
+  const homeHref = webUiMode === "standard" ? "/standard" : "/";
   const editorTooltip = editorMode
     ? t(WEBUI.shell.switchToConsole)
     : t(WEBUI.shell.switchToEditor);
@@ -84,7 +85,7 @@ export function AppHeader({ title, breadcrumbs = [] }: AppHeaderProps) {
             <BreadcrumbList className="gap-2 text-[13px]">
               <BreadcrumbItem>
                 <BreadcrumbLink asChild className="text-foreground/70">
-                  <Link href="/">OxiDNS</Link>
+                  <Link href={homeHref}>OxiDNS</Link>
                 </BreadcrumbLink>
               </BreadcrumbItem>
               {breadcrumbs.map((crumb, i) => (

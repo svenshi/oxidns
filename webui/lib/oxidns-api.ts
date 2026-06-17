@@ -32,6 +32,52 @@ export interface SaveConfigResponse {
   message: string;
 }
 
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+export type JsonObject = { [key: string]: JsonValue };
+
+export interface WebUiConfigResponse {
+  ok: boolean;
+  path: string;
+  config: JsonObject;
+  version: string;
+  updated_at_ms: number;
+  defaulted: boolean;
+  recovered: boolean;
+  backup_path: string | null;
+}
+
+export interface WebUiOptionsResponse {
+  ok: boolean;
+  persistent: boolean;
+  patch: boolean;
+  reset: boolean;
+  max_bytes: number;
+  schema: number;
+  path: string;
+  default_config: JsonObject;
+}
+
+export interface SaveWebUiConfigOptions {
+  config: JsonObject;
+  baseVersion?: string | null;
+}
+
+export interface PatchWebUiConfigOptions {
+  patch: JsonObject;
+  baseVersion?: string | null;
+}
+
+export interface DeleteWebUiConfigOptions {
+  baseVersion?: string | null;
+}
+
 export interface HealthResponse {
   status: string;
   version: string;
@@ -398,6 +444,75 @@ export async function fetchConfigFile(): Promise<ConfigFileResponse> {
     headers: apiHeaders(),
   });
   return readJsonResponse<ConfigFileResponse>(response);
+}
+
+export async function fetchWebUiConfig(): Promise<WebUiConfigResponse> {
+  const response = await fetch(apiUrl("/webui/config"), {
+    method: "GET",
+    headers: apiHeaders(),
+  });
+  return readJsonResponse<WebUiConfigResponse>(response);
+}
+
+export async function saveWebUiConfig({
+  config,
+  baseVersion,
+}: SaveWebUiConfigOptions): Promise<WebUiConfigResponse> {
+  const response = await fetch(apiUrl("/webui/config"), {
+    method: "PUT",
+    headers: {
+      ...apiHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      config,
+      base_version: baseVersion ?? undefined,
+    }),
+  });
+  return readJsonResponse<WebUiConfigResponse>(response);
+}
+
+export async function patchWebUiConfig({
+  patch,
+  baseVersion,
+}: PatchWebUiConfigOptions): Promise<WebUiConfigResponse> {
+  const response = await fetch(apiUrl("/webui/config"), {
+    method: "PATCH",
+    headers: {
+      ...apiHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      patch,
+      base_version: baseVersion ?? undefined,
+    }),
+  });
+  return readJsonResponse<WebUiConfigResponse>(response);
+}
+
+export async function deleteWebUiConfig(
+  options: DeleteWebUiConfigOptions = {},
+): Promise<WebUiConfigResponse> {
+  const response = await fetch(apiUrl("/webui/config"), {
+    method: "DELETE",
+    headers: {
+      ...apiHeaders(),
+      "Content-Type": "application/json",
+    },
+    body:
+      options.baseVersion === undefined
+        ? undefined
+        : JSON.stringify({ base_version: options.baseVersion }),
+  });
+  return readJsonResponse<WebUiConfigResponse>(response);
+}
+
+export async function fetchWebUiOptions(): Promise<WebUiOptionsResponse> {
+  const response = await fetch(apiUrl("/webui/options"), {
+    method: "GET",
+    headers: apiHeaders(),
+  });
+  return readJsonResponse<WebUiOptionsResponse>(response);
 }
 
 export async function fetchHealth(): Promise<HealthResponse> {
