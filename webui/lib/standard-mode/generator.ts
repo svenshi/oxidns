@@ -10,17 +10,25 @@ import type {
   StandardGenerationSummary,
   StandardModeSettings,
   StandardResolutionPath,
+  StandardSubscription,
   StandardTagMap,
   StandardUpstream,
   StandardUpstreamGroup,
 } from "./types";
+import {
+  normalizeStandardFilteringSettings,
+  standardFilteringCapabilityMap,
+} from "./validation";
 
 export const STANDARD_PLUGIN_TAGS = [
   "standard_metrics",
   "standard_recorder",
   "standard_cache",
+  "standard_filter_download",
   "standard_ad_rules",
   "standard_blocked",
+  "standard_filter_reload",
+  "standard_filter_cron",
   "standard_forward_default",
   "standard_path_default",
   "standard_main_sequence",
@@ -29,6 +37,7 @@ export const STANDARD_PLUGIN_TAGS = [
 ] as const;
 
 const STANDARD_TAG_SET = new Set<string>(STANDARD_PLUGIN_TAGS);
+const STANDARD_FILTER_SUBSCRIPTION_DIR = "./data/standard-filter-subscriptions";
 
 function plugin(type: PluginType, tag: string, args?: unknown): PluginConfig {
   return { type, tag, args: args ?? {} };
@@ -96,6 +105,31 @@ function blockMode(settings: StandardModeSettings) {
   if (settings.filtering.blockResponse === "nxdomain") return "nxdomain";
   if (settings.filtering.blockResponse === "refused") return "refused";
   return "null";
+}
+
+function subscriptionFileName(subscription: StandardSubscription): string {
+  const safe = subscription.id
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return `${safe || "subscription"}.txt`;
+}
+
+function subscriptionFilePath(subscription: StandardSubscription): string {
+  return `${STANDARD_FILTER_SUBSCRIPTION_DIR}/${subscriptionFileName(subscription)}`;
+}
+
+function enabledSubscriptions(settings: StandardModeSettings) {
+  return settings.filtering.subscriptions.filter(
+    (subscription) => subscription.enabled && subscription.url.trim(),
+  );
+}
+
+function filteringRules(settings: StandardModeSettings) {
+  return [
+    ...settings.filtering.blockRules,
+    ...settings.filtering.allowRules,
+  ].filter(Boolean);
 }
 
 export function isStandardManagedPlugin(tag: string): boolean {
@@ -181,8 +215,49 @@ export function generateStandardConfig(
     tagMap.cache = "standard_cache";
   }
 
+  const filteringSettings = normalizeStandardFilteringSettings(settings);
+  const filteringCapabilities = standardFilteringCapabilityMap(buildInfo);
+  const subscriptions = enabledSubscriptions(filteringSettings);
+  const shouldGenerateSubscriptions =
+    filteringSettings.filtering.enabled &&
+    subscriptions.length > 0 &&
+    filteringCapabilities.subscriptionRuntime;
+  const subscriptionFiles = shouldGenerateSubscriptions
+    ? subscriptions.map(subscriptionFilePath)
+    : [];
+
+  if (
+    filteringSettings.filtering.enabled &&
+    subscriptions.length > 0 &&
+    !filteringCapabilities.subscriptionRuntime
+  ) {
+    skippedCapabilities.push("filter_subscriptions");
+  }
+
+  if (
+    shouldGenerateSubscriptions &&
+    pushIfSupported(
+      "filter_download",
+      "executor",
+      "download",
+      "standard_filter_download",
+      {
+        startup_if_missing: true,
+        downloads: subscriptions.map((subscription) => ({
+          url: subscription.url,
+          dir: STANDARD_FILTER_SUBSCRIPTION_DIR,
+          filename: subscriptionFileName(subscription),
+        })),
+      },
+    )
+  ) {
+    tagMap.filtering = [...(tagMap.filtering ?? []), "standard_filter_download"];
+  }
+
+  const rules = filteringRules(filteringSettings);
   const hasFilteringRules =
-    settings.filtering.enabled && settings.filtering.blockRules.length > 0;
+    filteringSettings.filtering.enabled &&
+    (rules.length > 0 || subscriptionFiles.length > 0);
   if (
     hasFilteringRules &&
     pushIfSupported(
@@ -191,12 +266,12 @@ export function generateStandardConfig(
       "adguard_rule",
       "standard_ad_rules",
       {
-        files: [],
-        rules: settings.filtering.blockRules,
+        files: subscriptionFiles,
+        rules,
       },
     )
   ) {
-    tagMap.filtering = ["standard_ad_rules"];
+    tagMap.filtering = [...(tagMap.filtering ?? []), "standard_ad_rules"];
   }
   if (
     hasFilteringRules &&
@@ -206,12 +281,48 @@ export function generateStandardConfig(
       "black_hole",
       "standard_blocked",
       {
-        mode: blockMode(settings),
+        mode: blockMode(filteringSettings),
         short_circuit: true,
       },
     )
   ) {
     tagMap.filtering = [...(tagMap.filtering ?? []), "standard_blocked"];
+  }
+
+  if (
+    shouldGenerateSubscriptions &&
+    tagMap.filtering?.includes("standard_ad_rules") &&
+    pushIfSupported(
+      "filter_reload",
+      "executor",
+      "reload_provider",
+      "standard_filter_reload",
+      ["$standard_ad_rules"],
+    )
+  ) {
+    tagMap.filtering = [...(tagMap.filtering ?? []), "standard_filter_reload"];
+  }
+
+  const canScheduleFilterRefresh =
+    shouldGenerateSubscriptions &&
+    tagMap.filtering?.includes("standard_filter_download") &&
+    tagMap.filtering?.includes("standard_filter_reload");
+  if (
+    canScheduleFilterRefresh &&
+    pushIfSupported("filter_cron", "executor", "cron", "standard_filter_cron", {
+      jobs: [
+        {
+          name: "refresh_filter_subscriptions",
+          interval: `${Math.max(
+            1,
+            Math.min(...subscriptions.map((item) => item.updateIntervalHours)),
+          )}h`,
+          executors: ["$standard_filter_download", "$standard_filter_reload"],
+        },
+      ],
+    })
+  ) {
+    tagMap.filtering = [...(tagMap.filtering ?? []), "standard_filter_cron"];
   }
 
   const groupsById = new Map(settings.upstreamGroups.map((group) => [group.id, group]));

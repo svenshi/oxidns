@@ -1,6 +1,9 @@
+import { isPluginKindSupported } from "../build-capabilities";
 import type { BuildInfo } from "../oxidns-api";
 import type {
+  StandardFilteringSettings,
   StandardModeSettings,
+  StandardSubscription,
   StandardUpstream,
   StandardUpstreamProtocol,
 } from "./types";
@@ -14,6 +17,28 @@ export interface StandardDnsValidationIssue {
     | "protocol_unsupported";
   protocol?: StandardUpstreamProtocol;
   requiredFeatures?: string[];
+}
+
+export interface StandardFilteringCapabilityMap {
+  adRules: boolean;
+  blackHole: boolean;
+  download: boolean;
+  cron: boolean;
+  reloadProvider: boolean;
+  subscriptionRuntime: boolean;
+}
+
+export interface StandardFilteringValidationIssue {
+  field: string;
+  code:
+    | "capability_required"
+    | "rule_source_required"
+    | "subscription_runtime_required"
+    | "subscription_name_required"
+    | "subscription_url_required"
+    | "subscription_url_invalid"
+    | "subscription_interval_invalid";
+  subscriptionId?: string;
 }
 
 const protocolFeatureRequirements: Record<
@@ -148,4 +173,158 @@ export function validateStandardDnsSettings(
   }
 
   return issues;
+}
+
+export function standardFilteringCapabilityMap(
+  buildInfo: BuildInfo | null,
+): StandardFilteringCapabilityMap {
+  const download = isPluginKindSupported(buildInfo, "executor", "download");
+  const cron = isPluginKindSupported(buildInfo, "executor", "cron");
+  const reloadProvider = isPluginKindSupported(
+    buildInfo,
+    "executor",
+    "reload_provider",
+  );
+  return {
+    adRules: isPluginKindSupported(buildInfo, "provider", "adguard_rule"),
+    blackHole: isPluginKindSupported(buildInfo, "executor", "black_hole"),
+    download,
+    cron,
+    reloadProvider,
+    subscriptionRuntime: download && cron && reloadProvider,
+  };
+}
+
+export function normalizeStandardFilteringSettings(
+  settings: StandardModeSettings,
+): StandardModeSettings {
+  return {
+    ...settings,
+    filtering: normalizeFiltering(settings.filtering),
+  };
+}
+
+export function normalizeAdGuardAllowRule(rule: string): string {
+  const trimmed = rule.trim();
+  if (!trimmed) return "";
+  return trimmed.startsWith("@@") ? trimmed : `@@${trimmed}`;
+}
+
+function normalizeFiltering(
+  filtering: StandardFilteringSettings,
+): StandardFilteringSettings {
+  return {
+    ...filtering,
+    subscriptions: filtering.subscriptions.map(normalizeSubscription),
+    blockRules: uniqueLines(filtering.blockRules),
+    allowRules: uniqueLines(filtering.allowRules).map(normalizeAdGuardAllowRule),
+    blockResponse:
+      filtering.blockResponse === "nxdomain" ||
+      filtering.blockResponse === "refused"
+        ? filtering.blockResponse
+        : "null_ip",
+  };
+}
+
+function normalizeSubscription(
+  subscription: StandardSubscription,
+): StandardSubscription {
+  return {
+    ...subscription,
+    name: subscription.name.trim(),
+    url: subscription.url.trim(),
+    updateIntervalHours: Math.max(
+      1,
+      Math.trunc(subscription.updateIntervalHours) || 24,
+    ),
+  };
+}
+
+function uniqueLines(lines: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const line of lines) {
+    const value = line.trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+}
+
+export function validateStandardFilteringSettings(
+  settings: StandardModeSettings,
+  buildInfo: BuildInfo | null,
+): StandardFilteringValidationIssue[] {
+  const capabilities = standardFilteringCapabilityMap(buildInfo);
+  const filtering = normalizeFiltering(settings.filtering);
+  const issues: StandardFilteringValidationIssue[] = [];
+  if (!filtering.enabled) return issues;
+
+  if (!capabilities.adRules || !capabilities.blackHole) {
+    issues.push({ field: "filtering", code: "capability_required" });
+  }
+
+  const enabledSubscriptions = filtering.subscriptions.filter(
+    (subscription) => subscription.enabled,
+  );
+  if (filtering.blockRules.length === 0 && enabledSubscriptions.length === 0) {
+    issues.push({ field: "filtering", code: "rule_source_required" });
+  }
+
+  if (
+    filtering.blockRules.length === 0 &&
+    enabledSubscriptions.length > 0 &&
+    !capabilities.subscriptionRuntime
+  ) {
+    issues.push({
+      field: "subscriptions",
+      code: "subscription_runtime_required",
+    });
+  }
+
+  for (const subscription of enabledSubscriptions) {
+    const field = `subscription.${subscription.id}`;
+    if (!subscription.name.trim()) {
+      issues.push({
+        field,
+        code: "subscription_name_required",
+        subscriptionId: subscription.id,
+      });
+    }
+    if (!subscription.url.trim()) {
+      issues.push({
+        field,
+        code: "subscription_url_required",
+        subscriptionId: subscription.id,
+      });
+    } else if (!isHttpUrl(subscription.url)) {
+      issues.push({
+        field,
+        code: "subscription_url_invalid",
+        subscriptionId: subscription.id,
+      });
+    }
+    if (
+      !Number.isFinite(subscription.updateIntervalHours) ||
+      subscription.updateIntervalHours < 1
+    ) {
+      issues.push({
+        field,
+        code: "subscription_interval_invalid",
+        subscriptionId: subscription.id,
+      });
+    }
+  }
+
+  return issues;
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
