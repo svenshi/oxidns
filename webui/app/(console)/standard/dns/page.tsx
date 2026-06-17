@@ -7,16 +7,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { selectStandardCapabilityMap } from "@/lib/standard-mode/selectors";
+import {
+  selectDefaultUpstreamGroup,
+  selectStandardCapabilityMap,
+} from "@/lib/standard-mode/selectors";
 import type {
   StandardModeSettings,
   StandardUpstream,
@@ -30,20 +26,18 @@ function upstreamText(upstreams: StandardUpstream[]) {
     .join("\n");
 }
 
-function parseUpstreams(
-  value: string,
-  group: "global" | "domestic",
-): StandardUpstream[] {
+function parseUpstreams(value: string): StandardUpstream[] {
   return value
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
     .map((address, index) => ({
-      id: `${group}_${index + 1}`,
+      id: `default_${index + 1}`,
       name: address,
+      protocol: "auto",
       address,
       enabled: true,
-      group,
+      tlsVerify: true,
     }));
 }
 
@@ -59,9 +53,20 @@ export default function StandardDnsPage() {
   const [draftSettings, setDraftSettings] =
     useState<StandardModeSettings | null>(null);
   const settings = draftSettings ?? storeSettings;
+  const defaultGroup = selectDefaultUpstreamGroup(settings);
 
   const setPartial = (patch: Partial<StandardModeSettings>) => {
     setDraftSettings((current) => ({ ...(current ?? settings), ...patch }));
+  };
+  const setDefaultUpstreams = (upstreams: StandardUpstream[]) => {
+    const defaultGroupId = defaultGroup.id;
+    setPartial({
+      upstreamGroups: settings.upstreamGroups.map((group, index) =>
+        group.id === defaultGroupId || (index === 0 && defaultGroupId === group.id)
+          ? { ...group, upstreams }
+          : group,
+      ),
+    });
   };
 
   return (
@@ -134,11 +139,9 @@ export default function StandardDnsPage() {
               <label className="space-y-2 md:col-span-2">
                 <span className="text-sm font-medium">全局上游</span>
                 <Textarea
-                  value={upstreamText(settings.upstreams)}
+                  value={upstreamText(defaultGroup.upstreams)}
                   onChange={(event) =>
-                    setPartial({
-                      upstreams: parseUpstreams(event.target.value, "global"),
-                    })
+                    setDefaultUpstreams(parseUpstreams(event.target.value))
                   }
                   rows={5}
                   placeholder={"1.1.1.1:53\n8.8.8.8:53"}
@@ -184,52 +187,35 @@ export default function StandardDnsPage() {
                   }
                 />
               </label>
-              <label className="space-y-2">
-                <span className="text-sm font-medium">双栈策略</span>
-                <Select
-                  value={settings.dualStack.strategy}
-                  onValueChange={(value) =>
-                    setPartial({
-                      dualStack: {
-                        strategy:
-                          value as StandardModeSettings["dualStack"]["strategy"],
-                      },
-                    })
-                  }
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="auto">自动</SelectItem>
-                    <SelectItem value="prefer_ipv4">优先 IPv4</SelectItem>
-                    <SelectItem value="prefer_ipv6">优先 IPv6</SelectItem>
-                    <SelectItem value="ipv4_only">仅 IPv4</SelectItem>
-                    <SelectItem value="ipv6_only">仅 IPv6</SelectItem>
-                  </SelectContent>
-                </Select>
-              </label>
               <label className="flex items-center justify-between rounded-md border p-3 text-sm">
-                <span>启用 IP 优选</span>
+                <span>启用查询日志</span>
                 <Switch
-                  checked={settings.ipSelection.enabled}
-                  disabled={!capabilities.ipSelector}
+                  checked={settings.queryLog.enabled}
+                  disabled={!capabilities.queryRecorder}
                   onCheckedChange={(checked) =>
                     setPartial({
-                      ipSelection: {
-                        ...settings.ipSelection,
+                      queryLog: {
+                        ...settings.queryLog,
                         enabled: checked,
                       },
                     })
                   }
                 />
               </label>
-              <label className="flex items-center justify-between rounded-md border p-3 text-sm">
-                <span>启用 ECS</span>
-                <Switch
-                  checked={settings.ecs.enabled}
-                  onCheckedChange={(checked) =>
-                    setPartial({ ecs: { ...settings.ecs, enabled: checked } })
+              <label className="space-y-2">
+                <span className="text-sm font-medium">日志保留天数</span>
+                <Input
+                  type="number"
+                  min={1}
+                  value={settings.queryLog.retentionDays}
+                  disabled={!settings.queryLog.enabled || !capabilities.queryRecorder}
+                  onChange={(event) =>
+                    setPartial({
+                      queryLog: {
+                        ...settings.queryLog,
+                        retentionDays: Number(event.target.value) || 7,
+                      },
+                    })
                   }
                 />
               </label>

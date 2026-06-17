@@ -197,6 +197,12 @@ export const enUSWebui = {
       "Queries, filtering, resource usage, and hot spots from the last 24 hours.",
     refreshStats: "Refresh stats",
     statsReadFailed: "Failed to load statistics",
+    standardOutOfSync:
+      "The running config differs from the last Standard Mode output. Saving Standard Mode will overwrite the current YAML.",
+    legacyMigrated:
+      "A legacy Standard Mode draft was migrated to schema v2. Save Standard Mode again to persist it.",
+    invalidFallback:
+      "The Standard Mode draft could not be read, so defaults were loaded. Review and save again.",
     serviceStatus: "Service status",
     waitingStatus: "Waiting for runtime status",
     runningHours: "Running for {hours} hours",

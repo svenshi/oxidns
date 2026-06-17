@@ -189,6 +189,12 @@ export const zhCNWebui = {
     description: "最近 24 小时的查询、过滤、资源占用和热点排行。",
     refreshStats: "刷新统计",
     statsReadFailed: "统计数据读取失败",
+    standardOutOfSync:
+      "运行配置已经与最近一次标准模式生成结果不同；保存标准模式会覆盖当前 YAML。",
+    legacyMigrated:
+      "已将旧标准模式草稿迁移为 schema v2；建议重新保存标准模式。",
+    invalidFallback:
+      "标准模式草稿无法识别，已回退默认配置；建议检查后重新保存。",
     serviceStatus: "服务状态",
     waitingStatus: "等待运行状态",
     runningHours: "已运行 {hours} 小时",

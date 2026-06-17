@@ -1,26 +1,63 @@
-import type { StandardModeSettings } from "./types";
+import type {
+  StandardModeSettings,
+  StandardResolutionPath,
+  StandardUpstream,
+  StandardUpstreamGroup,
+} from "./types";
 
 function upstream(
   id: string,
   name: string,
   address: string,
-  group: "global" | "domestic" = "global",
-) {
-  return { id, name, address, enabled: true, group };
+  protocol: StandardUpstream["protocol"] = "auto",
+): StandardUpstream {
+  return { id, name, protocol, address, enabled: true, tlsVerify: true };
+}
+
+export function createDefaultUpstreamGroup(): StandardUpstreamGroup {
+  return {
+    id: "default",
+    name: "默认上游组",
+    strategy: "parallel",
+    upstreams: [
+      upstream("alidns", "AliDNS", "223.5.5.5:53"),
+      upstream("cloudflare", "Cloudflare", "1.1.1.1:53"),
+    ],
+    isDefault: true,
+  };
+}
+
+export function createDefaultResolutionPath(): StandardResolutionPath {
+  return {
+    id: "default",
+    name: "默认解析路径",
+    upstreamGroupId: "default",
+    filtering: "inherit",
+    cache: "inherit",
+    queryLog: "inherit",
+    dualStack: "inherit",
+    ipSelection: "inherit",
+    ecs: "inherit",
+  };
 }
 
 export function createDefaultStandardSettings(): StandardModeSettings {
   return {
-    schema: 1,
+    schema: 2,
     listen: {
       address: "0.0.0.0:5335",
       udp: true,
       tcp: true,
     },
-    upstreams: [
-      upstream("alidns", "AliDNS", "223.5.5.5:53", "global"),
-      upstream("cloudflare", "Cloudflare", "1.1.1.1:53", "global"),
-    ],
+    upstreamGroups: [createDefaultUpstreamGroup()],
+    paths: [createDefaultResolutionPath()],
+    filtering: {
+      enabled: false,
+      subscriptions: [],
+      blockRules: [],
+      allowRules: [],
+      blockResponse: "null_ip",
+    },
     cache: {
       enabled: true,
       size: 8192,
@@ -33,25 +70,13 @@ export function createDefaultStandardSettings(): StandardModeSettings {
       retentionDays: 7,
       sampleRate: 1,
     },
-    adBlock: {
+    routing: {
       enabled: false,
-      inlineRules: [],
+      rules: [],
+      scenarios: [],
     },
-    split: {
-      enabled: false,
-      domesticDomains: [],
-      domesticUpstreams: [],
-    },
-    dualStack: {
-      strategy: "auto",
-    },
-    ipSelection: {
-      enabled: false,
-      strategy: "lowest_latency",
-    },
-    ecs: {
-      enabled: false,
-    },
+    exceptions: [],
+    devices: [],
     system: {
       logLevel: "info",
     },
