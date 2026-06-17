@@ -6,6 +6,7 @@ import type {
 } from "../oxidns-config";
 import type { PluginType } from "../types";
 import type {
+  StandardExceptionRule,
   StandardGenerationResult,
   StandardGenerationSummary,
   StandardModeSettings,
@@ -17,6 +18,7 @@ import type {
   StandardUpstreamGroup,
 } from "./types";
 import {
+  normalizeStandardExceptionSettings,
   normalizeStandardFilteringSettings,
   normalizeStandardRoutingSettings,
   standardFilteringCapabilityMap,
@@ -146,8 +148,10 @@ export function generateStandardConfig(
   buildInfo: BuildInfo | null,
   baseConfig?: OxiDnsConfig | null,
 ): StandardGenerationResult {
-  const generationSettings = normalizeStandardRoutingSettings(
-    normalizeStandardFilteringSettings(settings),
+  const generationSettings = normalizeStandardExceptionSettings(
+    normalizeStandardRoutingSettings(
+      normalizeStandardFilteringSettings(settings),
+    ),
   );
   const generated: PluginConfig[] = [];
   const skippedCapabilities: string[] = [];
@@ -223,6 +227,9 @@ export function generateStandardConfig(
   const filteringSettings = generationSettings;
   const filteringCapabilities = standardFilteringCapabilityMap(buildInfo);
   const subscriptions = enabledSubscriptions(filteringSettings);
+  const hasBlockExceptions = generationSettings.exceptions.some(
+    (exception) => exception.enabled && exception.action.type === "block",
+  );
   const shouldGenerateSubscriptions =
     filteringSettings.filtering.enabled &&
     subscriptions.length > 0 &&
@@ -279,7 +286,7 @@ export function generateStandardConfig(
     tagMap.filtering = [...(tagMap.filtering ?? []), "standard_ad_rules"];
   }
   if (
-    hasFilteringRules &&
+    (hasFilteringRules || hasBlockExceptions) &&
     pushIfSupported(
       "black_hole",
       "executor",
@@ -292,6 +299,37 @@ export function generateStandardConfig(
     )
   ) {
     tagMap.filtering = [...(tagMap.filtering ?? []), "standard_blocked"];
+  }
+
+  const needsPreferIpv4 = generationSettings.exceptions.some(
+    (exception) => exception.enabled && exception.action.type === "prefer_ipv4",
+  );
+  const needsPreferIpv6 = generationSettings.exceptions.some(
+    (exception) => exception.enabled && exception.action.type === "prefer_ipv6",
+  );
+  if (needsPreferIpv4) {
+    pushIfSupported(
+      "prefer_ipv4",
+      "executor",
+      "prefer_ipv4",
+      "standard_prefer_ipv4",
+      {
+        cache: true,
+        cache_ttl: 3600,
+      },
+    );
+  }
+  if (needsPreferIpv6) {
+    pushIfSupported(
+      "prefer_ipv6",
+      "executor",
+      "prefer_ipv6",
+      "standard_prefer_ipv6",
+      {
+        cache: true,
+        cache_ttl: 3600,
+      },
+    );
   }
 
   if (
@@ -364,10 +402,71 @@ export function generateStandardConfig(
     tagMap.paths[defaultPath?.id ?? "default"] ??
     Object.values(tagMap.paths)[0] ??
     Object.values(tagMap.upstreamGroups)[0];
+  for (const exception of generationSettings.exceptions) {
+    if (!exception.enabled) continue;
+    const matcher = ruleMatcher(exception);
+    if (!matcher) continue;
+    const tag = standardTag("exception_match", exception.id);
+    if (
+      pushIfSupported(
+        `exception_${matcher.kind}`,
+        "matcher",
+        matcher.kind,
+        tag,
+        matcher.args,
+      )
+    ) {
+      tagMap.exceptionRules[exception.id] = tag;
+    }
+  }
+
+  const exceptionActionTags = new Map<string, string>();
+  for (const exception of generationSettings.exceptions) {
+    if (!exception.enabled || !tagMap.exceptionRules[exception.id]) continue;
+    if (
+      exception.action.type === "use_path" ||
+      exception.action.type === "use_default_path"
+    ) {
+      continue;
+    }
+    if (
+      exception.action.type === "prefer_ipv4" &&
+      !generated.some((item) => item.tag === "standard_prefer_ipv4")
+    ) {
+      continue;
+    }
+    if (
+      exception.action.type === "prefer_ipv6" &&
+      !generated.some((item) => item.tag === "standard_prefer_ipv6")
+    ) {
+      continue;
+    }
+    const sequence = buildExceptionSequence(
+      exception,
+      generationSettings,
+      defaultPath,
+      defaultPathTag,
+      tagMap,
+    );
+    if (!sequence) continue;
+    const tag = standardTag("exception_action", exception.id);
+    if (
+      pushIfSupported(
+        `exception_action_${exception.action.type}`,
+        "executor",
+        "sequence",
+        tag,
+        sequence,
+      )
+    ) {
+      exceptionActionTags.set(exception.id, tag);
+    }
+  }
+
   if (generationSettings.routing.enabled) {
     for (const rule of generationSettings.routing.rules) {
       if (!rule.enabled) continue;
-      const route = routeMatcher(rule);
+      const route = ruleMatcher(rule);
       const targetPathTag = routeTargetPathTag(rule, defaultPathTag, tagMap);
       if (!route || !targetPathTag) continue;
       const tag = standardTag("route_match", rule.id);
@@ -388,6 +487,20 @@ export function generateStandardConfig(
   const mainSequence: Array<Record<string, unknown>> = [];
   if (tagMap.system.includes("standard_metrics")) {
     mainSequence.push({ exec: "$standard_metrics" });
+  }
+  for (const exception of orderedExceptions(generationSettings.exceptions)) {
+    const matchTag = tagMap.exceptionRules[exception.id];
+    const execTag = exceptionExecTag(
+      exception,
+      exceptionActionTags,
+      tagMap,
+      defaultPathTag,
+    );
+    if (!exception.enabled || !matchTag || !execTag) continue;
+    mainSequence.push({
+      matches: `$${matchTag}`,
+      exec: `$${execTag}`,
+    });
   }
   if (generationSettings.routing.enabled) {
     for (const rule of generationSettings.routing.rules) {
@@ -453,17 +566,29 @@ function buildPathSequence(
   settings: StandardModeSettings,
   forwardTag: string,
   tagMap: StandardTagMap,
+  options: {
+    disableFiltering?: boolean;
+    disableQueryLog?: boolean;
+    prependExec?: string;
+  } = {},
 ): Array<Record<string, unknown>> {
   const sequence: Array<Record<string, unknown>> = [];
   const filteringEnabled =
-    path.filtering === "enabled" ||
-    (path.filtering === "inherit" && settings.filtering.enabled);
+    (!options.disableFiltering && path.filtering === "enabled") ||
+    (!options.disableFiltering &&
+      path.filtering === "inherit" &&
+      settings.filtering.enabled);
   const cacheEnabled =
     path.cache === "enabled" || (path.cache === "inherit" && settings.cache.enabled);
   const queryLogEnabled =
-    path.queryLog === "enabled" ||
-    (path.queryLog === "inherit" && settings.queryLog.enabled);
+    (!options.disableQueryLog && path.queryLog === "enabled") ||
+    (!options.disableQueryLog &&
+      path.queryLog === "inherit" &&
+      settings.queryLog.enabled);
 
+  if (options.prependExec) {
+    sequence.push({ exec: options.prependExec });
+  }
   if (queryLogEnabled && tagMap.queryLog) {
     sequence.push({ exec: `$${tagMap.queryLog}` });
   }
@@ -485,8 +610,8 @@ function buildPathSequence(
   return sequence;
 }
 
-function routeMatcher(
-  rule: StandardRoutingRule,
+function ruleMatcher(
+  rule: StandardRoutingRule | StandardExceptionRule,
 ): { kind: "qname" | "client_ip" | "qtype"; args: unknown } | null {
   if (
     rule.condition.type === "domain" ||
@@ -495,7 +620,7 @@ function routeMatcher(
   ) {
     return {
       kind: "qname",
-      args: routeDomainRules(rule),
+      args: ruleDomainRules(rule),
     };
   }
   if (rule.condition.type === "client_cidr") {
@@ -510,7 +635,7 @@ function routeMatcher(
   return null;
 }
 
-function routeDomainRules(rule: StandardRoutingRule): string[] {
+function ruleDomainRules(rule: StandardRoutingRule | StandardExceptionRule): string[] {
   if (rule.condition.type === "domain") {
     return rule.condition.values.map((value) => `full:${value}`);
   }
@@ -521,6 +646,83 @@ function routeDomainRules(rule: StandardRoutingRule): string[] {
     return rule.condition.values.map((value) => `keyword:${value}`);
   }
   return [];
+}
+
+function buildExceptionSequence(
+  exception: StandardExceptionRule,
+  settings: StandardModeSettings,
+  defaultPath: StandardResolutionPath | undefined,
+  defaultPathTag: string | undefined,
+  tagMap: StandardTagMap,
+): Array<Record<string, unknown>> | null {
+  const defaultForwardTag = defaultPath
+    ? tagMap.upstreamGroups[defaultPath.upstreamGroupId]
+    : Object.values(tagMap.upstreamGroups)[0];
+  if (exception.action.type === "block") {
+    return tagMap.filtering?.includes("standard_blocked")
+      ? [{ exec: "$standard_blocked" }, { exec: "accept" }]
+      : null;
+  }
+  if (!defaultPath || !defaultForwardTag) return null;
+  if (
+    exception.action.type === "allow" ||
+    exception.action.type === "skip_filtering"
+  ) {
+    return buildPathSequence(defaultPath, settings, defaultForwardTag, tagMap, {
+      disableFiltering: true,
+    });
+  }
+  if (exception.action.type === "disable_logging") {
+    return buildPathSequence(defaultPath, settings, defaultForwardTag, tagMap, {
+      disableQueryLog: true,
+    });
+  }
+  if (
+    exception.action.type === "prefer_ipv4" &&
+    settings.exceptions.some((item) => item.id === exception.id)
+  ) {
+    return buildPathSequence(defaultPath, settings, defaultForwardTag, tagMap, {
+      prependExec: "$standard_prefer_ipv4",
+    });
+  }
+  if (
+    exception.action.type === "prefer_ipv6" &&
+    settings.exceptions.some((item) => item.id === exception.id)
+  ) {
+    return buildPathSequence(defaultPath, settings, defaultForwardTag, tagMap, {
+      prependExec: "$standard_prefer_ipv6",
+    });
+  }
+  return null;
+}
+
+function orderedExceptions(exceptions: StandardExceptionRule[]) {
+  const priority: Record<StandardExceptionRule["action"]["type"], number> = {
+    block: 0,
+    allow: 1,
+    skip_filtering: 2,
+    use_path: 3,
+    use_default_path: 3,
+    prefer_ipv4: 4,
+    prefer_ipv6: 4,
+    disable_logging: 5,
+  };
+  return [...exceptions].sort(
+    (left, right) => priority[left.action.type] - priority[right.action.type],
+  );
+}
+
+function exceptionExecTag(
+  exception: StandardExceptionRule,
+  actionTags: Map<string, string>,
+  tagMap: StandardTagMap,
+  defaultPathTag: string | undefined,
+): string | undefined {
+  if (exception.action.type === "use_path") {
+    return tagMap.paths[exception.action.pathId];
+  }
+  if (exception.action.type === "use_default_path") return defaultPathTag;
+  return actionTags.get(exception.id);
 }
 
 function routeTargetPathTag(

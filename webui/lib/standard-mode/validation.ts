@@ -1,6 +1,7 @@
 import { isPluginKindSupported } from "../build-capabilities";
 import type { BuildInfo } from "../oxidns-api";
 import type {
+  StandardExceptionRule,
   StandardFilteringSettings,
   StandardModeSettings,
   StandardResolutionPath,
@@ -67,6 +68,25 @@ export interface StandardRoutingValidationIssue {
     | "rule_matcher_unsupported";
   pathId?: string;
   ruleId?: string;
+}
+
+export interface StandardExceptionCapabilityMap extends StandardRoutingCapabilityMap {
+  blackHole: boolean;
+  preferIpv4: boolean;
+  preferIpv6: boolean;
+}
+
+export interface StandardExceptionValidationIssue {
+  field: string;
+  code:
+    | "capability_required"
+    | "exception_name_required"
+    | "exception_condition_required"
+    | "exception_action_required"
+    | "exception_action_unsupported"
+    | "exception_condition_unsupported"
+    | "exception_matcher_unsupported";
+  exceptionId?: string;
 }
 
 const protocolFeatureRequirements: Record<
@@ -368,6 +388,17 @@ export function standardRoutingCapabilityMap(
   };
 }
 
+export function standardExceptionCapabilityMap(
+  buildInfo: BuildInfo | null,
+): StandardExceptionCapabilityMap {
+  return {
+    ...standardRoutingCapabilityMap(buildInfo),
+    blackHole: isPluginKindSupported(buildInfo, "executor", "black_hole"),
+    preferIpv4: isPluginKindSupported(buildInfo, "executor", "prefer_ipv4"),
+    preferIpv6: isPluginKindSupported(buildInfo, "executor", "prefer_ipv6"),
+  };
+}
+
 export function normalizeStandardRoutingSettings(
   settings: StandardModeSettings,
 ): StandardModeSettings {
@@ -395,6 +426,19 @@ export function normalizeStandardRoutingSettings(
     ...settings,
     paths: normalizedPaths,
     routing: normalizeRouting(settings.routing, pathIds, defaultPathId),
+  };
+}
+
+export function normalizeStandardExceptionSettings(
+  settings: StandardModeSettings,
+): StandardModeSettings {
+  const pathIds = new Set(settings.paths.map((path) => path.id));
+  const defaultPathId = settings.paths[0]?.id ?? "default";
+  return {
+    ...settings,
+    exceptions: settings.exceptions.map((exception) =>
+      normalizeExceptionRule(exception, pathIds, defaultPathId),
+    ),
   };
 }
 
@@ -481,6 +525,78 @@ export function validateStandardRoutingSettings(
   return issues;
 }
 
+export function validateStandardExceptionSettings(
+  settings: StandardModeSettings,
+  buildInfo: BuildInfo | null,
+): StandardExceptionValidationIssue[] {
+  const normalized = normalizeStandardExceptionSettings(
+    normalizeStandardRoutingSettings(settings),
+  );
+  const capabilities = standardExceptionCapabilityMap(buildInfo);
+  const pathIds = new Set(normalized.paths.map((path) => path.id));
+  const issues: StandardExceptionValidationIssue[] = [];
+
+  if (!capabilities.sequence && normalized.exceptions.some((item) => item.enabled)) {
+    issues.push({ field: "exceptions", code: "capability_required" });
+  }
+
+  for (const exception of normalized.exceptions.filter((item) => item.enabled)) {
+    const field = `exception.${exception.id}`;
+    if (!exception.name.trim()) {
+      issues.push({
+        field,
+        code: "exception_name_required",
+        exceptionId: exception.id,
+      });
+    }
+    if (!isSupportedStandardCondition(exception.condition)) {
+      issues.push({
+        field,
+        code: "exception_condition_unsupported",
+        exceptionId: exception.id,
+      });
+    } else if (exception.condition.values.length === 0) {
+      issues.push({
+        field,
+        code: "exception_condition_required",
+        exceptionId: exception.id,
+      });
+    }
+    if (!isSupportedExceptionAction(exception.action)) {
+      issues.push({
+        field,
+        code: "exception_action_unsupported",
+        exceptionId: exception.id,
+      });
+    } else if (
+      exception.action.type === "use_path" &&
+      !pathIds.has(exception.action.pathId)
+    ) {
+      issues.push({
+        field,
+        code: "exception_action_required",
+        exceptionId: exception.id,
+      });
+    }
+    if (!isConditionCapabilitySupported(exception, capabilities)) {
+      issues.push({
+        field,
+        code: "exception_matcher_unsupported",
+        exceptionId: exception.id,
+      });
+    }
+    if (!isExceptionActionCapabilitySupported(exception, capabilities)) {
+      issues.push({
+        field,
+        code: "exception_action_unsupported",
+        exceptionId: exception.id,
+      });
+    }
+  }
+
+  return issues;
+}
+
 export function isPathReferencedByRouting(
   pathId: string,
   routing: StandardRoutingSettings,
@@ -526,7 +642,7 @@ function normalizeRoutingRule(
   pathIds: Set<string>,
   defaultPathId: string,
 ): StandardRoutingRule {
-  const condition = isSupportedRoutingCondition(rule.condition)
+  const condition = isSupportedStandardCondition(rule.condition)
     ? {
         ...rule.condition,
         values: uniqueLines(rule.condition.values).map((value) =>
@@ -553,6 +669,40 @@ function normalizeRoutingRule(
   };
 }
 
+function normalizeExceptionRule(
+  exception: StandardExceptionRule,
+  pathIds: Set<string>,
+  defaultPathId: string,
+): StandardExceptionRule {
+  const condition = isSupportedStandardCondition(exception.condition)
+    ? {
+        ...exception.condition,
+        values: uniqueLines(exception.condition.values).map((value) =>
+          normalizeConditionValue(exception.condition.type, value),
+        ),
+      }
+    : exception.condition;
+  const action =
+    exception.action.type === "use_path"
+      ? {
+          type: "use_path" as const,
+          pathId: pathIds.has(exception.action.pathId)
+            ? exception.action.pathId
+            : defaultPathId,
+        }
+      : exception.action;
+  return {
+    ...exception,
+    id: cleanId(exception.id, "exception"),
+    name: exception.name.trim() || exception.id,
+    condition,
+    action,
+    ...(exception.note?.trim()
+      ? { note: exception.note.trim() }
+      : { note: undefined }),
+  };
+}
+
 function cleanId(value: string, fallback: string): string {
   const raw = value.trim();
   return raw
@@ -573,7 +723,7 @@ function normalizeConditionValue(
   return trimmed;
 }
 
-function isSupportedRoutingCondition(
+function isSupportedStandardCondition(
   condition: StandardRoutingRule["condition"],
 ): condition is Extract<
   StandardRoutingRule["condition"],
@@ -586,6 +736,15 @@ function isSupportedRoutingCondition(
     condition.type === "client_cidr" ||
     condition.type === "qtype"
   );
+}
+
+function isSupportedRoutingCondition(
+  condition: StandardRoutingRule["condition"],
+): condition is Extract<
+  StandardRoutingRule["condition"],
+  { type: "domain" | "suffix" | "keyword" | "client_cidr" | "qtype" }
+> {
+  return isSupportedStandardCondition(condition);
 }
 
 function isSupportedRoutingAction(
@@ -601,7 +760,14 @@ function isRoutingConditionCapabilitySupported(
   rule: StandardRoutingRule,
   capabilities: StandardRoutingCapabilityMap,
 ): boolean {
-  if (!isSupportedRoutingCondition(rule.condition)) return true;
+  return isConditionCapabilitySupported(rule, capabilities);
+}
+
+function isConditionCapabilitySupported(
+  rule: Pick<StandardRoutingRule, "condition">,
+  capabilities: StandardRoutingCapabilityMap,
+): boolean {
+  if (!isSupportedStandardCondition(rule.condition)) return true;
   if (
     rule.condition.type === "domain" ||
     rule.condition.type === "suffix" ||
@@ -611,5 +777,30 @@ function isRoutingConditionCapabilitySupported(
   }
   if (rule.condition.type === "client_cidr") return capabilities.clientIp;
   if (rule.condition.type === "qtype") return capabilities.qtype;
+  return true;
+}
+
+function isSupportedExceptionAction(
+  action: StandardExceptionRule["action"],
+): action is StandardExceptionRule["action"] {
+  return (
+    action.type === "use_path" ||
+    action.type === "use_default_path" ||
+    action.type === "block" ||
+    action.type === "allow" ||
+    action.type === "skip_filtering" ||
+    action.type === "prefer_ipv4" ||
+    action.type === "prefer_ipv6" ||
+    action.type === "disable_logging"
+  );
+}
+
+function isExceptionActionCapabilitySupported(
+  exception: StandardExceptionRule,
+  capabilities: StandardExceptionCapabilityMap,
+): boolean {
+  if (exception.action.type === "block") return capabilities.blackHole;
+  if (exception.action.type === "prefer_ipv4") return capabilities.preferIpv4;
+  if (exception.action.type === "prefer_ipv6") return capabilities.preferIpv6;
   return true;
 }
