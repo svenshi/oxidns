@@ -1,6 +1,7 @@
 import { isPluginKindSupported } from "../build-capabilities";
 import type { BuildInfo } from "../oxidns-api";
 import type {
+  StandardDeviceProfile,
   StandardExceptionRule,
   StandardFilteringSettings,
   StandardModeSettings,
@@ -87,6 +88,28 @@ export interface StandardExceptionValidationIssue {
     | "exception_condition_unsupported"
     | "exception_matcher_unsupported";
   exceptionId?: string;
+}
+
+export interface StandardDeviceCapabilityMap {
+  sequence: boolean;
+  clientIp: boolean;
+  adRules: boolean;
+  blackHole: boolean;
+  queryRecorder: boolean;
+}
+
+export interface StandardDeviceValidationIssue {
+  field: string;
+  code:
+    | "capability_required"
+    | "device_name_required"
+    | "device_address_required"
+    | "device_address_invalid"
+    | "device_path_required"
+    | "filtering_capability_required"
+    | "filtering_rule_source_required"
+    | "query_log_capability_required";
+  deviceId?: string;
 }
 
 const protocolFeatureRequirements: Record<
@@ -368,6 +391,113 @@ export function validateStandardFilteringSettings(
   return issues;
 }
 
+export function standardDeviceCapabilityMap(
+  buildInfo: BuildInfo | null,
+): StandardDeviceCapabilityMap {
+  return {
+    sequence: isPluginKindSupported(buildInfo, "executor", "sequence"),
+    clientIp: isPluginKindSupported(buildInfo, "matcher", "client_ip"),
+    adRules: isPluginKindSupported(buildInfo, "provider", "adguard_rule"),
+    blackHole: isPluginKindSupported(buildInfo, "executor", "black_hole"),
+    queryRecorder: isPluginKindSupported(buildInfo, "executor", "query_recorder"),
+  };
+}
+
+export function normalizeStandardDeviceSettings(
+  settings: StandardModeSettings,
+): StandardModeSettings {
+  const pathIds = new Set(settings.paths.map((path) => path.id));
+  const defaultPathId = settings.paths[0]?.id ?? "default";
+  return {
+    ...settings,
+    devices: settings.devices.map((device, index) =>
+      normalizeDeviceProfile(device, index, pathIds, defaultPathId),
+    ),
+  };
+}
+
+export function validateStandardDeviceSettings(
+  settings: StandardModeSettings,
+  buildInfo: BuildInfo | null,
+): StandardDeviceValidationIssue[] {
+  const normalized = normalizeStandardDeviceSettings(settings);
+  const capabilities = standardDeviceCapabilityMap(buildInfo);
+  const filteringCapabilities = standardFilteringCapabilityMap(buildInfo);
+  const pathIds = new Set(normalized.paths.map((path) => path.id));
+  const issues: StandardDeviceValidationIssue[] = [];
+  const activeDevices = normalized.devices.filter(deviceHasPolicy);
+  const forcedFiltering = normalized.devices.some(
+    (device) => device.filtering === "enabled",
+  );
+  const forcedQueryLog = normalized.devices.some(
+    (device) => device.queryLog === "enabled",
+  );
+
+  if (activeDevices.length > 0 && (!capabilities.sequence || !capabilities.clientIp)) {
+    issues.push({ field: "devices", code: "capability_required" });
+  }
+
+  if (forcedFiltering) {
+    const filtering = normalizeFiltering(normalized.filtering);
+    const enabledSubscriptions = filtering.subscriptions.filter(
+      (subscription) => subscription.enabled,
+    );
+    if (!filteringCapabilities.adRules || !filteringCapabilities.blackHole) {
+      issues.push({
+        field: "devices.filtering",
+        code: "filtering_capability_required",
+      });
+    }
+    if (filtering.blockRules.length === 0 && enabledSubscriptions.length === 0) {
+      issues.push({
+        field: "devices.filtering",
+        code: "filtering_rule_source_required",
+      });
+    }
+  }
+
+  if (forcedQueryLog && !capabilities.queryRecorder) {
+    issues.push({
+      field: "devices.queryLog",
+      code: "query_log_capability_required",
+    });
+  }
+
+  for (const device of normalized.devices) {
+    const field = `device.${device.id}`;
+    if (!device.name.trim()) {
+      issues.push({
+        field,
+        code: "device_name_required",
+        deviceId: device.id,
+      });
+    }
+    if (device.addresses.length === 0) {
+      issues.push({
+        field,
+        code: "device_address_required",
+        deviceId: device.id,
+      });
+    }
+    if (device.addresses.some((address) => !isClientAddress(address))) {
+      issues.push({
+        field,
+        code: "device_address_invalid",
+        deviceId: device.id,
+      });
+    }
+    if (device.assignedPathId && !pathIds.has(device.assignedPathId)) {
+      issues.push({
+        field,
+        code: "device_path_required",
+        deviceId: device.id,
+      });
+    }
+  }
+
+  return issues;
+}
+
 function isHttpUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -375,6 +505,65 @@ function isHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function normalizeDeviceProfile(
+  device: StandardDeviceProfile,
+  index: number,
+  pathIds: Set<string>,
+  defaultPathId: string,
+): StandardDeviceProfile {
+  const assignedPathId = device.assignedPathId?.trim();
+  return {
+    ...device,
+    id: cleanId(device.id, `device_${index + 1}`),
+    name: device.name.trim(),
+    addresses: uniqueLines(device.addresses),
+    ...(assignedPathId
+      ? { assignedPathId: pathIds.has(assignedPathId) ? assignedPathId : defaultPathId }
+      : { assignedPathId: undefined }),
+    filtering: normalizePolicy(device.filtering),
+    queryLog: normalizePolicy(device.queryLog),
+  };
+}
+
+function normalizePolicy(
+  policy: StandardDeviceProfile["filtering"],
+): "inherit" | "enabled" | "disabled" {
+  if (policy === "enabled" || policy === "disabled") return policy;
+  return "inherit";
+}
+
+function deviceHasPolicy(device: StandardDeviceProfile): boolean {
+  return Boolean(
+    device.assignedPathId ||
+      device.filtering === "enabled" ||
+      device.filtering === "disabled" ||
+      device.queryLog === "enabled" ||
+      device.queryLog === "disabled",
+  );
+}
+
+function isClientAddress(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || /\s/.test(trimmed)) return false;
+  const [address, prefix, extra] = trimmed.split("/");
+  if (!address || extra !== undefined) return false;
+  if (prefix !== undefined) {
+    const parsed = Number(prefix);
+    const maxPrefix = address.includes(":") ? 128 : 32;
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed > maxPrefix) return false;
+  }
+  if (address.includes(":")) return /^[0-9a-f:.]+$/i.test(address);
+  const octets = address.split(".");
+  return (
+    octets.length === 4 &&
+    octets.every((octet) => {
+      if (!/^\d{1,3}$/.test(octet)) return false;
+      const parsed = Number(octet);
+      return parsed >= 0 && parsed <= 255;
+    })
+  );
 }
 
 export function standardRoutingCapabilityMap(

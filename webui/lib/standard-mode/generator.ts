@@ -6,6 +6,7 @@ import type {
 } from "../oxidns-config";
 import type { PluginType } from "../types";
 import type {
+  StandardDeviceProfile,
   StandardExceptionRule,
   StandardGenerationResult,
   StandardGenerationSummary,
@@ -19,6 +20,7 @@ import type {
 } from "./types";
 import {
   normalizeStandardExceptionSettings,
+  normalizeStandardDeviceSettings,
   normalizeStandardFilteringSettings,
   normalizeStandardRoutingSettings,
   standardFilteringCapabilityMap,
@@ -149,8 +151,8 @@ export function generateStandardConfig(
   baseConfig?: OxiDnsConfig | null,
 ): StandardGenerationResult {
   const generationSettings = normalizeStandardExceptionSettings(
-    normalizeStandardRoutingSettings(
-      normalizeStandardFilteringSettings(settings),
+    normalizeStandardDeviceSettings(
+      normalizeStandardRoutingSettings(normalizeStandardFilteringSettings(settings)),
     ),
   );
   const generated: PluginConfig[] = [];
@@ -161,6 +163,7 @@ export function generateStandardConfig(
     paths: {},
     routingRules: {},
     exceptionRules: {},
+    devices: {},
   };
 
   const pushIfSupported = (
@@ -191,7 +194,7 @@ export function generateStandardConfig(
   }
 
   if (
-    generationSettings.queryLog.enabled &&
+    shouldEnableQueryLogPlugin(generationSettings) &&
     pushIfSupported(
       "query_recorder",
       "executor",
@@ -227,11 +230,12 @@ export function generateStandardConfig(
   const filteringSettings = generationSettings;
   const filteringCapabilities = standardFilteringCapabilityMap(buildInfo);
   const subscriptions = enabledSubscriptions(filteringSettings);
+  const shouldGenerateFiltering = shouldEnableFilteringPlugins(generationSettings);
   const hasBlockExceptions = generationSettings.exceptions.some(
     (exception) => exception.enabled && exception.action.type === "block",
   );
   const shouldGenerateSubscriptions =
-    filteringSettings.filtering.enabled &&
+    shouldGenerateFiltering &&
     subscriptions.length > 0 &&
     filteringCapabilities.subscriptionRuntime;
   const subscriptionFiles = shouldGenerateSubscriptions
@@ -239,7 +243,7 @@ export function generateStandardConfig(
     : [];
 
   if (
-    filteringSettings.filtering.enabled &&
+    shouldGenerateFiltering &&
     subscriptions.length > 0 &&
     !filteringCapabilities.subscriptionRuntime
   ) {
@@ -268,8 +272,7 @@ export function generateStandardConfig(
 
   const rules = filteringRules(filteringSettings);
   const hasFilteringRules =
-    filteringSettings.filtering.enabled &&
-    (rules.length > 0 || subscriptionFiles.length > 0);
+    shouldGenerateFiltering && (rules.length > 0 || subscriptionFiles.length > 0);
   if (
     hasFilteringRules &&
     pushIfSupported(
@@ -463,6 +466,40 @@ export function generateStandardConfig(
     }
   }
 
+  const deviceActionTags = new Map<string, string>();
+  for (const device of generationSettings.devices) {
+    if (!deviceHasPolicy(device)) continue;
+    const matcher = deviceMatcher(device);
+    if (!matcher) continue;
+    const tag = standardTag("device_match", device.id);
+    if (
+      pushIfSupported("device_client_ip", "matcher", "client_ip", tag, matcher.args)
+    ) {
+      tagMap.devices = {
+        ...(tagMap.devices ?? {}),
+        [device.id]: tag,
+      };
+    }
+  }
+
+  for (const device of generationSettings.devices) {
+    if (!deviceHasPolicy(device) || !tagMap.devices?.[device.id]) continue;
+    const sequence = buildDeviceSequence(
+      device,
+      generationSettings,
+      defaultPath,
+      defaultPathTag,
+      tagMap,
+    );
+    if (!sequence) continue;
+    const tag = standardTag("device_action", device.id);
+    if (
+      pushIfSupported("device_action_sequence", "executor", "sequence", tag, sequence)
+    ) {
+      deviceActionTags.set(device.id, tag);
+    }
+  }
+
   if (generationSettings.routing.enabled) {
     for (const rule of generationSettings.routing.rules) {
       if (!rule.enabled) continue;
@@ -497,6 +534,15 @@ export function generateStandardConfig(
       defaultPathTag,
     );
     if (!exception.enabled || !matchTag || !execTag) continue;
+    mainSequence.push({
+      matches: `$${matchTag}`,
+      exec: `$${execTag}`,
+    });
+  }
+  for (const device of generationSettings.devices) {
+    const matchTag = tagMap.devices?.[device.id];
+    const execTag = deviceActionTags.get(device.id);
+    if (!matchTag || !execTag) continue;
     mainSequence.push({
       matches: `$${matchTag}`,
       exec: `$${execTag}`,
@@ -568,12 +614,15 @@ function buildPathSequence(
   tagMap: StandardTagMap,
   options: {
     disableFiltering?: boolean;
+    forceFiltering?: boolean;
     disableQueryLog?: boolean;
+    forceQueryLog?: boolean;
     prependExec?: string;
   } = {},
 ): Array<Record<string, unknown>> {
   const sequence: Array<Record<string, unknown>> = [];
   const filteringEnabled =
+    (!options.disableFiltering && options.forceFiltering) ||
     (!options.disableFiltering && path.filtering === "enabled") ||
     (!options.disableFiltering &&
       path.filtering === "inherit" &&
@@ -581,6 +630,7 @@ function buildPathSequence(
   const cacheEnabled =
     path.cache === "enabled" || (path.cache === "inherit" && settings.cache.enabled);
   const queryLogEnabled =
+    (!options.disableQueryLog && options.forceQueryLog) ||
     (!options.disableQueryLog && path.queryLog === "enabled") ||
     (!options.disableQueryLog &&
       path.queryLog === "inherit" &&
@@ -608,6 +658,46 @@ function buildPathSequence(
   sequence.push({ matches: "!has_resp", exec: `$${forwardTag}` });
   sequence.push({ exec: "accept" });
   return sequence;
+}
+
+function deviceHasPolicy(device: StandardDeviceProfile): boolean {
+  return Boolean(
+    device.assignedPathId ||
+      device.filtering === "enabled" ||
+      device.filtering === "disabled" ||
+      device.queryLog === "enabled" ||
+      device.queryLog === "disabled",
+  );
+}
+
+function deviceMatcher(
+  device: StandardDeviceProfile,
+): { kind: "client_ip"; args: string[] } | null {
+  const values = device.addresses.map((address) => address.trim()).filter(Boolean);
+  if (values.length === 0) return null;
+  return { kind: "client_ip", args: values };
+}
+
+function buildDeviceSequence(
+  device: StandardDeviceProfile,
+  settings: StandardModeSettings,
+  defaultPath: StandardResolutionPath | undefined,
+  defaultPathTag: string | undefined,
+  tagMap: StandardTagMap,
+): Array<Record<string, unknown>> | null {
+  const path = device.assignedPathId
+    ? settings.paths.find((item) => item.id === device.assignedPathId) ?? defaultPath
+    : defaultPath;
+  const forwardTag = path
+    ? tagMap.upstreamGroups[path.upstreamGroupId]
+    : Object.values(tagMap.upstreamGroups)[0];
+  if (!path || !forwardTag || !defaultPathTag) return null;
+  return buildPathSequence(path, settings, forwardTag, tagMap, {
+    disableFiltering: device.filtering === "disabled",
+    forceFiltering: device.filtering === "enabled",
+    disableQueryLog: device.queryLog === "disabled",
+    forceQueryLog: device.queryLog === "enabled",
+  });
 }
 
 function ruleMatcher(
@@ -733,6 +823,20 @@ function routeTargetPathTag(
   if (rule.action.type === "use_default_path") return defaultPathTag;
   if (rule.action.type === "use_path") return tagMap.paths[rule.action.pathId];
   return undefined;
+}
+
+function shouldEnableFilteringPlugins(settings: StandardModeSettings): boolean {
+  return (
+    settings.filtering.enabled ||
+    settings.devices.some((device) => device.filtering === "enabled")
+  );
+}
+
+function shouldEnableQueryLogPlugin(settings: StandardModeSettings): boolean {
+  return (
+    settings.queryLog.enabled ||
+    settings.devices.some((device) => device.queryLog === "enabled")
+  );
 }
 
 function summarizeSettings(settings: StandardModeSettings): StandardGenerationSummary {
