@@ -438,6 +438,54 @@ export interface QueryRecorderTimeseriesResponse {
   points: QueryRecorderTimeseriesPoint[];
 }
 
+export interface UpstreamTestInput {
+  addr: string;
+  tag?: string;
+  bootstrap?: string;
+  dial_addr?: string;
+  insecure_skip_verify?: boolean;
+  enable_http3?: boolean;
+}
+
+export interface UpstreamGroupTestInput extends UpstreamTestInput {
+  id?: string;
+  name?: string;
+}
+
+export interface UpstreamTestAnswer {
+  name: string;
+  rr_type: string;
+  class: string;
+  ttl: number;
+  data: string;
+}
+
+export interface UpstreamTestResult {
+  id?: string;
+  name?: string;
+  success: boolean;
+  latency_ms?: number;
+  protocol?: string;
+  rcode?: string;
+  answers: UpstreamTestAnswer[];
+  error_code?: string;
+  error_message?: string;
+}
+
+export interface UpstreamTestResponse {
+  ok: boolean;
+  result: UpstreamTestResult;
+}
+
+export interface UpstreamGroupTestResponse {
+  ok: boolean;
+  results: UpstreamTestResult[];
+  success_count: number;
+  failure_count: number;
+  fastest_upstream_id?: string;
+  fastest_latency_ms?: number;
+}
+
 export async function fetchConfigFile(): Promise<ConfigFileResponse> {
   const response = await fetch(apiUrl("/config"), {
     method: "GET",
@@ -838,6 +886,50 @@ export async function fetchQueryRecorderTimeseries(
     { method: "GET", headers: apiHeaders(), signal: options.signal },
   );
   return readJsonResponse<QueryRecorderTimeseriesResponse>(response);
+}
+
+export async function testUpstream(options: {
+  upstream: UpstreamTestInput;
+  qname?: string;
+  qtype?: string;
+  timeoutMs?: number;
+}): Promise<UpstreamTestResponse> {
+  const response = await fetch(apiUrl("/upstreams/test"), {
+    method: "POST",
+    headers: {
+      ...apiHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      upstream: options.upstream,
+      qname: options.qname,
+      qtype: options.qtype,
+      timeout_ms: options.timeoutMs,
+    }),
+  });
+  return readJsonResponse<UpstreamTestResponse>(response);
+}
+
+export async function testUpstreamGroup(options: {
+  upstreams: UpstreamGroupTestInput[];
+  qname?: string;
+  qtype?: string;
+  timeoutMs?: number;
+}): Promise<UpstreamGroupTestResponse> {
+  const response = await fetch(apiUrl("/upstreams/test-group"), {
+    method: "POST",
+    headers: {
+      ...apiHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      upstreams: options.upstreams,
+      qname: options.qname,
+      qtype: options.qtype,
+      timeout_ms: options.timeoutMs,
+    }),
+  });
+  return readJsonResponse<UpstreamGroupTestResponse>(response);
 }
 
 // --- Dynamic Domain Set API ---
