@@ -156,6 +156,58 @@ export const WEBUI = {
     validationProtocolUnsupported:
       "webui.standardDns.validationProtocolUnsupported",
   },
+  standardFiltering: {
+    title: "webui.standardFiltering.title",
+    description: "webui.standardFiltering.description",
+    saveApply: "webui.standardFiltering.saveApply",
+    savingApplying: "webui.standardFiltering.savingApplying",
+    saveBlocked: "webui.standardFiltering.saveBlocked",
+    overviewTitle: "webui.standardFiltering.overviewTitle",
+    enabled: "webui.standardFiltering.enabled",
+    unsupportedFiltering: "webui.standardFiltering.unsupportedFiltering",
+    subscriptionRuntimeUnavailable:
+      "webui.standardFiltering.subscriptionRuntimeUnavailable",
+    manualBlockTitle: "webui.standardFiltering.manualBlockTitle",
+    manualBlockDescription: "webui.standardFiltering.manualBlockDescription",
+    manualAllowTitle: "webui.standardFiltering.manualAllowTitle",
+    manualAllowDescription: "webui.standardFiltering.manualAllowDescription",
+    blockResponse: "webui.standardFiltering.blockResponse",
+    responseNullIp: "webui.standardFiltering.responseNullIp",
+    responseNxdomain: "webui.standardFiltering.responseNxdomain",
+    responseRefused: "webui.standardFiltering.responseRefused",
+    subscriptionsTitle: "webui.standardFiltering.subscriptionsTitle",
+    subscriptionsDescription:
+      "webui.standardFiltering.subscriptionsDescription",
+    addSubscription: "webui.standardFiltering.addSubscription",
+    removeSubscription: "webui.standardFiltering.removeSubscription",
+    subscriptionEnabled: "webui.standardFiltering.subscriptionEnabled",
+    subscriptionName: "webui.standardFiltering.subscriptionName",
+    subscriptionUrl: "webui.standardFiltering.subscriptionUrl",
+    subscriptionInterval: "webui.standardFiltering.subscriptionInterval",
+    statsTitle: "webui.standardFiltering.statsTitle",
+    blockRuleCount: "webui.standardFiltering.blockRuleCount",
+    allowRuleCount: "webui.standardFiltering.allowRuleCount",
+    enabledSubscriptionCount:
+      "webui.standardFiltering.enabledSubscriptionCount",
+    blockResponseMetric: "webui.standardFiltering.blockResponseMetric",
+    blockedTotal: "webui.standardFiltering.blockedTotal",
+    metricUnavailable: "webui.standardFiltering.metricUnavailable",
+    validationTitle: "webui.standardFiltering.validationTitle",
+    validationCapabilityRequired:
+      "webui.standardFiltering.validationCapabilityRequired",
+    validationRuleSourceRequired:
+      "webui.standardFiltering.validationRuleSourceRequired",
+    validationSubscriptionRuntimeRequired:
+      "webui.standardFiltering.validationSubscriptionRuntimeRequired",
+    validationSubscriptionNameRequired:
+      "webui.standardFiltering.validationSubscriptionNameRequired",
+    validationSubscriptionUrlRequired:
+      "webui.standardFiltering.validationSubscriptionUrlRequired",
+    validationSubscriptionUrlInvalid:
+      "webui.standardFiltering.validationSubscriptionUrlInvalid",
+    validationSubscriptionIntervalInvalid:
+      "webui.standardFiltering.validationSubscriptionIntervalInvalid",
+  },
   plugins: {
     centerTitle: "webui.plugins.centerTitle",
     systemOverview: "webui.plugins.systemOverview",

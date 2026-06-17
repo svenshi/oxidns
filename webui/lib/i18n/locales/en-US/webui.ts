@@ -169,6 +169,57 @@ export const enUSWebui = {
     validationProtocolUnsupported:
       "{protocol} is unavailable in this build. Enable: {features}.",
   },
+  standardFiltering: {
+    title: "Ad Filtering",
+    description:
+      "Configure Standard Mode ad filtering, manual rules, and filter subscriptions.",
+    saveApply: "Save and apply",
+    savingApplying: "Saving and applying",
+    saveBlocked: "Fix validation issues before saving",
+    overviewTitle: "Filter switch and policy",
+    enabled: "Enable ad filtering",
+    unsupportedFiltering: "This build does not support the filtering workflow",
+    subscriptionRuntimeUnavailable:
+      "This build lacks subscription download or scheduled refresh support. Subscriptions will be saved but not generated into runtime config.",
+    manualBlockTitle: "Manual blocklist",
+    manualBlockDescription: "One AdGuard DNS rule per line.",
+    manualAllowTitle: "Manual allowlist",
+    manualAllowDescription:
+      "One allow rule per line. Saves normalize them into @@ exception rules.",
+    blockResponse: "Block response",
+    responseNullIp: "Null IP",
+    responseNxdomain: "NXDOMAIN",
+    responseRefused: "REFUSED",
+    subscriptionsTitle: "Filter subscriptions",
+    subscriptionsDescription:
+      "Subscriptions use the existing download, cron, and reload_provider plugins in generated runtime config.",
+    addSubscription: "Add subscription",
+    removeSubscription: "Remove subscription",
+    subscriptionEnabled: "Enabled",
+    subscriptionName: "Name",
+    subscriptionUrl: "URL",
+    subscriptionInterval: "Refresh interval (hours)",
+    statsTitle: "Lightweight stats",
+    blockRuleCount: "Block rules",
+    allowRuleCount: "Allow rules",
+    enabledSubscriptionCount: "Enabled subscriptions",
+    blockResponseMetric: "Block policy",
+    blockedTotal: "Blocked total",
+    metricUnavailable: "No runtime metrics yet",
+    validationTitle: "Before saving",
+    validationCapabilityRequired:
+      "This build lacks adguard_rule or black_hole, so ad filtering cannot be enabled.",
+    validationRuleSourceRequired:
+      "Enable at least one block rule or one enabled subscription when ad filtering is on.",
+    validationSubscriptionRuntimeRequired:
+      "This build cannot run subscription filtering. Add manual block rules or disable ad filtering.",
+    validationSubscriptionNameRequired: "Enabled subscriptions need a name.",
+    validationSubscriptionUrlRequired: "Enabled subscriptions need a URL.",
+    validationSubscriptionUrlInvalid:
+      "Subscription URLs must use http or https.",
+    validationSubscriptionIntervalInvalid:
+      "Subscription refresh intervals must be at least 1 hour.",
+  },
   plugins: {
     centerTitle: "Plugin Center",
     systemOverview: "System Overview",
