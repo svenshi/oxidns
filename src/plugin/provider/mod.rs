@@ -22,6 +22,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::Serialize;
 
 use crate::infra::error::{DnsError, Result as DnsResult};
 #[cfg(not(feature = "api"))]
@@ -75,6 +76,19 @@ pub trait Provider: Plugin {
         )))
     }
 
+    fn runtime_status(&self) -> ProviderRuntimeStatus {
+        ProviderRuntimeStatus {
+            ok: true,
+            plugin: self.tag().to_string(),
+            supports_reload: false,
+            supports_domain_matching: self.supports_domain_matching(),
+            supports_ip_matching: self.supports_ip_matching(),
+            last_reload_ms: None,
+            last_error: None,
+            rule_stats: None,
+        }
+    }
+
     #[inline]
     fn supports_ip_matching(&self) -> bool {
         false
@@ -84,6 +98,33 @@ pub trait Provider: Plugin {
     fn supports_domain_matching(&self) -> bool {
         false
     }
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ProviderRuleStats {
+    pub total_rules: Option<usize>,
+    pub supported_rules: Option<usize>,
+    pub skipped_rules: Option<usize>,
+    pub exception_rules: Option<usize>,
+    pub important_rules: Option<usize>,
+    pub full_rules: Option<usize>,
+    pub domain_rules: Option<usize>,
+    pub keyword_rules: Option<usize>,
+    pub regex_rules: Option<usize>,
+    pub v4_rules: Option<usize>,
+    pub v6_rules: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderRuntimeStatus {
+    pub ok: bool,
+    pub plugin: String,
+    pub supports_reload: bool,
+    pub supports_domain_matching: bool,
+    pub supports_ip_matching: bool,
+    pub last_reload_ms: Option<u64>,
+    pub last_error: Option<String>,
+    pub rule_stats: Option<ProviderRuleStats>,
 }
 
 #[cfg(feature = "api")]
@@ -113,6 +154,11 @@ mod api_routes {
         tag: String,
     }
 
+    #[derive(Debug)]
+    struct ProviderStatusHandler {
+        tag: String,
+    }
+
     #[async_trait]
     impl ApiHandler for ProviderReloadHandler {
         async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
@@ -135,12 +181,43 @@ mod api_routes {
         }
     }
 
+    #[async_trait]
+    impl ApiHandler for ProviderStatusHandler {
+        async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
+            let Some(runtime) = plugin::current_runtime() else {
+                return json_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "provider_runtime_unavailable",
+                    "plugin runtime is not available",
+                );
+            };
+            let Some(plugin_info) = runtime.get_plugin(&self.tag) else {
+                return json_error(
+                    StatusCode::NOT_FOUND,
+                    "provider_not_found",
+                    format!("provider '{}' was not found", self.tag),
+                );
+            };
+            if plugin_info.plugin_type != crate::plugin::PluginType::Provider {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "plugin_is_not_provider",
+                    format!("plugin '{}' is not a provider", self.tag),
+                );
+            }
+            json_ok(StatusCode::OK, &plugin_info.to_provider().runtime_status())
+        }
+    }
+
     pub(crate) fn register_reload_api_route(
         _registry: Arc<PluginRegistry>,
         tag: &str,
     ) -> DnsResult<()> {
         register_plugin_api!(
             tag,
+            GET "/status" => ProviderStatusHandler {
+                tag: tag.to_string(),
+            },
             POST "/reload" => ProviderReloadHandler {
                 tag: tag.to_string(),
             },
@@ -246,6 +323,23 @@ mod tests {
                 },
             )))
         }
+    }
+
+    #[test]
+    fn provider_status_reports_default_runtime_capabilities() {
+        let provider = ReloadableProvider {
+            tag: "reloadable".to_string(),
+            reload_count: Arc::new(AtomicUsize::new(0)),
+        };
+
+        let status = provider.runtime_status();
+
+        assert!(status.ok);
+        assert_eq!(status.plugin, "reloadable");
+        assert!(!status.supports_reload);
+        assert!(status.supports_domain_matching);
+        assert!(!status.supports_ip_matching);
+        assert!(status.rule_stats.is_none());
     }
 
     #[tokio::test]

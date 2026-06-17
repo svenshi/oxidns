@@ -197,6 +197,34 @@ export const WEBUI = {
     subscriptionName: "webui.standardFiltering.subscriptionName",
     subscriptionUrl: "webui.standardFiltering.subscriptionUrl",
     subscriptionInterval: "webui.standardFiltering.subscriptionInterval",
+    refreshSubscriptions: "webui.standardFiltering.refreshSubscriptions",
+    subscriptionStatusTitle:
+      "webui.standardFiltering.subscriptionStatusTitle",
+    subscriptionStatusDescription:
+      "webui.standardFiltering.subscriptionStatusDescription",
+    subscriptionRuntimeNotApplied:
+      "webui.standardFiltering.subscriptionRuntimeNotApplied",
+    subscriptionRefreshSuccess:
+      "webui.standardFiltering.subscriptionRefreshSuccess",
+    subscriptionRefreshFailed:
+      "webui.standardFiltering.subscriptionRefreshFailed",
+    subscriptionFile: "webui.standardFiltering.subscriptionFile",
+    subscriptionFileMissing:
+      "webui.standardFiltering.subscriptionFileMissing",
+    subscriptionFileSize: "webui.standardFiltering.subscriptionFileSize",
+    subscriptionFileModified:
+      "webui.standardFiltering.subscriptionFileModified",
+    subscriptionLastSuccess:
+      "webui.standardFiltering.subscriptionLastSuccess",
+    subscriptionLastError: "webui.standardFiltering.subscriptionLastError",
+    providerTotalRules: "webui.standardFiltering.providerTotalRules",
+    providerSupportedRules:
+      "webui.standardFiltering.providerSupportedRules",
+    providerSkippedRules: "webui.standardFiltering.providerSkippedRules",
+    providerExceptionRules:
+      "webui.standardFiltering.providerExceptionRules",
+    cronNextRun: "webui.standardFiltering.cronNextRun",
+    cronLastSuccess: "webui.standardFiltering.cronLastSuccess",
     statsTitle: "webui.standardFiltering.statsTitle",
     blockRuleCount: "webui.standardFiltering.blockRuleCount",
     allowRuleCount: "webui.standardFiltering.allowRuleCount",

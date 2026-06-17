@@ -486,6 +486,105 @@ export interface UpstreamGroupTestResponse {
   fastest_latency_ms?: number;
 }
 
+export interface DownloadFileStatus {
+  exists: boolean;
+  size_bytes?: number | null;
+  modified_at_ms?: number | null;
+}
+
+export interface DownloadItemStatus {
+  index: number;
+  url: string;
+  dir: string;
+  filename: string;
+  path: string;
+  file: DownloadFileStatus;
+  last_run_ms?: number | null;
+  last_success_ms?: number | null;
+  last_error?: string | null;
+  last_duration_ms?: number | null;
+}
+
+export interface DownloadStatusResponse {
+  ok: boolean;
+  plugin: string;
+  timeout_ms: number;
+  insecure_skip_verify: boolean;
+  socks5?: string | null;
+  items: DownloadItemStatus[];
+}
+
+export interface DownloadRunResponse {
+  ok: boolean;
+  plugin: string;
+  total: number;
+  success_count: number;
+  failure_count: number;
+  results: DownloadItemStatus[];
+}
+
+export interface CronJobStatusRow {
+  name: string;
+  trigger_kind: string;
+  schedule?: string | null;
+  interval_ms?: number | null;
+  timezone?: string | null;
+  next_run_ms?: number | null;
+  last_run_ms?: number | null;
+  last_success_ms?: number | null;
+  last_error?: string | null;
+  run_total: number;
+  skipped_total: number;
+  executor_error_total: number;
+}
+
+export interface CronStatusResponse {
+  ok: boolean;
+  plugin: string;
+  jobs: CronJobStatusRow[];
+}
+
+export interface CronJobRunResponse {
+  ok: boolean;
+  plugin: string;
+  job: string;
+  executor_count: number;
+  executor_error_count: number;
+  last_error?: string | null;
+}
+
+export interface ProviderRuleStats {
+  total_rules?: number | null;
+  supported_rules?: number | null;
+  skipped_rules?: number | null;
+  exception_rules?: number | null;
+  important_rules?: number | null;
+  full_rules?: number | null;
+  domain_rules?: number | null;
+  keyword_rules?: number | null;
+  regex_rules?: number | null;
+  v4_rules?: number | null;
+  v6_rules?: number | null;
+}
+
+export interface ProviderStatusResponse {
+  ok: boolean;
+  plugin: string;
+  supports_reload: boolean;
+  supports_domain_matching: boolean;
+  supports_ip_matching: boolean;
+  last_reload_ms?: number | null;
+  last_error?: string | null;
+  rule_stats?: ProviderRuleStats | null;
+}
+
+export interface ProviderReloadResponse {
+  ok: boolean;
+  action: string;
+  provider: string;
+  status: string;
+}
+
 export async function fetchConfigFile(): Promise<ConfigFileResponse> {
   const response = await fetch(apiUrl("/config"), {
     method: "GET",
@@ -930,6 +1029,67 @@ export async function testUpstreamGroup(options: {
     }),
   });
   return readJsonResponse<UpstreamGroupTestResponse>(response);
+}
+
+export async function fetchDownloadStatus(
+  tag: string,
+): Promise<DownloadStatusResponse> {
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/status`),
+    { method: "GET", headers: apiHeaders() },
+  );
+  return readJsonResponse<DownloadStatusResponse>(response);
+}
+
+export async function runDownload(tag: string): Promise<DownloadRunResponse> {
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/run`),
+    { method: "POST", headers: apiHeaders() },
+  );
+  return readJsonResponse<DownloadRunResponse>(response);
+}
+
+export async function fetchCronStatus(
+  tag: string,
+): Promise<CronStatusResponse> {
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/status`),
+    { method: "GET", headers: apiHeaders() },
+  );
+  return readJsonResponse<CronStatusResponse>(response);
+}
+
+export async function runCronJob(
+  tag: string,
+  jobName: string,
+): Promise<CronJobRunResponse> {
+  const response = await fetch(
+    apiUrl(
+      `/plugins/${encodeURIComponent(tag)}/jobs/${encodeURIComponent(jobName)}`,
+    ),
+    { method: "POST", headers: apiHeaders() },
+  );
+  return readJsonResponse<CronJobRunResponse>(response);
+}
+
+export async function fetchProviderStatus(
+  tag: string,
+): Promise<ProviderStatusResponse> {
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/status`),
+    { method: "GET", headers: apiHeaders() },
+  );
+  return readJsonResponse<ProviderStatusResponse>(response);
+}
+
+export async function reloadProvider(
+  tag: string,
+): Promise<ProviderReloadResponse> {
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/reload`),
+    { method: "POST", headers: apiHeaders() },
+  );
+  return readJsonResponse<ProviderReloadResponse>(response);
 }
 
 // --- Dynamic Domain Set API ---

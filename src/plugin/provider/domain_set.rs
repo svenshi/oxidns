@@ -16,7 +16,7 @@
 
 use std::any::Any;
 use std::fmt::Debug;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -28,7 +28,7 @@ use crate::core::rule_matcher::DomainRuleMatcher;
 use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result as DnsResult};
 use crate::plugin::dependency::DependencySpec;
-use crate::plugin::provider::Provider;
+use crate::plugin::provider::{Provider, ProviderRuleStats, ProviderRuntimeStatus};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;
 use crate::proto::{Name, Question};
@@ -49,6 +49,27 @@ struct DomainSetArgs {
 #[derive(Debug, Default)]
 struct DomainSetSnapshot {
     matcher: DomainRuleMatcher,
+    stats: DomainSetRuleStats,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct DomainSetRuleStats {
+    full_rules: usize,
+    domain_rules: usize,
+    keyword_rules: usize,
+    regex_rules: usize,
+}
+
+impl DomainSetRuleStats {
+    fn total_rules(self) -> usize {
+        self.full_rules + self.domain_rules + self.keyword_rules + self.regex_rules
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct ProviderReloadState {
+    last_reload_ms: Option<u64>,
+    last_error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -57,6 +78,7 @@ pub struct DomainSet {
     args: DomainSetArgs,
     referenced_sets: Vec<Arc<dyn Provider>>,
     snapshot: ArcSwap<DomainSetSnapshot>,
+    reload_state: Mutex<ProviderReloadState>,
 }
 
 impl DomainSet {
@@ -91,7 +113,24 @@ impl DomainSet {
             "domain_set snapshot built"
         );
 
-        Ok(DomainSetSnapshot { matcher })
+        Ok(DomainSetSnapshot {
+            matcher,
+            stats: DomainSetRuleStats {
+                full_rules: total_full_rules,
+                domain_rules: total_domain_rules,
+                keyword_rules: total_keyword_rules,
+                regex_rules: total_regex_rules,
+            },
+        })
+    }
+
+    fn update_reload_state(&self, result: &DnsResult<()>) {
+        let mut state = self
+            .reload_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.last_reload_ms = Some(AppClock::now_timestamp());
+        state.last_error = result.as_ref().err().map(ToString::to_string);
     }
 }
 
@@ -158,9 +197,37 @@ impl Provider for DomainSet {
 
     #[hotpath::measure]
     async fn reload(&self) -> DnsResult<()> {
-        let snapshot = self.build_local_snapshot()?;
-        self.snapshot.store(Arc::new(snapshot));
-        Ok(())
+        let result = self.build_local_snapshot().map(|snapshot| {
+            self.snapshot.store(Arc::new(snapshot));
+        });
+        self.update_reload_state(&result);
+        result
+    }
+
+    fn runtime_status(&self) -> ProviderRuntimeStatus {
+        let reload_state = self
+            .reload_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let stats = self.snapshot.load().stats;
+        ProviderRuntimeStatus {
+            ok: true,
+            plugin: self.tag.clone(),
+            supports_reload: true,
+            supports_domain_matching: true,
+            supports_ip_matching: false,
+            last_reload_ms: reload_state.last_reload_ms,
+            last_error: reload_state.last_error,
+            rule_stats: Some(ProviderRuleStats {
+                total_rules: Some(stats.total_rules()),
+                full_rules: Some(stats.full_rules),
+                domain_rules: Some(stats.domain_rules),
+                keyword_rules: Some(stats.keyword_rules),
+                regex_rules: Some(stats.regex_rules),
+                ..ProviderRuleStats::default()
+            }),
+        }
     }
 
     fn supports_domain_matching(&self) -> bool {
@@ -213,6 +280,7 @@ impl PluginFactory for DomainSetFactory {
             args,
             referenced_sets: Vec::new(),
             snapshot: ArcSwap::from_pointee(DomainSetSnapshot::default()),
+            reload_state: Mutex::new(ProviderReloadState::default()),
         })))
     }
 }
@@ -361,7 +429,14 @@ mod tests {
             tag: "test".to_string(),
             args: DomainSetArgs::default(),
             referenced_sets: vec![shared.clone()],
-            snapshot: ArcSwap::from_pointee(DomainSetSnapshot { matcher: local }),
+            snapshot: ArcSwap::from_pointee(DomainSetSnapshot {
+                matcher: local,
+                stats: DomainSetRuleStats {
+                    full_rules: 1,
+                    ..DomainSetRuleStats::default()
+                },
+            }),
+            reload_state: Mutex::new(ProviderReloadState::default()),
         };
         assert!(ds.contains_name(&Name::from_ascii("local.example").unwrap()));
         assert!(!ds.contains_name(&Name::from_ascii("none.example").unwrap()));

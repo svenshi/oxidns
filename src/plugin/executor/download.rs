@@ -16,18 +16,28 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
+#[cfg(feature = "api")]
+use bytes::Bytes;
 use futures::future::BoxFuture;
+#[cfg(feature = "api")]
+use http::{Request, StatusCode};
 use serde::Deserialize;
+#[cfg(feature = "api")]
+use serde::Serialize;
 use serde_yaml_ng::Value;
+use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tracing::{info, warn};
 use url::Url;
 
+#[cfg(feature = "api")]
+use crate::api::{ApiHandler, json_ok};
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
+use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::network::http_client::{HttpClient, HttpClientOptions, HttpRequestOptions};
 use crate::infra::network::proxy::{Socks5Opt, parse_socks5_opt};
@@ -39,6 +49,8 @@ use crate::infra::system::deserialize_duration_option;
 use crate::plugin::executor::{ExecStep, Executor};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;
+#[cfg(feature = "api")]
+use crate::register_plugin_api;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -120,8 +132,61 @@ impl MetricSource for DownloadMetrics {
     }
 }
 
+#[derive(Debug, Default, Clone)]
+struct DownloadItemRunState {
+    last_run_ms: Option<u64>,
+    last_success_ms: Option<u64>,
+    last_error: Option<String>,
+    last_duration_ms: Option<u64>,
+}
+
+#[cfg_attr(feature = "api", derive(Serialize))]
+#[derive(Debug, Clone)]
+struct DownloadFileStatus {
+    exists: bool,
+    size_bytes: Option<u64>,
+    modified_at_ms: Option<u64>,
+}
+
+#[cfg_attr(feature = "api", derive(Serialize))]
+#[derive(Debug, Clone)]
+struct DownloadItemStatus {
+    index: usize,
+    url: String,
+    dir: String,
+    filename: String,
+    path: String,
+    file: DownloadFileStatus,
+    last_run_ms: Option<u64>,
+    last_success_ms: Option<u64>,
+    last_error: Option<String>,
+    last_duration_ms: Option<u64>,
+}
+
+#[cfg_attr(feature = "api", derive(Serialize))]
+#[derive(Debug, Clone)]
+struct DownloadBatchResult {
+    ok: bool,
+    plugin: String,
+    total: usize,
+    success_count: usize,
+    failure_count: usize,
+    results: Vec<DownloadItemStatus>,
+}
+
+#[cfg_attr(feature = "api", derive(Serialize))]
+#[derive(Debug, Clone)]
+struct DownloadStatusResponse {
+    ok: bool,
+    plugin: String,
+    timeout_ms: u128,
+    insecure_skip_verify: bool,
+    socks5: Option<String>,
+    items: Vec<DownloadItemStatus>,
+}
+
 #[derive(Debug)]
-struct DownloadExecutor {
+struct DownloadRuntimeState {
     tag: String,
     client: HttpClient,
     timeout: Duration,
@@ -129,36 +194,70 @@ struct DownloadExecutor {
     insecure_skip_verify: bool,
     socks5: Option<String>,
     metrics: Arc<DownloadMetrics>,
+    item_states: Mutex<Vec<DownloadItemRunState>>,
+    run_lock: Mutex<()>,
 }
 
-#[async_trait]
-impl Plugin for DownloadExecutor {
-    fn tag(&self) -> &str {
-        &self.tag
+impl DownloadRuntimeState {
+    fn new(
+        tag: String,
+        client: HttpClient,
+        timeout: Duration,
+        downloads: Vec<DownloadTarget>,
+        insecure_skip_verify: bool,
+        socks5: Option<String>,
+        metrics: Arc<DownloadMetrics>,
+    ) -> Self {
+        let item_states = vec![DownloadItemRunState::default(); downloads.len()];
+        Self {
+            tag,
+            client,
+            timeout,
+            downloads,
+            insecure_skip_verify,
+            socks5,
+            metrics,
+            item_states: Mutex::new(item_states),
+            run_lock: Mutex::new(()),
+        }
     }
 
-    async fn init(&mut self, _context: &crate::plugin::PluginInitContext<'_>) -> Result<()> {
-        register_metric_source(self.metrics.clone())
+    async fn download_one(&self, item: &DownloadTarget) -> Result<()> {
+        self.client
+            .download(
+                HttpRequestOptions::from_url(item.url.as_str()),
+                item.path.as_path(),
+            )
+            .await
     }
 
-    async fn destroy(&self) -> Result<()> {
-        unregister_metric_source(&self.tag);
-        Ok(())
+    async fn status(&self) -> DownloadStatusResponse {
+        DownloadStatusResponse {
+            ok: true,
+            plugin: self.tag.clone(),
+            timeout_ms: self.timeout.as_millis(),
+            insecure_skip_verify: self.insecure_skip_verify,
+            socks5: self.socks5.clone(),
+            items: self.item_statuses().await,
+        }
     }
-}
 
-#[async_trait]
-impl Executor for DownloadExecutor {
-    #[hotpath::measure]
-    async fn execute(&self, _context: &mut DnsContext) -> Result<ExecStep> {
+    async fn run_batch(&self) -> DownloadBatchResult {
+        let _guard = self.run_lock.lock().await;
         let mut success_count = 0usize;
         let mut failure_count = 0usize;
 
-        for item in &self.downloads {
-            match timeout(self.timeout, self.download_one(item)).await {
+        for (index, item) in self.downloads.iter().enumerate() {
+            let started_ms = AppClock::now_timestamp();
+            let started_elapsed_ms = AppClock::elapsed_millis();
+            let result = timeout(self.timeout, self.download_one(item)).await;
+            let duration_ms = AppClock::elapsed_millis().saturating_sub(started_elapsed_ms);
+            match result {
                 Ok(Ok(())) => {
                     success_count += 1;
                     self.metrics.success_total.fetch_add(1, Ordering::Relaxed);
+                    self.record_item_state(index, started_ms, Some(started_ms), None, duration_ms)
+                        .await;
                     info!(
                         plugin = %self.tag,
                         url = %item.url,
@@ -172,17 +271,30 @@ impl Executor for DownloadExecutor {
                 Ok(Err(err)) => {
                     failure_count += 1;
                     self.metrics.failure_total.fetch_add(1, Ordering::Relaxed);
+                    let message = err.to_string();
+                    self.record_item_state(
+                        index,
+                        started_ms,
+                        None,
+                        Some(message.clone()),
+                        duration_ms,
+                    )
+                    .await;
                     warn!(
                         plugin = %self.tag,
                         url = %item.url,
                         target = %item.path.display(),
-                        error = %err,
+                        error = %message,
                         "download failed; continuing with remaining items"
                     );
                 }
                 Err(_) => {
                     failure_count += 1;
                     self.metrics.timeout_total.fetch_add(1, Ordering::Relaxed);
+                    let message =
+                        format!("download timed out after {} ms", self.timeout.as_millis());
+                    self.record_item_state(index, started_ms, None, Some(message), duration_ms)
+                        .await;
                     warn!(
                         plugin = %self.tag,
                         url = %item.url,
@@ -202,18 +314,88 @@ impl Executor for DownloadExecutor {
             "download batch finished"
         );
 
-        Ok(ExecStep::Next)
+        DownloadBatchResult {
+            ok: failure_count == 0,
+            plugin: self.tag.clone(),
+            total: self.downloads.len(),
+            success_count,
+            failure_count,
+            results: self.item_statuses().await,
+        }
+    }
+
+    async fn record_item_state(
+        &self,
+        index: usize,
+        last_run_ms: u64,
+        last_success_ms: Option<u64>,
+        last_error: Option<String>,
+        last_duration_ms: u64,
+    ) {
+        let mut states = self.item_states.lock().await;
+        if let Some(state) = states.get_mut(index) {
+            state.last_run_ms = Some(last_run_ms);
+            if let Some(success_ms) = last_success_ms {
+                state.last_success_ms = Some(success_ms);
+            }
+            state.last_error = last_error;
+            state.last_duration_ms = Some(last_duration_ms);
+        }
+    }
+
+    async fn item_statuses(&self) -> Vec<DownloadItemStatus> {
+        let states = self.item_states.lock().await.clone();
+        self.downloads
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let state = states.get(index).cloned().unwrap_or_default();
+                DownloadItemStatus {
+                    index,
+                    url: item.url.clone(),
+                    dir: item.dir.display().to_string(),
+                    filename: item.filename.clone(),
+                    path: item.path.display().to_string(),
+                    file: file_status(&item.path),
+                    last_run_ms: state.last_run_ms,
+                    last_success_ms: state.last_success_ms,
+                    last_error: state.last_error,
+                    last_duration_ms: state.last_duration_ms,
+                }
+            })
+            .collect()
     }
 }
 
-impl DownloadExecutor {
-    async fn download_one(&self, item: &DownloadTarget) -> Result<()> {
-        self.client
-            .download(
-                HttpRequestOptions::from_url(item.url.as_str()),
-                item.path.as_path(),
-            )
-            .await
+#[derive(Debug)]
+struct DownloadExecutor {
+    state: Arc<DownloadRuntimeState>,
+}
+
+#[async_trait]
+impl Plugin for DownloadExecutor {
+    fn tag(&self) -> &str {
+        &self.state.tag
+    }
+
+    async fn init(&mut self, _context: &crate::plugin::PluginInitContext<'_>) -> Result<()> {
+        register_metric_source(self.state.metrics.clone())?;
+        register_download_api(self.state.clone())?;
+        Ok(())
+    }
+
+    async fn destroy(&self) -> Result<()> {
+        unregister_metric_source(&self.state.tag);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Executor for DownloadExecutor {
+    #[hotpath::measure]
+    async fn execute(&self, _context: &mut DnsContext) -> Result<ExecStep> {
+        self.state.run_batch().await;
+        Ok(ExecStep::Next)
     }
 }
 
@@ -250,13 +432,15 @@ impl PluginFactory for DownloadFactory {
             }
 
             let executor = DownloadExecutor {
-                tag: plugin_tag.clone(),
-                client: build_http_client(runtime.insecure_skip_verify, runtime.parsed_socks5),
-                timeout: runtime.timeout,
-                downloads: runtime.downloads.clone(),
-                insecure_skip_verify: runtime.insecure_skip_verify,
-                socks5: runtime.raw_socks5,
-                metrics: Arc::new(DownloadMetrics::new(plugin_tag.clone())),
+                state: Arc::new(DownloadRuntimeState::new(
+                    plugin_tag.clone(),
+                    build_http_client(runtime.insecure_skip_verify, runtime.parsed_socks5),
+                    runtime.timeout,
+                    runtime.downloads.clone(),
+                    runtime.insecure_skip_verify,
+                    runtime.raw_socks5,
+                    Arc::new(DownloadMetrics::new(plugin_tag.clone())),
+                )),
             };
 
             info!(
@@ -268,10 +452,10 @@ impl PluginFactory for DownloadFactory {
             );
 
             for item in missing_targets {
-                match timeout(executor.timeout, executor.download_one(item)).await {
+                match timeout(executor.state.timeout, executor.state.download_one(item)).await {
                     Ok(Ok(())) => {
                         info!(
-                            plugin = %executor.tag,
+                            plugin = %executor.state.tag,
                             url = %item.url,
                             target = %item.path.display(),
                             "startup download completed for missing target"
@@ -305,15 +489,18 @@ impl PluginFactory for DownloadFactory {
         _init_context: &crate::plugin::PluginInitContext<'_>,
     ) -> Result<UninitializedPlugin> {
         let runtime = build_download_runtime_config(plugin_config)?;
+        let metrics = Arc::new(DownloadMetrics::new(plugin_config.tag.clone()));
 
         Ok(UninitializedPlugin::Executor(Box::new(DownloadExecutor {
-            tag: plugin_config.tag.clone(),
-            client: build_http_client(runtime.insecure_skip_verify, runtime.parsed_socks5),
-            timeout: runtime.timeout,
-            downloads: runtime.downloads,
-            insecure_skip_verify: runtime.insecure_skip_verify,
-            socks5: runtime.raw_socks5,
-            metrics: Arc::new(DownloadMetrics::new(plugin_config.tag.clone())),
+            state: Arc::new(DownloadRuntimeState::new(
+                plugin_config.tag.clone(),
+                build_http_client(runtime.insecure_skip_verify, runtime.parsed_socks5),
+                runtime.timeout,
+                runtime.downloads,
+                runtime.insecure_skip_verify,
+                runtime.raw_socks5,
+                metrics,
+            )),
         })))
     }
 
@@ -332,13 +519,15 @@ impl PluginFactory for DownloadFactory {
         )?;
 
         Ok(UninitializedPlugin::Executor(Box::new(DownloadExecutor {
-            tag: tag.to_string(),
-            client: build_http_client(false, None),
-            timeout: DEFAULT_TIMEOUT,
-            downloads,
-            insecure_skip_verify: false,
-            socks5: None,
-            metrics: Arc::new(DownloadMetrics::new(tag.to_string())),
+            state: Arc::new(DownloadRuntimeState::new(
+                tag.to_string(),
+                build_http_client(false, None),
+                DEFAULT_TIMEOUT,
+                downloads,
+                false,
+                None,
+                Arc::new(DownloadMetrics::new(tag.to_string())),
+            )),
         })))
     }
 }
@@ -446,6 +635,68 @@ fn resolve_download_targets(
     }
 
     Ok(targets)
+}
+
+fn file_status(path: &PathBuf) -> DownloadFileStatus {
+    match std::fs::metadata(path) {
+        Ok(metadata) => DownloadFileStatus {
+            exists: true,
+            size_bytes: Some(metadata.len()),
+            modified_at_ms: metadata.modified().ok().and_then(system_time_ms),
+        },
+        Err(_) => DownloadFileStatus {
+            exists: false,
+            size_bytes: None,
+            modified_at_ms: None,
+        },
+    }
+}
+
+fn system_time_ms(value: SystemTime) -> Option<u64> {
+    value
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+}
+
+#[cfg(feature = "api")]
+#[derive(Debug)]
+struct DownloadStatusHandler {
+    state: Arc<DownloadRuntimeState>,
+}
+
+#[cfg(feature = "api")]
+#[async_trait]
+impl ApiHandler for DownloadStatusHandler {
+    async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
+        json_ok(StatusCode::OK, &self.state.status().await)
+    }
+}
+
+#[cfg(feature = "api")]
+#[derive(Debug)]
+struct DownloadRunHandler {
+    state: Arc<DownloadRuntimeState>,
+}
+
+#[cfg(feature = "api")]
+#[async_trait]
+impl ApiHandler for DownloadRunHandler {
+    async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
+        json_ok(StatusCode::OK, &self.state.run_batch().await)
+    }
+}
+
+fn register_download_api(state: Arc<DownloadRuntimeState>) -> Result<()> {
+    register_plugin_api!(
+        state.tag.as_str(),
+        GET "/status" => DownloadStatusHandler {
+            state: state.clone(),
+        },
+        POST "/run" => DownloadRunHandler {
+            state,
+        },
+    )
 }
 
 fn parse_download_url(plugin_tag: &str, idx: usize, raw: &str) -> Result<Url> {
@@ -573,18 +824,20 @@ mod tests {
     #[tokio::test]
     async fn test_download_executor_returns_next_for_empty_runtime_errors() {
         let plugin = DownloadExecutor {
-            tag: "download".to_string(),
-            client: build_http_client(false, None),
-            timeout: Duration::from_millis(10),
-            downloads: vec![DownloadTarget {
-                url: "http://127.0.0.1:9/missing.txt".to_string(),
-                dir: PathBuf::from("/tmp"),
-                filename: "missing.txt".to_string(),
-                path: PathBuf::from("/tmp/missing.txt"),
-            }],
-            insecure_skip_verify: false,
-            socks5: None,
-            metrics: Arc::new(DownloadMetrics::new("download".to_string())),
+            state: Arc::new(DownloadRuntimeState::new(
+                "download".to_string(),
+                build_http_client(false, None),
+                Duration::from_millis(10),
+                vec![DownloadTarget {
+                    url: "http://127.0.0.1:9/missing.txt".to_string(),
+                    dir: PathBuf::from("/tmp"),
+                    filename: "missing.txt".to_string(),
+                    path: PathBuf::from("/tmp/missing.txt"),
+                }],
+                false,
+                None,
+                Arc::new(DownloadMetrics::new("download".to_string())),
+            )),
         };
         let mut ctx = test_context();
         let step = plugin
@@ -592,5 +845,34 @@ mod tests {
             .await
             .expect("execute should not fail");
         assert!(matches!(step, ExecStep::Next));
+    }
+
+    #[tokio::test]
+    async fn download_status_reports_file_metadata() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("rules.txt");
+        std::fs::write(&path, "||example.org^\n").expect("file should be written");
+        let state = DownloadRuntimeState::new(
+            "standard_filter_download".to_string(),
+            build_http_client(false, None),
+            Duration::from_secs(1),
+            vec![DownloadTarget {
+                url: "https://example.com/rules.txt".to_string(),
+                dir: temp.path().to_path_buf(),
+                filename: "rules.txt".to_string(),
+                path,
+            }],
+            false,
+            None,
+            Arc::new(DownloadMetrics::new("standard_filter_download".to_string())),
+        );
+
+        let status = state.status().await;
+
+        assert!(status.ok);
+        assert_eq!(status.items.len(), 1);
+        assert!(status.items[0].file.exists);
+        assert_eq!(status.items[0].file.size_bytes, Some(15));
+        assert!(status.items[0].file.modified_at_ms.is_some());
     }
 }
