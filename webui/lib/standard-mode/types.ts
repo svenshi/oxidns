@@ -174,6 +174,7 @@ export interface StandardTagMap {
   paths: Record<string, string>;
   routingRules: Record<string, string>;
   exceptionRules: Record<string, string>;
+  devices?: Record<string, string>;
 }
 
 export interface StandardGenerationSummary {
