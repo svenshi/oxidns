@@ -11,7 +11,7 @@
 use std::any::Any;
 use std::fmt::Debug;
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -25,7 +25,7 @@ use crate::infra::error::{DnsError, Result as DnsResult};
 use crate::infra::io::{LineClassifier, TextLine, TextLocation, TextSource};
 use crate::infra::task::spawn_isolated_build;
 use crate::plugin::dependency::DependencySpec;
-use crate::plugin::provider::Provider;
+use crate::plugin::provider::{Provider, ProviderRuleStats, ProviderRuntimeStatus};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;
 
@@ -48,6 +48,25 @@ struct IpSetSnapshot {
     /// Family-level fast guards to avoid useless scans.
     has_v4_rules: bool,
     has_v6_rules: bool,
+    stats: IpSetRuleStats,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct IpSetRuleStats {
+    v4_rules: usize,
+    v6_rules: usize,
+}
+
+impl IpSetRuleStats {
+    fn total_rules(self) -> usize {
+        self.v4_rules + self.v6_rules
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct ProviderReloadState {
+    last_reload_ms: Option<u64>,
+    last_error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -56,6 +75,7 @@ pub struct IpSet {
     args: Arc<IpSetArgs>,
     referenced_sets: Vec<Arc<dyn Provider>>,
     snapshot: ArcSwap<IpSetSnapshot>,
+    reload_state: Mutex<ProviderReloadState>,
 }
 
 impl IpSet {
@@ -90,7 +110,20 @@ impl IpSet {
             matcher,
             has_v4_rules,
             has_v6_rules,
+            stats: IpSetRuleStats {
+                v4_rules: total_v4_rules,
+                v6_rules: total_v6_rules,
+            },
         })
+    }
+
+    fn update_reload_state(&self, result: &DnsResult<()>) {
+        let mut state = self
+            .reload_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.last_reload_ms = Some(AppClock::now_timestamp());
+        state.last_error = result.as_ref().err().map(ToString::to_string);
     }
 }
 
@@ -152,12 +185,39 @@ impl Provider for IpSet {
     async fn reload(&self) -> DnsResult<()> {
         let tag = self.tag.clone();
         let args = self.args.clone();
-        let snapshot = spawn_isolated_build("ip_set snapshot build", move || {
+        let result = spawn_isolated_build("ip_set snapshot build", move || {
             Self::build_local_snapshot(&tag, &args)
         })
-        .await?;
-        self.snapshot.store(Arc::new(snapshot));
-        Ok(())
+        .await
+        .map(|snapshot| {
+            self.snapshot.store(Arc::new(snapshot));
+        });
+        self.update_reload_state(&result);
+        result
+    }
+
+    fn runtime_status(&self) -> ProviderRuntimeStatus {
+        let reload_state = self
+            .reload_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let stats = self.snapshot.load().stats;
+        ProviderRuntimeStatus {
+            ok: true,
+            plugin: self.tag.clone(),
+            supports_reload: true,
+            supports_domain_matching: false,
+            supports_ip_matching: true,
+            last_reload_ms: reload_state.last_reload_ms,
+            last_error: reload_state.last_error,
+            rule_stats: Some(ProviderRuleStats {
+                total_rules: Some(stats.total_rules()),
+                v4_rules: Some(stats.v4_rules),
+                v6_rules: Some(stats.v6_rules),
+                ..ProviderRuleStats::default()
+            }),
+        }
     }
 
     fn supports_ip_matching(&self) -> bool {
@@ -210,6 +270,7 @@ impl PluginFactory for IpSetFactory {
             args: Arc::new(args),
             referenced_sets: Vec::new(),
             snapshot: ArcSwap::from_pointee(IpSetSnapshot::default()),
+            reload_state: Mutex::new(ProviderReloadState::default()),
         })))
     }
 }

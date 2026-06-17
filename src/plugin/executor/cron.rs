@@ -20,13 +20,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+#[cfg(feature = "api")]
+use bytes::Bytes;
 use cronexpr::Crontab;
+#[cfg(feature = "api")]
+use http::{Request, StatusCode};
 use jiff::Timestamp;
 use serde::Deserialize;
+#[cfg(feature = "api")]
+use serde::Serialize;
 use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
+#[cfg(feature = "api")]
+use crate::api::{ApiHandler, json_error, json_ok};
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
 use crate::infra::clock::AppClock;
@@ -44,6 +52,8 @@ use crate::plugin::{
 };
 use crate::plugin_factory;
 use crate::proto::Message;
+#[cfg(feature = "api")]
+use crate::register_plugin_api;
 
 const ATTR_PLUGIN_TAG: &str = "cron.plugin_tag";
 const ATTR_JOB_NAME: &str = "cron.job_name";
@@ -105,11 +115,65 @@ struct PreparedJob {
 
 #[derive(Debug)]
 struct RuntimeJob {
+    control: Arc<CronJobControl>,
+    next_run_ms: i64,
+    handle: Option<JoinHandle<()>>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct CronJobRuntimeStatus {
+    next_run_ms: Option<i64>,
+    last_run_ms: Option<u64>,
+    last_success_ms: Option<u64>,
+    last_error: Option<String>,
+    run_total: u64,
+    skipped_total: u64,
+    executor_error_total: u64,
+}
+
+#[derive(Debug)]
+struct CronJobControl {
     name: String,
     trigger: JobTrigger,
-    next_run_ms: i64,
     executors: Vec<Arc<dyn Executor>>,
-    handle: Option<JoinHandle<()>>,
+    status: Mutex<CronJobRuntimeStatus>,
+    run_lock: Mutex<()>,
+}
+
+#[cfg_attr(feature = "api", derive(Serialize))]
+#[derive(Debug, Clone)]
+struct CronJobStatusRow {
+    name: String,
+    trigger_kind: String,
+    schedule: Option<String>,
+    interval_ms: Option<u128>,
+    timezone: Option<String>,
+    next_run_ms: Option<i64>,
+    last_run_ms: Option<u64>,
+    last_success_ms: Option<u64>,
+    last_error: Option<String>,
+    run_total: u64,
+    skipped_total: u64,
+    executor_error_total: u64,
+}
+
+#[cfg_attr(feature = "api", derive(Serialize))]
+#[derive(Debug, Clone)]
+struct CronStatusResponse {
+    ok: bool,
+    plugin: String,
+    jobs: Vec<CronJobStatusRow>,
+}
+
+#[cfg_attr(feature = "api", derive(Serialize))]
+#[derive(Debug, Clone)]
+struct CronJobRunResponse {
+    ok: bool,
+    plugin: String,
+    job: String,
+    executor_count: usize,
+    executor_error_count: usize,
+    last_error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -168,6 +232,7 @@ struct CronExecutor {
     tag: String,
     config: CronConfig,
     quick_setup_executors: Vec<Arc<dyn Executor>>,
+    job_controls: Arc<Mutex<Vec<Arc<CronJobControl>>>>,
     stop_tx: Mutex<Option<oneshot::Sender<()>>>,
     scheduler_handle: Mutex<Option<JoinHandle<()>>>,
     metrics: Arc<CronMetrics>,
@@ -188,15 +253,30 @@ impl Plugin for CronExecutor {
         }
 
         let mut runtime_jobs = Vec::with_capacity(prepared_jobs.len());
+        let mut controls = Vec::with_capacity(prepared_jobs.len());
         for job in prepared_jobs {
             let next_run_ms = compute_next_run_ms(&job.trigger, Timestamp::now().as_millisecond())?;
-            runtime_jobs.push(RuntimeJob {
+            let control = Arc::new(CronJobControl {
                 name: job.name,
                 trigger: job.trigger,
-                next_run_ms,
                 executors: job.executors,
+                status: Mutex::new(CronJobRuntimeStatus {
+                    next_run_ms: Some(next_run_ms),
+                    ..CronJobRuntimeStatus::default()
+                }),
+                run_lock: Mutex::new(()),
+            });
+            runtime_jobs.push(RuntimeJob {
+                control: control.clone(),
+                next_run_ms,
                 handle: None,
             });
+            controls.push(control);
+        }
+        if let Some(slot) = Arc::get_mut(&mut self.job_controls) {
+            *slot.get_mut() = controls;
+        } else {
+            *self.job_controls.lock().await = controls;
         }
 
         let (stop_tx, stop_rx) = oneshot::channel();
@@ -209,6 +289,11 @@ impl Plugin for CronExecutor {
 
         *self.stop_tx.get_mut() = Some(stop_tx);
         *self.scheduler_handle.get_mut() = Some(handle);
+        register_cron_api(
+            self.tag.clone(),
+            self.job_controls.clone(),
+            self.metrics.clone(),
+        )?;
         Ok(())
     }
 
@@ -405,6 +490,7 @@ impl PluginFactory for CronFactory {
             metrics: Arc::new(CronMetrics::new(plugin_config.tag.clone())),
             config,
             quick_setup_executors: Vec::new(),
+            job_controls: Arc::new(Mutex::new(Vec::new())),
             stop_tx: Mutex::new(None),
             scheduler_handle: Mutex::new(None),
         })))
@@ -635,7 +721,7 @@ fn trigger_description(trigger: &JobTrigger) -> String {
 
 fn advance_next_run_past_now(job: &mut RuntimeJob, now_ms: i64) -> Result<()> {
     loop {
-        let next = compute_next_run_ms(&job.trigger, job.next_run_ms)?;
+        let next = compute_next_run_ms(&job.control.trigger, job.next_run_ms)?;
         job.next_run_ms = next;
         if job.next_run_ms > now_ms {
             return Ok(());
@@ -673,7 +759,7 @@ async fn run_scheduler(
                 if let Err(err) = advance_next_run_past_now(job, now_ms) {
                     error!(
                         plugin = %plugin_tag,
-                        job = %job.name,
+                        job = %job.control.name,
                         error = %err,
                         "failed to advance cron job schedule"
                     );
@@ -681,33 +767,31 @@ async fn run_scheduler(
                     job.next_run_ms = now_ms.saturating_add(fallback);
                     continue;
                 }
+                {
+                    let mut status = job.control.status.lock().await;
+                    status.next_run_ms = Some(job.next_run_ms);
+                }
 
                 if job.handle.is_some() {
                     metrics.skipped_total.fetch_add(1, Ordering::Relaxed);
+                    {
+                        let mut status = job.control.status.lock().await;
+                        status.skipped_total = status.skipped_total.saturating_add(1);
+                    }
                     warn!(
                         plugin = %plugin_tag,
-                        job = %job.name,
-                        trigger = %job.trigger.kind_name(),
+                        job = %job.control.name,
+                        trigger = %job.control.trigger.kind_name(),
                         "cron job trigger skipped because the previous run is still active"
                     );
                     continue;
                 }
 
-                let run_name = job.name.clone();
-                let trigger_kind = job.trigger.kind_name().to_string();
-                let executors = job.executors.clone();
                 let run_plugin_tag = plugin_tag.clone();
                 let run_metrics = metrics.clone();
+                let control = job.control.clone();
                 job.handle = Some(tokio::spawn(async move {
-                    run_job(
-                        run_plugin_tag,
-                        run_name,
-                        trigger_kind,
-                        scheduled_at_ms,
-                        executors,
-                        run_metrics,
-                    )
-                    .await;
+                    run_job(run_plugin_tag, control, scheduled_at_ms, run_metrics).await;
                 }));
             }
             continue;
@@ -727,7 +811,7 @@ async fn run_scheduler(
     for job in &mut jobs {
         if let Some(handle) = job.handle.take() {
             handle.abort();
-            await_job_handle(&plugin_tag, &job.name, handle).await;
+            await_job_handle(&plugin_tag, &job.control.name, handle).await;
         }
     }
 }
@@ -741,7 +825,7 @@ async fn reap_finished_job_handles(plugin_tag: &str, jobs: &mut [RuntimeJob]) {
             .is_some_and(|handle| handle.is_finished())
             && let Some(handle) = job.handle.take()
         {
-            finished.push((job.name.clone(), handle));
+            finished.push((job.control.name.clone(), handle));
         }
     }
 
@@ -775,12 +859,20 @@ async fn await_job_handle(plugin_tag: &str, job_name: &str, handle: JoinHandle<(
 
 async fn run_job(
     plugin_tag: String,
-    job_name: String,
-    trigger_kind: String,
+    control: Arc<CronJobControl>,
     scheduled_at_ms: i64,
-    executors: Vec<Arc<dyn Executor>>,
     metrics: Arc<CronMetrics>,
-) {
+) -> CronJobRunResponse {
+    let _guard = control.run_lock.lock().await;
+    let job_name = control.name.clone();
+    let trigger_kind = control.trigger.kind_name().to_string();
+    let executors = control.executors.clone();
+    {
+        let mut status = control.status.lock().await;
+        status.last_run_ms = Some(AppClock::now_timestamp());
+        status.last_error = None;
+        status.run_total = status.run_total.saturating_add(1);
+    }
     metrics.run_total.fetch_add(1, Ordering::Relaxed);
     info!(
         plugin = %plugin_tag,
@@ -796,10 +888,14 @@ async fn run_job(
     context.set_attr(ATTR_SCHEDULED_AT_UNIX_MS, scheduled_at_ms);
     context.set_attr(ATTR_TRIGGER_KIND, trigger_kind.clone());
 
+    let mut executor_error_count = 0usize;
+    let mut last_error = None;
     for executor in executors {
         match executor.execute(&mut context).await {
             Ok(ExecStep::Next) | Ok(ExecStep::Stop) | Ok(ExecStep::Return) => {}
             Err(err) => {
+                executor_error_count += 1;
+                last_error = Some(err.to_string());
                 metrics.executor_error_total.fetch_add(1, Ordering::Relaxed);
                 warn!(
                     plugin = %plugin_tag,
@@ -812,12 +908,172 @@ async fn run_job(
         }
     }
 
+    {
+        let mut status = control.status.lock().await;
+        if executor_error_count == 0 {
+            status.last_success_ms = Some(AppClock::now_timestamp());
+            status.last_error = None;
+        } else {
+            status.last_error = last_error.clone();
+            status.executor_error_total = status
+                .executor_error_total
+                .saturating_add(executor_error_count as u64);
+        }
+    }
+
     info!(
         plugin = %plugin_tag,
         job = %job_name,
         trigger = %trigger_kind,
         "cron job finished"
     );
+
+    CronJobRunResponse {
+        ok: executor_error_count == 0,
+        plugin: plugin_tag,
+        job: job_name,
+        executor_count: control.executors.len(),
+        executor_error_count,
+        last_error,
+    }
+}
+
+async fn cron_status(
+    plugin: &str,
+    controls: Arc<Mutex<Vec<Arc<CronJobControl>>>>,
+) -> CronStatusResponse {
+    let controls = controls.lock().await.clone();
+    let mut jobs = Vec::with_capacity(controls.len());
+    for control in controls {
+        let status = control.status.lock().await.clone();
+        jobs.push(CronJobStatusRow {
+            name: control.name.clone(),
+            trigger_kind: control.trigger.kind_name().to_string(),
+            schedule: trigger_schedule(&control.trigger),
+            interval_ms: trigger_interval_ms(&control.trigger),
+            timezone: trigger_timezone(&control.trigger),
+            next_run_ms: status.next_run_ms,
+            last_run_ms: status.last_run_ms,
+            last_success_ms: status.last_success_ms,
+            last_error: status.last_error,
+            run_total: status.run_total,
+            skipped_total: status.skipped_total,
+            executor_error_total: status.executor_error_total,
+        });
+    }
+    CronStatusResponse {
+        ok: true,
+        plugin: plugin.to_string(),
+        jobs,
+    }
+}
+
+fn trigger_schedule(trigger: &JobTrigger) -> Option<String> {
+    match trigger {
+        JobTrigger::Cron { schedule, .. } => Some(schedule.clone()),
+        JobTrigger::Interval { .. } => None,
+    }
+}
+
+fn trigger_interval_ms(trigger: &JobTrigger) -> Option<u128> {
+    match trigger {
+        JobTrigger::Interval { interval } => Some(interval.as_millis()),
+        JobTrigger::Cron { .. } => None,
+    }
+}
+
+fn trigger_timezone(trigger: &JobTrigger) -> Option<String> {
+    match trigger {
+        JobTrigger::Cron { timezone_name, .. } => Some(timezone_name.clone()),
+        JobTrigger::Interval { .. } => None,
+    }
+}
+
+#[cfg(feature = "api")]
+#[derive(Debug)]
+struct CronStatusHandler {
+    plugin: String,
+    controls: Arc<Mutex<Vec<Arc<CronJobControl>>>>,
+}
+
+#[cfg(feature = "api")]
+#[async_trait]
+impl ApiHandler for CronStatusHandler {
+    async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
+        json_ok(
+            StatusCode::OK,
+            &cron_status(&self.plugin, self.controls.clone()).await,
+        )
+    }
+}
+
+#[cfg(feature = "api")]
+#[derive(Debug)]
+struct CronRunJobHandler {
+    plugin: String,
+    controls: Arc<Mutex<Vec<Arc<CronJobControl>>>>,
+    metrics: Arc<CronMetrics>,
+    path_prefix: String,
+}
+
+#[cfg(feature = "api")]
+#[async_trait]
+impl ApiHandler for CronRunJobHandler {
+    async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
+        let path = request.uri().path();
+        let Some(raw_name) = path.strip_prefix(self.path_prefix.as_str()) else {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "cron_job_run_invalid_path",
+                "invalid cron job run path",
+            );
+        };
+        let name = raw_name.trim_matches('/');
+        if name.is_empty() || name.contains('/') {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "cron_job_run_invalid_name",
+                "cron job name is required",
+            );
+        }
+        let controls = self.controls.lock().await.clone();
+        let Some(control) = controls.iter().find(|item| item.name == name).cloned() else {
+            return json_error(
+                StatusCode::NOT_FOUND,
+                "cron_job_not_found",
+                format!("cron job '{}' was not found", name),
+            );
+        };
+        let response = run_job(
+            self.plugin.clone(),
+            control,
+            AppClock::now_timestamp() as i64,
+            self.metrics.clone(),
+        )
+        .await;
+        json_ok(StatusCode::OK, &response)
+    }
+}
+
+fn register_cron_api(
+    plugin: String,
+    controls: Arc<Mutex<Vec<Arc<CronJobControl>>>>,
+    metrics: Arc<CronMetrics>,
+) -> Result<()> {
+    register_plugin_api!(
+        plugin.as_str(),
+        |plugin_api|
+        GET "/status" => CronStatusHandler {
+            plugin: plugin.clone(),
+            controls: controls.clone(),
+        },
+        POST_PREFIX "/jobs/" => CronRunJobHandler {
+            plugin,
+            controls,
+            metrics,
+            path_prefix: plugin_api.path("/jobs/")?,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -971,6 +1227,34 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn cron_status_reports_job_runtime() {
+        let control = Arc::new(CronJobControl {
+            name: "refresh_filter_subscriptions".to_string(),
+            trigger: JobTrigger::Interval {
+                interval: Duration::from_secs(3600),
+            },
+            executors: Vec::new(),
+            status: Mutex::new(CronJobRuntimeStatus {
+                next_run_ms: Some(12_345),
+                last_run_ms: Some(10_000),
+                last_success_ms: Some(10_100),
+                run_total: 1,
+                ..CronJobRuntimeStatus::default()
+            }),
+            run_lock: Mutex::new(()),
+        });
+        let controls = Arc::new(Mutex::new(vec![control]));
+
+        let status = cron_status("standard_filter_cron", controls).await;
+
+        assert!(status.ok);
+        assert_eq!(status.jobs.len(), 1);
+        assert_eq!(status.jobs[0].name, "refresh_filter_subscriptions");
+        assert_eq!(status.jobs[0].interval_ms, Some(3_600_000));
+        assert_eq!(status.jobs[0].last_success_ms, Some(10_100));
+    }
+
     #[test]
     fn test_factory_dependency_specs_expand_quick_setup_dependencies() {
         let cfg = plugin_config(
@@ -1049,13 +1333,20 @@ jobs:
             )),
             Arc::new(StubExecutor::new("third", StubBehavior::Next, log.clone())),
         ];
+        let control = Arc::new(CronJobControl {
+            name: "job".to_string(),
+            trigger: JobTrigger::Interval {
+                interval: Duration::from_secs(60),
+            },
+            executors,
+            status: Mutex::new(CronJobRuntimeStatus::default()),
+            run_lock: Mutex::new(()),
+        });
 
         run_job(
             "cron".to_string(),
-            "job".to_string(),
-            "interval".to_string(),
+            control,
             123,
-            executors,
             Arc::new(CronMetrics::new("cron".to_string())),
         )
         .await;
@@ -1084,10 +1375,17 @@ jobs:
         );
 
         let job = RuntimeJob {
-            name: "job".to_string(),
-            trigger: JobTrigger::Interval { interval },
+            control: Arc::new(CronJobControl {
+                name: "job".to_string(),
+                trigger: JobTrigger::Interval { interval },
+                executors: vec![executor.clone()],
+                status: Mutex::new(CronJobRuntimeStatus {
+                    next_run_ms: Some(first_run_at),
+                    ..CronJobRuntimeStatus::default()
+                }),
+                run_lock: Mutex::new(()),
+            }),
             next_run_ms: first_run_at,
-            executors: vec![executor.clone()],
             handle: None,
         };
         let (stop_tx, stop_rx) = oneshot::channel();
@@ -1118,11 +1416,19 @@ jobs:
         );
         let interval = Duration::from_millis(20);
 
+        let next_run_ms = AppClock::now_timestamp() as i64;
         let job = RuntimeJob {
-            name: "job".to_string(),
-            trigger: JobTrigger::Interval { interval },
-            next_run_ms: AppClock::now_timestamp() as i64,
-            executors: vec![executor.clone()],
+            control: Arc::new(CronJobControl {
+                name: "job".to_string(),
+                trigger: JobTrigger::Interval { interval },
+                executors: vec![executor.clone()],
+                status: Mutex::new(CronJobRuntimeStatus {
+                    next_run_ms: Some(next_run_ms),
+                    ..CronJobRuntimeStatus::default()
+                }),
+                run_lock: Mutex::new(()),
+            }),
+            next_run_ms,
             handle: None,
         };
         let (stop_tx, stop_rx) = oneshot::channel();
@@ -1169,6 +1475,7 @@ jobs:
                 }],
             },
             quick_setup_executors: vec![quick],
+            job_controls: Arc::new(Mutex::new(Vec::new())),
             stop_tx: Mutex::new(None),
             scheduler_handle: Mutex::new(None),
             metrics: Arc::new(CronMetrics::new("cron".to_string())),

@@ -17,7 +17,7 @@
 
 use std::any::Any;
 use std::fmt::Debug;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -25,11 +25,12 @@ use tracing::info;
 
 use self::compiler::build_rule_buckets;
 use self::config::{AdGuardRuleConfig, parse_config};
-use self::model::CompiledRuleSet;
+use self::model::{BuildStats, CompiledRuleSet};
 use crate::config::types::PluginConfig;
+use crate::infra::clock::AppClock;
 use crate::infra::error::Result as DnsResult;
 use crate::infra::task::spawn_isolated_build;
-use crate::plugin::provider::Provider;
+use crate::plugin::provider::{Provider, ProviderRuleStats, ProviderRuntimeStatus};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;
 use crate::proto::{Name, Question};
@@ -45,6 +46,13 @@ struct AdGuardRuleSnapshot {
     important_blocks: CompiledRuleSet,
     exceptions: CompiledRuleSet,
     blocks: CompiledRuleSet,
+    stats: BuildStats,
+}
+
+#[derive(Debug, Default, Clone)]
+struct ProviderReloadState {
+    last_reload_ms: Option<u64>,
+    last_error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -52,6 +60,7 @@ pub struct AdGuardRule {
     tag: String,
     cfg: Arc<AdGuardRuleConfig>,
     snapshot: ArcSwap<AdGuardRuleSnapshot>,
+    reload_state: Mutex<ProviderReloadState>,
 }
 
 impl AdGuardRule {
@@ -107,7 +116,17 @@ impl AdGuardRule {
             important_blocks,
             exceptions,
             blocks,
+            stats,
         })
+    }
+
+    fn update_reload_state(&self, result: &DnsResult<()>) {
+        let mut state = self
+            .reload_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.last_reload_ms = Some(AppClock::now_timestamp());
+        state.last_error = result.as_ref().err().map(ToString::to_string);
     }
 }
 
@@ -157,12 +176,41 @@ impl Provider for AdGuardRule {
     async fn reload(&self) -> DnsResult<()> {
         let tag = self.tag.clone();
         let cfg = self.cfg.clone();
-        let snapshot = spawn_isolated_build("adguard_rule snapshot build", move || {
+        let result = spawn_isolated_build("adguard_rule snapshot build", move || {
             Self::build_snapshot(&tag, &cfg)
         })
-        .await?;
-        self.snapshot.store(Arc::new(snapshot));
-        Ok(())
+        .await
+        .map(|snapshot| {
+            self.snapshot.store(Arc::new(snapshot));
+        });
+        self.update_reload_state(&result);
+        result
+    }
+
+    fn runtime_status(&self) -> ProviderRuntimeStatus {
+        let reload_state = self
+            .reload_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let stats = self.snapshot.load().stats;
+        ProviderRuntimeStatus {
+            ok: true,
+            plugin: self.tag.clone(),
+            supports_reload: true,
+            supports_domain_matching: true,
+            supports_ip_matching: false,
+            last_reload_ms: reload_state.last_reload_ms,
+            last_error: reload_state.last_error,
+            rule_stats: Some(ProviderRuleStats {
+                total_rules: Some(stats.total_rules),
+                supported_rules: Some(stats.supported_rules),
+                skipped_rules: Some(stats.skipped_rules),
+                exception_rules: Some(stats.exception_rules),
+                important_rules: Some(stats.important_rules),
+                ..ProviderRuleStats::default()
+            }),
+        }
     }
 }
 
@@ -182,7 +230,9 @@ impl PluginFactory for AdGuardRuleFactory {
                 important_blocks: CompiledRuleSet::default(),
                 exceptions: CompiledRuleSet::default(),
                 blocks: CompiledRuleSet::default(),
+                stats: BuildStats::default(),
             }),
+            reload_state: Mutex::new(ProviderReloadState::default()),
         })))
     }
 }
@@ -224,7 +274,7 @@ mod tests {
     }
 
     fn make_provider(cfg: config::AdGuardRuleConfig) -> AdGuardRule {
-        let (important_exceptions, important_blocks, exceptions, blocks, _) =
+        let (important_exceptions, important_blocks, exceptions, blocks, stats) =
             build_rule_buckets("agh", &cfg).expect("rules should build");
         AdGuardRule {
             tag: "agh".to_string(),
@@ -234,7 +284,9 @@ mod tests {
                 important_blocks,
                 exceptions,
                 blocks,
+                stats,
             }),
+            reload_state: Mutex::new(ProviderReloadState::default()),
         }
     }
 
@@ -567,5 +619,28 @@ mod tests {
 
         assert!(provider.reload().await.is_err());
         assert!(provider.contains_name(&existing));
+    }
+
+    #[test]
+    fn provider_status_reports_adguard_stats() {
+        let cfg = config::AdGuardRuleConfig {
+            rules: vec![
+                "||example.org^".to_string(),
+                "@@||safe.example.org^".to_string(),
+                "||ads.example.org^$important".to_string(),
+            ],
+            files: Vec::new(),
+        };
+        let provider = make_provider(cfg);
+
+        let status = provider.runtime_status();
+
+        assert!(status.ok);
+        assert!(status.supports_reload);
+        let stats = status.rule_stats.expect("adguard stats should exist");
+        assert_eq!(stats.total_rules, Some(3));
+        assert_eq!(stats.supported_rules, Some(3));
+        assert_eq!(stats.exception_rules, Some(1));
+        assert_eq!(stats.important_rules, Some(1));
     }
 }

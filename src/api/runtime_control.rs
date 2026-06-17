@@ -116,6 +116,21 @@ struct ProviderReloadHandler {
     tag: String,
 }
 
+#[derive(Debug)]
+struct ProviderStatusHandler {
+    tag: String,
+}
+
+#[async_trait]
+impl ApiHandler for ProviderStatusHandler {
+    async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
+        let Some(PluginRuntimeControl::Provider(control)) = live_runtime_control(&self.tag) else {
+            return runtime_control_unavailable(&self.tag, "provider");
+        };
+        json_ok(StatusCode::OK, &control.status())
+    }
+}
+
 #[async_trait]
 impl ApiHandler for ProviderReloadHandler {
     async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
@@ -168,6 +183,10 @@ pub(crate) fn register_plugin_runtime_control_routes(
                 plugin.post("/mode", Arc::new(MatcherModeHandler { tag }))?;
             }
             PluginRuntimeControl::Provider(_) => {
+                plugin.get(
+                    "/status",
+                    Arc::new(ProviderStatusHandler { tag: tag.clone() }),
+                )?;
                 plugin.post("/reload", Arc::new(ProviderReloadHandler { tag }))?;
             }
         }
