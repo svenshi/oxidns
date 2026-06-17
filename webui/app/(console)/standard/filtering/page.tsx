@@ -38,10 +38,7 @@ export default function StandardFilteringPage() {
 
   return (
     <>
-      <AppHeader
-        title="过滤与分流"
-        breadcrumbs={[{ label: "标准模式", href: "/standard" }]}
-      />
+      <AppHeader title="过滤与分流" />
       <main className="oxidns-dialog-scrollbar min-h-0 flex-1 overflow-auto p-6">
         <div className="mx-auto max-w-5xl space-y-6">
           <div className="flex flex-wrap items-center justify-between gap-3">

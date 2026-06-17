@@ -44,6 +44,8 @@ import { useAppStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 const STATS_WINDOW_MS = 24 * 60 * 60 * 1000;
+const overviewCardClass =
+  "bg-card/95 ring-border/70 shadow-sm shadow-foreground/5";
 
 interface OverviewStats {
   records: QueryRecordRow[];
@@ -199,7 +201,7 @@ function Sparkline({
         : "bg-primary";
 
   return (
-    <div className="mt-3 flex h-10 items-end gap-0.5">
+    <div className="mt-4 flex h-8 items-end gap-0.5">
       {Array.from({ length: 24 }).map((_, index) => {
         const value = values[index] ?? 0;
         const height = value > 0 ? Math.max(10, (value / max) * 100) : 6;
@@ -240,26 +242,61 @@ function StatCard({
         : tone === "danger"
           ? "text-destructive"
           : "";
+  const toneClass =
+    tone === "success"
+      ? {
+          border: "border-t-emerald-500/70",
+          icon: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+        }
+      : tone === "warning"
+        ? {
+            border: "border-t-amber-500/70",
+            icon: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+          }
+        : tone === "danger"
+          ? {
+              border: "border-t-destructive/70",
+              icon: "bg-destructive/10 text-destructive",
+            }
+          : {
+              border: "border-t-primary/35",
+              icon: "bg-muted/70 text-muted-foreground",
+            };
 
   return (
-    <Card className="overflow-hidden">
+    <Card
+      className={cn(
+        overviewCardClass,
+        "min-h-[132px] overflow-hidden border-t-2 transition-colors",
+        toneClass.border,
+      )}
+    >
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">
+        <CardTitle className="text-[0.82rem] font-medium text-muted-foreground">
           {title}
         </CardTitle>
-        <Icon className="size-4 text-muted-foreground" />
+        <div className={cn("rounded-md p-1.5", toneClass.icon)}>
+          <Icon className="size-3.5" />
+        </div>
       </CardHeader>
       <CardContent>
-        <div className={cn("font-mono text-2xl font-semibold", valueClass)}>
+        <div
+          className={cn(
+            "font-mono text-[1.625rem] leading-none font-semibold tabular-nums",
+            valueClass,
+          )}
+        >
           {value}
         </div>
         {detail ? (
-          <p className="mt-1 min-h-4 text-xs text-muted-foreground">{detail}</p>
+          <p className="mt-2 min-h-4 text-xs leading-4 text-muted-foreground">
+            {detail}
+          </p>
         ) : null}
         {progress ? (
           <Progress
             value={progress.value}
-            className="mt-3 h-1.5"
+            className="mt-4 h-1.5 bg-muted/70"
             indicatorClassName={progress.indicatorClassName}
           />
         ) : null}
@@ -275,21 +312,23 @@ function SummaryRows({
   rows: Array<{ label: string; value: string; hint?: string }>;
 }) {
   return (
-    <div className="divide-y rounded-md border">
+    <div className="space-y-1">
       {rows.map((row) => (
         <div
           key={row.label}
-          className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-2.5 text-sm"
+          className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md px-3 py-2.5 text-sm odd:bg-muted/30"
         >
           <div className="min-w-0">
-            <div className="truncate">{row.label}</div>
+            <div className="truncate font-medium">{row.label}</div>
             {row.hint ? (
-              <div className="truncate text-xs text-muted-foreground">
+              <div className="mt-0.5 truncate text-xs text-muted-foreground">
                 {row.hint}
               </div>
             ) : null}
           </div>
-          <div className="font-mono font-medium">{row.value}</div>
+          <div className="text-right font-mono font-medium tabular-nums">
+            {row.value}
+          </div>
         </div>
       ))}
     </div>
@@ -318,37 +357,36 @@ function UpstreamList({
   }
 
   return (
-    <div className="overflow-x-auto rounded-md border">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>{nameHeader}</TableHead>
-            <TableHead className="w-36 text-right">{queriesHeader}</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rows.map(({ upstream, queries }) => (
-            <TableRow key={upstreamKey(upstream)}>
-              <TableCell>
-                <div
-                  className={cn(
-                    "min-w-0 font-medium",
-                    !upstream.enabled && "text-muted-foreground",
-                  )}
-                >
-                  {upstream.name || upstream.id}
-                </div>
-                <div className="mt-0.5 truncate font-mono text-xs text-muted-foreground">
-                  {upstream.address}
-                </div>
-              </TableCell>
-              <TableCell className="text-right font-mono text-sm">
-                {queries == null ? "-" : formatNumber(queries, locale)}
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+    <div className="min-w-0">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 border-b border-border/70 pb-2 text-xs font-medium text-muted-foreground">
+        <div>{nameHeader}</div>
+        <div className="text-right">{queriesHeader}</div>
+      </div>
+      <div className="divide-y divide-border/70">
+        {rows.map(({ upstream, queries }) => (
+          <div
+            key={upstreamKey(upstream)}
+            className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 py-3 text-sm"
+          >
+            <div className="min-w-0">
+              <div
+                className={cn(
+                  "truncate font-medium",
+                  !upstream.enabled && "text-muted-foreground",
+                )}
+              >
+                {upstream.name || upstream.id}
+              </div>
+              <div className="mt-0.5 truncate font-mono text-xs text-muted-foreground">
+                {upstream.address}
+              </div>
+            </div>
+            <div className="text-right font-mono text-sm font-medium tabular-nums">
+              {queries == null ? "-" : formatNumber(queries, locale)}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -368,34 +406,34 @@ function TopList({
 }) {
   const max = Math.max(...rows.map((row) => row.count), 1);
   return (
-    <Card>
-      <CardHeader>
+    <Card className={overviewCardClass}>
+      <CardHeader className="pb-1">
         <CardTitle className="text-base">{title}</CardTitle>
-        <p className="text-xs text-muted-foreground">{subtitle}</p>
+        <p className="text-xs leading-4 text-muted-foreground">{subtitle}</p>
       </CardHeader>
       <CardContent className="space-y-3">
         {rows.length > 0 ? (
           rows.map((row) => (
-            <div key={row.key} className="space-y-1.5">
+            <div key={row.key} className="rounded-md bg-muted/25 p-2.5">
               <div className="flex items-center justify-between gap-3 text-sm">
                 <span className="min-w-0 truncate font-medium">{row.key}</span>
-                <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
                   {formatNumber(row.count, locale)}
                 </span>
               </div>
-              <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
                 <div
-                  className="h-full rounded-full bg-primary"
+                  className="h-full rounded-full bg-primary/75"
                   style={{ width: `${Math.max(4, (row.count / max) * 100)}%` }}
                 />
               </div>
-              <div className="text-right font-mono text-[11px] text-muted-foreground">
+              <div className="mt-1 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
                 {formatPercent(row.share * 100)}
               </div>
             </div>
           ))
         ) : (
-          <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+          <div className="rounded-md border border-dashed bg-muted/20 p-6 text-center text-sm text-muted-foreground">
             {empty}
           </div>
         )}
@@ -628,11 +666,11 @@ export default function StandardOverviewPage() {
   return (
     <>
       <AppHeader title={t(WEBUI.standardOverview.navTitle)} />
-      <main className="oxidns-dialog-scrollbar min-h-0 flex-1 overflow-auto p-6">
-        <div className="space-y-6">
+      <main className="oxidns-dialog-scrollbar min-h-0 flex-1 overflow-auto p-4 md:p-6">
+        <div className="mx-auto max-w-[1680px] space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h1 className="text-xl font-semibold tracking-tight">
+              <h1 className="text-lg font-semibold">
                 {t(WEBUI.standardOverview.title)}
               </h1>
               <p className="mt-1 text-sm text-muted-foreground">
@@ -641,6 +679,7 @@ export default function StandardOverviewPage() {
             </div>
             <Button
               variant="outline"
+              size="sm"
               onClick={() => void loadStats()}
               disabled={!recorderName || isRefreshing}
             >
@@ -657,7 +696,7 @@ export default function StandardOverviewPage() {
             </div>
           ) : null}
 
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
             <StatCard
               title={t(WEBUI.standardOverview.serviceStatus)}
               value={healthStatus}
@@ -746,36 +785,38 @@ export default function StandardOverviewPage() {
             />
           </div>
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">
-                {t(WEBUI.standardOverview.generalStatsTitle)}
-              </CardTitle>
-              <p className="text-xs text-muted-foreground">
-                {t(WEBUI.standardOverview.generalStatsDesc)}
-              </p>
-            </CardHeader>
-            <CardContent>
-              <SummaryRows rows={generalRows} />
-            </CardContent>
-          </Card>
+          <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
+            <Card className={overviewCardClass}>
+              <CardHeader className="pb-1">
+                <CardTitle className="text-base">
+                  {t(WEBUI.standardOverview.generalStatsTitle)}
+                </CardTitle>
+                <p className="text-xs text-muted-foreground">
+                  {t(WEBUI.standardOverview.generalStatsDesc)}
+                </p>
+              </CardHeader>
+              <CardContent>
+                <SummaryRows rows={generalRows} />
+              </CardContent>
+            </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">
-                {t(WEBUI.standardOverview.upstreamListTitle)}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <UpstreamList
-                rows={upstreamStats}
-                empty={t(WEBUI.standardOverview.upstreamEmpty)}
-                nameHeader={t(WEBUI.standardOverview.upstreamListName)}
-                queriesHeader={t(WEBUI.standardOverview.upstreamListQueries)}
-                locale={locale}
-              />
-            </CardContent>
-          </Card>
+            <Card className={overviewCardClass}>
+              <CardHeader className="pb-1">
+                <CardTitle className="text-base">
+                  {t(WEBUI.standardOverview.upstreamListTitle)}
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <UpstreamList
+                  rows={upstreamStats}
+                  empty={t(WEBUI.standardOverview.upstreamEmpty)}
+                  nameHeader={t(WEBUI.standardOverview.upstreamListName)}
+                  queriesHeader={t(WEBUI.standardOverview.upstreamListQueries)}
+                  locale={locale}
+                />
+              </CardContent>
+            </Card>
+          </div>
 
           <div className="grid gap-4 xl:grid-cols-3">
             <TopList
@@ -813,8 +854,8 @@ export default function StandardOverviewPage() {
             />
           </div>
 
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <Card className={overviewCardClass}>
+            <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3 space-y-0">
               <div>
                 <CardTitle className="text-base">
                   {t(WEBUI.standardOverview.recentQueriesTitle)}
@@ -829,7 +870,7 @@ export default function StandardOverviewPage() {
                   t(WEBUI.standardOverview.queryRecorderDisabled)}
               </div>
             </CardHeader>
-            <CardContent>
+            <CardContent className="overflow-x-auto">
               {stats.records.length > 0 ? (
                 <Table>
                   <TableHeader>

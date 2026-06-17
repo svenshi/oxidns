@@ -44,7 +44,6 @@ export default function ConsoleLayout({
   const isOfflineMode = useAppStore((s) => s.isOfflineMode);
   const exitOfflineMode = useAppStore((s) => s.exitOfflineMode);
   const isConfigLoading = useAppStore((s) => s.isConfigLoading);
-  const modeHeaderPresent = useAppStore((s) => s.modeHeaderPresent);
   const modeSelectionDismissed = useAppStore((s) => s.modeSelectionDismissed);
   const isConnected = useAuthStore((s) => s.isConnected);
   const connectionEpoch = useAuthStore((s) => s.connectionEpoch);
@@ -101,7 +100,6 @@ export default function ConsoleLayout({
     isConnected &&
     !isOfflineMode &&
     !isConfigLoading &&
-    !modeHeaderPresent &&
     !modeSelectionDismissed;
 
   useEffect(() => {
