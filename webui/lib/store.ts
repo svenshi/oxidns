@@ -100,8 +100,16 @@ import {
 } from "./webui-config-header";
 import { createDefaultStandardSettings } from "./standard-mode/defaults";
 import { generateStandardConfig } from "./standard-mode/generator";
-import { parseStandardSettingsFromYaml } from "./standard-mode/selectors";
-import type { StandardModeSettings } from "./standard-mode/types";
+import {
+  buildStandardGeneratedMetadata,
+  computeStandardSettingsRevision,
+  normalizeStandardSettings,
+  type StandardSettingsNotice,
+} from "./standard-mode/schema";
+import type {
+  StandardGeneratedMetadata,
+  StandardModeSettings,
+} from "./standard-mode/types";
 
 type StoreSet = (
   partial: Partial<AppState> | ((state: AppState) => Partial<AppState>),
@@ -166,6 +174,9 @@ interface AppState {
   modeHeaderPresent: boolean;
   modeSelectionDismissed: boolean;
   standardSettings: StandardModeSettings;
+  standardSettingsNotice: StandardSettingsNotice;
+  standardLastGenerated: StandardGeneratedMetadata | null;
+  standardConfigOutOfSync: boolean;
   selectedPlugin: PluginInstance | null;
   detailOpen: boolean;
   editorMode: boolean;
@@ -347,6 +358,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   modeHeaderPresent: false,
   modeSelectionDismissed: false,
   standardSettings: createDefaultStandardSettings(),
+  standardSettingsNotice: null,
+  standardLastGenerated: null,
+  standardConfigOutOfSync: false,
   selectedPlugin: null,
   detailOpen: false,
   editorMode: false,
@@ -386,6 +400,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       webUiConfig: applyWebUiConfigPatch(state.webUiConfig, patch),
       editorMode: mode === "standard" ? false : state.editorMode,
       modeSelectionDismissed,
+      standardConfigOutOfSync:
+        mode === "standard"
+          ? isStandardConfigOutOfSync(state.standardLastGenerated, state.configVersion)
+          : false,
     }));
     if (!get().isOfflineMode) {
       void persistWebUiConfigPatch(set, get, patch).catch(() => {});
@@ -405,6 +423,30 @@ export const useAppStore = create<AppState>((set, get) => ({
   saveStandardSettings: async (settings) => {
     const state = get();
     const nextSettings = settings ?? state.standardSettings;
+    const settingsRevision = computeStandardSettingsRevision(nextSettings);
+    const settingsPatch: JsonObject = {
+      mode: "standard",
+      standard: {
+        settings: nextSettings as unknown as JsonValue,
+        meta: {
+          settingsRevision,
+        },
+      },
+      ui: { modeSelectionDismissed: true },
+    };
+    set((current) => ({
+      webUiMode: "standard",
+      webUiConfig: applyWebUiConfigPatch(current.webUiConfig, settingsPatch),
+      modeSelectionDismissed: true,
+      standardSettings: nextSettings,
+      standardSettingsNotice: null,
+      standardConfigOutOfSync: false,
+      editorMode: false,
+    }));
+    if (!state.isOfflineMode) {
+      await persistWebUiConfigPatch(set, get, settingsPatch);
+    }
+
     const generated = generateStandardConfig(
       nextSettings,
       state.buildInfo,
@@ -416,26 +458,38 @@ export const useAppStore = create<AppState>((set, get) => ({
       modeHeaderPresent: true,
     });
     get().setYamlConfig(content);
-    const webUiPatch: JsonObject = {
-      mode: "standard",
-      standard: {
-        settings: nextSettings as unknown as JsonValue,
-      },
-      ui: { modeSelectionDismissed: true },
-    };
-    set((current) => ({
+    set({
       webUiMode: "standard",
-      webUiConfig: applyWebUiConfigPatch(current.webUiConfig, webUiPatch),
       modeHeaderPresent: true,
       modeSelectionDismissed: true,
       standardSettings: nextSettings,
+      standardSettingsNotice: null,
+      standardConfigOutOfSync: false,
       editorMode: false,
-    }));
+    });
     await get().saveConfig({
       source: "standard-settings",
     });
     if (!get().isOfflineMode) {
-      await persistWebUiConfigPatch(set, get, webUiPatch);
+      const metadata = buildStandardGeneratedMetadata(
+        nextSettings,
+        generated,
+        get().configVersion,
+      );
+      const metadataPatch: JsonObject = {
+        standard: {
+          meta: {
+            settingsRevision,
+            lastGenerated: metadata as unknown as JsonValue,
+          },
+        },
+      };
+      set((current) => ({
+        webUiConfig: applyWebUiConfigPatch(current.webUiConfig, metadataPatch),
+        standardLastGenerated: metadata,
+        standardConfigOutOfSync: false,
+      }));
+      await persistWebUiConfigPatch(set, get, metadataPatch);
     }
   },
   setYamlConfig: (config) => {
@@ -459,7 +513,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       configText: config,
       yamlConfig: config,
       ...headerState,
-      standardSettings: parseStandardSettingsFromYaml(parsed.config),
       plugins,
       matcherControls: reconcileMatcherControls(plugins, get().matcherControls),
       providerReloads: reconcileProviderReloads(plugins, get().providerReloads),
@@ -499,6 +552,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       modeHeaderPresent: false,
       modeSelectionDismissed: false,
       standardSettings: createDefaultStandardSettings(),
+      standardSettingsNotice: null,
+      standardLastGenerated: null,
+      standardConfigOutOfSync: false,
     });
     get().setYamlConfig(text);
   },
@@ -565,7 +621,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         throw configResult.reason;
       }
       const response = configResult.value;
-      applyConfigFileResponse(response, set, get());
+      applyConfigFileResponse(response, set);
       const header = parseWebUiConfigHeader(response.content);
       const scope = getScopeKey(response.path);
       recordSnapshot(scope, {
@@ -919,7 +975,6 @@ export const useAppStore = create<AppState>((set, get) => ({
           mode: prepared.header.mode,
         });
         const nextHeaderState = headerStateFromText(content);
-        const parsed = parseOxiDnsYaml(content);
         set({
           configText: content,
           yamlConfig: content,
@@ -927,10 +982,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           configPath: response.path,
           reloadStatus: response.reload ?? get().reloadStatus,
           configHistory: listSnapshots(scope),
-          ...(parsed.config
-            ? { standardSettings: parseStandardSettingsFromYaml(parsed.config) }
-            : {}),
           ...nextHeaderState,
+          standardConfigOutOfSync: isStandardConfigOutOfSync(
+            get().standardLastGenerated,
+            response.version,
+          ),
         });
         if (!isCurrentBackend(backendKey)) return;
         await get().refreshRuntimeState();
@@ -1500,7 +1556,6 @@ export const useAppStore = create<AppState>((set, get) => ({
 function applyConfigFileResponse(
   response: ConfigFileResponse,
   set: StoreSet,
-  state: AppState,
 ) {
   const parsed = parseOxiDnsYaml(response.content);
   const headerState = headerStateFromText(response.content);
@@ -1518,9 +1573,10 @@ function applyConfigFileResponse(
     return;
   }
 
-  const plugins = restorePinnedState(pluginsFromConfig(parsed.config));
-  set({
-    configModel: parsed.config,
+  const config = parsed.config;
+  const plugins = restorePinnedState(pluginsFromConfig(config));
+  set((state) => ({
+    configModel: config,
     configText: response.content,
     yamlConfig: response.content,
     ...headerState,
@@ -1551,10 +1607,13 @@ function applyConfigFileResponse(
         ]),
     ),
     selectedPlugin: syncSelectedPlugin(state.selectedPlugin, plugins),
-    standardSettings: parseStandardSettingsFromYaml(parsed.config),
+    standardConfigOutOfSync: isStandardConfigOutOfSync(
+      state.standardLastGenerated,
+      response.version,
+    ),
     configError: parsed.diagnostics[0] ?? null,
     configDiagnostics: parsed.diagnostics,
-  });
+  }));
 }
 
 function createDefaultWebUiConfig(): WebUiConfigDocument {
@@ -1587,7 +1646,8 @@ function applyWebUiConfigResponse(
   set: StoreSet,
 ) {
   const webUiConfig = normalizeWebUiConfig(response.config);
-  const standardSettings = standardSettingsDraftFromWebUiConfig(webUiConfig);
+  const standardSettings = loadStandardSettingsFromWebUiConfig(webUiConfig);
+  const standardLastGenerated = standardLastGeneratedFromWebUiConfig(webUiConfig);
   set((state) => ({
     webUiConfig,
     webUiConfigVersion: response.version,
@@ -1596,7 +1656,13 @@ function applyWebUiConfigResponse(
     webUiMode: webUiConfig.mode,
     modeSelectionDismissed: webUiConfig.ui.modeSelectionDismissed,
     editorMode: webUiConfig.mode === "standard" ? false : state.editorMode,
-    ...(standardSettings ? { standardSettings } : {}),
+    standardSettings: standardSettings.settings,
+    standardSettingsNotice: standardSettings.notice,
+    standardLastGenerated,
+    standardConfigOutOfSync:
+      webUiConfig.mode === "standard"
+        ? isStandardConfigOutOfSync(standardLastGenerated, state.configVersion)
+        : false,
   }));
 }
 
@@ -1653,28 +1719,51 @@ async function persistWebUiConfigPatch(
   });
 }
 
-function standardSettingsDraftFromWebUiConfig(
+function loadStandardSettingsFromWebUiConfig(
   config: WebUiConfigDocument,
-): StandardModeSettings | null {
+): { settings: StandardModeSettings; notice: StandardSettingsNotice } {
   const settings = config.standard.settings;
-  if (!isJsonObject(settings)) return null;
-  const candidate = settings as unknown as Partial<StandardModeSettings>;
+  if (settings === undefined) {
+    return { settings: createDefaultStandardSettings(), notice: null };
+  }
+  return normalizeStandardSettings(settings);
+}
+
+function standardLastGeneratedFromWebUiConfig(
+  config: WebUiConfigDocument,
+): StandardGeneratedMetadata | null {
+  const meta = isJsonObject(config.standard.meta) ? config.standard.meta : {};
+  const value = meta.lastGenerated;
+  if (!isJsonObject(value)) return null;
   if (
-    candidate.schema !== 1 ||
-    !candidate.listen ||
-    !Array.isArray(candidate.upstreams) ||
-    !candidate.cache ||
-    !candidate.queryLog ||
-    !candidate.adBlock ||
-    !candidate.split ||
-    !candidate.dualStack ||
-    !candidate.ipSelection ||
-    !candidate.ecs ||
-    !candidate.system
+    typeof value.settingsRevision !== "string" ||
+    !Array.isArray(value.generatedTags) ||
+    !isJsonObject(value.tagMap) ||
+    !isJsonObject(value.summary) ||
+    typeof value.generatedAtMs !== "number"
   ) {
     return null;
   }
-  return candidate as StandardModeSettings;
+  return {
+    configVersion:
+      typeof value.configVersion === "string" ? value.configVersion : null,
+    settingsRevision: value.settingsRevision,
+    generatedTags: value.generatedTags.map(String),
+    tagMap: value.tagMap as unknown as StandardGeneratedMetadata["tagMap"],
+    summary: value.summary as unknown as StandardGeneratedMetadata["summary"],
+    generatedAtMs: value.generatedAtMs,
+  };
+}
+
+function isStandardConfigOutOfSync(
+  lastGenerated: StandardGeneratedMetadata | null,
+  configVersion: string | null,
+): boolean {
+  return Boolean(
+    lastGenerated?.configVersion &&
+      configVersion &&
+      lastGenerated.configVersion !== configVersion,
+  );
 }
 
 function isJsonObject(value: unknown): value is JsonObject {
@@ -1752,7 +1841,10 @@ function syncPluginsToConfig(
     configModel,
     configText,
     yamlConfig: configText,
-    standardSettings: parseStandardSettingsFromYaml(configModel),
+    standardConfigOutOfSync: isStandardConfigOutOfSync(
+      state.standardLastGenerated,
+      state.configVersion,
+    ),
     selectedPlugin: syncSelectedPlugin(state.selectedPlugin, plugins),
     configError: null,
     configDiagnostics: [],
@@ -1778,7 +1870,10 @@ function applyConfigModelToState(
     configModel,
     configText,
     yamlConfig: configText,
-    standardSettings: parseStandardSettingsFromYaml(configModel),
+    standardConfigOutOfSync: isStandardConfigOutOfSync(
+      state.standardLastGenerated,
+      state.configVersion,
+    ),
     selectedPlugin:
       selectedTag === null
         ? null

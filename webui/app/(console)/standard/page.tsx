@@ -38,7 +38,10 @@ import {
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
 import type { MetricSeries } from "@/lib/metrics";
-import { selectStandardSummary } from "@/lib/standard-mode/selectors";
+import {
+  selectAllStandardUpstreams,
+  selectStandardSummary,
+} from "@/lib/standard-mode/selectors";
 import type { StandardUpstream } from "@/lib/standard-mode/types";
 import { useAppStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -448,6 +451,10 @@ export default function StandardOverviewPage() {
   const system = useAppStore((s) => s.system);
   const configModel = useAppStore((s) => s.configModel);
   const standardSettings = useAppStore((s) => s.standardSettings);
+  const standardSettingsNotice = useAppStore((s) => s.standardSettingsNotice);
+  const standardConfigOutOfSync = useAppStore(
+    (s) => s.standardConfigOutOfSync,
+  );
   const pluginMetrics = useAppStore((s) => s.pluginMetrics);
   const plugins = useAppStore((s) => s.plugins);
   const summary = useMemo(
@@ -515,7 +522,7 @@ export default function StandardOverviewPage() {
             sinceMs,
             signal,
           }),
-          standardSettings.adBlock.enabled
+          standardSettings.filtering.enabled
             ? fetchQueryRecorderTopQnames(recorderName, {
                 limit: 5,
                 sinceMs,
@@ -549,7 +556,7 @@ export default function StandardOverviewPage() {
         if (!signal?.aborted) setIsRefreshing(false);
       }
     },
-    [recorderName, standardSettings.adBlock.enabled, t],
+    [recorderName, standardSettings.filtering.enabled, t],
   );
 
   useEffect(() => {
@@ -588,18 +595,14 @@ export default function StandardOverviewPage() {
       : null;
   const qps = computeQps(totalQueries);
   const upstreamRows = useMemo(
-    () =>
-      uniqueUpstreams([
-        ...standardSettings.upstreams,
-        ...standardSettings.split.domesticUpstreams,
-      ]),
-    [standardSettings.split.domesticUpstreams, standardSettings.upstreams],
+    () => uniqueUpstreams(selectAllStandardUpstreams(standardSettings)),
+    [standardSettings],
   );
   const upstreamMetrics = useMemo(
-    () => [
-      ...(pluginMetrics.standard_forward_global ?? []),
-      ...(pluginMetrics.standard_forward_domestic ?? []),
-    ],
+    () =>
+      Object.entries(pluginMetrics)
+        .filter(([tag]) => tag.startsWith("standard_forward_"))
+        .flatMap(([, metrics]) => metrics),
     [pluginMetrics],
   );
   const upstreamStats = useMemo(
@@ -693,6 +696,16 @@ export default function StandardOverviewPage() {
           {statsError ? (
             <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {statsError}
+            </div>
+          ) : null}
+
+          {standardConfigOutOfSync || standardSettingsNotice ? (
+            <div className="rounded-md border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
+              {standardConfigOutOfSync
+                ? t(WEBUI.standardOverview.standardOutOfSync)
+                : standardSettingsNotice === "legacy_migrated"
+                  ? t(WEBUI.standardOverview.legacyMigrated)
+                  : t(WEBUI.standardOverview.invalidFallback)}
             </div>
           ) : null}
 

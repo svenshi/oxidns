@@ -73,7 +73,7 @@ const standardNavItems = [
     icon: Network,
   },
   {
-    title: "过滤与分流",
+    title: "广告过滤",
     href: "/standard/filtering",
     icon: ShieldCheck,
   },
