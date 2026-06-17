@@ -3,6 +3,9 @@ import type { BuildInfo } from "../oxidns-api";
 import type {
   StandardFilteringSettings,
   StandardModeSettings,
+  StandardResolutionPath,
+  StandardRoutingRule,
+  StandardRoutingSettings,
   StandardSubscription,
   StandardUpstream,
   StandardUpstreamProtocol,
@@ -39,6 +42,31 @@ export interface StandardFilteringValidationIssue {
     | "subscription_url_invalid"
     | "subscription_interval_invalid";
   subscriptionId?: string;
+}
+
+export interface StandardRoutingCapabilityMap {
+  sequence: boolean;
+  qname: boolean;
+  clientIp: boolean;
+  qtype: boolean;
+}
+
+export interface StandardRoutingValidationIssue {
+  field: string;
+  code:
+    | "capability_required"
+    | "path_required"
+    | "path_name_required"
+    | "path_upstream_group_required"
+    | "path_delete_blocked"
+    | "rule_name_required"
+    | "rule_condition_required"
+    | "rule_action_required"
+    | "rule_action_unsupported"
+    | "rule_condition_unsupported"
+    | "rule_matcher_unsupported";
+  pathId?: string;
+  ruleId?: string;
 }
 
 const protocolFeatureRequirements: Record<
@@ -327,4 +355,261 @@ function isHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+export function standardRoutingCapabilityMap(
+  buildInfo: BuildInfo | null,
+): StandardRoutingCapabilityMap {
+  return {
+    sequence: isPluginKindSupported(buildInfo, "executor", "sequence"),
+    qname: isPluginKindSupported(buildInfo, "matcher", "qname"),
+    clientIp: isPluginKindSupported(buildInfo, "matcher", "client_ip"),
+    qtype: isPluginKindSupported(buildInfo, "matcher", "qtype"),
+  };
+}
+
+export function normalizeStandardRoutingSettings(
+  settings: StandardModeSettings,
+): StandardModeSettings {
+  const fallbackPath: StandardResolutionPath = {
+    id: "default",
+    name: "默认解析路径",
+    upstreamGroupId: settings.upstreamGroups[0]?.id ?? "default",
+    filtering: "inherit",
+    cache: "inherit",
+    queryLog: "inherit",
+    dualStack: "inherit",
+    ipSelection: "inherit",
+    ecs: "inherit",
+  };
+  const paths = settings.paths.length > 0
+    ? settings.paths.map(normalizePath)
+    : [fallbackPath];
+  const normalizedPaths = paths.map((path, index) => ({
+    ...path,
+    id: index === 0 ? "default" : path.id,
+  }));
+  const pathIds = new Set(normalizedPaths.map((path) => path.id));
+  const defaultPathId = normalizedPaths[0]?.id ?? "default";
+  return {
+    ...settings,
+    paths: normalizedPaths,
+    routing: normalizeRouting(settings.routing, pathIds, defaultPathId),
+  };
+}
+
+export function validateStandardRoutingSettings(
+  settings: StandardModeSettings,
+  buildInfo: BuildInfo | null,
+): StandardRoutingValidationIssue[] {
+  const capabilities = standardRoutingCapabilityMap(buildInfo);
+  const normalized = normalizeStandardRoutingSettings(settings);
+  const issues: StandardRoutingValidationIssue[] = [];
+  const pathIds = new Set(normalized.paths.map((path) => path.id));
+  const groupIds = new Set(normalized.upstreamGroups.map((group) => group.id));
+
+  if (normalized.paths.length === 0) {
+    issues.push({ field: "paths", code: "path_required" });
+  }
+  for (const path of normalized.paths) {
+    if (!path.name.trim()) {
+      issues.push({
+        field: `path.${path.id}.name`,
+        code: "path_name_required",
+        pathId: path.id,
+      });
+    }
+    if (!groupIds.has(path.upstreamGroupId)) {
+      issues.push({
+        field: `path.${path.id}.upstreamGroupId`,
+        code: "path_upstream_group_required",
+        pathId: path.id,
+      });
+    }
+  }
+
+  if (!normalized.routing.enabled) return issues;
+
+  if (!capabilities.sequence) {
+    issues.push({ field: "routing", code: "capability_required" });
+  }
+
+  for (const rule of normalized.routing.rules.filter((item) => item.enabled)) {
+    const field = `rule.${rule.id}`;
+    if (!rule.name.trim()) {
+      issues.push({
+        field,
+        code: "rule_name_required",
+        ruleId: rule.id,
+      });
+    }
+    if (!isSupportedRoutingCondition(rule.condition)) {
+      issues.push({
+        field,
+        code: "rule_condition_unsupported",
+        ruleId: rule.id,
+      });
+    } else if (rule.condition.values.length === 0) {
+      issues.push({
+        field,
+        code: "rule_condition_required",
+        ruleId: rule.id,
+      });
+    }
+    if (!isSupportedRoutingAction(rule.action)) {
+      issues.push({
+        field,
+        code: "rule_action_unsupported",
+        ruleId: rule.id,
+      });
+    } else if (rule.action.type === "use_path" && !pathIds.has(rule.action.pathId)) {
+      issues.push({
+        field,
+        code: "rule_action_required",
+        ruleId: rule.id,
+      });
+    }
+    if (!isRoutingConditionCapabilitySupported(rule, capabilities)) {
+      issues.push({
+        field,
+        code: "rule_matcher_unsupported",
+        ruleId: rule.id,
+      });
+    }
+  }
+
+  return issues;
+}
+
+export function isPathReferencedByRouting(
+  pathId: string,
+  routing: StandardRoutingSettings,
+): boolean {
+  return routing.rules.some(
+    (rule) =>
+      rule.enabled &&
+      rule.action.type === "use_path" &&
+      rule.action.pathId === pathId,
+  );
+}
+
+function normalizePath(path: StandardResolutionPath): StandardResolutionPath {
+  return {
+    ...path,
+    id: cleanId(path.id, "path"),
+    name: path.name.trim() || path.id,
+    ...(path.description?.trim()
+      ? { description: path.description.trim() }
+      : { description: undefined }),
+    upstreamGroupId: cleanId(path.upstreamGroupId, "default"),
+  };
+}
+
+function normalizeRouting(
+  routing: StandardRoutingSettings,
+  pathIds: Set<string>,
+  defaultPathId: string,
+): StandardRoutingSettings {
+  return {
+    ...routing,
+    rules: routing.rules.map((rule) => normalizeRoutingRule(rule, pathIds, defaultPathId)),
+    scenarios: routing.scenarios.map((scenario) => ({
+      ...scenario,
+      id: cleanId(scenario.id, "scenario"),
+      name: scenario.name.trim() || scenario.id,
+    })),
+  };
+}
+
+function normalizeRoutingRule(
+  rule: StandardRoutingRule,
+  pathIds: Set<string>,
+  defaultPathId: string,
+): StandardRoutingRule {
+  const condition = isSupportedRoutingCondition(rule.condition)
+    ? {
+        ...rule.condition,
+        values: uniqueLines(rule.condition.values).map((value) =>
+          normalizeConditionValue(rule.condition.type, value),
+        ),
+      }
+    : rule.condition;
+  const action =
+    rule.action.type === "use_path"
+      ? {
+          type: "use_path" as const,
+          pathId: pathIds.has(rule.action.pathId)
+            ? rule.action.pathId
+            : defaultPathId,
+        }
+      : rule.action;
+  return {
+    ...rule,
+    id: cleanId(rule.id, "rule"),
+    name: rule.name.trim() || rule.id,
+    condition,
+    action,
+    ...(rule.note?.trim() ? { note: rule.note.trim() } : { note: undefined }),
+  };
+}
+
+function cleanId(value: string, fallback: string): string {
+  const raw = value.trim();
+  return raw
+    ? raw
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "_")
+        .replace(/^_+|_+$/g, "") || fallback
+    : fallback;
+}
+
+function normalizeConditionValue(
+  type: StandardRoutingRule["condition"]["type"],
+  value: string,
+): string {
+  const trimmed = value.trim();
+  if (type === "qtype") return trimmed.toUpperCase();
+  if (type === "suffix") return trimmed.replace(/^\.+/, "");
+  return trimmed;
+}
+
+function isSupportedRoutingCondition(
+  condition: StandardRoutingRule["condition"],
+): condition is Extract<
+  StandardRoutingRule["condition"],
+  { type: "domain" | "suffix" | "keyword" | "client_cidr" | "qtype" }
+> {
+  return (
+    condition.type === "domain" ||
+    condition.type === "suffix" ||
+    condition.type === "keyword" ||
+    condition.type === "client_cidr" ||
+    condition.type === "qtype"
+  );
+}
+
+function isSupportedRoutingAction(
+  action: StandardRoutingRule["action"],
+): action is Extract<
+  StandardRoutingRule["action"],
+  { type: "use_path" | "use_default_path" }
+> {
+  return action.type === "use_path" || action.type === "use_default_path";
+}
+
+function isRoutingConditionCapabilitySupported(
+  rule: StandardRoutingRule,
+  capabilities: StandardRoutingCapabilityMap,
+): boolean {
+  if (!isSupportedRoutingCondition(rule.condition)) return true;
+  if (
+    rule.condition.type === "domain" ||
+    rule.condition.type === "suffix" ||
+    rule.condition.type === "keyword"
+  ) {
+    return capabilities.qname;
+  }
+  if (rule.condition.type === "client_cidr") return capabilities.clientIp;
+  if (rule.condition.type === "qtype") return capabilities.qtype;
+  return true;
 }
