@@ -227,7 +227,10 @@ interface AppState {
   ) => void;
   dismissModeSelection: () => void;
   updateStandardSettings: (settings: StandardModeSettings) => void;
-  saveStandardSettings: (settings?: StandardModeSettings) => Promise<void>;
+  saveStandardSettings: (
+    settings?: StandardModeSettings,
+    options?: SaveStandardSettingsOptions,
+  ) => Promise<void>;
   saveConfig: (options?: SaveConfigOptions) => Promise<void>;
   applyConfig: () => Promise<void>;
   restartApp: () => Promise<void>;
@@ -289,6 +292,10 @@ let pendingWebUiConfigSaveCount = 0;
 
 interface SaveConfigOptions {
   source?: ConfigSnapshotSource;
+}
+
+interface SaveStandardSettingsOptions {
+  apply?: boolean;
 }
 
 function enqueueConfigSave(
@@ -420,7 +427,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
   updateStandardSettings: (settings) => set({ standardSettings: settings }),
-  saveStandardSettings: async (settings) => {
+  saveStandardSettings: async (settings, options) => {
     const state = get();
     const nextSettings = settings ?? state.standardSettings;
     const settingsRevision = computeStandardSettingsRevision(nextSettings);
@@ -490,6 +497,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         standardConfigOutOfSync: false,
       }));
       await persistWebUiConfigPatch(set, get, metadataPatch);
+    }
+    if (options?.apply) {
+      await get().applyConfig();
     }
   },
   setYamlConfig: (config) => {

@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Power,
   RotateCw,
+  CheckCircle2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -155,6 +156,7 @@ export function ConfigSyncControl() {
   const restartApp = useAppStore((s) => s.restartApp);
   const isRestarting = useAppStore((s) => s.isRestarting);
   const isConfigSaving = useAppStore((s) => s.isConfigSaving);
+  const webUiMode = useAppStore((s) => s.webUiMode);
   const restoreSnapshot = useAppStore((s) => s.restoreSnapshot);
   const saveConfig = useAppStore((s) => s.saveConfig);
   const setHistoryOpen = useAppStore((s) => s.setHistoryOpen);
@@ -168,6 +170,7 @@ export function ConfigSyncControl() {
 
   if (!isConnected) return null;
 
+  const isStandardMode = webUiMode === "standard";
   const hasLoadedConfig = Boolean(configVersion);
   const pendingRestartOnlyChange =
     requiresRestart && (state === "not-applied" || state === "apply-failed");
@@ -215,7 +218,22 @@ export function ConfigSyncControl() {
   const pillClass = tone === "neutral" ? "" : PILL_TONE[tone];
 
   const primary =
-    state === "in-sync" ? (
+    state === "in-sync" && isStandardMode ? (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 gap-1.5 rounded-md px-2.5 text-muted-foreground"
+            disabled
+          >
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            {t(WEBUI.configSync.inSync)}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{t(WEBUI.configSync.historyInSync)}</TooltipContent>
+      </Tooltip>
+    ) : state === "in-sync" ? (
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
@@ -296,73 +314,75 @@ export function ConfigSyncControl() {
     <>
       <div className="flex items-center gap-1">
         {primary}
-        <DropdownMenu>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon-sm" className="rounded-md">
-                  <MoreHorizontal className="h-4 w-4" />
-                  <span className="sr-only">
-                    {t(WEBUI.configSync.moreActions)}
-                  </span>
-                </Button>
-              </DropdownMenuTrigger>
-            </TooltipTrigger>
-            <TooltipContent>{t(WEBUI.configSync.moreActions)}</TooltipContent>
-          </Tooltip>
-          <DropdownMenuContent align="end" className="w-44">
-            <DropdownMenuItem
-              disabled={!canDiff}
-              onClick={() => setDiffOpen(true)}
-            >
-              <GitCompare className="h-4 w-4" />
-              {t(WEBUI.configSync.viewDiff)}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setHistoryOpen(true)}>
-              <History className="h-4 w-4" />
-              {t(WEBUI.configSync.historyButton)}
-            </DropdownMenuItem>
-            {canRestore && lastGood && (
-              <DropdownMenuItem onClick={handleRevertToRunning}>
-                <Undo2 className="h-4 w-4" />
-                {t(WEBUI.configSync.revertToRunning)}
+        {!isStandardMode ? (
+          <DropdownMenu>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon-sm" className="rounded-md">
+                    <MoreHorizontal className="h-4 w-4" />
+                    <span className="sr-only">
+                      {t(WEBUI.configSync.moreActions)}
+                    </span>
+                  </Button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent>{t(WEBUI.configSync.moreActions)}</TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem
+                disabled={!canDiff}
+                onClick={() => setDiffOpen(true)}
+              >
+                <GitCompare className="h-4 w-4" />
+                {t(WEBUI.configSync.viewDiff)}
               </DropdownMenuItem>
-            )}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              disabled={
-                state === "applying" ||
-                state === "error" ||
-                isRestarting ||
-                isConfigSaving ||
-                pendingRestartOnlyChange ||
-                !hasLoadedConfig
-              }
-              onClick={handleApply}
-            >
-              <RefreshCw className="h-4 w-4" />
-              {t(WEBUI.configSync.reloadConfig)}
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              disabled={
-                state === "applying" ||
-                state === "error" ||
-                isRestarting ||
-                isConfigSaving ||
-                !hasLoadedConfig
-              }
-              onClick={(event) => {
-                // Prevent the menu's default focus-restore so the AlertDialog
-                // can take focus cleanly after the menu closes.
-                event.preventDefault();
-                setRestartConfirmOpen(true);
-              }}
-            >
-              <Power className="h-4 w-4" />
-              {t(WEBUI.configSync.restartService)}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+              <DropdownMenuItem onClick={() => setHistoryOpen(true)}>
+                <History className="h-4 w-4" />
+                {t(WEBUI.configSync.historyButton)}
+              </DropdownMenuItem>
+              {canRestore && lastGood && (
+                <DropdownMenuItem onClick={handleRevertToRunning}>
+                  <Undo2 className="h-4 w-4" />
+                  {t(WEBUI.configSync.revertToRunning)}
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                disabled={
+                  state === "applying" ||
+                  state === "error" ||
+                  isRestarting ||
+                  isConfigSaving ||
+                  pendingRestartOnlyChange ||
+                  !hasLoadedConfig
+                }
+                onClick={handleApply}
+              >
+                <RefreshCw className="h-4 w-4" />
+                {t(WEBUI.configSync.reloadConfig)}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={
+                  state === "applying" ||
+                  state === "error" ||
+                  isRestarting ||
+                  isConfigSaving ||
+                  !hasLoadedConfig
+                }
+                onClick={(event) => {
+                  // Prevent the menu's default focus-restore so the AlertDialog
+                  // can take focus cleanly after the menu closes.
+                  event.preventDefault();
+                  setRestartConfirmOpen(true);
+                }}
+              >
+                <Power className="h-4 w-4" />
+                {t(WEBUI.configSync.restartService)}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
       </div>
 
       {lastGood && (

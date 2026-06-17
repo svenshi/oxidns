@@ -31,7 +31,9 @@ import {
   Puzzle,
   ScrollText,
   Settings,
+  ShieldAlert,
   ShieldCheck,
+  Smartphone,
   User,
 } from "lucide-react";
 import { WEBUI } from "@/lib/i18n";
@@ -63,27 +65,42 @@ const navItems = [
 
 const standardNavItems = [
   {
-    title: "概览",
+    titleKey: WEBUI.standardNav.overview,
     href: "/standard",
     icon: Gauge,
   },
   {
-    title: "DNS 设置",
+    titleKey: WEBUI.standardNav.dns,
     href: "/standard/dns",
     icon: Network,
   },
   {
-    title: "广告过滤",
+    titleKey: WEBUI.standardNav.filtering,
     href: "/standard/filtering",
     icon: ShieldCheck,
   },
   {
-    title: "查询日志",
+    titleKey: WEBUI.standardNav.routing,
+    href: "/standard/routing",
+    icon: GitBranch,
+  },
+  {
+    titleKey: WEBUI.standardNav.exceptions,
+    href: "/standard/exceptions",
+    icon: ShieldAlert,
+  },
+  {
+    titleKey: WEBUI.standardNav.queries,
     href: "/standard/queries",
     icon: ScrollText,
   },
   {
-    title: "系统",
+    titleKey: WEBUI.standardNav.devices,
+    href: "/standard/devices",
+    icon: Smartphone,
+  },
+  {
+    titleKey: WEBUI.standardNav.system,
     href: "/standard/system",
     icon: Settings,
   },
@@ -150,7 +167,7 @@ export function AppSidebar() {
                       >
                         <Link href={item.href}>
                           <item.icon className="size-4" />
-                          <span>{item.title}</span>
+                          <span>{t(item.titleKey)}</span>
                         </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
