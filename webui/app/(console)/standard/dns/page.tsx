@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Loader2, Plus, Save, Trash2 } from "lucide-react";
+import { Loader2, Plus, Save, TestTube2, Trash2 } from "lucide-react";
 import { AppHeader } from "@/components/shell/app-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,13 @@ import { Switch } from "@/components/ui/switch";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
 import {
+  testUpstream,
+  testUpstreamGroup,
+  type UpstreamGroupTestInput,
+  type UpstreamTestResult,
+} from "@/lib/oxidns-api";
+import { upstreamAddress } from "@/lib/standard-mode/generator";
+import {
   selectDefaultUpstreamGroup,
   selectStandardCapabilityMap,
 } from "@/lib/standard-mode/selectors";
@@ -30,6 +37,7 @@ import type {
 import {
   isStandardUpstreamProtocolSupported,
   normalizeStandardDnsSettings,
+  normalizeStandardUpstream,
   requiredStandardUpstreamProtocolFeatures,
   STANDARD_UPSTREAM_PROTOCOLS,
   validateStandardDnsSettings,
@@ -75,6 +83,36 @@ function numberValue(value: string, fallback: number) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function upstreamTestInput(upstream: StandardUpstream): UpstreamGroupTestInput {
+  const normalized = normalizeStandardUpstream(upstream);
+  return {
+    id: normalized.id,
+    name: normalized.name,
+    tag: normalized.id,
+    addr: upstreamAddress(normalized),
+    ...(normalized.bootstrap ? { bootstrap: normalized.bootstrap } : {}),
+    ...(normalized.dialAddress ? { dial_addr: normalized.dialAddress } : {}),
+    ...(normalized.tlsVerify === false ? { insecure_skip_verify: true } : {}),
+    ...(normalized.protocol === "doh3" || normalized.enableHttp3
+      ? { enable_http3: true }
+      : {}),
+  };
+}
+
+function failedUiTestResult(
+  upstream: StandardUpstream,
+  message: string,
+): UpstreamTestResult {
+  return {
+    id: upstream.id,
+    name: upstream.name || upstream.id,
+    success: false,
+    answers: [],
+    error_code: "request_failed",
+    error_message: message,
+  };
+}
+
 export default function StandardDnsPage() {
   const storeSettings = useAppStore((s) => s.standardSettings);
   const buildInfo = useAppStore((s) => s.buildInfo);
@@ -89,6 +127,14 @@ export default function StandardDnsPage() {
   const [draftSettings, setDraftSettings] =
     useState<StandardModeSettings | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [testResults, setTestResults] = useState<Record<string, UpstreamTestResult>>(
+    {},
+  );
+  const [testingUpstreams, setTestingUpstreams] = useState<Record<string, boolean>>(
+    {},
+  );
+  const [groupTestSummary, setGroupTestSummary] = useState<string | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
   const settings = draftSettings ?? storeSettings;
   const defaultGroup = selectDefaultUpstreamGroup(settings);
   const validationIssues = useMemo(
@@ -97,6 +143,13 @@ export default function StandardDnsPage() {
   );
   const isBusy = isConfigSaving || isApplying;
   const canSave = validationIssues.length === 0 && !isBusy;
+  const testableUpstreams = defaultGroup.upstreams.filter(
+    (upstream) =>
+      upstream.enabled &&
+      upstream.address.trim() &&
+      isStandardUpstreamProtocolSupported(upstream.protocol, buildInfo),
+  );
+  const isGroupTesting = Object.values(testingUpstreams).some(Boolean);
 
   const setPartial = (patch: Partial<StandardModeSettings>) => {
     setSaveError(null);
@@ -157,6 +210,76 @@ export default function StandardDnsPage() {
     }
   };
 
+  const handleTestUpstream = async (upstream: StandardUpstream) => {
+    setTestError(null);
+    setGroupTestSummary(null);
+    setTestingUpstreams((current) => ({ ...current, [upstream.id]: true }));
+    try {
+      const response = await testUpstream({
+        upstream: upstreamTestInput(upstream),
+        timeoutMs: 5000,
+      });
+      setTestResults((current) => ({
+        ...current,
+        [upstream.id]: { ...response.result, id: upstream.id, name: upstream.name },
+      }));
+    } catch (error) {
+      setTestResults((current) => ({
+        ...current,
+        [upstream.id]: failedUiTestResult(
+          upstream,
+          error instanceof Error ? error.message : String(error),
+        ),
+      }));
+    } finally {
+      setTestingUpstreams((current) => ({ ...current, [upstream.id]: false }));
+    }
+  };
+
+  const handleTestGroup = async () => {
+    if (testableUpstreams.length === 0) return;
+    setTestError(null);
+    setGroupTestSummary(null);
+    setTestingUpstreams((current) => {
+      const next = { ...current };
+      for (const upstream of testableUpstreams) next[upstream.id] = true;
+      return next;
+    });
+    try {
+      const response = await testUpstreamGroup({
+        upstreams: testableUpstreams.map(upstreamTestInput),
+        timeoutMs: 5000,
+      });
+      setTestResults((current) => {
+        const next = { ...current };
+        for (const result of response.results) {
+          if (result.id) next[result.id] = result;
+        }
+        return next;
+      });
+      setGroupTestSummary(
+        response.fastest_upstream_id
+          ? t(WEBUI.standardDns.testGroupSummary, {
+              success: response.success_count,
+              failed: response.failure_count,
+              upstream: response.fastest_upstream_id,
+              latency: response.fastest_latency_ms ?? 0,
+            })
+          : t(WEBUI.standardDns.testGroupNoSuccess, {
+              failed: response.failure_count,
+            }),
+      );
+    } catch (error) {
+      setTestError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTestingUpstreams((current) => {
+        const next = { ...current };
+        for (const upstream of testableUpstreams) next[upstream.id] = false;
+        return next;
+      });
+    }
+  };
+
   return (
     <>
       <AppHeader title={t(WEBUI.standardDns.title)} />
@@ -189,6 +312,12 @@ export default function StandardDnsPage() {
               saveError={saveError}
               protocolLabel={(protocol) => t(protocolLabelKeys[protocol])}
             />
+          ) : null}
+
+          {testError ? (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+              {testError}
+            </div>
           ) : null}
 
           <Card>
@@ -256,28 +385,51 @@ export default function StandardDnsPage() {
                   {t(WEBUI.standardDns.upstreamsDescription)}
                 </p>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  setDefaultUpstreams([
-                    ...defaultGroup.upstreams,
-                    createUpstream(defaultGroup.upstreams),
-                  ])
-                }
-              >
-                <Plus className="size-4" />
-                {t(WEBUI.standardDns.addUpstream)}
-              </Button>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={testableUpstreams.length === 0 || isGroupTesting}
+                  onClick={handleTestGroup}
+                >
+                  {isGroupTesting ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <TestTube2 className="size-4" />
+                  )}
+                  {t(WEBUI.standardDns.testAllUpstreams)}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    setDefaultUpstreams([
+                      ...defaultGroup.upstreams,
+                      createUpstream(defaultGroup.upstreams),
+                    ])
+                  }
+                >
+                  <Plus className="size-4" />
+                  {t(WEBUI.standardDns.addUpstream)}
+                </Button>
+              </div>
             </CardHeader>
             <CardContent className="space-y-3">
+              {groupTestSummary ? (
+                <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+                  {groupTestSummary}
+                </div>
+              ) : null}
               {defaultGroup.upstreams.map((upstream) => (
                 <UpstreamEditor
                   key={upstream.id}
                   upstream={upstream}
                   canRemove={defaultGroup.upstreams.length > 1}
+                  testResult={testResults[upstream.id]}
+                  testing={testingUpstreams[upstream.id] ?? false}
                   onChange={(patch) => updateUpstream(upstream.id, patch)}
                   onRemove={() => removeUpstream(upstream.id)}
+                  onTest={() => void handleTestUpstream(upstream)}
                 />
               ))}
             </CardContent>
@@ -446,13 +598,19 @@ export default function StandardDnsPage() {
 function UpstreamEditor({
   upstream,
   canRemove,
+  testResult,
+  testing,
   onChange,
   onRemove,
+  onTest,
 }: {
   upstream: StandardUpstream;
   canRemove: boolean;
+  testResult?: UpstreamTestResult;
+  testing: boolean;
   onChange: (patch: Partial<StandardUpstream>) => void;
   onRemove: () => void;
+  onTest: () => void;
 }) {
   const buildInfo = useAppStore((s) => s.buildInfo);
   const { t } = useI18n();
@@ -466,6 +624,8 @@ function UpstreamEditor({
     upstream.protocol,
     buildInfo,
   );
+  const canTest =
+    upstream.enabled && upstream.address.trim() && protocolSupported && !testing;
 
   return (
     <div className="rounded-lg border bg-card/40 p-4">
@@ -485,6 +645,22 @@ function UpstreamEditor({
           ) : null}
           <Button
             type="button"
+            variant="secondary"
+            size="sm"
+            disabled={!canTest}
+            onClick={onTest}
+          >
+            {testing ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <TestTube2 className="size-4" />
+            )}
+            {testing
+              ? t(WEBUI.standardDns.testRunning)
+              : t(WEBUI.standardDns.testUpstream)}
+          </Button>
+          <Button
+            type="button"
             variant="ghost"
             size="sm"
             disabled={!canRemove}
@@ -495,6 +671,11 @@ function UpstreamEditor({
           </Button>
         </div>
       </div>
+      <UpstreamTestStatus
+        upstream={upstream}
+        protocolSupported={protocolSupported}
+        result={testResult}
+      />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <div className="space-y-2">
           <Label htmlFor={`${upstream.id}-name`}>
@@ -594,6 +775,76 @@ function UpstreamEditor({
           </Label>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function UpstreamTestStatus({
+  upstream,
+  protocolSupported,
+  result,
+}: {
+  upstream: StandardUpstream;
+  protocolSupported: boolean;
+  result?: UpstreamTestResult;
+}) {
+  const { t } = useI18n();
+  if (!upstream.enabled) {
+    return (
+      <div className="mb-4 text-xs text-muted-foreground">
+        {t(WEBUI.standardDns.testDisabledUpstream)}
+      </div>
+    );
+  }
+  if (!upstream.address.trim()) {
+    return (
+      <div className="mb-4 text-xs text-muted-foreground">
+        {t(WEBUI.standardDns.testAddressRequired)}
+      </div>
+    );
+  }
+  if (!protocolSupported) {
+    return (
+      <div className="mb-4 text-xs text-muted-foreground">
+        {t(WEBUI.standardDns.testProtocolUnsupported)}
+      </div>
+    );
+  }
+  if (!result) {
+    return (
+      <div className="mb-4 text-xs text-muted-foreground">
+        {t(WEBUI.standardDns.testNotRun)}
+      </div>
+    );
+  }
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <Badge variant={result.success ? "secondary" : "destructive"}>
+        {result.success
+          ? t(WEBUI.standardDns.testSuccess)
+          : t(WEBUI.standardDns.testFailed)}
+      </Badge>
+      {result.protocol ? <span>{result.protocol.toUpperCase()}</span> : null}
+      {result.latency_ms !== undefined ? (
+        <span>
+          {t(WEBUI.standardDns.testLatency, { latency: result.latency_ms })}
+        </span>
+      ) : null}
+      {result.rcode ? <span>RCODE {result.rcode}</span> : null}
+      {result.answers.length > 0 ? (
+        <span>
+          {t(WEBUI.standardDns.testAnswerCount, {
+            count: result.answers.length,
+          })}
+        </span>
+      ) : null}
+      {result.error_message ? (
+        <span className="min-w-0 max-w-full truncate text-destructive">
+          {result.error_code === "protocol_unsupported"
+            ? t(WEBUI.standardDns.testProtocolUnsupported)
+            : result.error_message}
+        </span>
+      ) : null}
     </div>
   );
 }

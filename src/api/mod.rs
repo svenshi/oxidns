@@ -41,6 +41,7 @@ mod server;
 mod static_files;
 #[cfg(feature = "plugin-upgrade")]
 mod upgrade;
+mod upstreams;
 mod webui_config;
 
 use std::sync::Arc;
@@ -78,6 +79,7 @@ pub fn register_builtin_routes() -> Result<()> {
         build::register_builtin_routes(&register)?;
         #[cfg(feature = "plugin-upgrade")]
         upgrade::register_upgrade_routes(&register)?;
+        upstreams::register_builtin_routes(&register)?;
     }
     Ok(())
 }
