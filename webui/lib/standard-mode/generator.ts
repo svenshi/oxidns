@@ -10,6 +10,7 @@ import type {
   StandardGenerationSummary,
   StandardModeSettings,
   StandardResolutionPath,
+  StandardRoutingRule,
   StandardSubscription,
   StandardTagMap,
   StandardUpstream,
@@ -17,6 +18,7 @@ import type {
 } from "./types";
 import {
   normalizeStandardFilteringSettings,
+  normalizeStandardRoutingSettings,
   standardFilteringCapabilityMap,
 } from "./validation";
 
@@ -144,6 +146,9 @@ export function generateStandardConfig(
   buildInfo: BuildInfo | null,
   baseConfig?: OxiDnsConfig | null,
 ): StandardGenerationResult {
+  const generationSettings = normalizeStandardRoutingSettings(
+    normalizeStandardFilteringSettings(settings),
+  );
   const generated: PluginConfig[] = [];
   const skippedCapabilities: string[] = [];
   const tagMap: StandardTagMap = {
@@ -182,7 +187,7 @@ export function generateStandardConfig(
   }
 
   if (
-    settings.queryLog.enabled &&
+    generationSettings.queryLog.enabled &&
     pushIfSupported(
       "query_recorder",
       "executor",
@@ -194,7 +199,7 @@ export function generateStandardConfig(
         batch_size: 256,
         flush_interval_ms: 200,
         memory_tail: 1024,
-        retention_days: Math.max(1, settings.queryLog.retentionDays),
+        retention_days: Math.max(1, generationSettings.queryLog.retentionDays),
         cleanup_interval_hours: 1,
       },
     )
@@ -203,19 +208,19 @@ export function generateStandardConfig(
   }
 
   if (
-    settings.cache.enabled &&
+    generationSettings.cache.enabled &&
     pushIfSupported("cache", "executor", "cache", "standard_cache", {
-      size: settings.cache.size,
-      min_ttl: settings.cache.minTtl,
-      max_ttl: settings.cache.maxTtl,
-      negative_ttl: settings.cache.negativeTtl,
+      size: generationSettings.cache.size,
+      min_ttl: generationSettings.cache.minTtl,
+      max_ttl: generationSettings.cache.maxTtl,
+      negative_ttl: generationSettings.cache.negativeTtl,
       short_circuit: true,
     })
   ) {
     tagMap.cache = "standard_cache";
   }
 
-  const filteringSettings = normalizeStandardFilteringSettings(settings);
+  const filteringSettings = generationSettings;
   const filteringCapabilities = standardFilteringCapabilityMap(buildInfo);
   const subscriptions = enabledSubscriptions(filteringSettings);
   const shouldGenerateSubscriptions =
@@ -325,8 +330,10 @@ export function generateStandardConfig(
     tagMap.filtering = [...(tagMap.filtering ?? []), "standard_filter_cron"];
   }
 
-  const groupsById = new Map(settings.upstreamGroups.map((group) => [group.id, group]));
-  for (const group of settings.upstreamGroups) {
+  const groupsById = new Map(
+    generationSettings.upstreamGroups.map((group) => [group.id, group]),
+  );
+  for (const group of generationSettings.upstreamGroups) {
     const upstreams = enabledUpstreams(group.upstreams);
     if (upstreams.length === 0) continue;
     const tag = standardTag("forward", group.id);
@@ -340,25 +347,58 @@ export function generateStandardConfig(
     }
   }
 
-  for (const path of settings.paths) {
-    const group = groupsById.get(path.upstreamGroupId) ?? settings.upstreamGroups[0];
+  for (const path of generationSettings.paths) {
+    const group =
+      groupsById.get(path.upstreamGroupId) ?? generationSettings.upstreamGroups[0];
     const forwardTag = tagMap.upstreamGroups[group.id];
     if (!forwardTag) continue;
     const tag = standardTag("path", path.id);
-    const sequence = buildPathSequence(path, settings, forwardTag, tagMap);
+    const sequence = buildPathSequence(path, generationSettings, forwardTag, tagMap);
     if (pushIfSupported("path_sequence", "executor", "sequence", tag, sequence)) {
       tagMap.paths[path.id] = tag;
     }
   }
 
-  const defaultPath = settings.paths[0];
+  const defaultPath = generationSettings.paths[0];
   const defaultPathTag =
     tagMap.paths[defaultPath?.id ?? "default"] ??
     Object.values(tagMap.paths)[0] ??
     Object.values(tagMap.upstreamGroups)[0];
+  if (generationSettings.routing.enabled) {
+    for (const rule of generationSettings.routing.rules) {
+      if (!rule.enabled) continue;
+      const route = routeMatcher(rule);
+      const targetPathTag = routeTargetPathTag(rule, defaultPathTag, tagMap);
+      if (!route || !targetPathTag) continue;
+      const tag = standardTag("route_match", rule.id);
+      if (
+        pushIfSupported(
+          `route_${route.kind}`,
+          "matcher",
+          route.kind,
+          tag,
+          route.args,
+        )
+      ) {
+        tagMap.routingRules[rule.id] = tag;
+      }
+    }
+  }
+
   const mainSequence: Array<Record<string, unknown>> = [];
   if (tagMap.system.includes("standard_metrics")) {
     mainSequence.push({ exec: "$standard_metrics" });
+  }
+  if (generationSettings.routing.enabled) {
+    for (const rule of generationSettings.routing.rules) {
+      const matchTag = tagMap.routingRules[rule.id];
+      const targetPathTag = routeTargetPathTag(rule, defaultPathTag, tagMap);
+      if (!rule.enabled || !matchTag || !targetPathTag) continue;
+      mainSequence.push({
+        matches: `$${matchTag}`,
+        exec: `$${targetPathTag}`,
+      });
+    }
   }
   if (defaultPathTag) {
     mainSequence.push({ exec: `$${defaultPathTag}` });
@@ -373,15 +413,15 @@ export function generateStandardConfig(
     mainSequence,
   );
 
-  if (hasMainSequence && settings.listen.udp) {
+  if (hasMainSequence && generationSettings.listen.udp) {
     pushIfSupported("udp_server", "server", "udp_server", "standard_udp", {
-      listen: settings.listen.address,
+      listen: generationSettings.listen.address,
       entry: "standard_main_sequence",
     });
   }
-  if (hasMainSequence && settings.listen.tcp) {
+  if (hasMainSequence && generationSettings.listen.tcp) {
     pushIfSupported("tcp_server", "server", "tcp_server", "standard_tcp", {
-      listen: settings.listen.address,
+      listen: generationSettings.listen.address,
       entry: "standard_main_sequence",
     });
   }
@@ -389,10 +429,12 @@ export function generateStandardConfig(
   const config: OxiDnsConfig = {
     ...(baseConfig?.api ? { api: baseConfig.api } : {}),
     log: {
-      level: settings.system.logLevel,
+      level: generationSettings.system.logLevel,
     },
     runtime: {
-      ...(settings.system.threads ? { threads: settings.system.threads } : {}),
+      ...(generationSettings.system.threads
+        ? { threads: generationSettings.system.threads }
+        : {}),
     },
     plugins: generated,
   };
@@ -402,7 +444,7 @@ export function generateStandardConfig(
     skippedCapabilities: Array.from(new Set(skippedCapabilities)),
     generatedTags: generated.map((item) => item.tag),
     tagMap,
-    summary: summarizeSettings(settings),
+    summary: summarizeSettings(generationSettings),
   };
 }
 
@@ -439,7 +481,56 @@ function buildPathSequence(
     sequence.push({ exec: `$${tagMap.cache}` });
   }
   sequence.push({ matches: "!has_resp", exec: `$${forwardTag}` });
+  sequence.push({ exec: "accept" });
   return sequence;
+}
+
+function routeMatcher(
+  rule: StandardRoutingRule,
+): { kind: "qname" | "client_ip" | "qtype"; args: unknown } | null {
+  if (
+    rule.condition.type === "domain" ||
+    rule.condition.type === "suffix" ||
+    rule.condition.type === "keyword"
+  ) {
+    return {
+      kind: "qname",
+      args: routeDomainRules(rule),
+    };
+  }
+  if (rule.condition.type === "client_cidr") {
+    return { kind: "client_ip", args: rule.condition.values };
+  }
+  if (rule.condition.type === "qtype") {
+    return {
+      kind: "qtype",
+      args: rule.condition.values.map((value) => value.toUpperCase()),
+    };
+  }
+  return null;
+}
+
+function routeDomainRules(rule: StandardRoutingRule): string[] {
+  if (rule.condition.type === "domain") {
+    return rule.condition.values.map((value) => `full:${value}`);
+  }
+  if (rule.condition.type === "suffix") {
+    return rule.condition.values.map((value) => `domain:${value.replace(/^\.+/, "")}`);
+  }
+  if (rule.condition.type === "keyword") {
+    return rule.condition.values.map((value) => `keyword:${value}`);
+  }
+  return [];
+}
+
+function routeTargetPathTag(
+  rule: StandardRoutingRule,
+  defaultPathTag: string | undefined,
+  tagMap: StandardTagMap,
+): string | undefined {
+  if (rule.action.type === "use_default_path") return defaultPathTag;
+  if (rule.action.type === "use_path") return tagMap.paths[rule.action.pathId];
+  return undefined;
 }
 
 function summarizeSettings(settings: StandardModeSettings): StandardGenerationSummary {

@@ -208,6 +208,78 @@ export const WEBUI = {
     validationSubscriptionIntervalInvalid:
       "webui.standardFiltering.validationSubscriptionIntervalInvalid",
   },
+  standardRouting: {
+    title: "webui.standardRouting.title",
+    description: "webui.standardRouting.description",
+    saveApply: "webui.standardRouting.saveApply",
+    savingApplying: "webui.standardRouting.savingApplying",
+    overviewTitle: "webui.standardRouting.overviewTitle",
+    enabled: "webui.standardRouting.enabled",
+    unsupportedRouting: "webui.standardRouting.unsupportedRouting",
+    scenariosTitle: "webui.standardRouting.scenariosTitle",
+    scenariosDescription: "webui.standardRouting.scenariosDescription",
+    scenarioPrivacy: "webui.standardRouting.scenarioPrivacy",
+    scenarioGaming: "webui.standardRouting.scenarioGaming",
+    scenarioChildProtection:
+      "webui.standardRouting.scenarioChildProtection",
+    scenarioDomesticOptimization:
+      "webui.standardRouting.scenarioDomesticOptimization",
+    pathsTitle: "webui.standardRouting.pathsTitle",
+    pathsDescription: "webui.standardRouting.pathsDescription",
+    addPath: "webui.standardRouting.addPath",
+    removePath: "webui.standardRouting.removePath",
+    pathName: "webui.standardRouting.pathName",
+    pathDescription: "webui.standardRouting.pathDescription",
+    pathUpstreamGroup: "webui.standardRouting.pathUpstreamGroup",
+    pathFiltering: "webui.standardRouting.pathFiltering",
+    pathCache: "webui.standardRouting.pathCache",
+    pathQueryLog: "webui.standardRouting.pathQueryLog",
+    policyInherit: "webui.standardRouting.policyInherit",
+    policyEnabled: "webui.standardRouting.policyEnabled",
+    policyDisabled: "webui.standardRouting.policyDisabled",
+    rulesTitle: "webui.standardRouting.rulesTitle",
+    rulesDescription: "webui.standardRouting.rulesDescription",
+    rulesEmpty: "webui.standardRouting.rulesEmpty",
+    addRule: "webui.standardRouting.addRule",
+    removeRule: "webui.standardRouting.removeRule",
+    ruleEnabled: "webui.standardRouting.ruleEnabled",
+    ruleName: "webui.standardRouting.ruleName",
+    ruleCondition: "webui.standardRouting.ruleCondition",
+    ruleTargetPath: "webui.standardRouting.ruleTargetPath",
+    ruleNote: "webui.standardRouting.ruleNote",
+    ruleValues: "webui.standardRouting.ruleValues",
+    conditionDomain: "webui.standardRouting.conditionDomain",
+    conditionSuffix: "webui.standardRouting.conditionSuffix",
+    conditionKeyword: "webui.standardRouting.conditionKeyword",
+    conditionClientCidr: "webui.standardRouting.conditionClientCidr",
+    conditionQtype: "webui.standardRouting.conditionQtype",
+    unsupportedMatcher: "webui.standardRouting.unsupportedMatcher",
+    pathCount: "webui.standardRouting.pathCount",
+    ruleCount: "webui.standardRouting.ruleCount",
+    enabledRuleCount: "webui.standardRouting.enabledRuleCount",
+    validationTitle: "webui.standardRouting.validationTitle",
+    validationCapabilityRequired:
+      "webui.standardRouting.validationCapabilityRequired",
+    validationPathRequired: "webui.standardRouting.validationPathRequired",
+    validationPathNameRequired:
+      "webui.standardRouting.validationPathNameRequired",
+    validationPathUpstreamRequired:
+      "webui.standardRouting.validationPathUpstreamRequired",
+    validationPathDeleteBlocked:
+      "webui.standardRouting.validationPathDeleteBlocked",
+    validationRuleNameRequired:
+      "webui.standardRouting.validationRuleNameRequired",
+    validationRuleConditionRequired:
+      "webui.standardRouting.validationRuleConditionRequired",
+    validationRuleActionRequired:
+      "webui.standardRouting.validationRuleActionRequired",
+    validationRuleActionUnsupported:
+      "webui.standardRouting.validationRuleActionUnsupported",
+    validationRuleConditionUnsupported:
+      "webui.standardRouting.validationRuleConditionUnsupported",
+    validationRuleMatcherUnsupported:
+      "webui.standardRouting.validationRuleMatcherUnsupported",
+  },
   plugins: {
     centerTitle: "webui.plugins.centerTitle",
     systemOverview: "webui.plugins.systemOverview",

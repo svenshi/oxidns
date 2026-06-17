@@ -220,6 +220,78 @@ export const enUSWebui = {
     validationSubscriptionIntervalInvalid:
       "Subscription refresh intervals must be at least 1 hour.",
   },
+  standardRouting: {
+    title: "Routing Rules",
+    description:
+      "Configure resolution paths and rules that send selected requests to a specific upstream policy.",
+    saveApply: "Save and apply",
+    savingApplying: "Saving and applying",
+    overviewTitle: "Routing switch",
+    enabled: "Enable routing rules",
+    unsupportedRouting: "This build does not support sequence",
+    scenariosTitle: "Scenario path templates",
+    scenariosDescription:
+      "Templates create path drafts only. They do not create upstream groups, subscriptions, or a backend tester.",
+    scenarioPrivacy: "Private resolution",
+    scenarioGaming: "Low-latency gaming",
+    scenarioChildProtection: "Child protection",
+    scenarioDomesticOptimization: "Domestic optimization",
+    pathsTitle: "Resolution paths",
+    pathsDescription:
+      "Each path binds an upstream group and inherits or overrides filtering, cache, and query log policy.",
+    addPath: "Add path",
+    removePath: "Remove path",
+    pathName: "Name",
+    pathDescription: "Description",
+    pathUpstreamGroup: "Upstream group",
+    pathFiltering: "Ad filtering",
+    pathCache: "Cache",
+    pathQueryLog: "Query log",
+    policyInherit: "Inherit global",
+    policyEnabled: "Enabled",
+    policyDisabled: "Disabled",
+    rulesTitle: "Routing rules",
+    rulesDescription:
+      "Enabled rules send matching requests into the target path first. Misses fall back to the default path.",
+    rulesEmpty: "No routing rules yet.",
+    addRule: "Add rule",
+    removeRule: "Remove rule",
+    ruleEnabled: "Enabled",
+    ruleName: "Name",
+    ruleCondition: "Condition",
+    ruleTargetPath: "Target path",
+    ruleNote: "Note",
+    ruleValues: "Condition values",
+    conditionDomain: "Exact domain",
+    conditionSuffix: "Domain suffix",
+    conditionKeyword: "Keyword",
+    conditionClientCidr: "Client IP/CIDR",
+    conditionQtype: "QType",
+    unsupportedMatcher: "Unsupported condition in this build",
+    pathCount: "Resolution paths",
+    ruleCount: "Routing rules",
+    enabledRuleCount: "Enabled rules",
+    validationTitle: "Before saving",
+    validationCapabilityRequired:
+      "This build lacks sequence, so routing rules cannot be enabled.",
+    validationPathRequired: "At least one resolution path is required.",
+    validationPathNameRequired: "Resolution paths need a name.",
+    validationPathUpstreamRequired:
+      "Resolution paths must bind an existing upstream group.",
+    validationPathDeleteBlocked:
+      "Resolution paths referenced by rules cannot be deleted.",
+    validationRuleNameRequired: "Enabled rules need a name.",
+    validationRuleConditionRequired:
+      "Enabled rules need at least one condition value.",
+    validationRuleActionRequired:
+      "Enabled rules need an existing target path.",
+    validationRuleActionUnsupported:
+      "This rule action belongs to a later phase and cannot be saved as runtime config yet.",
+    validationRuleConditionUnsupported:
+      "This rule condition belongs to a later phase and cannot be saved as runtime config yet.",
+    validationRuleMatcherUnsupported:
+      "This build lacks the matcher required by this rule condition.",
+  },
   plugins: {
     centerTitle: "Plugin Center",
     systemOverview: "System Overview",
