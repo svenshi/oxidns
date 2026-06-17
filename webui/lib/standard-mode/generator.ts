@@ -65,7 +65,7 @@ function enabledUpstreams(upstreams: StandardUpstream[]) {
     }));
 }
 
-function upstreamAddress(upstream: StandardUpstream): string {
+export function upstreamAddress(upstream: StandardUpstream): string {
   const address = upstream.address.trim();
   if (upstream.protocol === "auto") return address;
   if (upstream.protocol === "udp") return withScheme(address, "udp://");
@@ -217,13 +217,12 @@ export function generateStandardConfig(
   const groupsById = new Map(settings.upstreamGroups.map((group) => [group.id, group]));
   for (const group of settings.upstreamGroups) {
     const upstreams = enabledUpstreams(group.upstreams);
+    if (upstreams.length === 0) continue;
     const tag = standardTag("forward", group.id);
-    const usableUpstreams =
-      upstreams.length > 0 ? upstreams : [{ tag: "default", addr: "udp://1.1.1.1:53" }];
     if (
       pushIfSupported("forward", "executor", "forward", tag, {
-        upstreams: usableUpstreams,
-        concurrent: concurrentCount(usableUpstreams, group.strategy),
+        upstreams,
+        concurrent: concurrentCount(upstreams, group.strategy),
       })
     ) {
       tagMap.upstreamGroups[group.id] = tag;
