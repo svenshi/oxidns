@@ -44,6 +44,12 @@ Every server plugin exports a shared set of request-level metrics through the gl
 - `server_latency_count`
 - `server_latency_sum_ms`
 
+### Internal Overload Protection
+
+All server entry points share one process-wide in-flight request limit, currently fixed at `4096`. When slow upstreams, long executor chains, or client bursts push the number of DNS requests being processed to that limit, new requests do not enter the `entry` executor pipeline and receive `SERVFAIL` immediately.
+
+This is an internal guardrail, not a YAML configuration option. Normal traffic below the limit is unchanged.
+
 ---
 
 ## `udp_server`

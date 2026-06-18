@@ -83,6 +83,8 @@ It is better suited for users who want explicit control over DNS behavior, rathe
 | Debugging and operations | Health checks, config validation, hot reload, query records, Prometheus plugin metrics, real-time logs |
 | Deployment | Multi-platform builds, Debian packages, standalone WebUI hosting, service installation |
 
+At runtime, all server entry points share an internal in-flight request limit, currently fixed at `4096`. New requests above that limit receive `SERVFAIL` immediately, preventing slow upstreams, long executor chains, or traffic bursts from piling up unbounded in the process. Normal traffic below the limit is unchanged.
+
 ---
 
 ## Good Fits

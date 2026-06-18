@@ -44,6 +44,12 @@ import Admonition from "@theme/Admonition";
 - `server_latency_count`
 - `server_latency_sum_ms`
 
+### 内部过载保护
+
+所有服务端入口共享一个进程级 in-flight 请求上限，当前固定为 `4096`。当慢上游、长执行链或突发客户端请求让正在处理的 DNS 请求达到该上限时，新的请求不会进入 `entry` 执行器管线，而是直接返回 `SERVFAIL`。
+
+这是内部保护机制，不是 YAML 配置项；正常流量低于上限时行为不变。
+
 ---
 
 ## `udp_server`

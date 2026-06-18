@@ -20,8 +20,8 @@
 //! providers, while preserving a common request lifecycle across all servers.
 
 use std::net::{SocketAddr, SocketAddrV4};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
@@ -81,7 +81,10 @@ impl ServerRequestLimiter {
 }
 
 pub(crate) fn default_request_limiter() -> Arc<ServerRequestLimiter> {
-    Arc::new(ServerRequestLimiter::new(DEFAULT_MAX_INFLIGHT_REQUESTS))
+    static LIMITER: OnceLock<Arc<ServerRequestLimiter>> = OnceLock::new();
+    LIMITER
+        .get_or_init(|| Arc::new(ServerRequestLimiter::new(DEFAULT_MAX_INFLIGHT_REQUESTS)))
+        .clone()
 }
 
 pub(crate) struct ConnectionGuard {
@@ -211,7 +214,7 @@ impl MetricSource for ServerMetrics {
         ));
         sink.emit(MetricSample::counter(
             "server_failed_total",
-            "Total requests that produced a SERVFAIL because the entry executor failed.",
+            "Total requests that produced SERVFAIL before or during executor processing.",
             &labels,
             self.failed_total.load(Ordering::Relaxed),
         ));
@@ -278,7 +281,7 @@ impl RequestHandle {
         let _request_permit = match self.acquire_request_permit(&msg, src_addr) {
             RequestPermitDecision::Acquired(permit) => permit,
             RequestPermitDecision::Rejected => {
-                return self.build_limit_exceeded_result(&msg, metrics_start);
+                return self.build_limit_exceeded_result(msg, metrics_start);
             }
         };
 
@@ -387,19 +390,19 @@ impl RequestHandle {
     #[inline]
     fn build_limit_exceeded_result(
         &self,
-        request: &Message,
+        request: Message,
         metrics_start: Option<u64>,
     ) -> RequestResult {
         let exit = RequestExit::Failed;
         let mut response = request.response(Rcode::ServFail);
-        Self::finalize_response(request, &mut response);
+        Self::finalize_response(&request, &mut response);
 
         if let (Some(metrics), Some(start_ms)) = (self.metrics.as_ref(), metrics_start) {
             metrics.on_request_finish(start_ms, exit);
         }
 
         RequestResult {
-            request: request.clone(),
+            request,
             response,
             exit,
         }
@@ -702,5 +705,13 @@ mod tests {
         let limiter = default_request_limiter();
 
         assert_eq!(limiter.max_inflight(), DEFAULT_MAX_INFLIGHT_REQUESTS);
+    }
+
+    #[test]
+    fn test_default_request_limiter_is_shared() {
+        let first = default_request_limiter();
+        let second = default_request_limiter();
+
+        assert!(Arc::ptr_eq(&first, &second));
     }
 }
