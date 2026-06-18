@@ -9,11 +9,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use tokio::sync::broadcast;
+use tokio::sync::{Semaphore, broadcast};
 use tracing::{error, warn};
 
 use super::model::{PendingRecord, RecordDetail, ResolvedRecorderConfig, TableNames};
-use super::store::{create_schema, open_database, run_writer_thread, table_names};
+use super::store::{create_schema, open_writer_database, run_writer_thread, table_names};
 use crate::infra::error::{DnsError, Result};
 
 #[derive(Debug)]
@@ -28,6 +28,7 @@ pub(super) struct RecorderBackend {
     pub(super) memory_tail: usize,
     pub(super) broadcaster: broadcast::Sender<RecordDetail>,
     pub(super) dropped_total: Arc<AtomicU64>,
+    pub(super) reader_semaphore: Arc<Semaphore>,
 }
 
 #[derive(Debug, Clone)]
@@ -79,7 +80,7 @@ impl RecorderBackend {
             })?;
         }
 
-        let mut conn = open_database(&config.path).map_err(|err| {
+        let mut conn = open_writer_database(&config.path).map_err(|err| {
             format!(
                 "failed to open database '{}': {}",
                 config.path.display(),
@@ -103,6 +104,7 @@ impl RecorderBackend {
         )));
         let (broadcaster, _) = broadcast::channel(config.memory_tail.max(16));
         let dropped_total = Arc::new(AtomicU64::new(0));
+        let reader_semaphore = Arc::new(Semaphore::new(config.reader_concurrency));
 
         let writer_tables = tables.clone();
         let writer_stop = stop_requested.clone();
@@ -142,6 +144,7 @@ impl RecorderBackend {
             memory_tail,
             broadcaster,
             dropped_total,
+            reader_semaphore,
         }))
     }
 

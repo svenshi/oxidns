@@ -23,7 +23,7 @@ use super::store::{
     load_record_detail, load_timeseries, load_top_clients, load_top_qnames, query_records,
 };
 use crate::api::{ApiHandler, json_error, json_ok, simple_response, streaming_response};
-use crate::infra::error::Result;
+use crate::infra::error::{DnsError, Result};
 use crate::register_plugin_api;
 
 const DEFAULT_LIST_LIMIT: usize = 100;
@@ -116,6 +116,28 @@ struct TimeseriesHandler {
     backend: Arc<RecorderBackend>,
 }
 
+async fn run_reader_query<T, F>(
+    backend: Arc<RecorderBackend>,
+    op: F,
+) -> std::result::Result<T, DnsError>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<RecorderBackend>) -> std::result::Result<T, DnsError> + Send + 'static,
+{
+    let permit = backend
+        .reader_semaphore
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|err| DnsError::runtime(format!("query_recorder reader closed: {err}")))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        op(backend)
+    })
+    .await
+    .map_err(|err| DnsError::runtime(format!("blocking task failed: {err}")))?
+}
+
 #[async_trait]
 impl ApiHandler for RecordsListHandler {
     async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
@@ -125,8 +147,8 @@ impl ApiHandler for RecordsListHandler {
         };
 
         let backend = self.backend.clone();
-        match tokio::task::spawn_blocking(move || query_records(backend, query)).await {
-            Ok(Ok((records, next_cursor))) => json_ok(
+        match run_reader_query(backend, move |backend| query_records(backend, query)).await {
+            Ok((records, next_cursor)) => json_ok(
                 StatusCode::OK,
                 &RecordListResponse {
                     ok: true,
@@ -134,15 +156,10 @@ impl ApiHandler for RecordsListHandler {
                     records,
                 },
             ),
-            Ok(Err(err)) => json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "query_recorder_records_failed",
-                err.to_string(),
-            ),
             Err(err) => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "query_recorder_records_failed",
-                format!("blocking task failed: {err}"),
+                err.to_string(),
             ),
         }
     }
@@ -173,24 +190,21 @@ impl ApiHandler for RecordDetailHandler {
         };
 
         let backend = self.backend.clone();
-        match tokio::task::spawn_blocking(move || load_record_detail(backend, record_id)).await {
-            Ok(Ok(Some(record))) => {
-                json_ok(StatusCode::OK, &RecordDetailResponse { ok: true, record })
-            }
-            Ok(Ok(None)) => json_error(
+        match run_reader_query(backend, move |backend| {
+            load_record_detail(backend, record_id)
+        })
+        .await
+        {
+            Ok(Some(record)) => json_ok(StatusCode::OK, &RecordDetailResponse { ok: true, record }),
+            Ok(None) => json_error(
                 StatusCode::NOT_FOUND,
                 "record_not_found",
                 format!("record {} does not exist", record_id),
             ),
-            Ok(Err(err)) => json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "query_recorder_record_failed",
-                err.to_string(),
-            ),
             Err(err) => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "query_recorder_record_failed",
-                format!("blocking task failed: {err}"),
+                err.to_string(),
             ),
         }
     }
@@ -230,8 +244,8 @@ impl ApiHandler for StatsPluginsHandler {
             Err(err) => return json_error(StatusCode::BAD_REQUEST, "invalid_query", err),
         };
         let backend = self.backend.clone();
-        match tokio::task::spawn_blocking(move || load_plugin_stats(backend, query)).await {
-            Ok(Ok((query_total, stats))) => json_ok(
+        match run_reader_query(backend, move |backend| load_plugin_stats(backend, query)).await {
+            Ok((query_total, stats)) => json_ok(
                 StatusCode::OK,
                 &PluginStatsResponse {
                     ok: true,
@@ -239,15 +253,10 @@ impl ApiHandler for StatsPluginsHandler {
                     stats,
                 },
             ),
-            Ok(Err(err)) => json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "query_recorder_stats_failed",
-                err.to_string(),
-            ),
             Err(err) => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "query_recorder_stats_failed",
-                format!("blocking task failed: {err}"),
+                err.to_string(),
             ),
         }
     }
@@ -342,17 +351,12 @@ impl ApiHandler for TopClientsHandler {
             Err(err) => return json_error(StatusCode::BAD_REQUEST, "invalid_query", err),
         };
         let backend = self.backend.clone();
-        match tokio::task::spawn_blocking(move || load_top_clients(backend, query)).await {
-            Ok(Ok(response)) => json_ok(StatusCode::OK, &response),
-            Ok(Err(err)) => json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "query_recorder_top_clients_failed",
-                err.to_string(),
-            ),
+        match run_reader_query(backend, move |backend| load_top_clients(backend, query)).await {
+            Ok(response) => json_ok(StatusCode::OK, &response),
             Err(err) => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "query_recorder_top_clients_failed",
-                format!("blocking task failed: {err}"),
+                err.to_string(),
             ),
         }
     }
@@ -366,17 +370,12 @@ impl ApiHandler for TopQnamesHandler {
             Err(err) => return json_error(StatusCode::BAD_REQUEST, "invalid_query", err),
         };
         let backend = self.backend.clone();
-        match tokio::task::spawn_blocking(move || load_top_qnames(backend, query)).await {
-            Ok(Ok(response)) => json_ok(StatusCode::OK, &response),
-            Ok(Err(err)) => json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "query_recorder_top_qnames_failed",
-                err.to_string(),
-            ),
+        match run_reader_query(backend, move |backend| load_top_qnames(backend, query)).await {
+            Ok(response) => json_ok(StatusCode::OK, &response),
             Err(err) => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "query_recorder_top_qnames_failed",
-                format!("blocking task failed: {err}"),
+                err.to_string(),
             ),
         }
     }
@@ -390,17 +389,16 @@ impl ApiHandler for QtypeDistributionHandler {
             Err(err) => return json_error(StatusCode::BAD_REQUEST, "invalid_query", err),
         };
         let backend = self.backend.clone();
-        match tokio::task::spawn_blocking(move || load_qtype_distribution(backend, query)).await {
-            Ok(Ok(response)) => json_ok(StatusCode::OK, &response),
-            Ok(Err(err)) => json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "query_recorder_qtype_failed",
-                err.to_string(),
-            ),
+        match run_reader_query(backend, move |backend| {
+            load_qtype_distribution(backend, query)
+        })
+        .await
+        {
+            Ok(response) => json_ok(StatusCode::OK, &response),
             Err(err) => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "query_recorder_qtype_failed",
-                format!("blocking task failed: {err}"),
+                err.to_string(),
             ),
         }
     }
@@ -414,17 +412,16 @@ impl ApiHandler for RcodeDistributionHandler {
             Err(err) => return json_error(StatusCode::BAD_REQUEST, "invalid_query", err),
         };
         let backend = self.backend.clone();
-        match tokio::task::spawn_blocking(move || load_rcode_distribution(backend, query)).await {
-            Ok(Ok(response)) => json_ok(StatusCode::OK, &response),
-            Ok(Err(err)) => json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "query_recorder_rcode_failed",
-                err.to_string(),
-            ),
+        match run_reader_query(backend, move |backend| {
+            load_rcode_distribution(backend, query)
+        })
+        .await
+        {
+            Ok(response) => json_ok(StatusCode::OK, &response),
             Err(err) => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "query_recorder_rcode_failed",
-                format!("blocking task failed: {err}"),
+                err.to_string(),
             ),
         }
     }
@@ -438,17 +435,12 @@ impl ApiHandler for LatencyHandler {
             Err(err) => return json_error(StatusCode::BAD_REQUEST, "invalid_query", err),
         };
         let backend = self.backend.clone();
-        match tokio::task::spawn_blocking(move || load_latency_summary(backend, query)).await {
-            Ok(Ok(response)) => json_ok(StatusCode::OK, &response),
-            Ok(Err(err)) => json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "query_recorder_latency_failed",
-                err.to_string(),
-            ),
+        match run_reader_query(backend, move |backend| load_latency_summary(backend, query)).await {
+            Ok(response) => json_ok(StatusCode::OK, &response),
             Err(err) => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "query_recorder_latency_failed",
-                format!("blocking task failed: {err}"),
+                err.to_string(),
             ),
         }
     }
@@ -462,17 +454,12 @@ impl ApiHandler for TimeseriesHandler {
             Err(err) => return json_error(StatusCode::BAD_REQUEST, "invalid_query", err),
         };
         let backend = self.backend.clone();
-        match tokio::task::spawn_blocking(move || load_timeseries(backend, query)).await {
-            Ok(Ok(response)) => json_ok(StatusCode::OK, &response),
-            Ok(Err(err)) => json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "query_recorder_timeseries_failed",
-                err.to_string(),
-            ),
+        match run_reader_query(backend, move |backend| load_timeseries(backend, query)).await {
+            Ok(response) => json_ok(StatusCode::OK, &response),
             Err(err) => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "query_recorder_timeseries_failed",
-                format!("blocking task failed: {err}"),
+                err.to_string(),
             ),
         }
     }

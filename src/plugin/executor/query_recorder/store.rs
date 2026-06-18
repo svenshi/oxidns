@@ -56,29 +56,40 @@ const RECORD_ROW_COLUMNS: [&str; 27] = [
     "resp_edns_json",
 ];
 
-pub(super) fn open_database(path: &Path) -> rusqlite::Result<Connection> {
+pub(super) fn open_writer_database(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
-    // Tuned for a workload of "one writer + bursty readers".
+    // Tuned for the dedicated writer thread. Keep WAL and incremental vacuum
+    // behavior, but avoid giving the single writer the same large read cache
+    // and mmap footprint that used to be applied to every reader.
     // - auto_vacuum must be selected before WAL or schema creation for a fresh
     //   database; otherwise SQLite keeps the default NONE mode until a manual
     //   VACUUM rewrites the file.
-    // - WAL + synchronous=NORMAL is the standard high-throughput combo for the
-    //   writer thread and keeps readers non-blocking.
-    // - temp_store=MEMORY keeps the implicit temp tables that GROUP BY / ORDER BY /
-    //   DISTINCT create off the disk on every aggregation query.
-    // - cache_size=-32768 = 32 MiB per connection (negative means KiB). The stats
-    //   endpoints repeatedly hit the same recent rows, so the cache amortizes
-    //   cleanly across read connections.
-    // - mmap_size lets SQLite memory-map the DB pages, which is a noticeable
-    //   speedup for read-heavy SELECTs once the OS page cache is warm.
+    // - WAL + synchronous=NORMAL keeps the writer fast and readers non-blocking.
     conn.execute_batch(
         "PRAGMA auto_vacuum=INCREMENTAL;
          PRAGMA journal_mode=WAL;
          PRAGMA synchronous=NORMAL;
          PRAGMA foreign_keys=ON;
-         PRAGMA temp_store=MEMORY;
-         PRAGMA cache_size=-32768;
-         PRAGMA mmap_size=134217728;",
+         PRAGMA temp_store=DEFAULT;
+         PRAGMA cache_size=-4096;
+         PRAGMA mmap_size=0;",
+    )?;
+    Ok(conn)
+}
+
+pub(super) fn open_reader_database(path: &Path) -> rusqlite::Result<Connection> {
+    let conn = Connection::open(path)?;
+    // Reader connections back WebUI list/stat/detail endpoints. They should
+    // not reserve a large per-connection cache or mmap window, because several
+    // dashboard requests can run at once against a large recorder database.
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=NORMAL;
+         PRAGMA foreign_keys=ON;
+         PRAGMA query_only=ON;
+         PRAGMA temp_store=FILE;
+         PRAGMA cache_size=-4096;
+         PRAGMA mmap_size=0;",
     )?;
     Ok(conn)
 }
@@ -496,7 +507,7 @@ pub(super) fn query_records(
     backend: Arc<RecorderBackend>,
     query: ListQuery,
 ) -> std::result::Result<(Vec<RecordRow>, Option<String>), DnsError> {
-    let conn = open_database(&backend.path)?;
+    let conn = open_reader_database(&backend.path)?;
     let (mut clauses, mut params) = record_filter_clauses(
         "r",
         &backend.tables,
@@ -553,7 +564,7 @@ pub(super) fn load_record_detail(
     backend: Arc<RecorderBackend>,
     record_id: i64,
 ) -> std::result::Result<Option<RecordDetail>, DnsError> {
-    let conn = open_database(&backend.path)?;
+    let conn = open_reader_database(&backend.path)?;
     let row_columns = record_row_select_columns(None);
     let record_sql = format!(
         "SELECT
@@ -614,7 +625,7 @@ pub(super) fn load_plugin_stats(
     backend: Arc<RecorderBackend>,
     query: PluginsStatsQuery,
 ) -> std::result::Result<(u64, Vec<PluginStatsRow>), DnsError> {
-    let conn = open_database(&backend.path)?;
+    let conn = open_reader_database(&backend.path)?;
     let (clauses, mut params) = record_filter_clauses(
         "r",
         &backend.tables,
@@ -724,7 +735,7 @@ pub(super) fn load_top_clients(
     backend: Arc<RecorderBackend>,
     query: TopQuery,
 ) -> std::result::Result<TopBucketsResponse, DnsError> {
-    let conn = open_database(&backend.path)?;
+    let conn = open_reader_database(&backend.path)?;
     let (clauses, mut params) = record_filter_clauses(
         "r",
         &backend.tables,
@@ -784,7 +795,7 @@ pub(super) fn load_top_qnames(
     backend: Arc<RecorderBackend>,
     query: TopQuery,
 ) -> std::result::Result<TopBucketsResponse, DnsError> {
-    let conn = open_database(&backend.path)?;
+    let conn = open_reader_database(&backend.path)?;
     let (clauses, mut params) = record_filter_clauses(
         "r",
         &backend.tables,
@@ -848,7 +859,7 @@ pub(super) fn load_qtype_distribution(
     backend: Arc<RecorderBackend>,
     query: DistributionQuery,
 ) -> std::result::Result<DistributionResponse, DnsError> {
-    let conn = open_database(&backend.path)?;
+    let conn = open_reader_database(&backend.path)?;
     let (clauses, mut params) = record_filter_clauses(
         "r",
         &backend.tables,
@@ -910,7 +921,7 @@ pub(super) fn load_rcode_distribution(
     backend: Arc<RecorderBackend>,
     query: DistributionQuery,
 ) -> std::result::Result<DistributionResponse, DnsError> {
-    let conn = open_database(&backend.path)?;
+    let conn = open_reader_database(&backend.path)?;
     let (clauses, mut params) = record_filter_clauses(
         "r",
         &backend.tables,
@@ -976,7 +987,7 @@ pub(super) fn load_latency_summary(
     backend: Arc<RecorderBackend>,
     query: LatencyQuery,
 ) -> std::result::Result<LatencySummary, DnsError> {
-    let conn = open_database(&backend.path)?;
+    let conn = open_reader_database(&backend.path)?;
     let (clauses, mut params) = record_filter_clauses(
         "r",
         &backend.tables,
@@ -1075,7 +1086,7 @@ pub(super) fn load_timeseries(
     backend: Arc<RecorderBackend>,
     query: TimeseriesQuery,
 ) -> std::result::Result<TimeseriesResponse, DnsError> {
-    let conn = open_database(&backend.path)?;
+    let conn = open_reader_database(&backend.path)?;
     let (clauses, mut params) = record_filter_clauses(
         "r",
         &backend.tables,
