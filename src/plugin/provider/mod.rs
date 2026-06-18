@@ -80,13 +80,18 @@ pub trait Provider: Plugin {
         ProviderRuntimeStatus {
             ok: true,
             plugin: self.tag().to_string(),
-            supports_reload: false,
+            supports_reload: self.supports_reload(),
             supports_domain_matching: self.supports_domain_matching(),
             supports_ip_matching: self.supports_ip_matching(),
             last_reload_ms: None,
             last_error: None,
             rule_stats: None,
         }
+    }
+
+    #[inline]
+    fn supports_reload(&self) -> bool {
+        false
     }
 
     #[inline]
@@ -300,6 +305,10 @@ mod tests {
             Ok(())
         }
 
+        fn supports_reload(&self) -> bool {
+            true
+        }
+
         fn supports_domain_matching(&self) -> bool {
             true
         }
@@ -336,7 +345,7 @@ mod tests {
 
         assert!(status.ok);
         assert_eq!(status.plugin, "reloadable");
-        assert!(!status.supports_reload);
+        assert!(status.supports_reload);
         assert!(status.supports_domain_matching);
         assert!(!status.supports_ip_matching);
         assert!(status.rule_stats.is_none());

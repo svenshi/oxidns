@@ -733,6 +733,8 @@ function validationMessage(
       WEBUI.standardDevices.validationFilteringCapabilityRequired,
     filtering_rule_source_required:
       WEBUI.standardDevices.validationFilteringRuleSourceRequired,
+    filtering_subscription_runtime_required:
+      WEBUI.standardDevices.validationFilteringSubscriptionRuntimeRequired,
     query_log_capability_required:
       WEBUI.standardDevices.validationQueryLogCapabilityRequired,
   };

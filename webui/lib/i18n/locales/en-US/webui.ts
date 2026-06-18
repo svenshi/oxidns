@@ -506,6 +506,8 @@ export const enUSWebui = {
       "This build lacks adguard_rule or black_hole, so filtering cannot be forced on for devices.",
     validationFilteringRuleSourceRequired:
       "Force-enabling filtering for a device needs at least one block rule or enabled subscription.",
+    validationFilteringSubscriptionRuntimeRequired:
+      "Device filtering cannot rely only on subscriptions in this build. Add manual block rules or enable subscription runtime support.",
     validationQueryLogCapabilityRequired:
       "This build lacks query_recorder, so query logging cannot be forced on for devices.",
   },

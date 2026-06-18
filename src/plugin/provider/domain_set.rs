@@ -204,6 +204,10 @@ impl Provider for DomainSet {
         result
     }
 
+    fn supports_reload(&self) -> bool {
+        true
+    }
+
     fn runtime_status(&self) -> ProviderRuntimeStatus {
         let reload_state = self
             .reload_state

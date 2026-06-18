@@ -471,6 +471,8 @@ export const zhCNWebui = {
       "当前构建缺少 adguard_rule 或 black_hole，不能为设备强制启用过滤。",
     validationFilteringRuleSourceRequired:
       "为设备强制启用过滤时，需要至少一条黑名单规则或一个启用订阅。",
+    validationFilteringSubscriptionRuntimeRequired:
+      "当前构建设备过滤不能只依赖订阅。请添加手动黑名单规则，或启用订阅运行能力。",
     validationQueryLogCapabilityRequired:
       "当前构建缺少 query_recorder，不能为设备强制启用查询日志。",
   },
