@@ -75,7 +75,7 @@ of `minimal`.
 **Additional**
 
 - Management: HTTP API, WebUI, Prometheus `/metrics`, `metrics_collector`
-- Inbound / upstream: DoT, DoH (HTTP/2), DoQ
+- Inbound / upstream: DoT, DoH (HTTP/1.1 / HTTP/2), DoQ
 - Providers: `geoip`, `geosite`, `v2ray_dat`, `adguard_rule`
 - Executors: `arbitrary`, `cron`, `download`, `http_request`,
   `reverse_lookup`, `query_recorder`, `script`
@@ -111,7 +111,7 @@ preset.
 | Feature | Purpose |
 |---|---|
 | `server-dot` | DoT (TLS over TCP) inbound server, rustls server stack |
-| `server-doh` | DoH (HTTP/2 over TLS) inbound server, hyper server + rustls |
+| `server-doh` | DoH (HTTP/1.1 / HTTP/2 over TLS) inbound server, hyper server + rustls |
 | `server-doq` | DoQ (QUIC) inbound server, `quinn` |
 | `server-doh3` | HTTP/3 leg on the DoH server (requires `server-doh`), adds `h3` / `h3-quinn` / `quinn` |
 | `upstream-dot` | DoT upstreams (`tls://` scheme) |

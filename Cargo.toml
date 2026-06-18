@@ -205,9 +205,9 @@ metrics = ["api"]
 # Inbound DoT (TLS over TCP) server. Pulls in the TLS server stack.
 server-dot = ["_tls-server"]
 
-# Inbound DoH (HTTP/2 over TLS) server. Pulls in hyper(server) + TLS server.
-# The HTTP/2 leg drives the `h2` crate directly for the DoH handshake.
-server-doh = ["_http-server", "_tls-server", "dep:h2"]
+# Inbound DoH (HTTP/1.1 + HTTP/2 over TLS) server. Pulls in hyper(server) +
+# TLS server.
+server-doh = ["_http-server", "_tls-server"]
 
 # Inbound DoQ server (QUIC). Pulls in the `quinn` server stack and the
 # rustls glue it needs for the QUIC TLS layer.

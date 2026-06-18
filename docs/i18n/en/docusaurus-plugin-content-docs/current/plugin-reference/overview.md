@@ -30,7 +30,7 @@ See [Server Plugins](server.mdx) for full field reference.
 | --- | --- |
 | [`udp_server`](server.mdx#udp_server) | Listens for DNS over UDP and forwards requests to `entry`. |
 | [`tcp_server`](server.mdx#tcp_server) | Listens for DNS over TCP. With `cert` and `key` configured it also serves as a DoT listener. |
-| [`http_server`](server.mdx#http_server) | Provides DNS over HTTPS (DoH) over HTTP/2 with optional HTTP/3. |
+| [`http_server`](server.mdx#http_server) | Provides DNS over HTTPS (DoH) over HTTP/1.1, HTTP/2, and optional HTTP/3. |
 | [`quic_server`](server.mdx#quic_server) | Provides DNS over QUIC (DoQ). |
 
 ## Executor plugins

@@ -30,7 +30,7 @@ server -> sequence
 | --- | --- |
 | [`udp_server`](server.mdx#udp_server) | 监听 UDP DNS 请求，并把请求转交给入口执行器。 |
 | [`tcp_server`](server.mdx#tcp_server) | 监听 TCP DNS 请求；同时配置证书与私钥时可作为 DoT 入口。 |
-| [`http_server`](server.mdx#http_server) | 提供 DNS over HTTPS（DoH），可同时支持 HTTP/2 与可选 HTTP/3。 |
+| [`http_server`](server.mdx#http_server) | 提供 DNS over HTTPS（DoH），可同时支持 HTTP/1.1、HTTP/2 与可选 HTTP/3。 |
 | [`quic_server`](server.mdx#quic_server) | 提供 DNS over QUIC（DoQ）。 |
 
 ## 执行器插件（executor）
