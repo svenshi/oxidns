@@ -426,15 +426,26 @@ Besides calling plugins, `sequence.args[].exec` can also use built-in control fl
 - If the current `sequence` was entered via `jump`, the caller resumes at the rule after `jump`.
 - If the current `sequence` is the top-level entry, this acts like an early exit from the current rule chain.
 
-### `reject [rcode]`
+### `reject [rcode] [soa]`
 
 - Builds a DNS response from the current request immediately and ends the current `sequence`.
 - The default `rcode` is `REFUSED`, so plain `reject` means “reject this request”.
 - A decimal numeric code can be provided explicitly, for example:
   - `reject 2` => `SERVFAIL`
   - `reject 3` => `NXDOMAIN`
+- `reject 0` returns a plain `NOERROR` response and does not add an SOA automatically.
+- `reject 0 soa` returns a NODATA-style `NOERROR` response: the Answer section is empty, and the Authority section includes a synthetic SOA so clients and recursive caches can distinguish “no answer for this type” from “the domain does not exist”.
+- The `soa` parameter is only supported with `rcode 0`; forms such as `reject 3 soa` are not supported.
+- In `reject 0 soa`, the SOA record class follows the current question class.
+- The synthetic SOA TTL and SOA minimum TTL are currently fixed at 300 seconds to avoid long negative caching.
 - The parameter currently accepts decimal integers only, not mnemonic names such as `SERVFAIL`.
 - Callers do not continue with later rules.
+- A typical use is suppressing a query type without denying that the domain exists, for example:
+
+```yaml
+- matches: "qtype HTTPS"
+  exec: "reject 0 soa"
+```
 
 ### `mark ...`
 

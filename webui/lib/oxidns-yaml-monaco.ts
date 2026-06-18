@@ -76,6 +76,7 @@ const topLevelKeys = [
   "init_order",
 ];
 const sequenceControls = ["accept", "return", "reject", "mark", "jump", "goto"];
+const sequenceControlExamples = ["reject 0", "reject 0 soa", "reject 3"];
 const logLevels = ["off", "trace", "debug", "info", "warn", "error"];
 
 // Sub-keys for top-level config sections derived from the Rust config structs.
@@ -647,7 +648,7 @@ function controlSuggestions(
   monaco: MonacoApi,
   range: MonacoRange,
 ): CompletionItem[] {
-  return sequenceControls.map((control) => ({
+  const controls = sequenceControls.map((control) => ({
     label: control,
     kind: monaco.languages.CompletionItemKind.Keyword,
     insertText: control,
@@ -655,6 +656,15 @@ function controlSuggestions(
     detail: "sequence control",
     sortText: `3-${control}`,
   }));
+  const examples = sequenceControlExamples.map((control) => ({
+    label: control,
+    kind: monaco.languages.CompletionItemKind.Snippet,
+    insertText: control,
+    range,
+    detail: "sequence control example",
+    sortText: `3-${control}`,
+  }));
+  return [...controls, ...examples];
 }
 
 // Detects whether the line prefix ends with "jump " or "goto " (plus optional

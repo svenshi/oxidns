@@ -1092,6 +1092,119 @@ plugins:
 }
 
 #[tokio::test]
+async fn test_sequence_reject_zero_returns_simple_noerror_response() -> Result<()> {
+    let yaml = r#"
+log:
+  level: info
+plugins:
+  - tag: seq
+    type: sequence
+    args:
+      - matches: qtype HTTPS
+        exec: reject 0
+      - exec: reject 2
+"#;
+
+    let config = parse_config(yaml)?;
+    let registry = plugin::init(config).await?;
+    let sequence = registry
+        .get_plugin("seq")
+        .expect("sequence plugin should exist")
+        .to_executor();
+    let mut context = make_context_with_qtype(registry.clone(), "apple.com.", RecordType::HTTPS);
+
+    let step = sequence.execute(&mut context).await?;
+
+    assert!(matches!(step, ExecStep::Stop));
+    let response = context.response().expect("reject 0 should set a response");
+    assert_eq!(response.rcode(), Rcode::NoError);
+    assert!(response.answers().is_empty());
+    assert!(response.authorities().is_empty());
+
+    registry.destroy().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_sequence_reject_zero_soa_for_https_qtype_returns_noerror_soa() -> Result<()> {
+    let yaml = r#"
+log:
+  level: info
+plugins:
+  - tag: seq
+    type: sequence
+    args:
+      - matches: qtype HTTPS
+        exec: reject 0 soa
+      - exec: reject 2
+"#;
+
+    let config = parse_config(yaml)?;
+    let registry = plugin::init(config).await?;
+    let sequence = registry
+        .get_plugin("seq")
+        .expect("sequence plugin should exist")
+        .to_executor();
+    let mut context = make_context_with_qtype(registry.clone(), "apple.com.", RecordType::HTTPS);
+
+    let step = sequence.execute(&mut context).await?;
+
+    assert!(matches!(step, ExecStep::Stop));
+    let response = context
+        .response()
+        .expect("reject 0 soa should set a response");
+    assert_eq!(response.rcode(), Rcode::NoError);
+    assert!(response.answers().is_empty());
+    assert_eq!(response.authorities().len(), 1);
+    assert_eq!(response.authorities()[0].rr_type(), RecordType::SOA);
+    assert_eq!(response.authorities()[0].class(), DNSClass::IN);
+
+    registry.destroy().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_sequence_reject_zero_soa_uses_question_class() -> Result<()> {
+    let yaml = r#"
+log:
+  level: info
+plugins:
+  - tag: seq
+    type: sequence
+    args:
+      - exec: reject 0 soa
+"#;
+
+    let config = parse_config(yaml)?;
+    let registry = plugin::init(config).await?;
+    let sequence = registry
+        .get_plugin("seq")
+        .expect("sequence plugin should exist")
+        .to_executor();
+    let mut request = Message::new();
+    request.add_question(Question::new(
+        Name::from_ascii("version.bind.").expect("query name should be valid"),
+        RecordType::TXT,
+        DNSClass::CH,
+    ));
+    let mut context = DnsContext::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 5300)), request);
+
+    let step = sequence.execute(&mut context).await?;
+
+    assert!(matches!(step, ExecStep::Stop));
+    let response = context
+        .response()
+        .expect("reject 0 soa should set a response");
+    assert_eq!(response.rcode(), Rcode::NoError);
+    assert_eq!(response.authorities().len(), 1);
+    assert_eq!(response.authorities()[0].class(), DNSClass::CH);
+    assert_eq!(response.authorities()[0].rr_type(), RecordType::SOA);
+
+    registry.destroy().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_sequence_jump_return_resumes_parent_execution() -> Result<()> {
     let yaml = r#"
 log:

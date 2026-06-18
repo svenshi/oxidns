@@ -272,8 +272,10 @@ export const zhCNPluginDefined = {
         },
         "args[].exec": {
           label: "执行动作",
-          description: "定义规则命中后要执行的动作。",
-          placeholder: "$forward_main / accept / reject 3 / jump seq_tag",
+          description:
+            "定义规则命中后要执行的动作，可引用执行器或使用 accept、return、reject、jump、goto、mark 等内置动作。",
+          placeholder:
+            "$forward_main / accept / reject 0 / reject 0 soa / reject 3 / jump seq_tag",
         },
       },
     },

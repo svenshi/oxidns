@@ -44,7 +44,7 @@ export const zhCNDocs = {
     "args[].matches":
       "- 类型：`string` 或 `array`\n- 必填：否\n- 默认值：无\n- 作用：定义当前规则的匹配条件。\n- 支持形式：\n  - 单个 matcher 字符串\n  - 多个 matcher 组成的列表\n- 运行影响：\n  - 多个条件之间为逻辑与关系。\n  - 未配置时表示无前置匹配条件。",
     "args[].exec":
-      "- 类型：`string`；必填：否；默认值：无\n- 作用：定义规则命中后要执行的动作。\n- 支持内容：\n  - 插件引用\n  - 快捷表达式\n  - 内建控制流\n- 运行影响：\n  - 直接决定当前规则的执行行为。",
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：定义规则命中后要执行的动作。\n- 支持内容：\n  - 插件引用\n  - 快捷表达式\n  - 内建控制流，例如 `accept`、`reject 0`、`reject 0 soa`、`reject 3`、`jump <tag>`\n- 运行影响：\n  - 直接决定当前规则的执行行为。",
   },
   forward: {
     concurrent:

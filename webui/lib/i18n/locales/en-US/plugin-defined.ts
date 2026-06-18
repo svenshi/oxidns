@@ -308,8 +308,9 @@ export const enUSPluginDefined = {
         "args[].exec": {
           label: "perform action",
           description:
-            "Define the action to be performed when the rule is hit.",
-          placeholder: "$forward_main / accept / reject 3 / jump seq_tag",
+            "Defines the action to perform when the rule matches. You can reference an executor or use built-in actions such as accept, return, reject, jump, goto, and mark.",
+          placeholder:
+            "$forward_main / accept / reject 0 / reject 0 soa / reject 3 / jump seq_tag",
         },
       },
     },

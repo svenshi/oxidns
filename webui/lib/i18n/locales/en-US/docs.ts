@@ -47,7 +47,7 @@ export const enUSDocs = {
     "args[].matches":
       "- Type: `string` or `array`\n- Required: No\n- Default: None\n- Function: Define the matching conditions of the current rule.\n- Supported forms:\n  - a single matcher string\n  - A list of multiple matchers\n- Operational impact:\n  - There is a logical AND relationship between multiple conditions.\n  - When not configured, it means there is no pre-matching condition.",
     "args[].exec":
-      "- Type: `string`; Required: No; Default: None\n- Function: Define the action to be performed after the rule is hit.\n- Support content:\n  - Plugin reference\n  - Shortcut expressions\n  - Built-in control flow\n- Operational impact:\n  - Directly determines the execution behavior of the current rule.",
+      "- Type: `string`; Required: No; Default: None\n- Function: Define the action to be performed after the rule is hit.\n- Support content:\n  - Plugin reference\n  - Shortcut expressions\n  - Built-in control flow, for example `accept`, `reject 0`, `reject 0 soa`, `reject 3`, `jump <tag>`\n- Operational impact:\n  - Directly determines the execution behavior of the current rule.",
   },
   forward: {
     concurrent:

@@ -97,11 +97,16 @@ Besides plugin calls, `sequence.args[].exec` can also use built-in control flow:
 - Does not build a response.
 - If the current `sequence` was entered by `jump`, the caller continues with the next rule.
 
-#### `reject [rcode]`
+#### `reject [rcode] [soa]`
 
 - Builds a response immediately and ends the current `sequence`.
 - The default `rcode` is `REFUSED`.
 - Only decimal numeric rcodes are accepted, for example `reject 2` or `reject 3`.
+- `reject 0` returns a plain `NOERROR` response and does not add an SOA automatically.
+- `reject 0 soa` returns a NODATA-style `NOERROR` response: the Answer section is empty, and the Authority section includes a synthetic SOA.
+- The `soa` parameter is only supported with `rcode 0`; forms such as `reject 3 soa` are not supported.
+- In `reject 0 soa`, the SOA record class follows the current question class.
+- The synthetic SOA TTL and SOA minimum TTL are currently fixed at 300 seconds to avoid long negative caching.
 - Stops later rules from running.
 
 #### `mark ...`

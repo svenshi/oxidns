@@ -105,11 +105,16 @@ import Admonition from "@theme/Admonition";
 - 不会自动生成响应。
 - 若当前 `sequence` 是被 `jump` 调用的，调用方会从下一条规则继续。
 
-#### `reject [rcode]`
+#### `reject [rcode] [soa]`
 
 - 立即生成响应并结束当前 `sequence`。
 - 默认 `rcode` 为 `REFUSED`。
 - 只支持十进制数值，例如 `reject 2`、`reject 3`。
+- `reject 0` 返回普通 `NOERROR` 响应，不会自动附加 SOA。
+- `reject 0 soa` 返回 NODATA 风格的 `NOERROR` 响应：Answer 为空，Authority 区会加入 synthetic SOA。
+- `soa` 参数只支持和 `rcode 0` 一起使用，不支持 `reject 3 soa` 这类写法。
+- `reject 0 soa` 中 SOA 记录的 class 会跟随当前 question 的 class。
+- synthetic SOA 的 TTL 和 SOA minimum TTL 当前固定为 300 秒，避免负缓存时间过长。
 - 会中断后续规则，不再继续执行。
 
 #### `mark ...`
