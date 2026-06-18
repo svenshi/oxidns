@@ -30,7 +30,8 @@ use url::Url;
 
 use crate::infra::error::{DnsError, Result};
 use crate::infra::network::dial::{DialTarget, SocketOptions};
-use crate::infra::network::proxy::{Socks5Opt, connect_tcp};
+use crate::infra::network::outbound::{self, OutboundPolicy};
+use crate::infra::network::proxy::{Socks5Opt, connect_tcp, parse_optional_socks5};
 use crate::infra::network::tls_config::{insecure_client_config, secure_client_config};
 
 pub const DEFAULT_MAX_REDIRECTS: usize = 5;
@@ -40,15 +41,32 @@ type InnerClient = HyperClient<hyper_rustls::HttpsConnector<HttpConnector>, Full
 #[derive(Clone, Debug, Default)]
 pub struct HttpClientOptions {
     pub insecure_skip_verify: bool,
-    pub socks5: Option<Socks5Opt>,
+    outbound: OutboundPolicy,
 }
 
 impl HttpClientOptions {
     pub fn new(insecure_skip_verify: bool, socks5: Option<Socks5Opt>) -> Self {
         Self {
             insecure_skip_verify,
-            socks5,
+            outbound: OutboundPolicy::system(socks5),
         }
+    }
+
+    pub fn from_outbound<F>(
+        insecure_skip_verify: bool,
+        outbound_ref: Option<&str>,
+        legacy_socks5: Option<&str>,
+        invalid_socks5: F,
+    ) -> Result<Self>
+    where
+        F: FnOnce(&str) -> DnsError,
+    {
+        let legacy_socks5 = parse_optional_socks5(legacy_socks5, invalid_socks5)?;
+        let outbound = outbound::global().resolve_policy(outbound_ref, legacy_socks5)?;
+        Ok(Self {
+            insecure_skip_verify,
+            outbound,
+        })
     }
 }
 
@@ -124,7 +142,7 @@ impl HttpClient {
             .enable_http1()
             .enable_http2()
             .wrap_connector(HttpConnector {
-                socks5: options.socks5,
+                outbound: options.outbound,
             });
 
         Self {
@@ -290,7 +308,7 @@ fn build_hyper_request(
 
 #[derive(Debug, Clone)]
 struct HttpConnector {
-    socks5: Option<Socks5Opt>,
+    outbound: OutboundPolicy,
 }
 
 impl Service<Uri> for HttpConnector {
@@ -303,7 +321,7 @@ impl Service<Uri> for HttpConnector {
     }
 
     fn call(&mut self, dst: Uri) -> Self::Future {
-        let socks5 = self.socks5.clone();
+        let outbound = self.outbound.clone();
         Box::pin(async move {
             let host = dst.host().ok_or_else(|| {
                 DnsError::plugin(format!("http request uri '{}' is missing host", dst))
@@ -321,7 +339,11 @@ impl Service<Uri> for HttpConnector {
                         dst
                     ))
                 })?;
-            let remote_ip = host.parse::<IpAddr>().ok();
+            let mut remote_ip = host.parse::<IpAddr>().ok();
+            let socks5 = outbound.proxy();
+            if remote_ip.is_none() && socks5.is_none() {
+                remote_ip = Some(outbound.resolve_host(host, port).await?);
+            }
             let target = DialTarget::new(remote_ip, host.to_string(), port);
             let stream = connect_tcp(target, SocketOptions::default(), socks5).await?;
             Ok(TokioIo::new(stream))

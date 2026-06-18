@@ -22,6 +22,7 @@ const EXIT_RESTART_REQUIRED: i32 = 75;
 struct UpgradeApiBody {
     repository: Option<String>,
     bundle: Option<String>,
+    outbound: Option<String>,
     socks5: Option<String>,
     allow_prerelease: Option<bool>,
     target: Option<String>,
@@ -36,6 +37,7 @@ fn build_upgrade_config(opts: UpgradeApiBody) -> std::result::Result<UpgradeConf
     if let Some(bundle_str) = opts.bundle.filter(|s| !s.trim().is_empty()) {
         config.bundle = UpgradeBundle::from_user_value(&bundle_str).map_err(|e| e.to_string())?;
     }
+    config.outbound = opts.outbound.filter(|s| !s.trim().is_empty());
     config.socks5 = opts.socks5.filter(|s| !s.trim().is_empty());
     if let Some(allow_prerelease) = opts.allow_prerelease {
         config.allow_prerelease = allow_prerelease;

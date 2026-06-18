@@ -1946,6 +1946,12 @@ Sends callback requests to external `http/https` services. It can trigger before
 - Purpose: Sets `Content-Type` for raw `args.body`.
 - Notes: This helper can only be used with `args.body`, not with `args.json` or `args.form`.
 
+#### `args.outbound`
+
+- Type: `string`; Required: no
+- Purpose: References a profile from `network.outbound.profiles` to control the resolver and proxy used by this HTTP request.
+- Notes: When omitted, the request uses `network.outbound.default`. If `args.socks5` is also set, `socks5` only overrides the proxy while the resolver still comes from the outbound profile.
+
 #### `args.socks5`
 
 - Type: `string`; Required: no
@@ -2484,6 +2490,7 @@ Runs the OxiDNS upgrade flow from the executor pipeline. It is suitable for main
       force: false
       cleanup: true
       timeout: 30s
+      outbound: oversea
       socks5: 127.0.0.1:1080
       insecure_skip_verify: false
 ```
@@ -2520,8 +2527,9 @@ Runs the OxiDNS upgrade flow from the executor pipeline. It is suitable for main
     - Boolean. Default: `false`.
     - When `true`, a successful upgrade does not trigger an automatic restart.
     - The default `false` restarts automatically after a successful upgrade: CLI `apply` restarts the installed service through the system service manager, while the executor requests a graceful in-process restart through the application control channel so the new binary is loaded.
-- `timeout`, `socks5`, `insecure_skip_verify`
+- `timeout`, `outbound`, `socks5`, `insecure_skip_verify`
     - Same meaning as the CLI `upgrade` flags.
+    - `outbound` references a profile from `network.outbound.profiles`. The legacy `socks5` field remains supported and overrides the profile proxy.
 
 ### Behavior
 
@@ -2561,6 +2569,7 @@ Downloads one or more `http/https` files into a local directory and overwrites t
   type: download
   args:
     timeout: 30s
+    outbound: oversea
     socks5: "127.0.0.1:1080"
     downloads:
       - url: "https://example.com/geosite.dat"
@@ -2582,6 +2591,7 @@ Downloads one or more `http/https` files into a local directory and overwrites t
 - A failed item only emits a warning log and does not stop later items.
 - Missing target directories are created automatically.
 - Files are written to a temporary path first and then moved into place.
+- When `outbound` is set, downloads use the resolver and proxy defined by the referenced `network.outbound.profiles` entry.
 - When `socks5` is set, all download connections are routed through that SOCKS5 proxy using the same format as `upstream[].socks5`.
 - By default, OxiDNS checks target files during startup and downloads any missing ones before other plugins initialize. A bootstrap failure aborts startup.
 - Set `startup_if_missing: false` to disable that bootstrap behavior.
@@ -2589,6 +2599,7 @@ Downloads one or more `http/https` files into a local directory and overwrites t
 <Admonition type="note" title="Notes">
 
 - Only `http` and `https` are supported.
+- When `outbound` is omitted, `network.outbound.default` is used. If both `outbound` and `socks5` are set, `socks5` overrides the profile proxy while preserving the profile resolver.
 - `socks5` accepts `host:port` and `username:password@host:port`; bracket IPv6 addresses such as `"[::1]:1080"` are supported too.
 - `startup_if_missing` only fills missing files; it does not overwrite existing targets on every startup.
 - When used inside a normal `sequence`, the download time is paid directly by that request.

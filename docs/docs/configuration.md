@@ -5,7 +5,7 @@ sidebar_position: 2
 
 ## 写在最前
 
-OxiDNS 的配置文件是 YAML。日常修改配置时，可以先把它理解为五个顶层部分：
+OxiDNS 的配置文件是 YAML。日常修改配置时，可以先把它理解为六个顶层部分：
 
 ```yaml
 runtime:
@@ -17,6 +17,14 @@ api:
 log:
   level: info
   file: ./oxidns.log
+
+network:
+  outbound:
+    default: direct
+    profiles:
+      direct:
+        resolver: system
+        proxy: none
 
 include: []
 
@@ -35,6 +43,8 @@ plugins:
   - 管理 API。
 - `log`
   - 日志输出。
+- `network`
+  - 共享网络出站配置，例如 HTTP 下载、升级检查和 webhook 请求使用的解析器与代理。
 - `include`
   - 从其他配置文件载入插件定义。
 - `plugins`
@@ -168,6 +178,44 @@ log:
 - `type: weekly`
   - 按周轮转。
   - 可选配置 `max_files`，表示最多保留多少个历史文件；`0` 表示不自动删除。
+
+### `network`
+
+`network.outbound` 用于集中管理项目内部 HTTP client 的出站策略。未配置时保持兼容行为：使用系统 DNS 解析，直连目标地址。
+
+```yaml
+network:
+  outbound:
+    default: direct
+    profiles:
+      direct:
+        resolver: system
+        proxy: none
+      oversea:
+        resolver:
+          bootstrap:
+            - 1.1.1.1:53
+            - 8.8.8.8:53
+          bootstrap_version: 4
+        proxy:
+          socks5: 127.0.0.1:1080
+```
+
+字段说明：
+
+- `outbound.default`
+  - 含义：未显式配置 `outbound` 的 HTTP client 默认使用哪个 profile。
+  - 默认：无；无默认 profile 时使用系统 DNS + 直连。
+  - 限制：如果配置，必须引用 `profiles` 中存在的名称。
+- `outbound.profiles.<name>.resolver`
+  - `system`：使用系统 DNS。HTTP client 中该解析是异步执行，不会阻塞运行时工作线程。
+  - `bootstrap`：使用指定 DNS bootstrap 服务器解析 HTTP 目标域名，适合系统 DNS 指回 OxiDNS 自身、但下载或升级又必须访问外网的场景。
+  - `bootstrap_version`：可选，`4` 查询 A 记录，`6` 查询 AAAA 记录；未配置时默认 IPv4。
+- `outbound.profiles.<name>.proxy`
+  - `none` 或 `direct`：直连。
+  - `socks5`：通过 SOCKS5 代理连接目标地址，格式与上游 `socks5` 一致。
+
+当前 `download`、`upgrade`、`http_request` 可通过 `args.outbound: oversea` 引用 profile。旧字段 `socks5` 继续兼容；当同一个插件同时配置 `outbound` 和 `socks5` 时，`socks5` 会覆盖 profile 中的代理设置，但 resolver 仍来自该 outbound profile。
 
 ### `api`
 

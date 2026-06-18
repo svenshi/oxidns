@@ -200,6 +200,10 @@ pub struct UpgradeOptions {
     #[arg(long = "timeout", value_parser = parse_cli_duration, default_value = "30s", global = true)]
     pub timeout: Duration,
 
+    /// Named network outbound profile for upgrade HTTP requests.
+    #[arg(long = "outbound", global = true)]
+    pub outbound: Option<String>,
+
     /// Optional SOCKS5 proxy address.
     #[arg(long = "socks5", global = true)]
     pub socks5: Option<String>,
@@ -411,6 +415,8 @@ mod tests {
             "--allow-prerelease",
             "--timeout",
             "2m",
+            "--outbound",
+            "oversea",
             "--socks5",
             "127.0.0.1:1080",
             "--insecure-skip-verify",
@@ -437,6 +443,7 @@ mod tests {
                 allow_prerelease: true,
                 force: false,
                 timeout: Duration::from_secs(120),
+                outbound: Some("oversea".to_string()),
                 socks5: Some("127.0.0.1:1080".to_string()),
                 insecure_skip_verify: true,
                 github_token: Some("ghp_test_token".to_string()),
@@ -506,6 +513,7 @@ mod tests {
                 allow_prerelease: false,
                 force: true,
                 timeout: Duration::from_secs(30),
+                outbound: None,
                 socks5: None,
                 insecure_skip_verify: false,
                 github_token: None,

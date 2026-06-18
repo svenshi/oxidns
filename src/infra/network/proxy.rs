@@ -10,11 +10,7 @@ use fast_socks5::{AuthenticationMethod, Socks5Command};
 use tokio::net::TcpStream;
 use tracing::warn;
 
-#[cfg(any(
-    feature = "plugin-download",
-    feature = "plugin-http-request",
-    feature = "plugin-upgrade"
-))]
+#[cfg(feature = "_http-client")]
 use crate::infra::error::DnsError;
 use crate::infra::error::Result;
 use crate::infra::network::dial::{
@@ -149,11 +145,7 @@ pub(crate) fn parse_socks5_opt(socks5_str: &str) -> Option<Socks5Opt> {
     parse_socks5_opt_with_resolver(socks5_str, try_lookup_server_name)
 }
 
-#[cfg(any(
-    feature = "plugin-download",
-    feature = "plugin-http-request",
-    feature = "plugin-upgrade"
-))]
+#[cfg(feature = "_http-client")]
 pub(crate) fn parse_optional_socks5<F>(raw: Option<&str>, invalid: F) -> Result<Option<Socks5Opt>>
 where
     F: FnOnce(&str) -> DnsError,

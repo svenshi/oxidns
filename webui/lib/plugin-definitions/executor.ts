@@ -1341,6 +1341,14 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         type: "text",
       },
       {
+        key: "outbound",
+        description:
+          "引用 network.outbound.profiles 中的出站配置，用于统一控制解析器和代理。",
+        label: "出站配置",
+        type: "text",
+        placeholder: "oversea",
+      },
+      {
         key: "socks5",
         description: "指定 SOCKS5 代理。",
         label: "SOCKS5 代理",
@@ -1865,6 +1873,14 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         default: "30s",
       },
       {
+        key: "outbound",
+        description:
+          "引用 network.outbound.profiles 中的出站配置，用于升级下载。",
+        label: "出站配置",
+        type: "text",
+        placeholder: "oversea",
+      },
+      {
         key: "socks5",
         description: "升级下载时使用的 SOCKS5 代理。",
         label: "SOCKS5 代理",
@@ -1953,6 +1969,14 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "超时",
         type: "duration",
         default: "30s",
+      },
+      {
+        key: "outbound",
+        description:
+          "引用 network.outbound.profiles 中的出站配置，用于统一控制下载解析器和代理。",
+        label: "出站配置",
+        type: "text",
+        placeholder: "oversea",
       },
       {
         key: "socks5",

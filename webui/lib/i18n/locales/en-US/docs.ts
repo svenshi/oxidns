@@ -292,6 +292,8 @@ export const enUSDocs = {
     form: "- Type: `map<string,string>`; Required: No\n- Function: Send the form in `application/x-www-form-urlencoded` mode.\n- Note: value supports `${key}` placeholder interpolation; the corresponding `Content-Type` will be automatically set.",
     content_type:
       "- Type: `string`; Required: No\n- Function: Specify `Content-Type` for the original `args.body`.\n- Note: It can only be used with `args.body` and cannot be used with `args.json` or `args.form` at the same time.",
+    outbound:
+      "- Type: `string`; Required: No\n- Function: Reference a profile from `network.outbound.profiles` to control the resolver and proxy used by this HTTP request.\n- Note: When omitted, `network.outbound.default` is used. If `args.socks5` is also set, `socks5` only overrides the proxy while the resolver still comes from the outbound profile.",
     socks5:
       "- Type: `string`; Required: No\n- Function: Specify SOCKS5 proxy.\n- Note: The format is consistent with `upstream[].socks5`, supporting `host:port`, `username:password@host:port` and IPv6 with square brackets.",
     insecure_skip_verify:
@@ -405,6 +407,8 @@ export const enUSDocs = {
       "- Type: `bool`; required: no; default value: `false`\n- Function: When set to `true`, automatic restart will not be triggered after successful upgrade.",
     timeout:
       "- Type: `duration`; Required: No; Default value: `30s`\n- Function: Limit the total waiting time of the upgrade process.",
+    outbound:
+      "- Type: `string`; Required: No; Default: None\n- Function: Reference a profile from `network.outbound.profiles` for upgrade downloads.\n- Note: The legacy `socks5` field remains supported and overrides the profile proxy.",
     socks5:
       "- Type: `string`; Required: No; Default: None\n- Function: Upgrade the SOCKS5 proxy used when downloading.",
     insecure_skip_verify:
@@ -421,6 +425,8 @@ export const enUSDocs = {
       "- Type: `string`; Required: No; Default: Deduced from URL path\n- Function: The target file name of the download item.",
     timeout:
       "- Type: `duration`; Required: No; Default value: `30s`\n- Function: Download timeout.",
+    outbound:
+      "- Type: `string`; Required: No; Default: None\n- Function: Reference a profile from `network.outbound.profiles` to control download resolver and proxy settings.\n- Note: If both `outbound` and `socks5` are set, `socks5` overrides the profile proxy while preserving the profile resolver.",
     socks5:
       '- Type: `string`; Required: No; Default: None\n- Function: All download connections will be initiated through this SOCKS5 proxy.\n- Supported formats: `host:port`, `username:password@host:port`, IPv6 needs to be written as `"[::1]:1080"`.',
     startup_if_missing:

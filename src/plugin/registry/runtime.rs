@@ -15,6 +15,8 @@ use super::{
 use crate::config::types::Config;
 use crate::infra::control::{AppController, ControlRequestError};
 use crate::infra::error::{DnsError, Result};
+#[cfg(feature = "_http-client")]
+use crate::infra::network::outbound;
 
 #[cfg(debug_assertions)]
 #[derive(Debug)]
@@ -69,6 +71,9 @@ impl PluginRuntimeManager {
             None
         };
         let _guard = self.lifecycle.lock().await;
+        #[cfg(feature = "_http-client")]
+        outbound::install_global(&config.network.outbound)?;
+
         let mut candidate = PluginRegistry::new();
         #[cfg(debug_assertions)]
         candidate.set_test_runtime_guard(test_guard);
@@ -76,6 +81,8 @@ impl PluginRuntimeManager {
         let candidate = Arc::new(candidate);
         if let Err(err) = candidate.clone().init_plugins(config.plugins).await {
             candidate.destroy().await;
+            #[cfg(feature = "_http-client")]
+            outbound::clear_global();
             return Err(err);
         }
 
@@ -95,6 +102,8 @@ impl PluginRuntimeManager {
         if let Some(previous) = previous {
             previous.destroy().await;
         }
+        #[cfg(feature = "_http-client")]
+        outbound::clear_global();
     }
 
     /// The manager is the single authoritative owner of the application

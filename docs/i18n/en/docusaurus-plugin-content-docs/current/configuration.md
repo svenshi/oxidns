@@ -5,7 +5,7 @@ sidebar_position: 2
 
 ## Before Starting
 
-OxiDNS uses YAML configuration. For day-to-day editing, it is easiest to understand the file as five top-level parts:
+OxiDNS uses YAML configuration. For day-to-day editing, it is easiest to understand the file as six top-level parts:
 
 ```yaml
 runtime:
@@ -17,6 +17,14 @@ api:
 log:
   level: info
   file: ./oxidns.log
+
+network:
+  outbound:
+    default: direct
+    profiles:
+      direct:
+        resolver: system
+        proxy: none
 
 include: []
 
@@ -35,6 +43,8 @@ Where:
   - Management API settings.
 - `log`
   - Log output settings.
+- `network`
+  - Shared outbound networking settings, such as resolver and proxy choices for HTTP downloads, upgrade checks, and webhook requests.
 - `include`
   - Load plugin definitions from other configuration files.
 - `plugins`
@@ -167,6 +177,44 @@ Field notes:
 - `type: weekly`
   - Rotate every week.
   - Optional `max_files` controls how many rotated files are retained; `0` disables automatic cleanup.
+
+### `network`
+
+`network.outbound` centralizes outbound policy for internal HTTP clients. When omitted, behavior stays compatible: system DNS resolution and direct connections.
+
+```yaml
+network:
+  outbound:
+    default: direct
+    profiles:
+      direct:
+        resolver: system
+        proxy: none
+      oversea:
+        resolver:
+          bootstrap:
+            - 1.1.1.1:53
+            - 8.8.8.8:53
+          bootstrap_version: 4
+        proxy:
+          socks5: 127.0.0.1:1080
+```
+
+Field notes:
+
+- `outbound.default`
+  - Meaning: Which profile HTTP clients use when they do not set `outbound` explicitly.
+  - Default: none; without a default profile, OxiDNS uses system DNS + direct connections.
+  - Constraint: If set, it must reference an existing entry in `profiles`.
+- `outbound.profiles.<name>.resolver`
+  - `system`: Use system DNS. HTTP clients perform this lookup asynchronously so it does not block runtime worker threads.
+  - `bootstrap`: Resolve HTTP target names through the configured DNS bootstrap servers. This is useful when system DNS points back to OxiDNS itself but downloads or upgrades still need external resolution.
+  - `bootstrap_version`: Optional, `4` queries A records and `6` queries AAAA records. When omitted, IPv4 is used.
+- `outbound.profiles.<name>.proxy`
+  - `none` or `direct`: Connect directly.
+  - `socks5`: Connect through a SOCKS5 proxy. The format is the same as upstream `socks5`.
+
+`download`, `upgrade`, and `http_request` can now reference a profile with `args.outbound: oversea`. The legacy `socks5` field remains supported. When both `outbound` and `socks5` are set on the same plugin, `socks5` overrides the profile proxy while the resolver still comes from the outbound profile.
 
 ### `api`
 

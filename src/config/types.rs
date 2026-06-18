@@ -47,6 +47,9 @@ pub enum ConfigError {
     #[error("api.http.webui.index cannot be empty")]
     EmptyApiWebUiIndex,
 
+    #[error("Invalid network outbound config: {0}")]
+    InvalidNetworkOutbound(String),
+
     #[error(
         "Duplicate plugin tag '{tag}' found at plugins[{first_index}] and plugins[{duplicate_index}]"
     )]
@@ -75,6 +78,10 @@ pub struct Config {
     /// Logging configuration (level, file output)
     #[serde(default)]
     pub log: LogConfig,
+
+    /// Shared network policy configuration.
+    #[serde(default)]
+    pub network: NetworkConfig,
 
     /// List of plugins to load and their configurations
     #[serde(default)]
@@ -134,6 +141,8 @@ impl Config {
             }
         }
 
+        self.network.validate()?;
+
         // Validate plugins - basic structure checks
         let mut seen_tags = HashMap::new();
         for (idx, plugin) in self.plugins.iter().enumerate() {
@@ -156,6 +165,171 @@ impl Config {
         }
 
         Ok(())
+    }
+}
+
+/// Shared network configuration.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct NetworkConfig {
+    /// Named outbound connection profiles shared by HTTP clients and upstreams.
+    #[serde(default)]
+    pub outbound: NetworkOutboundConfig,
+}
+
+impl NetworkConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        self.outbound.validate()
+    }
+}
+
+/// Global outbound profile registry.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct NetworkOutboundConfig {
+    /// Optional default profile used when a caller does not name one.
+    pub default: Option<String>,
+
+    /// Named outbound profiles.
+    #[serde(default)]
+    pub profiles: HashMap<String, OutboundProfileConfig>,
+}
+
+impl NetworkOutboundConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(default) = self.default.as_deref() {
+            let default = default.trim();
+            if default.is_empty() {
+                return Err(ConfigError::InvalidNetworkOutbound(
+                    "default profile name cannot be empty".to_string(),
+                ));
+            }
+            if !self.profiles.contains_key(default) {
+                return Err(ConfigError::InvalidNetworkOutbound(format!(
+                    "default profile '{}' is not defined",
+                    default
+                )));
+            }
+        }
+
+        for (name, profile) in &self.profiles {
+            if name.trim().is_empty() {
+                return Err(ConfigError::InvalidNetworkOutbound(
+                    "profile name cannot be empty".to_string(),
+                ));
+            }
+            profile.validate(name)?;
+        }
+        Ok(())
+    }
+}
+
+/// One named outbound connection profile.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutboundProfileConfig {
+    pub resolver: Option<OutboundResolverConfig>,
+    pub proxy: Option<OutboundProxyConfig>,
+}
+
+impl OutboundProfileConfig {
+    fn validate(&self, profile_name: &str) -> Result<(), ConfigError> {
+        if let Some(resolver) = &self.resolver {
+            resolver.validate(profile_name)?;
+        }
+        if let Some(proxy) = &self.proxy {
+            proxy.validate(profile_name)?;
+        }
+        Ok(())
+    }
+}
+
+/// Resolver policy for an outbound profile.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum OutboundResolverConfig {
+    Mode(String),
+    Bootstrap {
+        bootstrap: BootstrapServerConfig,
+        bootstrap_version: Option<u8>,
+    },
+}
+
+impl OutboundResolverConfig {
+    fn validate(&self, profile_name: &str) -> Result<(), ConfigError> {
+        match self {
+            Self::Mode(mode) if mode.trim().eq_ignore_ascii_case("system") => Ok(()),
+            Self::Mode(mode) => Err(ConfigError::InvalidNetworkOutbound(format!(
+                "profile '{}' has invalid resolver mode '{}'",
+                profile_name, mode
+            ))),
+            Self::Bootstrap {
+                bootstrap,
+                bootstrap_version,
+            } => {
+                let servers = bootstrap.servers();
+                if servers.is_empty() || servers.iter().any(|server| server.trim().is_empty()) {
+                    return Err(ConfigError::InvalidNetworkOutbound(format!(
+                        "profile '{}' bootstrap resolver requires at least one server",
+                        profile_name
+                    )));
+                }
+                if !matches!(bootstrap_version, None | Some(4) | Some(6)) {
+                    return Err(ConfigError::InvalidNetworkOutbound(format!(
+                        "profile '{}' bootstrap_version must be 4 or 6",
+                        profile_name
+                    )));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// One or more bootstrap DNS servers.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum BootstrapServerConfig {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl BootstrapServerConfig {
+    pub fn servers(&self) -> Vec<&str> {
+        match self {
+            Self::One(server) => vec![server.as_str()],
+            Self::Many(servers) => servers.iter().map(String::as_str).collect(),
+        }
+    }
+}
+
+/// Proxy policy for an outbound profile.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum OutboundProxyConfig {
+    Mode(String),
+    Socks5 { socks5: String },
+}
+
+impl OutboundProxyConfig {
+    fn validate(&self, profile_name: &str) -> Result<(), ConfigError> {
+        match self {
+            Self::Mode(mode)
+                if mode.trim().eq_ignore_ascii_case("none")
+                    || mode.trim().eq_ignore_ascii_case("direct") =>
+            {
+                Ok(())
+            }
+            Self::Mode(mode) => Err(ConfigError::InvalidNetworkOutbound(format!(
+                "profile '{}' has invalid proxy mode '{}'",
+                profile_name, mode
+            ))),
+            Self::Socks5 { socks5 } if socks5.trim().is_empty() => {
+                Err(ConfigError::InvalidNetworkOutbound(format!(
+                    "profile '{}' socks5 proxy cannot be empty",
+                    profile_name
+                )))
+            }
+            Self::Socks5 { .. } => Ok(()),
+        }
     }
 }
 
@@ -386,6 +560,7 @@ mod tests {
             runtime: RuntimeConfig::default(),
             api: ApiConfig::default(),
             log: LogConfig::default(),
+            network: NetworkConfig::default(),
             plugins: vec![plugin("dup", "debug_print"), plugin("dup", "ttl")],
         };
 
@@ -402,6 +577,7 @@ mod tests {
             runtime: RuntimeConfig::default(),
             api: ApiConfig::default(),
             log: LogConfig::default(),
+            network: NetworkConfig::default(),
             plugins: vec![plugin("test", "")],
         };
 
@@ -418,6 +594,7 @@ mod tests {
             runtime: RuntimeConfig::default(),
             api: ApiConfig::default(),
             log: LogConfig::default(),
+            network: NetworkConfig::default(),
             plugins: vec![plugin("ok", "debug_print")],
         };
 
@@ -433,6 +610,7 @@ mod tests {
             },
             api: ApiConfig::default(),
             log: LogConfig::default(),
+            network: NetworkConfig::default(),
             plugins: vec![plugin("ok", "debug_print")],
         };
 
@@ -463,6 +641,7 @@ mod tests {
                 http: Some(ApiHttpConfig::Listen("0.0.0.0:8080".to_string())),
             },
             log: LogConfig::default(),
+            network: NetworkConfig::default(),
             plugins: vec![plugin("ok", "debug_print")],
         };
 
@@ -489,6 +668,7 @@ mod tests {
                 }))),
             },
             log: LogConfig::default(),
+            network: NetworkConfig::default(),
             plugins: vec![plugin("ok", "debug_print")],
         };
 
@@ -496,6 +676,52 @@ mod tests {
             .validate()
             .expect_err("should reject mtls config without client_ca");
         assert!(matches!(err, ConfigError::MissingApiTlsClientCa));
+    }
+
+    #[test]
+    fn test_validate_accepts_network_outbound_profile() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    default: oversea
+    profiles:
+      oversea:
+        resolver:
+          bootstrap:
+            - 1.1.1.1:53
+            - 8.8.8.8:53
+          bootstrap_version: 4
+        proxy:
+          socks5: 127.0.0.1:1080
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_unknown_default_outbound_profile() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    default: missing
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = config
+            .validate()
+            .expect_err("missing outbound default profile should fail");
+        assert!(matches!(err, ConfigError::InvalidNetworkOutbound(_)));
     }
 
     #[test]

@@ -171,6 +171,7 @@ struct UpgradePluginConfig {
     force: Option<bool>,
     cleanup: Option<bool>,
     timeout: Option<String>,
+    outbound: Option<String>,
     socks5: Option<String>,
     insecure_skip_verify: Option<bool>,
     github_token: Option<String>,
@@ -220,6 +221,7 @@ impl UpgradePluginConfig {
                 DnsError::plugin(format!("invalid upgrade timeout '{}': {}", value, err))
             })?;
         }
+        config.outbound = self.outbound;
         config.socks5 = self.socks5;
         if let Some(value) = self.insecure_skip_verify {
             config.insecure_skip_verify = value;

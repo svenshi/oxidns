@@ -892,6 +892,10 @@ export const enUSWebui = {
     bundleFull: "full — full edition",
     bundleStandard: "standard — standard edition",
     bundleMinimal: "minimal — minimal edition",
+    outboundProfile: "Outbound Profile",
+    outboundProfileDesc:
+      "Reference a profile from network.outbound.profiles. Leave empty to use the default outbound settings.",
+    outboundProfilePlaceholder: "oversea",
     socks5Proxy: "SOCKS5 Proxy",
     socks5ProxyDesc:
       "SOCKS5 proxy used for downloads. Do not include a protocol prefix; username and password are supported.",

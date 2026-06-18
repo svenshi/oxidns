@@ -857,6 +857,10 @@ export const zhCNWebui = {
     bundleFull: "full — 完整版",
     bundleStandard: "standard — 标准版",
     bundleMinimal: "minimal — 精简版",
+    outboundProfile: "出站配置",
+    outboundProfileDesc:
+      "引用 network.outbound.profiles 中的配置；留空时使用默认出站配置",
+    outboundProfilePlaceholder: "oversea",
     socks5Proxy: "Socks5 代理",
     socks5ProxyDesc:
       "下载时使用的 SOCKS5 代理，不需要协议前缀；支持用户名和密码",

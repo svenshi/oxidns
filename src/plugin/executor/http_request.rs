@@ -32,7 +32,6 @@ use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::network::http_client::{HttpClient, HttpClientOptions, HttpRequestOptions};
-use crate::infra::network::proxy::{Socks5Opt, parse_optional_socks5};
 use crate::infra::observability::metrics::{
     MetricLabel, MetricSample, MetricSink, MetricSource, register_metric_source,
     unregister_metric_source,
@@ -64,6 +63,7 @@ struct HttpRequestConfig {
     json: Option<JsonValue>,
     form: Option<HashMap<String, String>>,
     content_type: Option<String>,
+    outbound: Option<String>,
     socks5: Option<String>,
     insecure_skip_verify: Option<bool>,
     max_redirects: Option<usize>,
@@ -107,8 +107,7 @@ struct HttpRequestRuntimeConfig {
     headers: Vec<(HeaderName, Template)>,
     query_params: Vec<(String, Template)>,
     body: Option<BodyTemplate>,
-    parsed_socks5: Option<Socks5Opt>,
-    insecure_skip_verify: bool,
+    http_options: HttpClientOptions,
     max_redirects: usize,
     queue_size: usize,
 }
@@ -509,10 +508,7 @@ impl PluginFactory for HttpRequestFactory {
         Ok(UninitializedPlugin::Executor(Box::new(
             HttpRequestExecutor {
                 tag: plugin_config.tag.clone(),
-                client: HttpClient::new(HttpClientOptions::new(
-                    config.insecure_skip_verify,
-                    config.parsed_socks5.clone(),
-                )),
+                client: HttpClient::new(config.http_options.clone()),
                 config,
                 async_tx: None,
                 stop_tx: Mutex::new(None),
@@ -552,7 +548,18 @@ fn build_http_request_runtime_config(
         config.content_type,
     )?;
     let timeout = parse_timeout(plugin_config.tag.as_str(), config.timeout.as_deref())?;
-    let parsed_socks5 = parse_socks5(plugin_config.tag.as_str(), config.socks5.as_deref())?;
+    let insecure_skip_verify = config.insecure_skip_verify.unwrap_or(false);
+    let http_options = HttpClientOptions::from_outbound(
+        insecure_skip_verify,
+        config.outbound.as_deref(),
+        config.socks5.as_deref(),
+        |raw| {
+            DnsError::plugin(format!(
+                "plugin '{}' field 'args.socks5' is invalid: '{}'",
+                plugin_config.tag, raw
+            ))
+        },
+    )?;
     let queue_size = config.queue_size.unwrap_or(DEFAULT_QUEUE_SIZE);
     if queue_size == 0 {
         return Err(DnsError::plugin(format!(
@@ -571,8 +578,7 @@ fn build_http_request_runtime_config(
         headers,
         query_params,
         body,
-        parsed_socks5,
-        insecure_skip_verify: config.insecure_skip_verify.unwrap_or(false),
+        http_options,
         max_redirects: config.max_redirects.unwrap_or(DEFAULT_MAX_REDIRECTS),
         queue_size,
     })
@@ -603,15 +609,6 @@ fn parse_timeout(plugin_tag: &str, raw: Option<&str>) -> Result<Duration> {
         DnsError::plugin(format!(
             "plugin '{}' field 'args.timeout' is invalid '{}': {}",
             plugin_tag, raw, err
-        ))
-    })
-}
-
-fn parse_socks5(plugin_tag: &str, raw: Option<&str>) -> Result<Option<Socks5Opt>> {
-    parse_optional_socks5(raw, |raw| {
-        DnsError::plugin(format!(
-            "plugin '{}' field 'args.socks5' is invalid: '{}'",
-            plugin_tag, raw
         ))
     })
 }

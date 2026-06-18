@@ -2040,6 +2040,12 @@ old-static.example.com static.example.net
 - 作用：为原始 `args.body` 指定 `Content-Type`。
 - 说明：只能和 `args.body` 搭配，不能与 `args.json` 或 `args.form` 同时使用。
 
+#### `args.outbound`
+
+- 类型：`string`；必填：否
+- 作用：引用 `network.outbound.profiles` 中的出站配置，统一控制该 HTTP 请求使用的解析器和代理。
+- 说明：未配置时使用 `network.outbound.default`；若也配置了 `args.socks5`，`socks5` 只覆盖代理设置，resolver 仍来自 outbound profile。
+
 #### `args.socks5`
 
 - 类型：`string`；必填：否
@@ -2594,6 +2600,7 @@ old-static.example.com static.example.net
       force: false
       cleanup: true
       timeout: 30s
+      outbound: oversea
       socks5: 127.0.0.1:1080
       insecure_skip_verify: false
 ```
@@ -2635,8 +2642,9 @@ old-static.example.com static.example.net
     - 默认值：`false`
     - 设为 `true` 时，升级成功后不触发自动重启。
     - 默认值 `false` 会在升级成功后自动重启：CLI `apply` 通过系统服务管理器重启已安装服务，插件内执行时通过应用控制通道触发优雅重启并加载新二进制。
-- `timeout`、`socks5`、`insecure_skip_verify`
+- `timeout`、`outbound`、`socks5`、`insecure_skip_verify`
     - 与 CLI `upgrade` 参数含义一致。
+    - `outbound` 引用 `network.outbound.profiles` 中的出站配置；旧 `socks5` 字段继续兼容，且会覆盖 profile 里的代理设置。
 
 ### 行为说明
 
@@ -2676,6 +2684,7 @@ old-static.example.com static.example.net
   type: download
   args:
     timeout: 30s
+    outbound: oversea
     socks5: "127.0.0.1:1080"
     downloads:
       - url: "https://example.com/geosite.dat"
@@ -2697,6 +2706,7 @@ old-static.example.com static.example.net
 - 单个下载失败只会写 warning 日志，不会阻止后续项继续下载。
 - 目标目录不存在时会自动创建。
 - 文件会先写入临时文件，再覆盖目标文件，避免半写入状态。
+- 配置 `outbound` 后，下载使用 `network.outbound.profiles` 中定义的解析器和代理。
 - 配置 `socks5` 后，所有下载连接都会通过该 SOCKS5 代理发起，格式与 `upstream[].socks5` 一致。
 - 默认会在启动时检查目标文件；缺失项会在其它插件初始化前自动下载，失败会直接中止启动。
 - 如需关闭该行为，可显式配置 `startup_if_missing: false`。
@@ -2704,6 +2714,7 @@ old-static.example.com static.example.net
 <Admonition type="note" title="注意事项">
 
 - 只支持 `http` / `https`。
+- `outbound` 未配置时使用 `network.outbound.default`；同时配置 `outbound` 和 `socks5` 时，`socks5` 会覆盖 profile 代理但保留 profile resolver。
 - `socks5` 支持 `host:port` 和 `username:password@host:port`，IPv6 需写成 `"[::1]:1080"`。
 - `startup_if_missing` 只会补齐缺失文件，不会在每次启动时强制覆盖已有文件。
 - 放进普通 `sequence` 时会直接占用该次请求的执行时间。

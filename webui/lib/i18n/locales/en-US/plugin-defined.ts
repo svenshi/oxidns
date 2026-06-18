@@ -1295,6 +1295,12 @@ export const enUSPluginDefined = {
           label: "Content-Type",
           description: "Specify Content-Type for raw args.body.",
         },
+        outbound: {
+          label: "Outbound profile",
+          description:
+            "Reference a profile from network.outbound.profiles to control resolver and proxy settings.",
+          placeholder: "oversea",
+        },
         socks5: {
           label: "SOCKS5 proxy",
           description: "Specify SOCKS5 proxy.",
@@ -1734,6 +1740,12 @@ export const enUSPluginDefined = {
           label: "Timeout",
           description: "Limit the total wait time for the upgrade process.",
         },
+        outbound: {
+          label: "Outbound profile",
+          description:
+            "Reference a profile from network.outbound.profiles for upgrade downloads.",
+          placeholder: "oversea",
+        },
         socks5: {
           label: "SOCKS5 proxy",
           description: "SOCKS5 proxy used when updating downloads.",
@@ -1782,6 +1794,12 @@ export const enUSPluginDefined = {
         timeout: {
           label: "Timeout",
           description: "Download timeout.",
+        },
+        outbound: {
+          label: "Outbound profile",
+          description:
+            "Reference a profile from network.outbound.profiles to control download resolver and proxy settings.",
+          placeholder: "oversea",
         },
         socks5: {
           label: "SOCKS5 proxy",

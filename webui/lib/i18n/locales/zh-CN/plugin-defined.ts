@@ -1170,6 +1170,12 @@ export const zhCNPluginDefined = {
           label: "Content-Type",
           description: "为原始 args.body 指定 Content-Type。",
         },
+        outbound: {
+          label: "出站配置",
+          description:
+            "引用 network.outbound.profiles 中的出站配置，用于统一控制解析器和代理。",
+          placeholder: "oversea",
+        },
         socks5: {
           label: "SOCKS5 代理",
           description: "指定 SOCKS5 代理。",
@@ -1570,6 +1576,12 @@ export const zhCNPluginDefined = {
           label: "超时",
           description: "限制升级过程的总等待时间。",
         },
+        outbound: {
+          label: "出站配置",
+          description:
+            "引用 network.outbound.profiles 中的出站配置，用于升级下载。",
+          placeholder: "oversea",
+        },
         socks5: {
           label: "SOCKS5 代理",
           description: "升级下载时使用的 SOCKS5 代理。",
@@ -1616,6 +1628,12 @@ export const zhCNPluginDefined = {
         timeout: {
           label: "超时",
           description: "下载超时时间。",
+        },
+        outbound: {
+          label: "出站配置",
+          description:
+            "引用 network.outbound.profiles 中的出站配置，用于统一控制下载解析器和代理。",
+          placeholder: "oversea",
         },
         socks5: {
           label: "SOCKS5 代理",

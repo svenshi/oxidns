@@ -36,6 +36,8 @@ pub(crate) mod dial;
 pub mod http_client;
 pub(crate) mod ip;
 pub mod listen;
+#[cfg(feature = "_http-client")]
+pub(crate) mod outbound;
 pub mod proxy;
 #[cfg(any(feature = "_tls-client", feature = "_tls-server"))]
 pub mod tls_config;

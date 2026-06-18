@@ -894,6 +894,7 @@ export async function fetchPrometheusMetrics(): Promise<string> {
 export interface UpgradeCheckOptions {
   repository?: string;
   bundle?: string;
+  outbound?: string;
   socks5?: string;
   allowPrerelease?: boolean;
   target?: string;
@@ -922,6 +923,7 @@ export async function fetchUpgradeCheck(
   const body: Record<string, unknown> = {};
   if (options.repository) body.repository = options.repository;
   if (options.bundle) body.bundle = options.bundle;
+  if (options.outbound) body.outbound = options.outbound;
   if (options.socks5) body.socks5 = options.socks5;
   if (options.allowPrerelease) body.allow_prerelease = true;
   if (options.target) body.target = options.target;
@@ -940,6 +942,7 @@ export async function triggerUpgradeApply(
   const body: Record<string, unknown> = {};
   if (options.repository) body.repository = options.repository;
   if (options.bundle) body.bundle = options.bundle;
+  if (options.outbound) body.outbound = options.outbound;
   if (options.socks5) body.socks5 = options.socks5;
   if (options.allowPrerelease) body.allow_prerelease = true;
   if (options.target) body.target = options.target;

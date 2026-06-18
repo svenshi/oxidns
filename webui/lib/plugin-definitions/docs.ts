@@ -286,6 +286,8 @@ export const pluginFieldDocs = {
     form: "- 类型：`map<string,string>`；必填：否\n- 作用：以 `application/x-www-form-urlencoded` 方式发送表单。\n- 说明：value 支持 `${key}` 占位符插值；会自动设置对应的 `Content-Type`。",
     content_type:
       "- 类型：`string`；必填：否\n- 作用：为原始 `args.body` 指定 `Content-Type`。\n- 说明：只能和 `args.body` 搭配，不能与 `args.json` 或 `args.form` 同时使用。",
+    outbound:
+      "- 类型：`string`；必填：否\n- 作用：引用 `network.outbound.profiles` 中的出站配置，统一控制该 HTTP 请求使用的解析器和代理。\n- 说明：未配置时使用 `network.outbound.default`；若也配置了 `args.socks5`，`socks5` 只覆盖代理设置，resolver 仍来自 outbound profile。",
     socks5:
       "- 类型：`string`；必填：否\n- 作用：指定 SOCKS5 代理。\n- 说明：格式与 `upstream[].socks5` 一致，支持 `host:port`、`username:password@host:port` 和带中括号的 IPv6。",
     insecure_skip_verify:
@@ -398,6 +400,8 @@ export const pluginFieldDocs = {
       "- 类型：`bool`；必填：否；默认值：`false`\n- 作用：设为 `true` 时，升级成功后不触发自动重启。",
     timeout:
       "- 类型：`duration`；必填：否；默认值：`30s`\n- 作用：限制升级过程的总等待时间。",
+    outbound:
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：引用 `network.outbound.profiles` 中的出站配置，用于升级下载。\n- 说明：旧 `socks5` 字段继续兼容，且会覆盖 profile 里的代理设置。",
     socks5:
       "- 类型：`string`；必填：否；默认值：无\n- 作用：升级下载时使用的 SOCKS5 代理。",
     insecure_skip_verify:
@@ -414,6 +418,8 @@ export const pluginFieldDocs = {
       "- 类型：`string`；必填：否；默认值：从 URL 路径推导\n- 作用：下载项的目标文件名。",
     timeout:
       "- 类型：`duration`；必填：否；默认值：`30s`\n- 作用：下载超时时间。",
+    outbound:
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：引用 `network.outbound.profiles` 中的出站配置，用于统一控制下载解析器和代理。\n- 说明：同时配置 `outbound` 和 `socks5` 时，`socks5` 会覆盖 profile 代理但保留 profile resolver。",
     socks5:
       '- 类型：`string`；必填：否；默认值：无\n- 作用：所有下载连接都会通过该 SOCKS5 代理发起。\n- 支持格式：`host:port`、`username:password@host:port`，IPv6 需写成 `"[::1]:1080"`。',
     startup_if_missing:

@@ -187,6 +187,9 @@ export default function SettingsPage() {
     if (upgradeConfig.bundle !== "auto") {
       parts.push("--bundle", upgradeConfig.bundle);
     }
+    if (upgradeConfig.outbound.trim()) {
+      parts.push("--outbound", upgradeConfig.outbound.trim());
+    }
     if (upgradeConfig.socks5.trim()) {
       parts.push("--socks5", upgradeConfig.socks5.trim());
     }
@@ -1233,6 +1236,24 @@ export default function SettingsPage() {
                             </SelectItem>
                           </SelectContent>
                         </Select>
+                      </Field>
+                      <Field>
+                        <FieldLabel>
+                          {t(WEBUI.settings.outboundProfile)}
+                        </FieldLabel>
+                        <p className="text-xs text-muted-foreground mb-2">
+                          {t(WEBUI.settings.outboundProfileDesc)}
+                        </p>
+                        <Input
+                          value={upgradeConfig.outbound}
+                          onChange={(e) =>
+                            setUpgradeConfig({ outbound: e.target.value })
+                          }
+                          placeholder={t(
+                            WEBUI.settings.outboundProfilePlaceholder,
+                          )}
+                          className="font-mono"
+                        />
                       </Field>
                       <Field>
                         <FieldLabel>{t(WEBUI.settings.socks5Proxy)}</FieldLabel>

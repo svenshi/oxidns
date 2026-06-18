@@ -7,7 +7,10 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 use crate::cli::{UpgradeAction, UpgradeOptions};
+use crate::config::types::NetworkConfig;
 use crate::infra::error::{DnsError, Result};
+#[cfg(feature = "_http-client")]
+use crate::infra::network::outbound;
 use crate::infra::service;
 use crate::infra::upgrade::{
     self, ApplyDecision, UpgradeConfig, UpgradeContext, UpgradeDownloadProgressReporter,
@@ -36,6 +39,7 @@ fn config_from_options_with_path_defaults(
     path_defaults: &CliPathDefaults,
 ) -> Result<UpgradeConfig> {
     let path_context = resolve_path_context(options, path_defaults);
+    install_outbound_from_config(&path_context)?;
     Ok(UpgradeConfig {
         target: options.target.clone(),
         repository: options.repository.clone(),
@@ -49,11 +53,40 @@ fn config_from_options_with_path_defaults(
         allow_prerelease: options.allow_prerelease,
         force: options.force,
         timeout: options.timeout,
+        outbound: options.outbound.clone(),
         socks5: options.socks5.clone(),
         insecure_skip_verify: options.insecure_skip_verify,
         github_token: options.github_token.clone(),
         ..UpgradeConfig::default()
     })
+}
+
+#[cfg(feature = "_http-client")]
+fn install_outbound_from_config(context: &CliPathContext) -> Result<()> {
+    let Some(config_path) = &context.config_path else {
+        outbound::clear_global();
+        return Ok(());
+    };
+    match read_upgrade_runtime_config(config_path) {
+        Ok(config) => {
+            if let Some(network) = config.network {
+                outbound::install_global(&network.outbound)?;
+            } else {
+                outbound::clear_global();
+            }
+            Ok(())
+        }
+        Err(err) if context.config_explicit => Err(err),
+        Err(_) => {
+            outbound::clear_global();
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(feature = "_http-client"))]
+fn install_outbound_from_config(_context: &CliPathContext) -> Result<()> {
+    Ok(())
 }
 
 struct CliPathDefaults {
@@ -154,6 +187,28 @@ fn resolve_webui_dir(options: &UpgradeOptions, context: &CliPathContext) -> Resu
 }
 
 fn read_config_webui_root(config_path: &Path) -> Result<Option<String>> {
+    let config = read_upgrade_runtime_config(config_path)?;
+    let root = config
+        .api
+        .and_then(|api| api.http)
+        .and_then(|http| match http {
+            UpgradeRuntimeHttpConfig::Listen(_) => None,
+            UpgradeRuntimeHttpConfig::Detailed(config) => config.webui.map(|webui| webui.root),
+        });
+    let Some(root) = root else {
+        return Ok(None);
+    };
+    let root = root.trim();
+    if root.is_empty() {
+        return Err(DnsError::config(format!(
+            "api.http.webui.root cannot be empty in {}",
+            config_path.display()
+        )));
+    }
+    Ok(Some(root.to_string()))
+}
+
+fn read_upgrade_runtime_config(config_path: &Path) -> Result<UpgradeRuntimeConfig> {
     let string = std::fs::read_to_string(config_path).map_err(|err| {
         DnsError::config(format!(
             "failed to read upgrade config {}: {}",
@@ -182,29 +237,13 @@ fn read_config_webui_root(config_path: &Path) -> Result<Option<String>> {
             err
         ))
     })?;
-    let root = config
-        .api
-        .and_then(|api| api.http)
-        .and_then(|http| match http {
-            UpgradeRuntimeHttpConfig::Listen(_) => None,
-            UpgradeRuntimeHttpConfig::Detailed(config) => config.webui.map(|webui| webui.root),
-        });
-    let Some(root) = root else {
-        return Ok(None);
-    };
-    let root = root.trim();
-    if root.is_empty() {
-        return Err(DnsError::config(format!(
-            "api.http.webui.root cannot be empty in {}",
-            config_path.display()
-        )));
-    }
-    Ok(Some(root.to_string()))
+    Ok(config)
 }
 
 #[derive(Debug, serde::Deserialize)]
 struct UpgradeRuntimeConfig {
     api: Option<UpgradeRuntimeApiConfig>,
+    network: Option<NetworkConfig>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -403,6 +442,9 @@ fn print_plan(action: &str, config: &UpgradeConfig) {
         }
     }
     println!("Timeout: {:?}", config.timeout);
+    if let Some(outbound) = config.outbound.as_deref() {
+        println!("Outbound: {}", outbound);
+    }
     if let Some(socks5) = config.socks5.as_deref() {
         println!("SOCKS5: {}", socks5);
     }
