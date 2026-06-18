@@ -278,7 +278,7 @@ function normalizeRoutingRule(value: unknown, index: number): StandardRoutingRul
   if (!condition || !action) return null;
   return {
     id: cleanId(source.id, `rule_${index + 1}`),
-    name: asString(source.name, `规则 ${index + 1}`),
+    name: asString(source.name, `Rule ${index + 1}`),
     enabled: asBoolean(source.enabled, true),
     condition,
     action,
@@ -343,7 +343,7 @@ function normalizeScenario(value: unknown, index: number): StandardScenario | nu
   }
   return {
     id: cleanId(source.id, `scenario_${index + 1}`),
-    name: asString(source.name, `场景 ${index + 1}`),
+    name: asString(source.name, `Scenario ${index + 1}`),
     enabled: asBoolean(source.enabled, true),
     kind: source.kind,
   };
@@ -359,7 +359,7 @@ function normalizeException(
   if (!condition || !action) return null;
   return {
     id: cleanId(source.id, `exception_${index + 1}`),
-    name: asString(source.name, `例外 ${index + 1}`),
+    name: asString(source.name, `Exception ${index + 1}`),
     enabled: asBoolean(source.enabled, true),
     condition,
     action,
@@ -385,7 +385,7 @@ function normalizeDevice(value: unknown, index: number): StandardDeviceProfile |
         : undefined;
   return {
     id: cleanId(source.id, `device_${index + 1}`),
-    name: asString(source.name, `设备 ${index + 1}`),
+    name: asString(source.name, `Device ${index + 1}`),
     addresses,
     ...(asString(source.assignedPathId).trim()
       ? { assignedPathId: cleanId(source.assignedPathId, "default") }
@@ -506,14 +506,14 @@ export function migrateLegacyStandardSettings(value: unknown): StandardModeSetti
   if (domesticUpstreams.length > 0) {
     upstreamGroups.push({
       id: "domestic",
-      name: "国内上游组",
+      name: "Domestic upstream group",
       strategy: "parallel",
       upstreams: domesticUpstreams,
     });
     paths.push({
       ...defaults.paths[0],
       id: "domestic",
-      name: "国内访问路径",
+      name: "Domestic path",
       upstreamGroupId: "domestic",
     });
   }

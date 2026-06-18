@@ -179,6 +179,10 @@ impl Provider for GeoSiteProvider {
         Ok(())
     }
 
+    fn supports_reload(&self) -> bool {
+        true
+    }
+
     fn supports_domain_matching(&self) -> bool {
         true
     }

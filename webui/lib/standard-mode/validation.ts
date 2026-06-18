@@ -108,6 +108,7 @@ export interface StandardDeviceValidationIssue {
     | "device_path_required"
     | "filtering_capability_required"
     | "filtering_rule_source_required"
+    | "filtering_subscription_runtime_required"
     | "query_log_capability_required";
   deviceId?: string;
 }
@@ -454,6 +455,16 @@ export function validateStandardDeviceSettings(
         code: "filtering_rule_source_required",
       });
     }
+    if (
+      filtering.blockRules.length === 0 &&
+      enabledSubscriptions.length > 0 &&
+      !filteringCapabilities.subscriptionRuntime
+    ) {
+      issues.push({
+        field: "devices.filtering",
+        code: "filtering_subscription_runtime_required",
+      });
+    }
   }
 
   if (forcedQueryLog && !capabilities.queryRecorder) {
@@ -593,7 +604,7 @@ export function normalizeStandardRoutingSettings(
 ): StandardModeSettings {
   const fallbackPath: StandardResolutionPath = {
     id: "default",
-    name: "默认解析路径",
+    name: "Default path",
     upstreamGroupId: settings.upstreamGroups[0]?.id ?? "default",
     filtering: "inherit",
     cache: "inherit",

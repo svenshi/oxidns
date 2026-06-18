@@ -17,7 +17,7 @@ function upstream(
 export function createDefaultUpstreamGroup(): StandardUpstreamGroup {
   return {
     id: "default",
-    name: "默认上游组",
+    name: "Default upstream group",
     strategy: "parallel",
     upstreams: [
       upstream("alidns", "AliDNS", "223.5.5.5:53"),
@@ -30,7 +30,7 @@ export function createDefaultUpstreamGroup(): StandardUpstreamGroup {
 export function createDefaultResolutionPath(): StandardResolutionPath {
   return {
     id: "default",
-    name: "默认解析路径",
+    name: "Default path",
     upstreamGroupId: "default",
     filtering: "inherit",
     cache: "inherit",

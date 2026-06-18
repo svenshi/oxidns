@@ -498,6 +498,8 @@ export const WEBUI = {
       "webui.standardDevices.validationFilteringCapabilityRequired",
     validationFilteringRuleSourceRequired:
       "webui.standardDevices.validationFilteringRuleSourceRequired",
+    validationFilteringSubscriptionRuntimeRequired:
+      "webui.standardDevices.validationFilteringSubscriptionRuntimeRequired",
     validationQueryLogCapabilityRequired:
       "webui.standardDevices.validationQueryLogCapabilityRequired",
   },
