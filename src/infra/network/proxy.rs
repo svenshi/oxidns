@@ -39,6 +39,83 @@ pub struct Socks5Opt {
     pub(crate) socket_addr: SocketAddr,
 }
 
+#[derive(Debug)]
+struct Socks5Parts {
+    username: Option<String>,
+    password: Option<String>,
+    host: String,
+    port: u16,
+}
+
+fn parse_socks5_parts(socks5_str: &str) -> Option<Socks5Parts> {
+    let socks5_str = socks5_str.trim();
+
+    let (username, password, host_port) = if let Some(at_pos) = socks5_str.rfind('@') {
+        let auth_part = &socks5_str[..at_pos];
+        let host_part = &socks5_str[at_pos + 1..];
+
+        if let Some(colon_pos) = auth_part.find(':') {
+            let username = auth_part[..colon_pos].to_string();
+            let password = auth_part[colon_pos + 1..].to_string();
+            (Some(username), Some(password), host_part)
+        } else {
+            warn!(
+                "Invalid SOCKS5 auth format (expected username:password): {}",
+                socks5_str
+            );
+            return None;
+        }
+    } else {
+        (None, None, socks5_str)
+    };
+
+    let (mut host, port) = match host_port.rfind(':') {
+        Some(colon_pos) => {
+            let host = &host_port[..colon_pos];
+            let port_str = &host_port[colon_pos + 1..];
+
+            match port_str.parse::<u16>() {
+                Ok(port) => (host, port),
+                Err(_) => {
+                    warn!("Invalid SOCKS5 port: {}", port_str);
+                    return None;
+                }
+            }
+        }
+        None => {
+            warn!("Invalid SOCKS5 format (expected host:port): {}", host_port);
+            return None;
+        }
+    };
+
+    if host.starts_with('[') || host.ends_with(']') {
+        if !(host.starts_with('[') && host.ends_with(']')) {
+            warn!("Invalid SOCKS5 IPv6 bracket format: {}", host);
+            return None;
+        }
+        host = &host[1..host.len() - 1];
+    }
+
+    if host.is_empty() {
+        warn!(
+            "Invalid SOCKS5 format (host cannot be empty): {}",
+            socks5_str
+        );
+        return None;
+    }
+
+    Some(Socks5Parts {
+        username,
+        password,
+        host: host.to_string(),
+        port,
+    })
+}
+
+pub(crate) fn validate_socks5_syntax(socks5_str: &str) -> bool {
+    parse_socks5_parts(socks5_str).is_some()
+}
+
 /// Parse SOCKS5 proxy configuration from string
 ///
 /// Supports two formats:
@@ -71,73 +148,27 @@ pub(crate) fn parse_socks5_opt_with_resolver<F>(
 where
     F: FnMut(&str) -> Result<IpAddr>,
 {
-    // Split by '@' to separate auth from host:port
-    let (username, password, host_port) = if let Some(at_pos) = socks5_str.rfind('@') {
-        // Format: username:password@host:port
-        let auth_part = &socks5_str[..at_pos];
-        let host_part = &socks5_str[at_pos + 1..];
-
-        // Split auth by ':'
-        if let Some(colon_pos) = auth_part.find(':') {
-            let username = auth_part[..colon_pos].to_string();
-            let password = auth_part[colon_pos + 1..].to_string();
-            (Some(username), Some(password), host_part)
-        } else {
-            warn!(
-                "Invalid SOCKS5 auth format (expected username:password): {}",
-                socks5_str
-            );
-            return None;
-        }
-    } else {
-        // Format: host:port (no auth)
-        (None, None, socks5_str)
-    };
-
-    // Parse host:port - use last colon to split
-    let (mut host, port) = match host_port.rfind(':') {
-        Some(colon_pos) => {
-            let host = &host_port[..colon_pos];
-            let port_str = &host_port[colon_pos + 1..];
-
-            match port_str.parse::<u16>() {
-                Ok(port) => (host, port),
-                Err(_) => {
-                    warn!("Invalid SOCKS5 port: {}", port_str);
-                    return None;
-                }
-            }
-        }
-        None => {
-            warn!("Invalid SOCKS5 format (expected host:port): {}", host_port);
-            return None;
-        }
-    };
-
-    // Remove IPv6 brackets if present: [::1] -> ::1
-    if host.starts_with('[') && host.ends_with(']') {
-        host = &host[1..host.len() - 1];
-    }
+    let parts = parse_socks5_parts(socks5_str)?;
 
     // Resolve host to IP address
-    let ip_addr = if let Ok(ip) = IpAddr::from_str(host) {
+    let ip_addr = if let Ok(ip) = IpAddr::from_str(&parts.host) {
         // Already an IP address
         ip
     } else {
         // It's a hostname, resolve it
-        match resolve_host(host) {
+        match resolve_host(&parts.host) {
             Ok(ip) => ip,
             Err(e) => {
-                warn!("Failed to resolve SOCKS5 hostname '{}': {}", host, e);
+                warn!("Failed to resolve SOCKS5 hostname '{}': {}", parts.host, e);
                 return None;
             }
         }
     };
 
     Some(Socks5Opt {
-        username,
-        password,
-        socket_addr: SocketAddr::new(ip_addr, port),
+        username: parts.username,
+        password: parts.password,
+        socket_addr: SocketAddr::new(ip_addr, parts.port),
     })
 }
 
@@ -216,6 +247,21 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::*;
+
+    #[test]
+    fn test_validate_socks5_syntax_accepts_hostname_without_dns() {
+        assert!(validate_socks5_syntax("proxy.example.com:1080"));
+        assert!(validate_socks5_syntax("user:pass@proxy.example.com:1080"));
+    }
+
+    #[test]
+    fn test_validate_socks5_syntax_rejects_malformed_values() {
+        assert!(!validate_socks5_syntax("127.0.0.1"));
+        assert!(!validate_socks5_syntax("127.0.0.1:notaport"));
+        assert!(!validate_socks5_syntax(":1080"));
+        assert!(!validate_socks5_syntax("user@127.0.0.1:1080"));
+        assert!(!validate_socks5_syntax("[::1:1080"));
+    }
 
     #[tokio::test]
     async fn test_connect_tcp_performs_standard_socks5_handshake_without_auth() {

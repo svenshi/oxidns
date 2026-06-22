@@ -8,6 +8,7 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::cli::{UpgradeAction, UpgradeOptions};
 use crate::config::types::NetworkConfig;
+use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
 #[cfg(feature = "_http-client")]
 use crate::infra::network::outbound;
@@ -24,6 +25,7 @@ const DEFAULT_SERVICE_CONFIG: &str = "/etc/oxidns/config.yaml";
 const DEFAULT_SERVICE_WORKING_DIR: &str = "/var/lib/oxidns";
 
 pub fn run(options: UpgradeOptions) -> Result<()> {
+    AppClock::start();
     let action = options.action.unwrap_or(UpgradeAction::Apply);
     let config = config_from_options(&options)?;
     run_action(action, config)

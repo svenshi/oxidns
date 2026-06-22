@@ -12,6 +12,8 @@ use serde::Deserialize;
 use serde_yaml_ng::Value;
 use thiserror::Error;
 
+use crate::infra::network::proxy::validate_socks5_syntax;
+
 /// Configuration validation errors
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -244,6 +246,10 @@ impl OutboundProfileConfig {
 }
 
 /// Resolver policy for an outbound profile.
+///
+/// This resolver is used by OxiDNS-owned outbound clients and opt-in upstreams.
+/// It is intentionally separate from legacy upstream `bootstrap`, whose field
+/// remains available on each upstream for local override compatibility.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum OutboundResolverConfig {
@@ -425,6 +431,12 @@ impl OutboundProxyConfig {
                 Err(ConfigError::InvalidNetworkOutbound(format!(
                     "profile '{}' socks5 proxy cannot be empty",
                     profile_name
+                )))
+            }
+            Self::Socks5 { socks5 } if !validate_socks5_syntax(socks5) => {
+                Err(ConfigError::InvalidNetworkOutbound(format!(
+                    "profile '{}' has invalid socks5 proxy '{}'",
+                    profile_name, socks5
                 )))
             }
             Self::Socks5 { .. } => Ok(()),
@@ -872,6 +884,49 @@ plugins:
         let err = config
             .validate()
             .expect_err("DoQ nameserver cannot use profile proxy");
+        assert!(matches!(err, ConfigError::InvalidNetworkOutbound(_)));
+    }
+
+    #[test]
+    fn test_validate_accepts_hostname_socks5_outbound_proxy_syntax() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    profiles:
+      oversea:
+        proxy:
+          socks5: user:pass@proxy.example.com:1080
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_malformed_socks5_outbound_proxy() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    profiles:
+      oversea:
+        proxy:
+          socks5: 127.0.0.1
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = config
+            .validate()
+            .expect_err("malformed socks5 proxy should fail validation");
         assert!(matches!(err, ConfigError::InvalidNetworkOutbound(_)));
     }
 
