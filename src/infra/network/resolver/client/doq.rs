@@ -6,6 +6,8 @@
 use async_trait::async_trait;
 
 use super::super::endpoint::NameserverConfig;
+#[cfg(feature = "resolver-doq")]
+use super::super::query::validate_response_id;
 use super::{NameserverClient, effective_deadline};
 #[cfg(not(feature = "resolver-doq"))]
 use crate::infra::error::DnsError;
@@ -76,17 +78,17 @@ async fn query_doq_config(
         DeadlineOutcome::Completed(result) => result?,
         DeadlineOutcome::Expired => return Err(deadline.timeout_error()),
     };
-    let raw_id = request.id();
+    let query_id = request.id();
     match deadline.run(writer.write_message(&request)).await {
         DeadlineOutcome::Completed(result) => result?,
         DeadlineOutcome::Expired => return Err(deadline.timeout_error()),
     }
     writer.finish()?;
-    let mut response = match deadline.run(reader.read_message()).await {
+    let response = match deadline.run(reader.read_message()).await {
         DeadlineOutcome::Completed(result) => result?,
         DeadlineOutcome::Expired => return Err(deadline.timeout_error()),
     };
-    response.set_id(raw_id);
+    validate_response_id(&response, query_id)?;
     transport.close(b"resolver query complete");
     Ok(response)
 }

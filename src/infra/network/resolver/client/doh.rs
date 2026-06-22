@@ -29,6 +29,9 @@ use crate::infra::network::dial::{SocketOptions, TlsDialOptions, connect_tls};
 use crate::infra::network::proxy::connect_tcp as proxy_connect_tcp;
 use crate::proto::Message;
 
+#[cfg(feature = "resolver-doh")]
+const MAX_DNS_MESSAGE_LEN: usize = u16::MAX as usize;
+
 #[derive(Debug)]
 pub(super) struct DohNameserverClient {
     config: NameserverConfig,
@@ -195,6 +198,7 @@ pub(super) fn response_buffer<T>(response: &http::Response<T>) -> BytesMut {
         .get(http::header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<usize>().ok())
+        .map(|value| value.min(MAX_DNS_MESSAGE_LEN))
         .unwrap_or(4096);
     BytesMut::with_capacity(capacity)
 }
@@ -218,5 +222,17 @@ mod tests {
         let uri = doh_request_uri(&config);
 
         assert!(uri.starts_with("https://[2001:4860:4860::8888]/dns-query?dns="));
+    }
+
+    #[test]
+    fn test_response_buffer_caps_content_length() {
+        let response = http::Response::builder()
+            .header(http::header::CONTENT_LENGTH, "999999999")
+            .body(())
+            .expect("response should build");
+
+        let buffer = response_buffer(&response);
+
+        assert_eq!(buffer.capacity(), MAX_DNS_MESSAGE_LEN);
     }
 }

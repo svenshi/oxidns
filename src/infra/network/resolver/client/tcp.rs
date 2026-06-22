@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 
 use super::super::endpoint::NameserverConfig;
+use super::super::query::validate_response_id;
 use super::{NameserverClient, effective_deadline};
 use crate::infra::error::Result;
 use crate::infra::network::deadline::{DeadlineOutcome, QueryDeadline};
@@ -82,10 +83,68 @@ where
         DeadlineOutcome::Completed(result) => result?,
         DeadlineOutcome::Expired => return Err(deadline.timeout_error()),
     }
-    let mut response = match deadline.run(reader.read_message()).await {
+    let response = match deadline.run(reader.read_message()).await {
         DeadlineOutcome::Completed(result) => result?,
         DeadlineOutcome::Expired => return Err(deadline.timeout_error()),
     };
-    response.set_id(query_id);
+    validate_response_id(&response, query_id)?;
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::io::{AsyncWriteExt, duplex, split};
+
+    use super::*;
+    use crate::proto::{DNSClass, Name, Question, RecordType};
+
+    fn make_query(id: u16) -> Message {
+        let mut message = Message::new();
+        message.set_id(id);
+        message.add_question(Question::new(
+            Name::from_ascii("example.com.").expect("query name should parse"),
+            RecordType::A,
+            DNSClass::IN,
+        ));
+        message
+    }
+
+    fn encode_frame(message: &Message) -> Vec<u8> {
+        let body = message
+            .to_bytes()
+            .expect("message should serialize successfully");
+        let mut frame = Vec::with_capacity(2 + body.len());
+        frame.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        frame.extend_from_slice(&body);
+        frame
+    }
+
+    #[tokio::test]
+    async fn test_query_framed_tcp_rejects_response_id_mismatch() {
+        let (client, mut server) = duplex(1024);
+        let (reader, writer) = split(client);
+        let mut response = Message::new();
+        response.set_id(8);
+        let response_frame = encode_frame(&response);
+
+        tokio::spawn(async move {
+            server
+                .write_all(&response_frame)
+                .await
+                .expect("server side should write response");
+        });
+
+        let err = query_framed_tcp(
+            TcpTransportReader::new(reader),
+            TcpTransportWriter::new(writer),
+            make_query(7),
+            QueryDeadline::new(Duration::from_secs(1)),
+        )
+        .await
+        .expect_err("mismatched response ID should fail");
+
+        assert!(err.to_string().contains("DNS response ID mismatch"));
+    }
 }

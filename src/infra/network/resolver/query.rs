@@ -65,7 +65,11 @@ pub(super) struct ResolvedAnswer {
     pub(super) record_type: RecordType,
 }
 
-pub(super) fn select_answer(answers: &[Record], query_name: &Name) -> Option<ResolvedAnswer> {
+pub(super) fn select_answer(
+    answers: &[Record],
+    query_name: &Name,
+    expected_type: RecordType,
+) -> Option<ResolvedAnswer> {
     let mut accepted_names = HashMap::new();
     accepted_names.insert(query_name.clone(), u32::MAX);
 
@@ -93,7 +97,7 @@ pub(super) fn select_answer(answers: &[Record], query_name: &Name) -> Option<Res
     }
 
     for answer in answers {
-        if !matches!(answer.rr_type(), RecordType::A | RecordType::AAAA) {
+        if answer.rr_type() != expected_type {
             continue;
         }
         let Some(owner_ttl) = accepted_names.get(answer.name()).copied() else {
@@ -185,8 +189,8 @@ mod tests {
         let target =
             Record::from_rdata(alias_name, 300, RData::A(A(Ipv4Addr::new(203, 0, 113, 53))));
 
-        let selected =
-            select_answer(&[unrelated, cname, target], &query_name).expect("answer should match");
+        let selected = select_answer(&[unrelated, cname, target], &query_name, RecordType::A)
+            .expect("answer should match");
 
         assert_eq!(selected.ip, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 53)));
         assert_eq!(selected.ttl_seconds, 30);
@@ -203,7 +207,28 @@ mod tests {
             RData::A(A(Ipv4Addr::new(192, 0, 2, 10))),
         );
 
-        assert!(select_answer(&[unrelated], &query_name).is_none());
+        assert!(select_answer(&[unrelated], &query_name, RecordType::A).is_none());
+    }
+
+    #[test]
+    fn test_select_answer_filters_unexpected_ip_family() {
+        let query_name = Name::from_ascii("example.com.").expect("name should parse");
+        let v4 = Record::from_rdata(
+            query_name.clone(),
+            300,
+            RData::A(A(Ipv4Addr::new(192, 0, 2, 10))),
+        );
+        let v6 = Record::from_rdata(
+            query_name.clone(),
+            300,
+            RData::AAAA(AAAA(Ipv6Addr::LOCALHOST)),
+        );
+
+        let selected =
+            select_answer(&[v4, v6], &query_name, RecordType::AAAA).expect("AAAA should match");
+
+        assert_eq!(selected.ip, IpAddr::V6(Ipv6Addr::LOCALHOST));
+        assert_eq!(selected.record_type, RecordType::AAAA);
     }
 
     #[test]

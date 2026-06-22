@@ -16,7 +16,7 @@ use super::endpoint::NameserverConfig;
 use super::query::{ResolvedAnswer, select_answer};
 use crate::infra::error::{DnsError, Result};
 use crate::infra::network::deadline::QueryDeadline;
-use crate::proto::{Message, Name};
+use crate::proto::{Message, Name, RecordType};
 
 /// Shared resolver backed by one or more DNS nameserver endpoints.
 #[derive(Debug)]
@@ -97,7 +97,9 @@ impl NameResolver {
             message.set_id(random());
             match client.query(message, deadline).await {
                 Ok(response) => {
-                    if let Some(answer) = select_answer(response.answers(), &query_name) {
+                    if let Some(answer) =
+                        select_answer(response.answers(), &query_name, self.expected_record_type())
+                    {
                         info!(
                             domain = %query_name.to_fqdn(),
                             server = %client.label(),
@@ -140,6 +142,13 @@ impl NameResolver {
         });
         debug!(domain = %query_name.to_fqdn(), error = %err, "Resolver query exhausted servers");
         Err(err)
+    }
+
+    fn expected_record_type(&self) -> RecordType {
+        match self.ip_version {
+            Some(6) => RecordType::AAAA,
+            _ => RecordType::A,
+        }
     }
 }
 
