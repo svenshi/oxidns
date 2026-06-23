@@ -701,6 +701,12 @@ async fn test_hyper_serves_webui_static_files_and_spa_fallback() {
         asset.headers().get(http::header::CONTENT_TYPE),
         Some(&HeaderValue::from_static("text/javascript; charset=utf-8"))
     );
+    assert_eq!(
+        asset.headers().get(http::header::CACHE_CONTROL),
+        Some(&HeaderValue::from_static(
+            "public, max-age=31536000, immutable"
+        ))
+    );
 
     let fallback_uri: Uri = format!("http://{addr}/settings")
         .parse()
@@ -729,6 +735,10 @@ async fn test_hyper_serves_webui_static_files_and_spa_fallback() {
         .await
         .expect("logs response");
     assert_eq!(logs.status(), StatusCode::OK);
+    assert_eq!(
+        logs.headers().get(http::header::CACHE_CONTROL),
+        Some(&HeaderValue::from_static("no-cache"))
+    );
     let logs_body = logs
         .into_body()
         .collect()

@@ -10,16 +10,19 @@ use bytes::Bytes;
 use http::{Request, StatusCode};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
-use tracing::error;
+use tracing::{error, info};
 
 use crate::api::{ApiHandler, ApiRegister, json_error, json_ok, json_response};
 use crate::infra::error::Result;
-use crate::infra::upgrade::{UpgradeBundle, UpgradeConfig, UpgradeContext};
+use crate::infra::upgrade::{ApplyRunOutcome, UpgradeBundle, UpgradeConfig, UpgradeContext};
+
+const EXIT_RESTART_REQUIRED: i32 = 75;
 
 #[derive(Debug, Deserialize, Default)]
 struct UpgradeApiBody {
     repository: Option<String>,
     bundle: Option<String>,
+    outbound: Option<String>,
     socks5: Option<String>,
     allow_prerelease: Option<bool>,
     target: Option<String>,
@@ -34,6 +37,7 @@ fn build_upgrade_config(opts: UpgradeApiBody) -> std::result::Result<UpgradeConf
     if let Some(bundle_str) = opts.bundle.filter(|s| !s.trim().is_empty()) {
         config.bundle = UpgradeBundle::from_user_value(&bundle_str).map_err(|e| e.to_string())?;
     }
+    config.outbound = opts.outbound.filter(|s| !s.trim().is_empty());
     config.socks5 = opts.socks5.filter(|s| !s.trim().is_empty());
     if let Some(allow_prerelease) = opts.allow_prerelease {
         config.allow_prerelease = allow_prerelease;
@@ -164,6 +168,11 @@ impl ApiHandler for UpgradeApplyHandler {
         tokio::spawn(async move {
             let _permit = permit;
             match crate::infra::upgrade::apply(&config, UpgradeContext::Plugin).await {
+                Ok(ApplyRunOutcome::Applied { outcome, .. }) if outcome.restart_required => {
+                    info!("requesting app restart after API-triggered upgrade");
+                    crate::plugin::request_app_restart()
+                        .unwrap_or_else(|_| std::process::exit(EXIT_RESTART_REQUIRED));
+                }
                 Ok(_) => {}
                 Err(err) => {
                     error!(error = %err, "upgrade apply failed");

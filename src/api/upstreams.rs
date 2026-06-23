@@ -273,6 +273,7 @@ async fn run_upstream_test(
     let config = UpstreamConfig {
         tag: input.tag,
         addr: input.addr,
+        outbound: None,
         dial_addr: input.dial_addr,
         port: None,
         bootstrap: input.bootstrap,

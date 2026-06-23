@@ -206,7 +206,7 @@ fn content_type_for_path(path: &Path) -> &'static str {
 }
 
 fn cache_control_for_path(path: &Path) -> &'static str {
-    if path.file_name().and_then(|name| name.to_str()) == Some("index.html") {
+    if path.extension().and_then(|extension| extension.to_str()) == Some("html") {
         "no-cache"
     } else {
         "public, max-age=31536000, immutable"

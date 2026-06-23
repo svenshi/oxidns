@@ -40,7 +40,8 @@ use crate::core::context::DnsContext;
 use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::network::http_client::{HttpClient, HttpClientOptions, HttpRequestOptions};
-use crate::infra::network::proxy::{Socks5Opt, parse_socks5_opt};
+#[cfg(test)]
+use crate::infra::network::proxy::{Socks5Opt, parse_optional_socks5};
 use crate::infra::observability::metrics::{
     MetricLabel, MetricSample, MetricSink, MetricSource, register_metric_source,
     unregister_metric_source,
@@ -60,6 +61,7 @@ struct DownloadConfig {
     #[serde(default, deserialize_with = "deserialize_duration_option")]
     timeout: Option<Duration>,
     insecure_skip_verify: Option<bool>,
+    outbound: Option<String>,
     socks5: Option<String>,
     startup_if_missing: Option<bool>,
     downloads: Vec<DownloadItemConfig>,
@@ -434,7 +436,7 @@ impl PluginFactory for DownloadFactory {
             let executor = DownloadExecutor {
                 state: Arc::new(DownloadRuntimeState::new(
                     plugin_tag.clone(),
-                    build_http_client(runtime.insecure_skip_verify, runtime.parsed_socks5),
+                    HttpClient::new(runtime.http_options.clone()),
                     runtime.timeout,
                     runtime.downloads.clone(),
                     runtime.insecure_skip_verify,
@@ -494,7 +496,7 @@ impl PluginFactory for DownloadFactory {
         Ok(UninitializedPlugin::Executor(Box::new(DownloadExecutor {
             state: Arc::new(DownloadRuntimeState::new(
                 plugin_config.tag.clone(),
-                build_http_client(runtime.insecure_skip_verify, runtime.parsed_socks5),
+                HttpClient::new(runtime.http_options),
                 runtime.timeout,
                 runtime.downloads,
                 runtime.insecure_skip_verify,
@@ -521,7 +523,12 @@ impl PluginFactory for DownloadFactory {
         Ok(UninitializedPlugin::Executor(Box::new(DownloadExecutor {
             state: Arc::new(DownloadRuntimeState::new(
                 tag.to_string(),
-                build_http_client(false, None),
+                HttpClient::new(HttpClientOptions::from_outbound(
+                    false,
+                    None,
+                    None,
+                    |raw| DnsError::plugin(format!("invalid download socks5 proxy '{}'", raw)),
+                )?),
                 DEFAULT_TIMEOUT,
                 downloads,
                 false,
@@ -538,7 +545,7 @@ struct DownloadRuntimeConfig {
     insecure_skip_verify: bool,
     startup_if_missing: bool,
     raw_socks5: Option<String>,
-    parsed_socks5: Option<Socks5Opt>,
+    http_options: HttpClientOptions,
 }
 
 fn build_download_runtime_config(plugin_config: &PluginConfig) -> Result<DownloadRuntimeConfig> {
@@ -548,13 +555,21 @@ fn build_download_runtime_config(plugin_config: &PluginConfig) -> Result<Downloa
         .ok_or_else(|| DnsError::plugin("download requires configuration arguments"))
         .and_then(parse_download_config)?;
 
+    let insecure_skip_verify = cfg.insecure_skip_verify.unwrap_or(false);
+    let http_options = HttpClientOptions::from_outbound(
+        insecure_skip_verify,
+        cfg.outbound.as_deref(),
+        cfg.socks5.as_deref(),
+        |raw| DnsError::plugin(format!("invalid download socks5 proxy '{}'", raw)),
+    )?;
+
     Ok(DownloadRuntimeConfig {
         timeout: cfg.timeout.unwrap_or(DEFAULT_TIMEOUT),
-        parsed_socks5: parse_socks5(cfg.socks5.as_deref())?,
         downloads: resolve_download_targets(&plugin_config.tag, cfg.downloads)?,
-        insecure_skip_verify: cfg.insecure_skip_verify.unwrap_or(false),
+        insecure_skip_verify,
         startup_if_missing: cfg.startup_if_missing.unwrap_or(true),
         raw_socks5: cfg.socks5,
+        http_options,
     })
 }
 
@@ -723,20 +738,11 @@ fn filename_from_url(url: &Url) -> Option<String> {
         .map(str::to_string)
 }
 
-fn build_http_client(insecure_skip_verify: bool, socks5: Option<Socks5Opt>) -> HttpClient {
-    HttpClient::new(HttpClientOptions {
-        insecure_skip_verify,
-        socks5,
-    })
-}
-
+#[cfg(test)]
 fn parse_socks5(raw: Option<&str>) -> Result<Option<Socks5Opt>> {
-    let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
-        return Ok(None);
-    };
-    parse_socks5_opt(raw)
-        .map(Some)
-        .ok_or_else(|| DnsError::plugin(format!("invalid download socks5 proxy '{}'", raw)))
+    parse_optional_socks5(raw, |raw| {
+        DnsError::plugin(format!("invalid download socks5 proxy '{}'", raw))
+    })
 }
 
 #[cfg(test)]
@@ -823,10 +829,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_download_executor_returns_next_for_empty_runtime_errors() {
+        AppClock::start();
+
         let plugin = DownloadExecutor {
             state: Arc::new(DownloadRuntimeState::new(
                 "download".to_string(),
-                build_http_client(false, None),
+                HttpClient::new(HttpClientOptions::new(false, None)),
                 Duration::from_millis(10),
                 vec![DownloadTarget {
                     url: "http://127.0.0.1:9/missing.txt".to_string(),
@@ -854,7 +862,7 @@ mod tests {
         std::fs::write(&path, "||example.org^\n").expect("file should be written");
         let state = DownloadRuntimeState::new(
             "standard_filter_download".to_string(),
-            build_http_client(false, None),
+            HttpClient::new(HttpClientOptions::new(false, None)),
             Duration::from_secs(1),
             vec![DownloadTarget {
                 url: "https://example.com/rules.txt".to_string(),

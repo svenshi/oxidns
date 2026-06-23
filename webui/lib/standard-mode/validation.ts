@@ -1,4 +1,5 @@
 import { isPluginKindSupported } from "../build-capabilities";
+import { createServerSettings } from "./defaults";
 import type { BuildInfo } from "../oxidns-api";
 import type {
   StandardDeviceProfile,
@@ -8,6 +9,8 @@ import type {
   StandardResolutionPath,
   StandardRoutingRule,
   StandardRoutingSettings,
+  StandardServerProtocol,
+  StandardServerSettings,
   StandardSubscription,
   StandardUpstream,
   StandardUpstreamProtocol,
@@ -17,10 +20,17 @@ export interface StandardDnsValidationIssue {
   field: string;
   code:
     | "listen_required"
+    | "server_listen_required"
+    | "server_tls_required"
+    | "server_protocol_unsupported"
+    | "server_port_conflict"
+    | "doh_path_required"
     | "upstream_required"
     | "upstream_address_required"
     | "protocol_unsupported";
   protocol?: StandardUpstreamProtocol;
+  serverProtocol?: StandardServerProtocol;
+  conflictWith?: string;
   requiredFeatures?: string[];
 }
 
@@ -136,6 +146,36 @@ export const STANDARD_UPSTREAM_PROTOCOLS: readonly StandardUpstreamProtocol[] = 
   "doq",
 ] as const;
 
+export const STANDARD_SERVER_PROTOCOLS: readonly StandardServerProtocol[] = [
+  "udp",
+  "tcp",
+  "dot",
+  "doh",
+  "doq",
+] as const;
+
+const serverProtocolFeatureRequirements: Record<
+  StandardServerProtocol,
+  readonly string[]
+> = {
+  udp: [],
+  tcp: [],
+  dot: ["server-dot"],
+  doh: [],
+  doq: [],
+};
+
+const serverProtocolKindRequirements: Record<
+  StandardServerProtocol,
+  "udp_server" | "tcp_server" | "http_server" | "quic_server"
+> = {
+  udp: "udp_server",
+  tcp: "tcp_server",
+  dot: "tcp_server",
+  doh: "http_server",
+  doq: "quic_server",
+};
+
 export function requiredStandardUpstreamProtocolFeatures(
   protocol: StandardUpstreamProtocol,
 ): readonly string[] {
@@ -152,18 +192,54 @@ export function isStandardUpstreamProtocolSupported(
   return required.every((feature) => enabled.has(feature));
 }
 
+export function requiredStandardServerProtocolFeatures(
+  protocol: StandardServerProtocol,
+  settings?: StandardServerSettings,
+): readonly string[] {
+  if (protocol === "doh" && settings?.enableHttp3) {
+    return ["server-doh3"];
+  }
+  return serverProtocolFeatureRequirements[protocol];
+}
+
+export function isStandardServerProtocolSupported(
+  protocol: StandardServerProtocol,
+  buildInfo: BuildInfo | null,
+  settings?: StandardServerSettings,
+): boolean {
+  if (
+    !isPluginKindSupported(
+      buildInfo,
+      "server",
+      serverProtocolKindRequirements[protocol],
+    )
+  ) {
+    return false;
+  }
+  const required = requiredStandardServerProtocolFeatures(protocol, settings);
+  if (required.length === 0 || !buildInfo) return true;
+  const enabled = new Set(buildInfo.enabled_features);
+  return required.every((feature) => enabled.has(feature));
+}
+
 export function normalizeStandardDnsSettings(
   settings: StandardModeSettings,
 ): StandardModeSettings {
   const sampleRate = Number(settings.queryLog.sampleRate);
+  const listenAddress = settings.listen.address.trim() || "0.0.0.0:5335";
+  const servers = normalizeServerSettings(settings.listen.servers, listenAddress);
   return {
     ...settings,
     listen: {
       ...settings.listen,
-      address: settings.listen.address.trim() || "0.0.0.0:5335",
+      address: listenAddress,
+      udp: servers.some((server) => server.protocol === "udp"),
+      tcp: servers.some((server) => server.protocol === "tcp"),
+      servers,
     },
     upstreamGroups: settings.upstreamGroups.map((group) => ({
       ...group,
+      concurrent: Math.max(1, Math.min(3, Math.trunc(group.concurrent) || 1)),
       upstreams: group.upstreams.map(normalizeStandardUpstream),
     })),
     cache: {
@@ -183,6 +259,40 @@ export function normalizeStandardDnsSettings(
         ? Math.min(1, Math.max(0, sampleRate))
         : 1,
     },
+  };
+}
+
+function normalizeServerSettings(
+  servers: StandardModeSettings["listen"]["servers"],
+  listenAddress: string,
+): StandardModeSettings["listen"]["servers"] {
+  return servers.map((server, index) =>
+    normalizeServer({
+      ...createServerSettings(server.protocol, server.id || `server_${index + 1}`),
+      ...server,
+      listen: server.listen || (server.protocol === "udp" || server.protocol === "tcp"
+        ? listenAddress
+        : createServerSettings(server.protocol).listen),
+    }),
+  );
+}
+
+function normalizeServer(server: StandardServerSettings): StandardServerSettings {
+  const idleTimeout = Number(server.idleTimeout);
+  return {
+    ...server,
+    listen: server.listen.trim(),
+    ...(server.cert !== undefined ? { cert: server.cert.trim() } : {}),
+    ...(server.key !== undefined ? { key: server.key.trim() } : {}),
+    ...(server.path !== undefined
+      ? { path: server.path.trim() || "/dns-query" }
+      : {}),
+    ...(server.srcIpHeader !== undefined
+      ? { srcIpHeader: server.srcIpHeader.trim() }
+      : {}),
+    ...(Number.isFinite(idleTimeout)
+      ? { idleTimeout: Math.max(1, Math.trunc(idleTimeout)) }
+      : {}),
   };
 }
 
@@ -214,23 +324,57 @@ export function validateStandardDnsSettings(
   buildInfo: BuildInfo | null,
 ): StandardDnsValidationIssue[] {
   const issues: StandardDnsValidationIssue[] = [];
-  if (!settings.listen.udp && !settings.listen.tcp) {
+  const servers = settings.listen.servers;
+  if (servers.length === 0) {
     issues.push({ field: "listen", code: "listen_required" });
   }
 
-  const defaultGroup = settings.upstreamGroups.find((group) => group.isDefault)
-    ?? settings.upstreamGroups[0];
-  const enabledUpstreams = defaultGroup?.upstreams.filter((item) => item.enabled) ?? [];
-  const usableUpstreamCount = enabledUpstreams.filter((item) =>
-    item.address.trim(),
+  for (const server of servers) {
+    const protocol = server.protocol;
+    const field = `listen.${server.id}`;
+    if (!server.listen.trim()) {
+      issues.push({ field, code: "server_listen_required", serverProtocol: protocol });
+    }
+    if (
+      (protocol === "dot" || protocol === "doq" || protocol === "doh") &&
+      (!server.cert?.trim() || !server.key?.trim())
+    ) {
+      issues.push({ field, code: "server_tls_required", serverProtocol: protocol });
+    }
+    if (protocol === "doh" && !server.path?.trim()) {
+      issues.push({ field, code: "doh_path_required", serverProtocol: protocol });
+    }
+    if (!isStandardServerProtocolSupported(protocol, buildInfo, server)) {
+      issues.push({
+        field,
+        code: "server_protocol_unsupported",
+        serverProtocol: protocol,
+        requiredFeatures: [
+          ...requiredStandardServerProtocolFeatures(protocol, server),
+        ],
+      });
+    }
+  }
+
+  for (const issue of detectServerPortConflicts(servers)) {
+    issues.push(issue);
+  }
+
+  const enabledUpstreams = settings.upstreamGroups.flatMap((group) =>
+    group.upstreams
+      .filter((item) => item.enabled)
+      .map((upstream) => ({ groupId: group.id, upstream })),
+  );
+  const usableUpstreamCount = enabledUpstreams.filter(({ upstream }) =>
+    upstream.address.trim(),
   ).length;
 
   if (usableUpstreamCount === 0) {
     issues.push({ field: "upstreams", code: "upstream_required" });
   }
 
-  for (const upstream of enabledUpstreams) {
-    const field = `upstream.${upstream.id}`;
+  for (const { groupId, upstream } of enabledUpstreams) {
+    const field = `upstream.${groupId}.${upstream.id}`;
     if (!upstream.address.trim()) {
       issues.push({ field, code: "upstream_address_required" });
     }
@@ -245,6 +389,76 @@ export function validateStandardDnsSettings(
   }
 
   return issues;
+}
+
+function detectServerPortConflicts(
+  servers: StandardServerSettings[],
+): StandardDnsValidationIssue[] {
+  const bindings: Array<{
+    server: StandardServerSettings;
+    transport: "udp" | "tcp";
+    host: string;
+    port: number;
+  }> = [];
+  for (const server of servers) {
+    const endpoint = parseListenEndpoint(server.listen);
+    if (!endpoint) continue;
+    for (const transport of serverTransports(server)) {
+      bindings.push({ server, transport, ...endpoint });
+    }
+  }
+
+  const issues: StandardDnsValidationIssue[] = [];
+  for (let leftIndex = 0; leftIndex < bindings.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < bindings.length; rightIndex += 1) {
+      const left = bindings[leftIndex];
+      const right = bindings[rightIndex];
+      if (left.server.id === right.server.id) continue;
+      if (left.transport !== right.transport || left.port !== right.port) continue;
+      if (!hostsConflict(left.host, right.host)) continue;
+      issues.push({
+        field: `listen.${right.server.id}`,
+        code: "server_port_conflict",
+        serverProtocol: right.server.protocol,
+        conflictWith: left.server.id,
+      });
+    }
+  }
+  return issues;
+}
+
+function serverTransports(server: StandardServerSettings): Array<"udp" | "tcp"> {
+  if (server.protocol === "udp" || server.protocol === "doq") return ["udp"];
+  if (server.protocol === "doh" && server.enableHttp3) return ["tcp", "udp"];
+  return ["tcp"];
+}
+
+function parseListenEndpoint(listen: string): { host: string; port: number } | null {
+  const value = listen.trim();
+  if (!value) return null;
+  const bracketMatch = /^\[([^\]]+)\]:(\d+)$/.exec(value);
+  if (bracketMatch) {
+    return { host: normalizeListenHost(bracketMatch[1]), port: Number(bracketMatch[2]) };
+  }
+  const portOnly = /^:(\d+)$/.exec(value);
+  if (portOnly) return { host: "", port: Number(portOnly[1]) };
+  const splitAt = value.lastIndexOf(":");
+  if (splitAt < 0) return null;
+  const port = Number(value.slice(splitAt + 1));
+  if (!Number.isInteger(port) || port < 0 || port > 65535) return null;
+  return { host: normalizeListenHost(value.slice(0, splitAt)), port };
+}
+
+function normalizeListenHost(host: string): string {
+  return host.trim().replace(/^\[|\]$/g, "").toLowerCase();
+}
+
+function hostsConflict(left: string, right: string): boolean {
+  return left === right || isWildcardHost(left) || isWildcardHost(right);
+}
+
+function isWildcardHost(host: string): boolean {
+  return host === "" || host === "*" || host === "0.0.0.0" || host === "::";
 }
 
 export function standardFilteringCapabilityMap(

@@ -9,17 +9,32 @@ export type StandardUpstreamProtocol =
   | "doh3"
   | "doq";
 
+export type StandardServerProtocol = "udp" | "tcp" | "dot" | "doh" | "doq";
+
+export interface StandardServerSettings {
+  id: string;
+  protocol: StandardServerProtocol;
+  listen: string;
+  cert?: string;
+  key?: string;
+  idleTimeout?: number;
+  path?: string;
+  srcIpHeader?: string;
+  enableHttp3?: boolean;
+}
+
 export interface StandardListenSettings {
   address: string;
   udp: boolean;
   tcp: boolean;
+  servers: StandardServerSettings[];
 }
 
 export interface StandardUpstreamGroup {
   id: string;
   name: string;
   description?: string;
-  strategy: "parallel" | "sequential" | "fastest";
+  concurrent: number;
   upstreams: StandardUpstream[];
   isDefault?: boolean;
 }
@@ -166,7 +181,6 @@ export interface StandardModeSettings {
 }
 
 export interface StandardTagMap {
-  system: string[];
   cache?: string;
   queryLog?: string;
   filtering?: string[];

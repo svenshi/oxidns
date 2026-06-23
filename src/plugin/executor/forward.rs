@@ -591,6 +591,7 @@ fn make_default_upstream_config(addr: String) -> UpstreamConfig {
     UpstreamConfig {
         tag: None,
         addr,
+        outbound: None,
         dial_addr: None,
         port: None,
         bootstrap: None,

@@ -9,7 +9,7 @@ members = [
 
 [package]
 name = "oxidns"
-version = "1.2.3"
+version = "1.3.0"
 edition = "2024"
 authors = ["Sven Shi <isvenshi@gmail.com>"]
 description = "A Rust-powered DNS engine inspired by MosDNS, designed for performance and complete configurability."
@@ -57,7 +57,7 @@ sha2 = "0.11.0"
 wincode = { version = "0.5", features = ["derive"] }
 oxidns-proto = { version = "0.1.1", path = "crates/proto" }
 oxidns-macros = { version = "0.1.0", path = "crates/macros" }
-hotpath = "0.16"
+hotpath = "0.17"
 
 # Optional: only needed by the `plugin-upgrade` feature (self-upgrade CLI +
 # `upgrade` executor). Pulled in by tarball / archive verification helpers.
@@ -65,12 +65,12 @@ semver = { version = "1.0", optional = true }
 flate2 = { version = "1.1", optional = true }
 tar = { version = "0.4", optional = true }
 
-# DNS transport and TLS stack used by server plugins and upstream clients.
+# DNS transport and TLS stack used by server plugins and outbound DNS clients.
 # All of these are now optional: the `api` / `webui` / `metrics` features pull
 # in the HTTP server + TLS server stack; `server-dot` / `server-doh` /
-# `upstream-dot` / `upstream-doh` pull in their respective pieces; `quinn` /
-# `h3` / `h3-quinn` are reached through `server-doq` / `server-doh3` /
-# `upstream-doq` / `upstream-doh3`.
+# `resolver-dot` / `resolver-doh` / `upstream-dot` / `upstream-doh` pull in
+# their respective pieces; `quinn` / `h3` / `h3-quinn` are reached through
+# `server-doq` / `server-doh3` and the shared `_dns-client-*` features.
 h2 = { version = "0.4", optional = true }
 quinn = { version = "0.11.9", optional = true }
 h3 = { version = "0.0.8", optional = true }
@@ -103,7 +103,7 @@ cronexpr = { version = "1.5.0", optional = true }
 fast-socks5 = "1.0.0"
 mikrotik-rs = { version = "0.8.0", optional = true }
 rusqlite = { version = "0.40.1", features = ["bundled"], optional = true }
-zoneparser = { package = "oxidns-zoneparser", version = "0.1.0", path = "crates/zoneparser", optional = true }
+zoneparser = { package = "oxidns-zoneparser", version = "0.1.1", path = "crates/zoneparser", optional = true }
 
 # Service management
 service-manager = "0.11.0"
@@ -158,6 +158,9 @@ standard = [
     "server-dot",
     "server-doh",
     "server-doq",
+    "resolver-dot",
+    "resolver-doh",
+    "resolver-doq",
     "upstream-dot",
     "upstream-doh",
     "upstream-doq",
@@ -179,6 +182,7 @@ standard = [
 full = [
     "standard",
     "server-doh3",
+    "resolver-doh3",
     "upstream-doh3",
     "plugin-mikrotik",
     "plugin-ipset",
@@ -205,9 +209,9 @@ metrics = ["api"]
 # Inbound DoT (TLS over TCP) server. Pulls in the TLS server stack.
 server-dot = ["_tls-server"]
 
-# Inbound DoH (HTTP/2 over TLS) server. Pulls in hyper(server) + TLS server.
-# The HTTP/2 leg drives the `h2` crate directly for the DoH handshake.
-server-doh = ["_http-server", "_tls-server", "dep:h2"]
+# Inbound DoH (HTTP/1.1 + HTTP/2 over TLS) server. Pulls in hyper(server) +
+# TLS server.
+server-doh = ["_http-server", "_tls-server"]
 
 # Inbound DoQ server (QUIC). Pulls in the `quinn` server stack and the
 # rustls glue it needs for the QUIC TLS layer.
@@ -217,19 +221,30 @@ server-doq = ["dep:quinn", "_tls-server"]
 # `h3` + `h3-quinn` + `quinn` on top.
 server-doh3 = ["server-doh", "dep:h3", "dep:h3-quinn", "dep:quinn"]
 
-# Outbound DoT upstream. Pulls in the TLS client stack.
-upstream-dot = ["_tls-client"]
+# Outbound resolver DoT nameserver support.
+resolver-dot = ["_dns-client-dot"]
 
-# Outbound DoH (HTTP/2) upstream. Pulls in the HTTP client stack + h2.
-upstream-doh = ["_http-client", "dep:h2"]
+# Outbound resolver DoH (HTTP/2) nameserver support.
+resolver-doh = ["_dns-client-doh"]
 
-# Outbound DoQ upstream. Pulls in the `quinn` client stack and the
-# `_tls-client` rustls glue it shares with DoT / DoH.
-upstream-doq = ["dep:quinn", "_tls-client"]
+# Outbound resolver DoQ nameserver support.
+resolver-doq = ["_dns-client-doq"]
+
+# Outbound resolver HTTP/3 nameserver support.
+resolver-doh3 = ["resolver-doh", "_dns-client-doh3"]
+
+# Outbound DoT upstream. Pulls in the shared DoT client stack.
+upstream-dot = ["_dns-client-dot"]
+
+# Outbound DoH (HTTP/2) upstream. Pulls in the shared DoH client stack.
+upstream-doh = ["_dns-client-doh"]
+
+# Outbound DoQ upstream. Pulls in the shared DoQ client stack.
+upstream-doq = ["_dns-client-doq"]
 
 # Outbound HTTP/3 leg of DoH upstreams (`h3://` scheme or
 # `enable_http3: true`). Requires `upstream-doh`.
-upstream-doh3 = ["upstream-doh", "dep:h3", "dep:h3-quinn", "dep:quinn"]
+upstream-doh3 = ["upstream-doh", "_dns-client-doh3"]
 
 # --- Granular plugin features ----------------------------------------------
 
@@ -314,6 +329,12 @@ _http-client = [
 # Request-local sequence step capture used by observer plugins such as
 # `query_recorder`.
 _sequence-step-recording = []
+
+# Shared outbound DNS client protocol stacks used by resolver and upstream.
+_dns-client-dot = ["_tls-client"]
+_dns-client-doh = ["_http-client", "_tls-client", "dep:h2"]
+_dns-client-doq = ["dep:quinn", "_tls-client"]
+_dns-client-doh3 = ["_dns-client-doh", "dep:h3", "dep:h3-quinn", "dep:quinn"]
 
 # --- Profiling -------------------------------------------------------------
 hotpath = ["hotpath/hotpath"]

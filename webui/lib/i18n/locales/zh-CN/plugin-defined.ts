@@ -136,6 +136,11 @@ export const zhCNPluginDefined = {
           description: "指定处理该路径请求的执行器。",
           placeholder: "seq_main",
         },
+        "entries[].json_api": {
+          label: "JSON DNS API",
+          description:
+            "开启后，该路径的 GET 请求可使用 JSON DNS API 参数；RFC 8484 GET/POST 始终可用。",
+        },
         listen: {
           label: "监听地址",
           description: "指定 HTTP/HTTPS 监听地址。",
@@ -272,8 +277,10 @@ export const zhCNPluginDefined = {
         },
         "args[].exec": {
           label: "执行动作",
-          description: "定义规则命中后要执行的动作。",
-          placeholder: "$forward_main / accept / reject 3 / jump seq_tag",
+          description:
+            "定义规则命中后要执行的动作，可引用执行器或使用 accept、return、reject、jump、goto、mark 等内置动作；reject 支持大小写不敏感的 RCODE 名称和数字。",
+          placeholder:
+            "$forward_main / accept / reject SERVFAIL / reject NOERROR / reject 3 / jump seq_tag",
         },
       },
     },
@@ -299,6 +306,12 @@ export const zhCNPluginDefined = {
           label: "上游地址",
           description: "定义上游地址、协议类型以及目标主机。",
           placeholder: "udp://1.1.1.1:53",
+        },
+        "upstreams[].outbound": {
+          label: "出站配置",
+          description:
+            "引用 network.outbound.profiles 中的出站配置，为该上游注入 resolver 和 proxy；本地 dial_addr、bootstrap、socks5 优先生效。",
+          placeholder: "oversea",
         },
         "upstreams[].dial_addr": {
           label: "拨号 IP",
@@ -1023,6 +1036,11 @@ export const zhCNPluginDefined = {
           label: "清理周期(小时)",
           description: "定义过期清理任务的执行周期。",
         },
+        reader_concurrency: {
+          label: "读取并发数",
+          description:
+            "限制 query_recorder API/统计读取侧同时运行的 SQLite reader 数量，避免 WebUI 或 API 突发请求占用过多阻塞线程和内存。",
+        },
       },
     },
     metrics_collector: {
@@ -1162,6 +1180,12 @@ export const zhCNPluginDefined = {
         content_type: {
           label: "Content-Type",
           description: "为原始 args.body 指定 Content-Type。",
+        },
+        outbound: {
+          label: "出站配置",
+          description:
+            "引用 network.outbound.profiles 中的出站配置，用于统一控制解析器和代理。",
+          placeholder: "oversea",
         },
         socks5: {
           label: "SOCKS5 代理",
@@ -1563,6 +1587,12 @@ export const zhCNPluginDefined = {
           label: "超时",
           description: "限制升级过程的总等待时间。",
         },
+        outbound: {
+          label: "出站配置",
+          description:
+            "引用 network.outbound.profiles 中的出站配置，用于升级下载。",
+          placeholder: "oversea",
+        },
         socks5: {
           label: "SOCKS5 代理",
           description: "升级下载时使用的 SOCKS5 代理。",
@@ -1609,6 +1639,12 @@ export const zhCNPluginDefined = {
         timeout: {
           label: "超时",
           description: "下载超时时间。",
+        },
+        outbound: {
+          label: "出站配置",
+          description:
+            "引用 network.outbound.profiles 中的出站配置，用于统一控制下载解析器和代理。",
+          placeholder: "oversea",
         },
         socks5: {
           label: "SOCKS5 代理",

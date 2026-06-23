@@ -30,25 +30,12 @@ use crate::infra::observability::metrics::{
     MetricLabel, MetricSample, MetricSink, MetricSource, register_metric_source,
     unregister_metric_source,
 };
-use crate::plugin::executor::{ExecStep, Executor};
+use crate::plugin::executor::{ExecStep, Executor, synthetic_response};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;
-use crate::proto::{A, AAAA, Message, Name, Question, RData, Rcode, Record, RecordType, SOA};
+use crate::proto::{A, AAAA, Message, Question, RData, Rcode, RecordType};
 
 const BLACK_HOLE_ANSWER_TTL: u32 = 300;
-const BLACK_HOLE_FAKE_SOA_TTL: u32 = 300;
-
-lazy_static::lazy_static! {
-    static ref FAKE_SOA_RDATA: Arc<RData> = Arc::new(RData::SOA(SOA::new(
-        Name::from_ascii("fake-ns.oxidns.fake.root.").expect("fake SOA mname should parse"),
-        Name::from_ascii("fake-mbox.oxidns.fake.root.").expect("fake SOA rname should parse"),
-        2021110400,
-        1800,
-        900,
-        604800,
-        86400,
-    )));
-}
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct BlackHoleConfig {
@@ -165,8 +152,12 @@ impl Executor for BlackHole {
 impl BlackHole {
     fn build_response(&self, request: &Message, question: &Question) -> Result<Message> {
         match self.mode {
-            BlackHoleMode::NxDomain => Ok(build_nxdomain_response(request, question)),
-            BlackHoleMode::NoData => Ok(build_nodata_response(request, question)),
+            BlackHoleMode::NxDomain => Ok(synthetic_response::default_nxdomain_response(
+                request, question,
+            )),
+            BlackHoleMode::NoData => Ok(synthetic_response::default_nodata_response(
+                request, question,
+            )),
             BlackHoleMode::Refused => Ok(request.response(Rcode::Refused)),
             BlackHoleMode::Null | BlackHoleMode::Custom => {
                 self.build_address_or_nodata_response(request, question)
@@ -186,7 +177,9 @@ impl BlackHole {
             RecordType::AAAA if !self.ipv6.is_empty() => {
                 Ok(request.address_response_rdata(question, BLACK_HOLE_ANSWER_TTL, &self.ipv6)?)
             }
-            _ => Ok(build_nodata_response(request, question)),
+            _ => Ok(synthetic_response::default_nodata_response(
+                request, question,
+            )),
         }
     }
 }
@@ -418,26 +411,6 @@ fn split_ips(ips: Vec<IpAddr>) -> (Vec<Arc<RData>>, Vec<Arc<RData>>) {
     (ipv4, ipv6)
 }
 
-fn build_nxdomain_response(request: &Message, question: &Question) -> Message {
-    let mut response = request.response(Rcode::NXDomain);
-    add_fake_soa_authority(&mut response, question);
-    response
-}
-
-fn build_nodata_response(request: &Message, question: &Question) -> Message {
-    let mut response = request.response(Rcode::NoError);
-    add_fake_soa_authority(&mut response, question);
-    response
-}
-
-fn add_fake_soa_authority(response: &mut Message, question: &Question) {
-    response.add_authority(Record::from_arc_rdata(
-        question.name().clone(),
-        BLACK_HOLE_FAKE_SOA_TTL,
-        FAKE_SOA_RDATA.clone(),
-    ));
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -496,7 +469,10 @@ mod tests {
     fn assert_fake_soa(response: &Message) {
         assert_eq!(response.authorities().len(), 1);
         assert_eq!(response.authorities()[0].rr_type(), RecordType::SOA);
-        assert_eq!(response.authorities()[0].ttl(), BLACK_HOLE_FAKE_SOA_TTL);
+        assert_eq!(
+            response.authorities()[0].ttl(),
+            synthetic_response::DEFAULT_FAKE_SOA_TTL
+        );
     }
 
     #[test]

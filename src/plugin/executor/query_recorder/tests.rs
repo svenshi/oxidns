@@ -13,8 +13,8 @@ use super::model::{
 };
 use super::store::{
     create_schema, load_latency_summary, load_plugin_stats, load_qtype_distribution,
-    load_rcode_distribution, load_timeseries, load_top_clients, load_top_qnames, open_database,
-    query_records, table_names,
+    load_rcode_distribution, load_timeseries, load_top_clients, load_top_qnames,
+    open_reader_database, open_writer_database, query_records, table_names,
 };
 use super::{QueryRecorder, QueryRecorderFactory, resolve_config};
 use crate::core::context::{DnsContext, ExecutionPathEvent};
@@ -35,6 +35,7 @@ fn recorder_config(path: &str) -> serde_yaml_ng::Value {
         memory_tail: Some(16),
         retention_days: Some(7),
         cleanup_interval_hours: Some(1),
+        reader_concurrency: Some(2),
     })
     .unwrap()
 }
@@ -117,13 +118,15 @@ fn test_table_names_include_tag_hash_and_version() {
     assert!(tables.records.starts_with("qr_recorder_main_"));
     assert!(tables.records.ends_with("_v1_records"));
     assert!(tables.steps.ends_with("_v1_steps"));
+    assert!(tables.questions.ends_with("_v1_questions"));
+    assert!(tables.meta.ends_with("_v1_meta"));
 }
 
 #[test]
-fn test_open_database_enables_incremental_auto_vacuum_for_new_database() {
+fn test_open_writer_database_enables_incremental_auto_vacuum_for_new_database() {
     let temp = NamedTempFile::new().unwrap();
     let tables = table_names("rec");
-    let mut conn = open_database(temp.path()).unwrap();
+    let mut conn = open_writer_database(temp.path()).unwrap();
 
     create_schema(&mut conn, &tables).unwrap();
 
@@ -131,6 +134,35 @@ fn test_open_database_enables_incremental_auto_vacuum_for_new_database() {
         .query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
         .unwrap();
     assert_eq!(mode, 2);
+}
+
+#[test]
+fn test_open_reader_database_uses_low_memory_read_pragmas() {
+    let temp = NamedTempFile::new().unwrap();
+    let tables = table_names("rec");
+    {
+        let mut conn = open_writer_database(temp.path()).unwrap();
+        create_schema(&mut conn, &tables).unwrap();
+    }
+
+    let conn = open_reader_database(temp.path()).unwrap();
+    let query_only: i64 = conn
+        .query_row("PRAGMA query_only", [], |row| row.get(0))
+        .unwrap();
+    let cache_size: i64 = conn
+        .query_row("PRAGMA cache_size", [], |row| row.get(0))
+        .unwrap();
+    let mmap_size: i64 = conn
+        .query_row("PRAGMA mmap_size", [], |row| row.get(0))
+        .unwrap();
+    let temp_store: i64 = conn
+        .query_row("PRAGMA temp_store", [], |row| row.get(0))
+        .unwrap();
+
+    assert_eq!(query_only, 1);
+    assert_eq!(cache_size, -4096);
+    assert_eq!(mmap_size, 0);
+    assert_eq!(temp_store, 1);
 }
 
 #[test]
@@ -238,6 +270,7 @@ async fn test_query_recorder_execute_enqueues_record() {
             memory_tail: Some(8),
             retention_days: Some(7),
             cleanup_interval_hours: Some(1),
+            reader_concurrency: Some(2),
         })
         .unwrap(),
     ))
@@ -290,6 +323,7 @@ async fn test_query_recorder_list_cursor_only_when_more_records_exist() {
             memory_tail: Some(8),
             retention_days: Some(7),
             cleanup_interval_hours: Some(1),
+            reader_concurrency: Some(2),
         })
         .unwrap(),
     ))
@@ -381,6 +415,44 @@ async fn test_query_recorder_clear_history_removes_records_and_tail() {
         .unwrap()
         .0;
     assert!(records.is_empty());
+
+    plugin.destroy().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_query_recorder_clear_history_does_not_wait_for_reader_permits() {
+    AppClock::start();
+
+    let temp = NamedTempFile::new().unwrap();
+    let config = resolve_config(Some(recorder_config(&temp.path().display().to_string()))).unwrap();
+    let mut plugin = QueryRecorder::new("rec".to_string(), config);
+    plugin.init_for_test().await.unwrap();
+    let backend = plugin.backend.as_ref().unwrap().clone();
+
+    seed_demo_records(&backend).await;
+    let _reader_a = backend
+        .reader_semaphore
+        .clone()
+        .try_acquire_owned()
+        .expect("first reader permit should be available");
+    let _reader_b = backend
+        .reader_semaphore
+        .clone()
+        .try_acquire_owned()
+        .expect("second reader permit should be available");
+
+    let clear_backend = backend.clone();
+    let clear_result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        tokio::task::spawn_blocking(move || clear_backend.clear_history()),
+    )
+    .await
+    .expect("clear should not wait for reader permits")
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(clear_result.cleared_records, 5);
+    assert!(backend.tail.lock().unwrap().is_empty());
 
     plugin.destroy().await.unwrap();
 }
@@ -811,6 +883,7 @@ async fn test_load_top_clients_allows_limit_above_200() {
             memory_tail: Some(16),
             retention_days: Some(7),
             cleanup_interval_hours: Some(1),
+            reader_concurrency: Some(2),
         })
         .unwrap(),
     ))
@@ -1054,6 +1127,7 @@ fn test_resolve_config_rejects_zero_limits() {
         memory_tail: Some(1),
         retention_days: Some(1),
         cleanup_interval_hours: Some(1),
+        reader_concurrency: Some(2),
     })
     .unwrap();
     assert!(resolve_config(Some(config)).is_err());

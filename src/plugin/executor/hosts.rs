@@ -37,27 +37,12 @@ use crate::infra::observability::metrics::{
     MetricLabel, MetricSample, MetricSink, MetricSource, register_metric_source,
     unregister_metric_source,
 };
-use crate::plugin::executor::{ExecStep, Executor};
+use crate::plugin::executor::{ExecStep, Executor, synthetic_response};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;
-use crate::proto::{
-    A, AAAA, DNSClass, Message, Name, Question, RData, Rcode, Record, RecordType, SOA,
-};
+use crate::proto::{A, AAAA, DNSClass, Message, Question, RData, RecordType};
 
 const HOSTS_ANSWER_TTL: u32 = 10;
-const HOSTS_FAKE_SOA_TTL: u32 = 300;
-
-lazy_static::lazy_static! {
-    static ref FAKE_SOA_RDATA: Arc<RData> = Arc::new(RData::SOA(SOA::new(
-        Name::from_ascii("fake-ns.oxidns.fake.root.").expect("fake SOA mname should parse"),
-        Name::from_ascii("fake-mbox.oxidns.fake.root.").expect("fake SOA rname should parse"),
-        2021110400,
-        1800,
-        900,
-        604800,
-        86400,
-    )));
-}
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct HostsConfig {
@@ -419,21 +404,13 @@ fn build_hosts_response(
         RecordType::AAAA if !answers.ipv6.is_empty() => {
             Ok(request.address_response_rdata(question, HOSTS_ANSWER_TTL, &answers.ipv6)?)
         }
-        RecordType::A | RecordType::AAAA => Ok(build_nodata_response(request, question)),
+        RecordType::A | RecordType::AAAA => Ok(synthetic_response::default_nodata_response(
+            request, question,
+        )),
         _ => Err(DnsError::protocol(
             "hosts synthetic response only supports A/AAAA questions",
         )),
     }
-}
-
-fn build_nodata_response(request: &Message, question: &Question) -> Message {
-    let mut response = request.response(Rcode::NoError);
-    response.add_authority(Record::from_arc_rdata(
-        question.name().clone(),
-        HOSTS_FAKE_SOA_TTL,
-        FAKE_SOA_RDATA.clone(),
-    ));
-    response
 }
 
 impl RuleIndexBuilder {
@@ -682,7 +659,7 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
-    use crate::proto::{DNSClass, Name, Question};
+    use crate::proto::{DNSClass, Name, Question, Rcode};
 
     #[test]
     fn test_parse_hosts_line_validation() {
@@ -888,7 +865,10 @@ mod tests {
         assert!(response.answers().is_empty());
         assert_eq!(response.authorities().len(), 1);
         assert_eq!(response.authorities()[0].rr_type(), RecordType::SOA);
-        assert_eq!(response.authorities()[0].ttl(), HOSTS_FAKE_SOA_TTL);
+        assert_eq!(
+            response.authorities()[0].ttl(),
+            synthetic_response::DEFAULT_FAKE_SOA_TTL
+        );
     }
 
     #[tokio::test]

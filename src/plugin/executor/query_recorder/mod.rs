@@ -50,6 +50,7 @@ const DEFAULT_FLUSH_INTERVAL_MS: u64 = 200;
 const DEFAULT_MEMORY_TAIL: usize = 1_024;
 const DEFAULT_RETENTION_DAYS: u64 = 7;
 const DEFAULT_CLEANUP_INTERVAL_HOURS: u64 = 1;
+const DEFAULT_READER_CONCURRENCY: usize = 2;
 const ONE_DAY_MS: u64 = 24 * 60 * 60 * 1000;
 
 #[derive(Debug)]
@@ -183,6 +184,9 @@ fn resolve_config(args: Option<YamlValue>) -> Result<ResolvedRecorderConfig> {
     let cleanup_interval_hours = parsed
         .cleanup_interval_hours
         .unwrap_or(DEFAULT_CLEANUP_INTERVAL_HOURS);
+    let reader_concurrency = parsed
+        .reader_concurrency
+        .unwrap_or(DEFAULT_READER_CONCURRENCY);
 
     if queue_size == 0 {
         return Err(DnsError::plugin(
@@ -214,6 +218,11 @@ fn resolve_config(args: Option<YamlValue>) -> Result<ResolvedRecorderConfig> {
             "query_recorder cleanup_interval_hours must be at least 1",
         ));
     }
+    if reader_concurrency == 0 {
+        return Err(DnsError::plugin(
+            "query_recorder reader_concurrency must be greater than 0",
+        ));
+    }
 
     Ok(ResolvedRecorderConfig {
         path: PathBuf::from(path),
@@ -223,6 +232,7 @@ fn resolve_config(args: Option<YamlValue>) -> Result<ResolvedRecorderConfig> {
         memory_tail,
         retention_days,
         cleanup_interval_hours,
+        reader_concurrency,
     })
 }
 

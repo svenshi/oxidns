@@ -156,6 +156,11 @@ export const enUSPluginDefined = {
             "Specifies the executor that handles requests for this path.",
           placeholder: "seq_main",
         },
+        "entries[].json_api": {
+          label: "JSON DNS API",
+          description:
+            "When enabled, GET requests on this path can use JSON DNS API parameters; RFC 8484 GET/POST always remains available.",
+        },
         listen: {
           label: "listening address",
           description: "Specify the HTTP/HTTPS listening address.",
@@ -308,8 +313,9 @@ export const enUSPluginDefined = {
         "args[].exec": {
           label: "perform action",
           description:
-            "Define the action to be performed when the rule is hit.",
-          placeholder: "$forward_main / accept / reject 3 / jump seq_tag",
+            "Defines the action to perform when the rule matches. You can reference an executor or use built-in actions such as accept, return, reject, jump, goto, and mark; reject accepts case-insensitive RCODE names and numeric values.",
+          placeholder:
+            "$forward_main / accept / reject SERVFAIL / reject NOERROR / reject 3 / jump seq_tag",
         },
       },
     },
@@ -338,6 +344,12 @@ export const enUSPluginDefined = {
           description:
             "Define the upstream address, protocol type, and target host.",
           placeholder: "udp://1.1.1.1:53",
+        },
+        "upstreams[].outbound": {
+          label: "Outbound Profile",
+          description:
+            "Reference a profile from network.outbound.profiles to inject resolver and proxy defaults into this upstream. Local dial_addr, bootstrap, and socks5 take precedence.",
+          placeholder: "oversea",
         },
         "upstreams[].dial_addr": {
           label: "Dial-up IP",
@@ -920,8 +932,7 @@ export const enUSPluginDefined = {
     },
     black_hole: {
       name: "Black Hole",
-      description:
-        "Generates full-qtype local interception responses by mode",
+      description: "Generates full-qtype local interception responses by mode",
       fields: {
         mode: {
           label: "Interception mode",
@@ -1139,6 +1150,11 @@ export const enUSPluginDefined = {
           label: "Cleanup interval (hours)",
           description: "Defines how often the expired-data cleanup task runs.",
         },
+        reader_concurrency: {
+          label: "Reader concurrency",
+          description:
+            "Limits how many SQLite readers may run concurrently for query_recorder API/statistics reads, preventing WebUI or API bursts from occupying too many blocking threads and too much memory.",
+        },
       },
     },
     metrics_collector: {
@@ -1288,6 +1304,12 @@ export const enUSPluginDefined = {
         content_type: {
           label: "Content-Type",
           description: "Specify Content-Type for raw args.body.",
+        },
+        outbound: {
+          label: "Outbound profile",
+          description:
+            "Reference a profile from network.outbound.profiles to control resolver and proxy settings.",
+          placeholder: "oversea",
         },
         socks5: {
           label: "SOCKS5 proxy",
@@ -1728,6 +1750,12 @@ export const enUSPluginDefined = {
           label: "Timeout",
           description: "Limit the total wait time for the upgrade process.",
         },
+        outbound: {
+          label: "Outbound profile",
+          description:
+            "Reference a profile from network.outbound.profiles for upgrade downloads.",
+          placeholder: "oversea",
+        },
         socks5: {
           label: "SOCKS5 proxy",
           description: "SOCKS5 proxy used when updating downloads.",
@@ -1776,6 +1804,12 @@ export const enUSPluginDefined = {
         timeout: {
           label: "Timeout",
           description: "Download timeout.",
+        },
+        outbound: {
+          label: "Outbound profile",
+          description:
+            "Reference a profile from network.outbound.profiles to control download resolver and proxy settings.",
+          placeholder: "oversea",
         },
         socks5: {
           label: "SOCKS5 proxy",

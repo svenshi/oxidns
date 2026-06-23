@@ -145,7 +145,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout oxidns source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: svenshi/oxidns
           ref: ${{ inputs.tag }}
@@ -186,7 +186,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout oxidns source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: svenshi/oxidns
           ref: ${{ inputs.tag }}

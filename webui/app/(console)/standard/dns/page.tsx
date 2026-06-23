@@ -24,21 +24,26 @@ import {
   type UpstreamGroupTestInput,
   type UpstreamTestResult,
 } from "@/lib/oxidns-api";
+import { createServerSettings } from "@/lib/standard-mode/defaults";
 import { upstreamAddress } from "@/lib/standard-mode/generator";
 import {
-  selectDefaultUpstreamGroup,
   selectStandardCapabilityMap,
 } from "@/lib/standard-mode/selectors";
 import type {
   StandardModeSettings,
+  StandardServerProtocol,
+  StandardServerSettings,
   StandardUpstream,
   StandardUpstreamProtocol,
 } from "@/lib/standard-mode/types";
 import {
+  isStandardServerProtocolSupported,
   isStandardUpstreamProtocolSupported,
   normalizeStandardDnsSettings,
   normalizeStandardUpstream,
+  requiredStandardServerProtocolFeatures,
   requiredStandardUpstreamProtocolFeatures,
+  STANDARD_SERVER_PROTOCOLS,
   STANDARD_UPSTREAM_PROTOCOLS,
   validateStandardDnsSettings,
   type StandardDnsValidationIssue,
@@ -55,6 +60,14 @@ const protocolLabelKeys: Record<StandardUpstreamProtocol, string> = {
   doq: WEBUI.standardDns.protocolDoq,
 };
 
+const serverProtocolLabelKeys: Record<StandardServerProtocol, string> = {
+  udp: WEBUI.standardDns.protocolUdp,
+  tcp: WEBUI.standardDns.protocolTcp,
+  dot: WEBUI.standardDns.protocolDot,
+  doh: WEBUI.standardDns.protocolDoh,
+  doq: WEBUI.standardDns.protocolDoq,
+};
+
 function createUpstreamId(upstreams: StandardUpstream[]) {
   const used = new Set(upstreams.map((item) => item.id));
   let index = upstreams.length + 1;
@@ -62,6 +75,31 @@ function createUpstreamId(upstreams: StandardUpstream[]) {
   while (used.has(id)) {
     index += 1;
     id = `upstream_${index}`;
+  }
+  return id;
+}
+
+function createServerId(
+  servers: StandardServerSettings[],
+  protocol: StandardServerProtocol,
+) {
+  const used = new Set(servers.map((item) => item.id));
+  let index = servers.filter((item) => item.protocol === protocol).length + 1;
+  let id = index === 1 && !used.has(protocol) ? protocol : `${protocol}_${index}`;
+  while (used.has(id)) {
+    index += 1;
+    id = `${protocol}_${index}`;
+  }
+  return id;
+}
+
+function createGroupId(groups: StandardModeSettings["upstreamGroups"]) {
+  const used = new Set(groups.map((item) => item.id));
+  let index = groups.length + 1;
+  let id = `group_${index}`;
+  while (used.has(id)) {
+    index += 1;
+    id = `group_${index}`;
   }
   return id;
 }
@@ -135,19 +173,26 @@ export default function StandardDnsPage() {
   );
   const [groupTestSummary, setGroupTestSummary] = useState<string | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
+  const [newServerProtocol, setNewServerProtocol] =
+    useState<StandardServerProtocol>("dot");
+  const [hasAttemptedSave, setHasAttemptedSave] = useState(false);
   const settings = draftSettings ?? storeSettings;
-  const defaultGroup = selectDefaultUpstreamGroup(settings);
   const validationIssues = useMemo(
     () => validateStandardDnsSettings(settings, buildInfo),
     [settings, buildInfo],
   );
   const isBusy = isConfigSaving || isApplying;
-  const canSave = validationIssues.length === 0 && !isBusy;
-  const testableUpstreams = defaultGroup.upstreams.filter(
-    (upstream) =>
-      upstream.enabled &&
-      upstream.address.trim() &&
-      isStandardUpstreamProtocolSupported(upstream.protocol, buildInfo),
+  const canSave = !isBusy;
+  const showValidationIssues = hasAttemptedSave && validationIssues.length > 0;
+  const allTestableUpstreams = settings.upstreamGroups.flatMap((group) =>
+    group.upstreams
+      .filter(
+        (upstream) =>
+          upstream.enabled &&
+          upstream.address.trim() &&
+          isStandardUpstreamProtocolSupported(upstream.protocol, buildInfo),
+      )
+      .map((upstream) => ({ groupId: group.id, upstream })),
   );
   const isGroupTesting = Object.values(testingUpstreams).some(Boolean);
 
@@ -156,23 +201,116 @@ export default function StandardDnsPage() {
     setDraftSettings((current) => ({ ...(current ?? settings), ...patch }));
   };
 
-  const setDefaultUpstreams = (upstreams: StandardUpstream[]) => {
-    const defaultGroupId = defaultGroup.id;
+  const updateServer = (
+    serverId: string,
+    patch: Partial<StandardServerSettings>,
+  ) => {
+    const servers = settings.listen.servers.map((server) =>
+      server.id === serverId
+        ? patch.protocol
+          ? (patch as StandardServerSettings)
+          : { ...server, ...patch }
+        : server,
+    );
     setPartial({
-      upstreamGroups: settings.upstreamGroups.map((group, index) =>
-        group.id === defaultGroupId || (index === 0 && defaultGroupId === group.id)
-          ? { ...group, upstreams }
+      listen: {
+        ...settings.listen,
+        address:
+          serverId === "udp" && typeof patch.listen === "string"
+            ? patch.listen
+            : settings.listen.address,
+        udp: servers.some((server) => server.protocol === "udp"),
+        tcp: servers.some((server) => server.protocol === "tcp"),
+        servers,
+      },
+    });
+  };
+
+  const addServer = (protocol: StandardServerProtocol) => {
+    const id = createServerId(settings.listen.servers, protocol);
+    const servers = [
+      ...settings.listen.servers,
+      createServerSettings(protocol, id),
+    ];
+    setPartial({
+      listen: {
+        ...settings.listen,
+        udp: servers.some((server) => server.protocol === "udp"),
+        tcp: servers.some((server) => server.protocol === "tcp"),
+        servers,
+      },
+    });
+  };
+
+  const removeServer = (serverId: string) => {
+    const servers = settings.listen.servers.filter(
+      (server) => server.id !== serverId,
+    );
+    setPartial({
+      listen: {
+        ...settings.listen,
+        udp: servers.some((server) => server.protocol === "udp"),
+        tcp: servers.some((server) => server.protocol === "tcp"),
+        servers,
+      },
+    });
+  };
+
+  const updateUpstreamGroup = (
+    groupId: string,
+    patch: Partial<StandardModeSettings["upstreamGroups"][number]>,
+  ) => {
+    setPartial({
+      upstreamGroups: settings.upstreamGroups.map((group) =>
+        group.id === groupId
+          ? { ...group, ...patch }
           : group,
       ),
     });
   };
 
+  const addUpstreamGroup = () => {
+    const id = createGroupId(settings.upstreamGroups);
+    setPartial({
+      upstreamGroups: [
+        ...settings.upstreamGroups,
+        {
+          id,
+          name: id,
+          concurrent: 1,
+          upstreams: [createUpstream([])],
+        },
+      ],
+    });
+  };
+
+  const removeUpstreamGroup = (groupId: string) => {
+    const fallbackGroupId = settings.upstreamGroups[0]?.id ?? "default";
+    if (groupId === fallbackGroupId || settings.upstreamGroups.length <= 1) return;
+    setPartial({
+      upstreamGroups: settings.upstreamGroups.filter((group) => group.id !== groupId),
+      paths: settings.paths.map((path) =>
+        path.upstreamGroupId === groupId
+          ? { ...path, upstreamGroupId: fallbackGroupId }
+          : path,
+      ),
+    });
+  };
+
+  const setGroupUpstreams = (groupId: string, upstreams: StandardUpstream[]) => {
+    updateUpstreamGroup(groupId, { upstreams });
+  };
+
   const updateUpstream = (
+    groupId: string,
     upstreamId: string,
     patch: Partial<StandardUpstream>,
   ) => {
-    setDefaultUpstreams(
-      defaultGroup.upstreams.map((upstream) => {
+    const group = settings.upstreamGroups.find((item) => item.id === groupId);
+    if (!group) return;
+    setGroupUpstreams(
+      groupId,
+      group.upstreams.map((upstream) => {
         if (upstream.id !== upstreamId) return upstream;
         const next = { ...upstream, ...patch };
         if (patch.protocol === "doh3") {
@@ -190,21 +328,34 @@ export default function StandardDnsPage() {
     );
   };
 
-  const removeUpstream = (upstreamId: string) => {
-    if (defaultGroup.upstreams.length <= 1) return;
-    setDefaultUpstreams(
-      defaultGroup.upstreams.filter((upstream) => upstream.id !== upstreamId),
+  const addUpstreamToGroup = (groupId: string) => {
+    const group = settings.upstreamGroups.find((item) => item.id === groupId);
+    if (!group) return;
+    setGroupUpstreams(groupId, [
+      ...group.upstreams,
+      createUpstream(group.upstreams),
+    ]);
+  };
+
+  const removeUpstream = (groupId: string, upstreamId: string) => {
+    const group = settings.upstreamGroups.find((item) => item.id === groupId);
+    if (!group || group.upstreams.length <= 1) return;
+    setGroupUpstreams(
+      groupId,
+      group.upstreams.filter((upstream) => upstream.id !== upstreamId),
     );
   };
 
   const handleSave = async () => {
-    const nextSettings = normalizeStandardDnsSettings(settings);
-    const issues = validateStandardDnsSettings(nextSettings, buildInfo);
+    setHasAttemptedSave(true);
+    const issues = validateStandardDnsSettings(settings, buildInfo);
     if (issues.length > 0) return;
+    const nextSettings = normalizeStandardDnsSettings(settings);
     setSaveError(null);
     try {
       await saveStandardSettings(nextSettings, { apply: true });
       setDraftSettings(nextSettings);
+      setHasAttemptedSave(false);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : String(error));
     }
@@ -237,17 +388,17 @@ export default function StandardDnsPage() {
   };
 
   const handleTestGroup = async () => {
-    if (testableUpstreams.length === 0) return;
+    if (allTestableUpstreams.length === 0) return;
     setTestError(null);
     setGroupTestSummary(null);
     setTestingUpstreams((current) => {
       const next = { ...current };
-      for (const upstream of testableUpstreams) next[upstream.id] = true;
+      for (const { upstream } of allTestableUpstreams) next[upstream.id] = true;
       return next;
     });
     try {
       const response = await testUpstreamGroup({
-        upstreams: testableUpstreams.map(upstreamTestInput),
+        upstreams: allTestableUpstreams.map(({ upstream }) => upstreamTestInput(upstream)),
         timeoutMs: 5000,
       });
       setTestResults((current) => {
@@ -274,7 +425,7 @@ export default function StandardDnsPage() {
     } finally {
       setTestingUpstreams((current) => {
         const next = { ...current };
-        for (const upstream of testableUpstreams) next[upstream.id] = false;
+        for (const { upstream } of allTestableUpstreams) next[upstream.id] = false;
         return next;
       });
     }
@@ -306,11 +457,14 @@ export default function StandardDnsPage() {
             </Button>
           </div>
 
-          {validationIssues.length > 0 || saveError ? (
+          {showValidationIssues || saveError ? (
             <ValidationPanel
-              issues={validationIssues}
+              issues={showValidationIssues ? validationIssues : []}
               saveError={saveError}
               protocolLabel={(protocol) => t(protocolLabelKeys[protocol])}
+              serverProtocolLabel={(protocol) =>
+                t(serverProtocolLabelKeys[protocol])
+              }
             />
           ) : null}
 
@@ -321,57 +475,55 @@ export default function StandardDnsPage() {
           ) : null}
 
           <Card>
-            <CardHeader>
-              <CardTitle className="text-base">
-                {t(WEBUI.standardDns.listenTitle)}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="grid gap-5 md:grid-cols-[minmax(0,1fr)_auto]">
-              <div className="space-y-2">
-                <Label htmlFor="standard-listen-address">
-                  {t(WEBUI.standardDns.listenAddress)}
-                </Label>
-                <Input
-                  id="standard-listen-address"
-                  value={settings.listen.address}
-                  onChange={(event) =>
-                    setPartial({
-                      listen: {
-                        ...settings.listen,
-                        address: event.target.value,
-                      },
-                    })
+            <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+              <div>
+                <CardTitle className="text-base">
+                  {t(WEBUI.standardDns.listenTitle)}
+                </CardTitle>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Select
+                  value={newServerProtocol}
+                  onValueChange={(value) =>
+                    setNewServerProtocol(value as StandardServerProtocol)
                   }
-                  placeholder="0.0.0.0:5335"
-                />
+                >
+                  <SelectTrigger className="h-9 w-[132px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {STANDARD_SERVER_PROTOCOLS.map((protocol) => (
+                      <SelectItem key={protocol} value={protocol}>
+                        {t(serverProtocolLabelKeys[protocol])}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => addServer(newServerProtocol)}
+                >
+                  <Plus className="size-4" />
+                  {t(WEBUI.standardDns.addListener)}
+                </Button>
               </div>
-              <div className="space-y-2">
-                <Label>{t(WEBUI.standardDns.listenProtocols)}</Label>
-                <div className="flex min-h-8 items-center gap-5 rounded-lg border px-3">
-                  <Label className="text-sm font-normal">
-                    <Switch
-                      checked={settings.listen.udp}
-                      onCheckedChange={(checked) =>
-                        setPartial({
-                          listen: { ...settings.listen, udp: checked },
-                        })
-                      }
-                    />
-                    {t(WEBUI.standardDns.udp)}
-                  </Label>
-                  <Label className="text-sm font-normal">
-                    <Switch
-                      checked={settings.listen.tcp}
-                      onCheckedChange={(checked) =>
-                        setPartial({
-                          listen: { ...settings.listen, tcp: checked },
-                        })
-                      }
-                    />
-                    {t(WEBUI.standardDns.tcp)}
-                  </Label>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {settings.listen.servers.length === 0 ? (
+                <div className="rounded-lg border border-dashed bg-muted/20 p-6 text-center text-sm text-muted-foreground">
+                  {t(WEBUI.standardDns.noListeners)}
                 </div>
-              </div>
+              ) : null}
+              {settings.listen.servers.map((server) => (
+                <ServerProtocolEditor
+                  key={server.id}
+                  settings={server}
+                  onChange={(patch) => updateServer(server.id, patch)}
+                  onRemove={() => removeServer(server.id)}
+                />
+              ))}
             </CardContent>
           </Card>
 
@@ -389,7 +541,7 @@ export default function StandardDnsPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={testableUpstreams.length === 0 || isGroupTesting}
+                  disabled={allTestableUpstreams.length === 0 || isGroupTesting}
                   onClick={handleTestGroup}
                 >
                   {isGroupTesting ? (
@@ -402,15 +554,10 @@ export default function StandardDnsPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() =>
-                    setDefaultUpstreams([
-                      ...defaultGroup.upstreams,
-                      createUpstream(defaultGroup.upstreams),
-                    ])
-                  }
+                  onClick={addUpstreamGroup}
                 >
                   <Plus className="size-4" />
-                  {t(WEBUI.standardDns.addUpstream)}
+                  {t(WEBUI.standardDns.addUpstreamGroup)}
                 </Button>
               </div>
             </CardHeader>
@@ -420,16 +567,24 @@ export default function StandardDnsPage() {
                   {groupTestSummary}
                 </div>
               ) : null}
-              {defaultGroup.upstreams.map((upstream) => (
-                <UpstreamEditor
-                  key={upstream.id}
-                  upstream={upstream}
-                  canRemove={defaultGroup.upstreams.length > 1}
-                  testResult={testResults[upstream.id]}
-                  testing={testingUpstreams[upstream.id] ?? false}
-                  onChange={(patch) => updateUpstream(upstream.id, patch)}
-                  onRemove={() => removeUpstream(upstream.id)}
-                  onTest={() => void handleTestUpstream(upstream)}
+              {settings.upstreamGroups.map((group, index) => (
+                <UpstreamGroupEditor
+                  key={group.id}
+                  group={group}
+                  isDefault={index === 0 || group.isDefault === true}
+                  canRemove={index > 0}
+                  testResults={testResults}
+                  testingUpstreams={testingUpstreams}
+                  onChange={(patch) => updateUpstreamGroup(group.id, patch)}
+                  onAddUpstream={() => addUpstreamToGroup(group.id)}
+                  onRemove={() => removeUpstreamGroup(group.id)}
+                  onUpdateUpstream={(upstreamId, patch) =>
+                    updateUpstream(group.id, upstreamId, patch)
+                  }
+                  onRemoveUpstream={(upstreamId) =>
+                    removeUpstream(group.id, upstreamId)
+                  }
+                  onTestUpstream={(upstream) => void handleTestUpstream(upstream)}
                 />
               ))}
             </CardContent>
@@ -595,6 +750,269 @@ export default function StandardDnsPage() {
   );
 }
 
+function ServerProtocolEditor({
+  settings,
+  onChange,
+  onRemove,
+}: {
+  settings: StandardServerSettings;
+  onChange: (patch: Partial<StandardServerSettings>) => void;
+  onRemove: () => void;
+}) {
+  const buildInfo = useAppStore((s) => s.buildInfo);
+  const { t } = useI18n();
+  const protocol = settings.protocol;
+  const supported = isStandardServerProtocolSupported(
+    protocol,
+    buildInfo,
+    settings,
+  );
+  const required = requiredStandardServerProtocolFeatures(protocol, settings);
+  const usesTls = protocol === "dot" || protocol === "doh" || protocol === "doq";
+  const usesHttp = protocol === "doh";
+  const usesIdleTimeout = protocol !== "udp";
+
+  return (
+    <div className="rounded-lg border bg-card/40 p-4">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Select
+            value={protocol}
+            onValueChange={(value) => {
+              const next = createServerSettings(
+                value as StandardServerProtocol,
+                settings.id,
+              );
+              onChange(next);
+            }}
+          >
+            <SelectTrigger className="h-9 w-[132px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {STANDARD_SERVER_PROTOCOLS.map((item) => (
+                <SelectItem key={item} value={item}>
+                  {t(serverProtocolLabelKeys[item])}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <span className="font-mono text-xs text-muted-foreground">
+            {settings.id}
+          </span>
+          {!supported ? (
+            <Badge variant="destructive">
+              {required.length > 0
+                ? t(WEBUI.standardDns.unsupportedProtocolDetail, {
+                    features: required.join(", "),
+                  })
+                : t(WEBUI.standardDns.unsupportedProtocol)}
+            </Badge>
+          ) : null}
+        </div>
+        <Button type="button" variant="ghost" size="sm" onClick={onRemove}>
+          <Trash2 className="size-4" />
+          {t(WEBUI.standardDns.removeListener)}
+        </Button>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="space-y-2 md:col-span-2">
+          <Label htmlFor={`standard-${protocol}-listen`}>
+            {t(WEBUI.standardDns.listenAddress)}
+            <RequiredMark />
+          </Label>
+          <Input
+            id={`standard-${protocol}-listen`}
+            value={settings.listen}
+            onChange={(event) => onChange({ listen: event.target.value })}
+            placeholder={serverListenPlaceholder(protocol)}
+          />
+        </div>
+        {usesHttp ? (
+          <div className="space-y-2">
+            <Label htmlFor={`standard-${protocol}-path`}>
+              {t(WEBUI.standardDns.dohPath)}
+              <RequiredMark />
+            </Label>
+            <Input
+              id={`standard-${protocol}-path`}
+              value={settings.path ?? "/dns-query"}
+              onChange={(event) => onChange({ path: event.target.value })}
+              placeholder="/dns-query"
+            />
+          </div>
+        ) : null}
+        {usesIdleTimeout ? (
+          <NumberField
+            id={`standard-${protocol}-idle-timeout`}
+            label={t(WEBUI.standardDns.idleTimeout)}
+            min={1}
+            value={settings.idleTimeout ?? (protocol === "doh" ? 30 : 10)}
+            onChange={(value) =>
+              onChange({ idleTimeout: Math.max(1, Math.trunc(value)) })
+            }
+          />
+        ) : null}
+        {usesTls ? (
+          <>
+            <div className="space-y-2">
+              <Label htmlFor={`standard-${protocol}-cert`}>
+                {t(WEBUI.standardDns.tlsCert)}
+                <RequiredMark />
+              </Label>
+              <Input
+                id={`standard-${protocol}-cert`}
+                value={settings.cert ?? ""}
+                onChange={(event) => onChange({ cert: event.target.value })}
+                placeholder="/etc/oxidns/server.crt"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor={`standard-${protocol}-key`}>
+                {t(WEBUI.standardDns.tlsKey)}
+                <RequiredMark />
+              </Label>
+              <Input
+                id={`standard-${protocol}-key`}
+                value={settings.key ?? ""}
+                onChange={(event) => onChange({ key: event.target.value })}
+                placeholder="/etc/oxidns/server.key"
+              />
+            </div>
+          </>
+        ) : null}
+        {usesHttp ? (
+          <>
+            <OptionalTextField
+              id={`standard-${protocol}-src-ip-header`}
+              label={t(WEBUI.standardDns.srcIpHeader)}
+              value={settings.srcIpHeader ?? ""}
+              placeholder="X-Forwarded-For"
+              onChange={(value) => onChange({ srcIpHeader: value })}
+            />
+            <Label className="flex min-h-10 items-center justify-between rounded-lg border px-3 text-sm font-normal">
+              {t(WEBUI.standardDns.enableHttp3)}
+              <Switch
+                checked={settings.enableHttp3 ?? false}
+                onCheckedChange={(checked) => onChange({ enableHttp3: checked })}
+              />
+            </Label>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function serverListenPlaceholder(protocol: StandardServerProtocol): string {
+  if (protocol === "udp" || protocol === "tcp") return "0.0.0.0:5335";
+  if (protocol === "doh") return "0.0.0.0:443";
+  return "0.0.0.0:853";
+}
+
+function RequiredMark() {
+  return (
+    <span aria-hidden="true" className="ml-1 text-destructive">
+      *
+    </span>
+  );
+}
+
+function UpstreamGroupEditor({
+  group,
+  isDefault,
+  canRemove,
+  testResults,
+  testingUpstreams,
+  onChange,
+  onAddUpstream,
+  onRemove,
+  onUpdateUpstream,
+  onRemoveUpstream,
+  onTestUpstream,
+}: {
+  group: StandardModeSettings["upstreamGroups"][number];
+  isDefault: boolean;
+  canRemove: boolean;
+  testResults: Record<string, UpstreamTestResult>;
+  testingUpstreams: Record<string, boolean>;
+  onChange: (patch: Partial<StandardModeSettings["upstreamGroups"][number]>) => void;
+  onAddUpstream: () => void;
+  onRemove: () => void;
+  onUpdateUpstream: (
+    upstreamId: string,
+    patch: Partial<StandardUpstream>,
+  ) => void;
+  onRemoveUpstream: (upstreamId: string) => void;
+  onTestUpstream: (upstream: StandardUpstream) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="rounded-lg border bg-card/40 p-4">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div className="grid min-w-0 flex-1 gap-4 md:grid-cols-2">
+          <div className="space-y-2">
+            <Label htmlFor={`${group.id}-group-name`}>
+              {t(WEBUI.standardDns.upstreamGroupName)}
+            </Label>
+            <Input
+              id={`${group.id}-group-name`}
+              value={group.name}
+              onChange={(event) => onChange({ name: event.target.value })}
+              placeholder={group.id}
+            />
+          </div>
+          <div className="space-y-2">
+            <NumberField
+              id={`${group.id}-group-concurrent`}
+              label={t(WEBUI.standardDns.upstreamGroupConcurrent)}
+              min={1}
+              max={3}
+              value={group.concurrent}
+              onChange={(value) =>
+                onChange({ concurrent: Math.max(1, Math.min(3, Math.trunc(value))) })
+              }
+            />
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {isDefault ? (
+            <Badge variant="secondary">{t(WEBUI.common.defaultValue)}</Badge>
+          ) : null}
+          <Button type="button" variant="outline" size="sm" onClick={onAddUpstream}>
+            <Plus className="size-4" />
+            {t(WEBUI.standardDns.addUpstream)}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={!canRemove}
+            onClick={onRemove}
+          >
+            <Trash2 className="size-4" />
+            {t(WEBUI.standardDns.removeUpstreamGroup)}
+          </Button>
+        </div>
+      </div>
+      <div className="space-y-3">
+        {group.upstreams.map((upstream) => (
+          <UpstreamEditor
+            key={upstream.id}
+            upstream={upstream}
+            canRemove={group.upstreams.length > 1}
+            testResult={testResults[upstream.id]}
+            testing={testingUpstreams[upstream.id] ?? false}
+            onChange={(patch) => onUpdateUpstream(upstream.id, patch)}
+            onRemove={() => onRemoveUpstream(upstream.id)}
+            onTest={() => onTestUpstream(upstream)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function UpstreamEditor({
   upstream,
   canRemove,
@@ -732,6 +1150,7 @@ function UpstreamEditor({
         <div className="space-y-2 md:col-span-2">
           <Label htmlFor={`${upstream.id}-address`}>
             {t(WEBUI.standardDns.upstreamAddress)}
+            {upstream.enabled ? <RequiredMark /> : null}
           </Label>
           <Input
             id={`${upstream.id}-address`}
@@ -921,10 +1340,12 @@ function ValidationPanel({
   issues,
   saveError,
   protocolLabel,
+  serverProtocolLabel,
 }: {
   issues: StandardDnsValidationIssue[];
   saveError: string | null;
   protocolLabel: (protocol: StandardUpstreamProtocol) => string;
+  serverProtocolLabel: (protocol: StandardServerProtocol) => string;
 }) {
   const { t } = useI18n();
   return (
@@ -933,7 +1354,7 @@ function ValidationPanel({
       <ul className="mt-2 list-disc space-y-1 pl-5">
         {issues.map((issue, index) => (
           <li key={`${issue.field}-${issue.code}-${index}`}>
-            {validationMessage(issue, t, protocolLabel)}
+            {validationMessage(issue, t, protocolLabel, serverProtocolLabel)}
           </li>
         ))}
         {saveError ? <li>{saveError}</li> : null}
@@ -946,9 +1367,43 @@ function validationMessage(
   issue: StandardDnsValidationIssue,
   t: (key: string, params?: Record<string, string | number>) => string,
   protocolLabel: (protocol: StandardUpstreamProtocol) => string,
+  serverProtocolLabel: (protocol: StandardServerProtocol) => string,
 ) {
   if (issue.code === "listen_required") {
     return t(WEBUI.standardDns.validationListenRequired);
+  }
+  if (issue.code === "server_listen_required") {
+    return t(WEBUI.standardDns.validationServerListenRequired, {
+      protocol: issue.serverProtocol
+        ? serverProtocolLabel(issue.serverProtocol)
+        : "",
+    });
+  }
+  if (issue.code === "server_tls_required") {
+    return t(WEBUI.standardDns.validationServerTlsRequired, {
+      protocol: issue.serverProtocol
+        ? serverProtocolLabel(issue.serverProtocol)
+        : "",
+    });
+  }
+  if (issue.code === "doh_path_required") {
+    return t(WEBUI.standardDns.validationDohPathRequired);
+  }
+  if (issue.code === "server_protocol_unsupported") {
+    return t(WEBUI.standardDns.validationServerProtocolUnsupported, {
+      protocol: issue.serverProtocol
+        ? serverProtocolLabel(issue.serverProtocol)
+        : "",
+      features: issue.requiredFeatures?.join(", ") || "-",
+    });
+  }
+  if (issue.code === "server_port_conflict") {
+    return t(WEBUI.standardDns.validationServerPortConflict, {
+      protocol: issue.serverProtocol
+        ? serverProtocolLabel(issue.serverProtocol)
+        : "",
+      id: issue.conflictWith ?? "",
+    });
   }
   if (issue.code === "upstream_required") {
     return t(WEBUI.standardDns.validationUpstreamRequired);

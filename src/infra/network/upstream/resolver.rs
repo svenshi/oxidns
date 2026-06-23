@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use crate::infra::error::{DnsError, Result};
-use crate::infra::network::upstream::bootstrap::Bootstrap;
+use crate::infra::network::resolver::NameResolver;
 use crate::infra::network::upstream::builder::{
     main_pool_min_conns, pipeline_request_map_capacity, reuse_request_map_capacity,
 };
@@ -210,6 +210,47 @@ impl Upstream for UdpTruncatedUpstream {
     }
 }
 
+/// Bootstrap-resolved UDP upstream with automatic TCP fallback on truncation.
+#[derive(Debug)]
+pub(crate) struct BootstrapUdpTruncatedUpstream {
+    connection_info: ConnectionInfo,
+    main: BootstrapUpstream<UdpConnection>,
+    fallback: BootstrapUpstream<TcpConnection>,
+}
+
+impl BootstrapUdpTruncatedUpstream {
+    pub(crate) fn new(connection_info: ConnectionInfo) -> Self {
+        let mut fallback_info = connection_info.clone();
+        fallback_info.connection_type = ConnectionType::TCP;
+        Self {
+            connection_info: connection_info.clone(),
+            main: BootstrapUpstream::new(connection_info),
+            fallback: BootstrapUpstream::new(fallback_info),
+        }
+    }
+}
+
+#[async_trait]
+impl Upstream for BootstrapUdpTruncatedUpstream {
+    async fn inner_query(&self, request: Message, deadline: QueryDeadline) -> Result<Message> {
+        let response = self.main.inner_query(request.clone(), deadline).await?;
+        if response.truncated() {
+            debug!("Bootstrap UDP response truncated, falling back to TCP");
+            self.fallback.inner_query(request, deadline).await
+        } else {
+            Ok(response)
+        }
+    }
+
+    fn connection_info(&self) -> &ConnectionInfo {
+        &self.connection_info
+    }
+
+    fn handles_query_deadline(&self) -> bool {
+        true
+    }
+}
+
 #[derive(Debug)]
 pub struct ConnectionBuilderFactory {
     connection_info: ConnectionInfo,
@@ -367,7 +408,7 @@ pub(crate) struct BootstrapUpstream<C: Connection> {
     /// Connection metadata (includes bootstrap config)
     connection_info: ConnectionInfo,
     /// Bootstrap resolver for domain name resolution
-    bootstrap: Arc<Bootstrap>,
+    bootstrap: Arc<NameResolver>,
     /// Lock-free connection pool with current resolved IP
     /// Tuple: (current_ip, connection_pool)
     pool: ArcSwap<(Option<IpAddr>, Arc<dyn ConnectionPool<C>>)>,
@@ -419,8 +460,14 @@ impl<C: Connection> BootstrapUpstream<C> {
         let guard = &(*self.pool.load());
         let pool_ip = guard.0;
 
-        // Resolve domain name via bootstrap (cached in Bootstrap with TTL)
-        let ip = match self.bootstrap.get_with_deadline(deadline).await {
+        // Resolve domain name via bootstrap (cached with TTL)
+        let bootstrap_deadline =
+            bootstrap_deadline(deadline, self.connection_info.bootstrap_timeout);
+        let ip = match self
+            .bootstrap
+            .resolve(&self.server_name, bootstrap_deadline)
+            .await
+        {
             Ok(value) => value,
             Err(value) => return Err(value),
         };
@@ -528,6 +575,18 @@ impl<C: Connection> BootstrapUpstream<C> {
         self.pool.swap(Arc::from((Some(ip), new_pool)));
 
         Ok(())
+    }
+}
+
+fn bootstrap_deadline(deadline: QueryDeadline, timeout: Option<Duration>) -> QueryDeadline {
+    let Some(timeout) = timeout else {
+        return deadline;
+    };
+    let timeout_deadline = QueryDeadline::new(timeout);
+    if timeout_deadline.expires_at_ms < deadline.expires_at_ms {
+        timeout_deadline
+    } else {
+        deadline
     }
 }
 

@@ -19,7 +19,7 @@
 //! This separation keeps protocol code isolated from matchers, executors, and
 //! providers, while preserving a common request lifecycle across all servers.
 
-use std::net::{SocketAddr, SocketAddrV4};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -28,7 +28,7 @@ use tracing::{Level, debug, event_enabled, warn};
 
 use crate::core::context::DnsContext;
 use crate::infra::clock::AppClock;
-pub(crate) use crate::infra::network::listen::parse_listen_addr;
+use crate::infra::network::ip::normalize_ipv4_mapped_socket_addr;
 use crate::infra::observability::metrics::{MetricLabel, MetricSample, MetricSink, MetricSource};
 use crate::plugin::Plugin;
 use crate::plugin::executor::{ExecStep, Executor};
@@ -239,7 +239,7 @@ impl RequestHandle {
     ) -> RequestResult {
         let metrics_start = self.metrics.as_ref().map(|m| m.on_request_start());
 
-        let mut context = DnsContext::new(canonicalize_addr(src_addr), msg);
+        let mut context = DnsContext::new(normalize_ipv4_mapped_socket_addr(src_addr), msg);
 
         self.apply_request_meta(&mut context, meta);
 
@@ -357,23 +357,8 @@ impl RequestHandle {
     }
 }
 
-#[inline]
-fn canonicalize_addr(addr: SocketAddr) -> SocketAddr {
-    match addr {
-        SocketAddr::V6(v6) => {
-            if let Some(ipv4) = v6.ip().to_ipv4_mapped() {
-                SocketAddr::V4(SocketAddrV4::new(ipv4, v6.port()))
-            } else {
-                SocketAddr::V6(v6)
-            }
-        }
-        SocketAddr::V4(_) => addr,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::net::Ipv6Addr;
     use std::sync::Mutex;
 
     use async_trait::async_trait;
@@ -382,20 +367,6 @@ mod tests {
     use crate::continue_next;
     use crate::infra::error::Result;
     use crate::proto::{Name, Question, RecordType};
-
-    #[test]
-    fn test_parse_listen_addr_accepts_port_only_shorthand() {
-        let addr = parse_listen_addr(":5337").expect("port-only shorthand should parse");
-
-        assert_eq!(addr, SocketAddr::from((Ipv6Addr::UNSPECIFIED, 5337)));
-    }
-
-    #[test]
-    fn test_parse_listen_addr_rejects_invalid_port_only_shorthand() {
-        let err = parse_listen_addr(":not-a-port").unwrap_err();
-
-        assert!(err.to_string().contains("Invalid listen address"));
-    }
 
     fn make_request(id: u16, qname: &str) -> Message {
         let mut request = Message::new();

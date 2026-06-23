@@ -20,7 +20,7 @@ export const enUSDocs = {
   },
   http_server: {
     entries:
-      "- Type: `array`; Required: Yes; Default: None\n- Function: Define the mapping relationship between HTTP paths and executors.\n- Each element contains the following fields:\n  - `path`\n    - Type: `string`\n    - Required: Yes\n    - Function: Specify the DoH request path.\n    - Constraint: Must start with `/`.\n  - `exec`\n    - Type: `string`\n    - Required: Yes\n    - Function: Specify the executor to handle the path request.\n    - Constraint: Must reference a defined executor plugin.\n- Operational impact:\n  - Different paths can enter different strategy chains.",
+      "- Type: `array`; Required: Yes; Default: None\n- Function: Define the mapping relationship between HTTP paths and executors.\n- Each element contains the following fields:\n  - `path`\n    - Type: `string`\n    - Required: Yes\n    - Function: Specify the DoH request path.\n    - Constraint: Must start with `/`.\n  - `exec`\n    - Type: `string`\n    - Required: Yes\n    - Function: Specify the executor to handle the path request.\n    - Constraint: Must reference a defined executor plugin.\n  - `json_api`\n    - Type: `boolean`\n    - Required: No\n    - Default: `false`\n    - Function: Controls whether this path accepts the JSON DNS API.\n- Operational impact:\n  - Different paths can enter different strategy chains.",
     listen:
       "- Type: `string`; Required: Yes; Default: None\n- Function: Specify the HTTP/HTTPS listening address.",
     src_ip_header:
@@ -47,7 +47,7 @@ export const enUSDocs = {
     "args[].matches":
       "- Type: `string` or `array`\n- Required: No\n- Default: None\n- Function: Define the matching conditions of the current rule.\n- Supported forms:\n  - a single matcher string\n  - A list of multiple matchers\n- Operational impact:\n  - There is a logical AND relationship between multiple conditions.\n  - When not configured, it means there is no pre-matching condition.",
     "args[].exec":
-      "- Type: `string`; Required: No; Default: None\n- Function: Define the action to be performed after the rule is hit.\n- Support content:\n  - Plugin reference\n  - Shortcut expressions\n  - Built-in control flow\n- Operational impact:\n  - Directly determines the execution behavior of the current rule.",
+      "- Type: `string`; Required: No; Default: None\n- Function: Define the action to be performed after the rule is hit.\n- Support content:\n  - Plugin reference\n  - Shortcut expressions\n  - Built-in control flow, for example `accept`, `reject SERVFAIL`, `reject NOERROR`, `reject 3`, `jump <tag>`\n- Note: the RCODE argument for `reject` accepts case-insensitive English names and decimal numbers.\n- Operational impact:\n  - Directly determines the execution behavior of the current rule.",
   },
   forward: {
     concurrent:
@@ -62,6 +62,8 @@ export const enUSDocs = {
       "- Type: `string`; Required: No; Default: None\n- Function: Provide log identification for a single upstream to facilitate troubleshooting multi-upstream competition results.",
     "upstreams[].dial_addr":
       "- Type: `ip`; Required: No; Default: None\n- Function: Specify the actual connection IP, while retaining the host name in `addr` for SNI, Host and certificate verification.\n- Applicable scenarios: fixed dial-up address, bypassing local resolution or matching with custom routing exports.",
+    "upstreams[].outbound":
+      "- Type: `string`; Required: No; Default: None\n- Function: Reference a profile from `network.outbound.profiles` to inject resolver and proxy defaults into this upstream.\n- Override rules: local `dial_addr` takes precedence over resolver use; local `bootstrap` takes precedence over the outbound resolver; local `socks5` takes precedence over the profile proxy.",
     "upstreams[].port":
       "- Type: `integer`; required: no; default value: protocol default port\n- Function: Override the protocol default port.",
     "upstreams[].bootstrap":
@@ -258,6 +260,8 @@ export const enUSDocs = {
       "- Type: `integer`; required: no; default value: `7`\n- Minimum value: `1`\n- Function: Define how many days logs are retained; expired data is periodically deleted.",
     cleanup_interval_hours:
       "- Type: `integer`; required: no; default value: `1`\n- Minimum value: `1`\n- Function: Define how often the expired-data cleanup task runs.",
+    reader_concurrency:
+      "- Type: `integer`; required: no; default value: `2`\n- Minimum value: `1`\n- Function: Limit how many SQLite readers may run concurrently for query_recorder API/statistics reads, preventing WebUI or API bursts from occupying too many blocking threads and too much memory.",
   },
   metrics_collector: {
     name: '- Type: `string`; Required: No; Default value: `"default"`\n- Function: Define the name label of the current indicator collector.',
@@ -290,6 +294,8 @@ export const enUSDocs = {
     form: "- Type: `map<string,string>`; Required: No\n- Function: Send the form in `application/x-www-form-urlencoded` mode.\n- Note: value supports `${key}` placeholder interpolation; the corresponding `Content-Type` will be automatically set.",
     content_type:
       "- Type: `string`; Required: No\n- Function: Specify `Content-Type` for the original `args.body`.\n- Note: It can only be used with `args.body` and cannot be used with `args.json` or `args.form` at the same time.",
+    outbound:
+      "- Type: `string`; Required: No\n- Function: Reference a profile from `network.outbound.profiles` to control the resolver and proxy used by this HTTP request.\n- Note: When omitted, `network.outbound.default` is used. If `args.socks5` is also set, `socks5` only overrides the proxy while the resolver still comes from the outbound profile.",
     socks5:
       "- Type: `string`; Required: No\n- Function: Specify SOCKS5 proxy.\n- Note: The format is consistent with `upstream[].socks5`, supporting `host:port`, `username:password@host:port` and IPv6 with square brackets.",
     insecure_skip_verify:
@@ -403,6 +409,8 @@ export const enUSDocs = {
       "- Type: `bool`; required: no; default value: `false`\n- Function: When set to `true`, automatic restart will not be triggered after successful upgrade.",
     timeout:
       "- Type: `duration`; Required: No; Default value: `30s`\n- Function: Limit the total waiting time of the upgrade process.",
+    outbound:
+      "- Type: `string`; Required: No; Default: None\n- Function: Reference a profile from `network.outbound.profiles` for upgrade downloads.\n- Note: The legacy `socks5` field remains supported and overrides the profile proxy.",
     socks5:
       "- Type: `string`; Required: No; Default: None\n- Function: Upgrade the SOCKS5 proxy used when downloading.",
     insecure_skip_verify:
@@ -419,6 +427,8 @@ export const enUSDocs = {
       "- Type: `string`; Required: No; Default: Deduced from URL path\n- Function: The target file name of the download item.",
     timeout:
       "- Type: `duration`; Required: No; Default value: `30s`\n- Function: Download timeout.",
+    outbound:
+      "- Type: `string`; Required: No; Default: None\n- Function: Reference a profile from `network.outbound.profiles` to control download resolver and proxy settings.\n- Note: If both `outbound` and `socks5` are set, `socks5` overrides the profile proxy while preserving the profile resolver.",
     socks5:
       '- Type: `string`; Required: No; Default: None\n- Function: All download connections will be initiated through this SOCKS5 proxy.\n- Supported formats: `host:port`, `username:password@host:port`, IPv6 needs to be written as `"[::1]:1080"`.',
     startup_if_missing:

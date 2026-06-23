@@ -11,6 +11,7 @@ export type UpgradeBundle = "auto" | "full" | "minimal" | "standard";
 export interface UpgradeConfig {
   repository: string;
   bundle: UpgradeBundle;
+  outbound: string;
   socks5: string;
   githubToken: string;
   persistGithubToken: boolean;
@@ -21,6 +22,7 @@ export interface UpgradeConfig {
 export const DEFAULT_UPGRADE_CONFIG: UpgradeConfig = {
   repository: "svenshi/oxidns",
   bundle: "auto",
+  outbound: "",
   socks5: "",
   githubToken: "",
   persistGithubToken: false,
@@ -97,6 +99,7 @@ function pickPersistedUpgradeConfig(
       ? { repository: config.repository }
       : {}),
     ...(config.bundle !== undefined ? { bundle: config.bundle } : {}),
+    ...(config.outbound !== undefined ? { outbound: config.outbound } : {}),
     ...(config.socks5 !== undefined ? { socks5: config.socks5 } : {}),
     ...(config.persistGithubToken !== undefined
       ? { persistGithubToken: config.persistGithubToken }
@@ -136,6 +139,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       const result = await fetchUpgradeCheck({
         repository: upgradeConfig.repository,
         bundle: upgradeConfig.bundle,
+        outbound: upgradeConfig.outbound || undefined,
         socks5: upgradeConfig.socks5 || undefined,
         githubToken: upgradeConfig.githubToken.trim() || undefined,
         allowPrerelease: upgradeConfig.allowPrerelease,
@@ -170,6 +174,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       await triggerUpgradeApply({
         repository: upgradeConfig.repository,
         bundle: upgradeConfig.bundle,
+        outbound: upgradeConfig.outbound || undefined,
         socks5: upgradeConfig.socks5 || undefined,
         githubToken: upgradeConfig.githubToken.trim() || undefined,
         allowPrerelease: upgradeConfig.allowPrerelease,

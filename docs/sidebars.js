@@ -10,7 +10,7 @@ const sidebars = {
     {
       type: 'category',
       label: '配置参考',
-      items: ['configuration', 'cli', 'custom-build'],
+      items: ['configuration', 'dns-codes', 'cli', 'custom-build'],
     },
     {
       type: 'category',

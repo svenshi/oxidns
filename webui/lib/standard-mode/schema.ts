@@ -1,4 +1,8 @@
-import { createDefaultStandardSettings } from "./defaults";
+import {
+  createDefaultServerSettings,
+  createServerSettings,
+  createDefaultStandardSettings,
+} from "./defaults";
 import type {
   StandardCacheSettings,
   StandardDeviceProfile,
@@ -6,12 +10,15 @@ import type {
   StandardFilteringSettings,
   StandardGeneratedMetadata,
   StandardGenerationResult,
+  StandardListenSettings,
   StandardModeSettings,
   StandardQueryLogSettings,
   StandardResolutionPath,
   StandardRoutingRule,
   StandardRoutingSettings,
   StandardScenario,
+  StandardServerProtocol,
+  StandardServerSettings,
   StandardSubscription,
   StandardSystemSettings,
   StandardUpstream,
@@ -39,6 +46,14 @@ const upstreamProtocols = new Set<StandardUpstreamProtocol>([
   "doq",
 ]);
 
+const serverProtocols: readonly StandardServerProtocol[] = [
+  "udp",
+  "tcp",
+  "dot",
+  "doh",
+  "doq",
+] as const;
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -56,6 +71,10 @@ function asBoolean(value: unknown, fallback: boolean): boolean {
 function asNumber(value: unknown, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function clampConcurrent(value: unknown, fallback: number): number {
+  return Math.max(1, Math.min(3, Math.trunc(asNumber(value, fallback))));
 }
 
 function asStringArray(value: unknown): string[] {
@@ -132,10 +151,10 @@ function normalizeUpstreamGroup(
       )
     : [];
   if (upstreams.length === 0 && id !== "default") return null;
-  const strategy =
-    source.strategy === "sequential" || source.strategy === "fastest"
-      ? source.strategy
-      : "parallel";
+  const defaultConcurrent = Math.max(1, Math.min(3, upstreams.length || 1));
+  const legacyConcurrent =
+    source.strategy === "sequential" ? 1 : defaultConcurrent;
+  const concurrent = clampConcurrent(source.concurrent, legacyConcurrent);
   return {
     id,
     name: asString(
@@ -145,7 +164,7 @@ function normalizeUpstreamGroup(
     ...(asString(source.description).trim()
       ? { description: asString(source.description).trim() }
       : {}),
-    strategy,
+    concurrent,
     upstreams: upstreams.length > 0 ? upstreams : defaults.upstreamGroups[0].upstreams,
     ...(source.isDefault === true || id === "default" ? { isDefault: true } : {}),
   };
@@ -217,6 +236,124 @@ function normalizeQueryLog(value: unknown): StandardQueryLogSettings {
       1,
       Math.max(0, asNumber(source.sampleRate, defaults.sampleRate)),
     ),
+  };
+}
+
+function normalizeListen(value: unknown): StandardListenSettings {
+  const defaults = createDefaultStandardSettings().listen;
+  const source = asRecord(value);
+  const address = asString(source.address, defaults.address).trim() || defaults.address;
+  const udp = asBoolean(source.udp, defaults.udp);
+  const tcp = asBoolean(source.tcp, defaults.tcp);
+  const servers = normalizeServerList(source.servers, address, udp, tcp);
+  return {
+    address,
+    udp: servers.some((server) => server.protocol === "udp"),
+    tcp: servers.some((server) => server.protocol === "tcp"),
+    servers,
+  };
+}
+
+function normalizeServerList(
+  value: unknown,
+  address: string,
+  udp: boolean,
+  tcp: boolean,
+): StandardServerSettings[] {
+  const rows = Array.isArray(value)
+    ? value
+        .map((item, index) => normalizeServerSettings(item, `server_${index + 1}`))
+        .filter((item): item is StandardServerSettings => item !== null)
+    : normalizeServerRecord(value, address);
+  const withLegacyFallback = rows.length > 0
+    ? rows
+    : [
+        ...(udp
+          ? [normalizeServerSettings({ protocol: "udp", listen: address }, "udp")]
+          : []),
+        ...(tcp
+          ? [normalizeServerSettings({ protocol: "tcp", listen: address }, "tcp")]
+          : []),
+      ].filter((item): item is StandardServerSettings => item !== null);
+  const fallback = withLegacyFallback.length > 0
+    ? withLegacyFallback
+    : createDefaultServerSettings();
+  return uniqueById(fallback);
+}
+
+function normalizeServerRecord(
+  value: unknown,
+  address: string,
+): StandardServerSettings[] {
+  const source = asRecord(value);
+  return serverProtocols
+    .map((protocol) => {
+      const raw = asRecord(source[protocol]);
+      if (Object.keys(raw).length === 0) return null;
+      if (raw.enabled === false) return null;
+      return normalizeServerSettings(
+        {
+          ...raw,
+          protocol,
+          id: raw.id ?? protocol,
+          listen: raw.listen ?? raw.address ?? address,
+        },
+        protocol,
+      );
+    })
+    .filter((item): item is StandardServerSettings => item !== null);
+}
+
+function normalizeServerSettings(
+  value: unknown,
+  fallbackId: string,
+): StandardServerSettings | null {
+  const source = asRecord(value);
+  const protocol = serverProtocols.includes(source.protocol as StandardServerProtocol)
+    ? (source.protocol as StandardServerProtocol)
+    : null;
+  if (!protocol) return null;
+  const fallback = createServerSettings(protocol, fallbackId);
+  const id = cleanId(source.id, fallback.id);
+  const listen =
+    asString(source.listen ?? source.address, fallback.listen).trim() ||
+    fallback.listen;
+  const cert = asString(source.cert, fallback.cert ?? "").trim();
+  const key = asString(source.key, fallback.key ?? "").trim();
+  const path = asString(source.path, fallback.path ?? "/dns-query").trim();
+  const srcIpHeader = asString(
+    source.srcIpHeader ?? source.src_ip_header,
+    fallback.srcIpHeader ?? "",
+  ).trim();
+  const hasIdleTimeout =
+    source.idleTimeout !== undefined ||
+    source.idle_timeout !== undefined ||
+    fallback.idleTimeout !== undefined;
+  const idleTimeout = hasIdleTimeout
+    ? Math.max(
+        1,
+        Math.trunc(
+          asNumber(
+            source.idleTimeout ?? source.idle_timeout,
+            fallback.idleTimeout ?? 1,
+          ),
+        ),
+      )
+    : undefined;
+  return {
+    id,
+    protocol,
+    listen,
+    ...(cert ? { cert } : fallback.cert !== undefined ? { cert: "" } : {}),
+    ...(key ? { key } : fallback.key !== undefined ? { key: "" } : {}),
+    ...(idleTimeout !== undefined ? { idleTimeout } : {}),
+    ...(path || fallback.path !== undefined ? { path: path || "/dns-query" } : {}),
+    ...(srcIpHeader || fallback.srcIpHeader !== undefined
+      ? { srcIpHeader }
+      : {}),
+    ...(source.enableHttp3 !== undefined || fallback.enableHttp3 !== undefined
+      ? { enableHttp3: asBoolean(source.enableHttp3, fallback.enableHttp3 ?? false) }
+      : {}),
   };
 }
 
@@ -451,11 +588,7 @@ export function normalizeStandardSettings(value: unknown): StandardSettingsLoadR
   return {
     settings: {
       schema: 2,
-      listen: {
-        address: asString(asRecord(source.listen).address, "0.0.0.0:5335"),
-        udp: asBoolean(asRecord(source.listen).udp, true),
-        tcp: asBoolean(asRecord(source.listen).tcp, true),
-      },
+      listen: normalizeListen(source.listen),
       upstreamGroups: upstreamGroups.map((group, index) => ({
         ...group,
         isDefault: index === 0 || group.id === "default" ? true : group.isDefault,
@@ -507,7 +640,7 @@ export function migrateLegacyStandardSettings(value: unknown): StandardModeSetti
     upstreamGroups.push({
       id: "domestic",
       name: "Domestic upstream group",
-      strategy: "parallel",
+      concurrent: Math.max(1, Math.min(3, domesticUpstreams.length)),
       upstreams: domesticUpstreams,
     });
     paths.push({
@@ -527,11 +660,7 @@ export function migrateLegacyStandardSettings(value: unknown): StandardModeSetti
 
   return {
     ...defaults,
-    listen: {
-      address: asString(asRecord(source.listen).address, defaults.listen.address),
-      udp: asBoolean(asRecord(source.listen).udp, defaults.listen.udp),
-      tcp: asBoolean(asRecord(source.listen).tcp, defaults.listen.tcp),
-    },
+    listen: normalizeListen(source.listen),
     upstreamGroups,
     paths,
     filtering: legacyFiltering,

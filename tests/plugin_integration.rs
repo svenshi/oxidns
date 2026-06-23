@@ -1092,6 +1092,75 @@ plugins:
 }
 
 #[tokio::test]
+async fn test_sequence_reject_accepts_lowercase_text_rcode() -> Result<()> {
+    let yaml = r#"
+log:
+  level: info
+plugins:
+  - tag: seq
+    type: sequence
+    args:
+      - exec: reject servfail
+"#;
+
+    let config = parse_config(yaml)?;
+    let registry = plugin::init(config).await?;
+    let sequence = registry
+        .get_plugin("seq")
+        .expect("sequence plugin should exist")
+        .to_executor();
+    let mut context = make_context(registry.clone(), "example.com.");
+
+    let step = sequence.execute(&mut context).await?;
+
+    assert!(matches!(step, ExecStep::Stop));
+    assert_eq!(
+        context
+            .response()
+            .expect("reject should set a response")
+            .rcode(),
+        Rcode::ServFail
+    );
+
+    registry.destroy().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_sequence_reject_zero_returns_simple_noerror_response() -> Result<()> {
+    let yaml = r#"
+log:
+  level: info
+plugins:
+  - tag: seq
+    type: sequence
+    args:
+      - matches: qtype HTTPS
+        exec: reject 0
+      - exec: reject 2
+"#;
+
+    let config = parse_config(yaml)?;
+    let registry = plugin::init(config).await?;
+    let sequence = registry
+        .get_plugin("seq")
+        .expect("sequence plugin should exist")
+        .to_executor();
+    let mut context = make_context_with_qtype(registry.clone(), "apple.com.", RecordType::HTTPS);
+
+    let step = sequence.execute(&mut context).await?;
+
+    assert!(matches!(step, ExecStep::Stop));
+    let response = context.response().expect("reject 0 should set a response");
+    assert_eq!(response.rcode(), Rcode::NoError);
+    assert!(response.answers().is_empty());
+    assert!(response.authorities().is_empty());
+
+    registry.destroy().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_sequence_jump_return_resumes_parent_execution() -> Result<()> {
     let yaml = r#"
 log:

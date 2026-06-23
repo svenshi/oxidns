@@ -16,11 +16,11 @@ use crate::core::context::DnsContext;
 use crate::infra::error::Result as DnsResult;
 use crate::plugin::matcher::Matcher;
 use crate::plugin::matcher::matcher_utils::{
-    parse_class, parse_enum_rules_from_value, parse_quick_setup_rules, parse_u16_rules,
-    validate_non_empty_rules,
+    parse_enum_rules_from_value, parse_quick_setup_rules, parse_u16_rules, validate_non_empty_rules,
 };
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;
+use crate::proto::DNSClass;
 
 #[derive(Debug, Clone)]
 #[plugin_factory("qclass")]
@@ -44,7 +44,9 @@ impl PluginFactory for QclassFactory {
 
 fn build_qclass_matcher(tag: String, rules: Vec<String>) -> DnsResult<UninitializedPlugin> {
     validate_non_empty_rules("qclass", &rules)?;
-    let qclasses = parse_u16_rules("qclass", &rules, parse_class)?;
+    let qclasses = parse_u16_rules("qclass", &rules, |raw| {
+        DNSClass::from_token(raw).map(u16::from)
+    })?;
     Ok(UninitializedPlugin::Matcher(Box::new(QclassMatcher {
         tag,
         qclasses,

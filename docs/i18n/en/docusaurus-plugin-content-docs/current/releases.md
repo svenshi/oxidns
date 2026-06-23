@@ -10,7 +10,35 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-06
 
 <div className="release-stack">
-   <ReleaseCard version="v1.2.3" badge="Patch Release" date="2026-06-11" defaultOpen>
+   <ReleaseCard version="v1.3.0" badge="Minor Release" date="2026-06-16" defaultOpen>
+       **Release Scope**
+
+       - Minor Release. The headline change is turning `black_hole` into a full interceptor that covers every qtype, alongside broad hardening for upstream pools, bootstrap resolution, deadline / cancellation safety, and RouterOS integration. The Rust module layout is also reorganized around new `cli` and `infra` layers while `core` is narrowed to DNS execution semantics. Runtime configuration remains mostly compatible, but `black_hole` no-argument defaults and non-A/AAAA handling changed; Rust library embedders must migrate public module paths.
+
+       **Changes**
+
+       - `feat(executor)`: `black_hole` now supports `mode` (`nxdomain`, `nodata`, `null`, `custom`, `refused`) and applies across all qtypes. With no `ips` it defaults to `nxdomain`; legacy `ips` configurations continue as implicit `custom`.
+       - `feat(upstream)`: upstream pools gain `min_conns` for optional warm connections. `max_conns` now has documented range validation, with docs and WebUI schema updates.
+       - `fix(upstream)`: pipeline and reuse pools have stronger deadline handling, cancellation safety, slot reclamation, and unusable-connection pruning, reducing hangs and busy retries around connection close, timeout, replacement failure, and upstream recovery paths.
+       - `fix(upstream)`: bootstrap servers must be literal IP endpoints, bootstrap answer selection follows valid CNAME chains, and bootstrap queries respect deadlines. HTTP upstream requests also send an `Accept` header.
+       - `feat(executor)`: `ros_address_list` exposes `connect_timeout`, `send_timeout`, and `receive_timeout`; RouterOS startup scans and persistent-entry sync now run in the background so slow address lists do not block DNS startup, and cleanup revalidates rows before deletion.
+       - `fix(matcher)`: rule-file parsing preserves commas inside line expressions, fixing domain / matcher rules that legitimately contain commas.
+       - `refactor`: add `src/cli/` and `src/infra/`; move network, service, upgrade, build_info, errors, tasks, cache, and observability infrastructure under `infra`; keep `core` focused on `context` and `rule_matcher`.
+       - `zoneparser`: parse more standard RDATA families directly, including A/AAAA, name records, MX/RT/AFSDB, TXT/SPF/AVC/RESINFO, SOA, SRV, and CAA, while keeping RFC3597 generic syntax fallback.
+       - `query_recorder` / internals: extract RDATA JSON serialization and storage helpers to reduce complexity while keeping recorder output paths maintainable.
+       - `release`: fix GitHub Actions release artifact uploads so already-packaged archives are not double-archived.
+       - `docs(ai)`: centralize maintainer-facing AI / agent notes under `ai/`, add a Chinese GitHub Release template, and make release prep explicitly hand off without automatic commit, tag, or push.
+
+       **Compatibility and Upgrade Notes**
+
+       - Root crate version bumped to `1.3.0`; `oxidns-zoneparser` bumped to `0.1.1`; `crates/macros`, `crates/proto`, and `crates/ripset` do not need version bumps; the release tag should use `v1.3.0`.
+       - `v1.2.3` configs generally upgrade directly. Review `black_hole` usage carefully: legacy `ips` configs keep `custom` semantics, no-argument `black_hole` now returns `NXDOMAIN`, and `null` / `custom` return NODATA for non-A/AAAA instead of passing through.
+       - Upstream `bootstrap` values must now be `IP:port`, not hostnames. The new `min_conns` option defaults to `0`, so omitted configs keep lazy connection creation.
+       - The new `ros_address_list` timeout fields are optional and default-compatible. Large shared RouterOS address lists should still be split into OxiDNS-owned lists to avoid expensive management-plane scans.
+       - Rust library embedders must migrate public module paths: old top-level `network` / `build_info` / `upgrade` / `service` and the infrastructure modules previously under `core` now live under `infra`; `core::context` and `core::rule_matcher` remain.
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.2.3" badge="Patch Release" date="2026-06-11">
        **Release Scope**
 
        - Patch Release focused on fixing a high-CPU path where TCP / DoT response writer tasks could spin after `/api/reload`, and on reducing busy retry loops in upstream pools while upstreams are unavailable or restarting. It also adds English WebUI i18n, GitHub token controls for the WebUI upgrade flow, and additional test plus CLI / plugin documentation hardening. No breaking configuration changes.

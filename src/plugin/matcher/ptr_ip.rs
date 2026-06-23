@@ -15,6 +15,7 @@ use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
 use crate::core::rule_matcher::IpPrefixMatcher;
 use crate::infra::error::Result as DnsResult;
+use crate::infra::network::ip::normalize_ipv4_mapped_ip;
 use crate::plugin::dependency::DependencySpec;
 use crate::plugin::matcher::Matcher;
 #[cfg(test)]
@@ -123,17 +124,7 @@ impl Matcher for PtrIpMatcher {
 fn parse_ptr_name_ip(name: &crate::proto::Name) -> Option<IpAddr> {
     name.parse_arpa_name()
         .ok()
-        .map(|net| normalize_ip(net.addr()))
-}
-
-fn normalize_ip(ip: IpAddr) -> IpAddr {
-    match ip {
-        IpAddr::V4(v4) => IpAddr::V4(v4),
-        IpAddr::V6(v6) => v6
-            .to_ipv4_mapped()
-            .map(IpAddr::V4)
-            .unwrap_or(IpAddr::V6(v6)),
-    }
+        .map(|net| normalize_ipv4_mapped_ip(net.addr()))
 }
 
 #[cfg(test)]

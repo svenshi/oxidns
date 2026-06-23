@@ -12,13 +12,14 @@ use crate::infra::network::upstream::conn::{H3Connection, H3ConnectionBuilder};
 #[cfg(feature = "upstream-doq")]
 use crate::infra::network::upstream::conn::{QuicConnection, QuicConnectionBuilder};
 use crate::infra::network::upstream::conn::{
-    TcpConnection, TcpConnectionBuilder, UdpConnection, UdpConnectionBuilder,
+    TcpConnection, TcpConnectionBuilder, UdpConnectionBuilder,
 };
 use crate::infra::network::upstream::pool::pool_pipeline::PipelinePool;
 use crate::infra::network::upstream::pool::pool_reuse::ReusePool;
 use crate::infra::network::upstream::pool::{Connection, ConnectionBuilder, QueryTimeoutPolicy};
 use crate::infra::network::upstream::resolver::{
-    BootstrapUpstream, PooledUpstream, UdpTruncatedUpstream, Upstream,
+    BootstrapUdpTruncatedUpstream, BootstrapUpstream, PooledUpstream, UdpTruncatedUpstream,
+    Upstream,
 };
 
 /// Builder for creating upstream instances
@@ -161,9 +162,7 @@ impl UpstreamBuilder {
             // Domain-based upstream: use bootstrap or system DNS for resolution
             let upstream: Box<dyn Upstream> = match &connection_info.connection_type {
                 ConnectionType::UDP => {
-                    let upstream: BootstrapUpstream<UdpConnection> =
-                        BootstrapUpstream::new(connection_info);
-                    Box::new(upstream)
+                    Box::new(BootstrapUdpTruncatedUpstream::new(connection_info))
                 }
                 ConnectionType::TCP => {
                     let upstream: BootstrapUpstream<TcpConnection> =

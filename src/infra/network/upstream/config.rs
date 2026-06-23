@@ -11,8 +11,9 @@ use tracing::{debug, warn};
 use url::Url;
 
 use crate::infra::error::{DnsError, Result};
+use crate::infra::network::outbound;
 use crate::infra::network::proxy::{Socks5Opt, parse_socks5_opt};
-use crate::infra::network::upstream::bootstrap::Bootstrap;
+use crate::infra::network::resolver::NameResolver;
 use crate::infra::system::deserialize_duration_option;
 
 /// Supported upstream connection types
@@ -50,6 +51,12 @@ impl ConnectionType {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProxySource {
+    Local,
+    Profile,
+}
+
 /// Configuration for building an upstream DNS server connection
 ///
 /// This structure is typically deserialized from YAML/JSON configuration files
@@ -83,6 +90,13 @@ pub struct UpstreamConfig {
     /// - `quic://dns.adguard.com:853` - DNS over QUIC (DoQ)
     /// - `https://dns.google.com/dns-query` - DNS over HTTPS (DoH)
     pub addr: String,
+
+    /// Optional named outbound profile to supply resolver/proxy defaults.
+    ///
+    /// Local upstream fields keep precedence: `dial_addr` bypasses resolver
+    /// injection, `bootstrap` overrides the profile resolver, and `socks5`
+    /// overrides the profile proxy.
+    pub outbound: Option<String>,
 
     /// Direct IP address to use for connection (bypasses DNS resolution)
     ///
@@ -253,7 +267,10 @@ pub struct ConnectionInfo {
     pub socks5: Option<Socks5Opt>,
 
     /// Bootstrap resolver for dynamic hostname resolution with TTL caching
-    pub(crate) bootstrap: Option<Arc<Bootstrap>>,
+    pub(crate) bootstrap: Option<Arc<NameResolver>>,
+
+    /// Timeout to apply when the bootstrap resolver was injected from outbound.
+    pub(crate) bootstrap_timeout: Option<Duration>,
 
     /// DoH request path (e.g., `/dns-query`), empty for non-HTTP protocols
     pub path: String,
@@ -315,6 +332,7 @@ impl ConnectionInfo {
             socks5: None,
             connection_type,
             bootstrap: None,
+            bootstrap_timeout: None,
             path,
             timeout: Self::DEFAULT_QUERY_TIMEOUT,
             server_name: host,
@@ -350,6 +368,7 @@ impl TryFrom<UpstreamConfig> for ConnectionInfo {
         let UpstreamConfig {
             tag,
             addr,
+            outbound: outbound_ref,
             dial_addr,
             port: config_port,
             bootstrap,
@@ -420,6 +439,16 @@ impl TryFrom<UpstreamConfig> for ConnectionInfo {
             connection_type, &host, port, path
         );
 
+        let outbound_policy = match outbound_ref.as_deref().map(str::trim) {
+            Some("") => {
+                return Err(DnsError::plugin(
+                    "upstream outbound profile cannot be empty",
+                ));
+            }
+            Some(name) => Some(outbound::global().resolve_policy(Some(name), None)?),
+            None => None,
+        };
+
         let dial_addr_configured = dial_addr.is_some();
         let remote_ip = static_remote_ip_from_host(&host, dial_addr);
 
@@ -430,30 +459,63 @@ impl TryFrom<UpstreamConfig> for ConnectionInfo {
             );
         }
 
-        let bootstrap = if let Some(bootstrap_server) = bootstrap
-            && remote_ip.is_none()
-        {
-            Some(Arc::new(Bootstrap::new(
-                &bootstrap_server,
-                &host,
-                bootstrap_version,
-            )?))
+        let (bootstrap, bootstrap_timeout) = if remote_ip.is_none() {
+            if let Some(bootstrap_server) = bootstrap {
+                (
+                    Some(Arc::new(NameResolver::new(
+                        vec![bootstrap_server],
+                        bootstrap_version,
+                    )?)),
+                    None,
+                )
+            } else {
+                outbound_policy
+                    .as_ref()
+                    .and_then(|policy| policy.resolver())
+                    .map_or((None, None), |(resolver, timeout)| {
+                        (Some(resolver), Some(timeout))
+                    })
+            }
         } else {
-            None
+            (None, None)
         };
 
-        let socks5 = if let Some(socks5_str) = socks5 {
+        let raw_socks5 = if let Some(socks5_str) = socks5.as_deref() {
+            Some((
+                parse_socks5_opt(socks5_str).ok_or_else(|| {
+                    DnsError::plugin(format!("upstream has invalid socks5 proxy '{socks5_str}'"))
+                })?,
+                ProxySource::Local,
+            ))
+        } else {
+            outbound_policy
+                .as_ref()
+                .and_then(|policy| policy.proxy())
+                .map(|socks5| (socks5, ProxySource::Profile))
+        };
+        let socks5 = if let Some((socks5_opt, proxy_source)) = raw_socks5 {
             match connection_type {
-                ConnectionType::TCP | ConnectionType::DoT => parse_socks5_opt(&socks5_str),
+                ConnectionType::TCP | ConnectionType::DoT => Some(socks5_opt),
                 ConnectionType::DoH => {
                     if enable_http3 {
+                        if proxy_source == ProxySource::Profile {
+                            return Err(DnsError::plugin(
+                                "upstream outbound profile proxy does not support DoH3",
+                            ));
+                        }
                         warn!("Sock5 proxy only support tcp portal");
                         None
                     } else {
-                        parse_socks5_opt(&socks5_str)
+                        Some(socks5_opt)
                     }
                 }
                 _ => {
+                    if proxy_source == ProxySource::Profile {
+                        return Err(DnsError::plugin(format!(
+                            "upstream outbound profile proxy does not support {:?}",
+                            connection_type
+                        )));
+                    }
                     warn!("Sock5 proxy only support tcp portal");
                     None
                 }
@@ -469,6 +531,7 @@ impl TryFrom<UpstreamConfig> for ConnectionInfo {
             socks5,
             connection_type,
             bootstrap,
+            bootstrap_timeout,
             path,
             timeout: timeout.unwrap_or(Self::DEFAULT_QUERY_TIMEOUT),
             server_name: host,

@@ -15,7 +15,7 @@
 //!
 //! Keeping these helpers small makes the protocol plugins easier to review and
 //! reduces duplication at transport boundaries.
-#[cfg(any(feature = "server-doq", feature = "upstream-doq"))]
+#[cfg(any(feature = "server-doq", feature = "_dns-client-doq"))]
 pub mod quic_transport;
 pub mod tcp_transport;
 pub mod udp_transport;

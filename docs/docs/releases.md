@@ -10,7 +10,35 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-06
 
 <div className="release-stack">
-   <ReleaseCard version="v1.2.3" badge="Patch Release" date="2026-06-11" defaultOpen>
+   <ReleaseCard version="v1.3.0" badge="Minor Release" date="2026-06-16" defaultOpen>
+       **版本定位**
+
+       - Minor Release，核心变更是将 `black_hole` 升级为覆盖全 qtype 的完整拦截器，并系统性加固 upstream 连接池、bootstrap、deadline / cancel safety 和 RouterOS 联动路径。同时完成 Rust 包结构重构：新增 `cli` 与 `infra` 层，`core` 收敛为 DNS 执行核心。配置层面保持大体兼容，但 `black_hole` 的无参默认行为与非 A/AAAA 命中语义发生变化；Rust library embedders 需要迁移公开 module path。
+
+       **主要变更**
+
+       - `feat(executor)`：`black_hole` 新增 `mode`（`nxdomain` / `nodata` / `null` / `custom` / `refused`），覆盖所有 qtype；无 `ips` 时默认 `nxdomain`，旧的 `ips` 写法自动按 `custom` 兼容处理。
+       - `feat(upstream)`：上游连接池新增 `min_conns`，可按需保持预热连接；`max_conns` 增加明确范围校验，文档和 WebUI 配置表单同步补齐。
+       - `fix(upstream)`：加固 pipeline / reuse 连接池的 deadline、取消安全、slot 回收和不可用连接裁剪逻辑，降低连接关闭、超时、替换连接失败或上游恢复期间的请求悬挂与忙等风险。
+       - `fix(upstream)`：bootstrap 要求引导服务器使用字面量 IP，按 CNAME 链选择合法 A/AAAA 结果，并纳入查询 deadline；HTTP 上游请求补充 `Accept` header。
+       - `feat(executor)`：`ros_address_list` 新增 `connect_timeout`、`send_timeout`、`receive_timeout`；启动阶段的 RouterOS 扫描和常驻项同步后台化，避免慢 address-list 阻塞 DNS 服务启动，并在清理前重新校验行状态。
+       - `fix(matcher)`：规则文件按行解析时保留逗号，修复包含逗号的 domain / matcher 表达式被错误切分的问题。
+       - `refactor`：新增 `src/cli/` 与 `src/infra/`，迁移 network、service、upgrade、build_info、error、task、cache、observability 等基础设施；`src/core/` 仅保留 `context` 与 `rule_matcher`。
+       - `zoneparser`：扩展标准 RDATA 解析能力，覆盖 A/AAAA、名称类记录、MX/RT/AFSDB、TXT/SPF/AVC/RESINFO、SOA、SRV、CAA 等代表性记录，并保留 RFC3597 generic syntax 兜底。
+       - `query_recorder` / 内部结构：抽出 RDATA JSON 序列化与存储辅助，降低复杂度并保持 recorder 输出路径可维护。
+       - `release`：修复 GitHub Actions 上传 release 归档时的二次压缩问题，避免已打包产物被再次 archive。
+       - `docs(ai)`：维护者向 AI/agent 的说明集中到 `ai/`，发布流程新增中文 GitHub Release 模板，并明确 release prep 不自动 commit / tag / push。
+
+       **配置与升级说明**
+
+       - 根 crate 版本号升级为 `1.3.0`；`oxidns-zoneparser` 同步升级到 `0.1.1`；`crates/macros`、`crates/proto`、`crates/ripset` 无需同步升级；release tag 应使用 `v1.3.0`。
+       - `v1.2.3` 配置通常可直接升级。使用 `black_hole` 时请重点检查：旧的 `ips` 配置会自动保持 `custom` 语义；无参 `black_hole` 现在默认返回 `NXDOMAIN`；`null` / `custom` 对非 A/AAAA 返回 NODATA，而不是继续透传。
+       - 如配置了 upstream `bootstrap`，现在必须使用 `IP:port`，不要写域名；新字段 `min_conns` 默认 `0`，未配置时仍保持懒加载。
+       - `ros_address_list` 新增的三个 timeout 字段均为可选，默认值兼容旧配置。大型共享 address-list 仍建议拆分为 OxiDNS 专用列表，避免 RouterOS 管理面扫描成本过高。
+       - Rust library embedders 需要迁移公开 module path：旧顶层 `network` / `build_info` / `upgrade` / `service` 以及 `core` 下的基础设施模块已移入 `infra`；`core::context` 和 `core::rule_matcher` 保持不变。
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.2.3" badge="Patch Release" date="2026-06-11">
        **版本定位**
 
        - Patch Release，核心变更为修复 `/api/reload` 后 TCP / DoT 写响应任务可能空转导致的高 CPU 问题，并降低上游连接池在上游不可用或重启期间的忙等重试开销。同时补齐 WebUI 英文界面 i18n，新增升级流程中的 GitHub token 控制，并继续收敛测试与 CLI / 插件文档细节。不引入破坏性配置变更。

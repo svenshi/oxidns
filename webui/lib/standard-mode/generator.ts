@@ -13,21 +13,23 @@ import type {
   StandardModeSettings,
   StandardResolutionPath,
   StandardRoutingRule,
+  StandardServerProtocol,
+  StandardServerSettings,
   StandardSubscription,
   StandardTagMap,
   StandardUpstream,
-  StandardUpstreamGroup,
 } from "./types";
 import {
   normalizeStandardExceptionSettings,
   normalizeStandardDeviceSettings,
+  normalizeStandardDnsSettings,
   normalizeStandardFilteringSettings,
   normalizeStandardRoutingSettings,
+  isStandardServerProtocolSupported,
   standardFilteringCapabilityMap,
 } from "./validation";
 
 export const STANDARD_PLUGIN_TAGS = [
-  "standard_metrics",
   "standard_recorder",
   "standard_cache",
   "standard_filter_download",
@@ -40,13 +42,16 @@ export const STANDARD_PLUGIN_TAGS = [
   "standard_main_sequence",
   "standard_udp",
   "standard_tcp",
+  "standard_dot",
+  "standard_doh",
+  "standard_doq",
 ] as const;
 
 const STANDARD_TAG_SET = new Set<string>(STANDARD_PLUGIN_TAGS);
 const STANDARD_FILTER_SUBSCRIPTION_DIR = "./data/standard-filter-subscriptions";
 
-function plugin(type: PluginType, tag: string, args?: unknown): PluginConfig {
-  return { type, tag, args: args ?? {} };
+function plugin(kind: string, tag: string, args?: unknown): PluginConfig {
+  return { type: kind, tag, args: args ?? {} };
 }
 
 function supports(
@@ -101,10 +106,9 @@ function withScheme(address: string, scheme: string): string {
 
 function concurrentCount(
   upstreams: ReturnType<typeof enabledUpstreams>,
-  strategy: StandardUpstreamGroup["strategy"],
+  concurrent: number,
 ): number {
-  if (strategy === "sequential") return 1;
-  return Math.max(1, Math.min(3, upstreams.length));
+  return Math.max(1, Math.min(3, upstreams.length, Math.trunc(concurrent)));
 }
 
 function blockMode(settings: StandardModeSettings) {
@@ -152,13 +156,14 @@ export function generateStandardConfig(
 ): StandardGenerationResult {
   const generationSettings = normalizeStandardExceptionSettings(
     normalizeStandardDeviceSettings(
-      normalizeStandardRoutingSettings(normalizeStandardFilteringSettings(settings)),
+      normalizeStandardRoutingSettings(
+        normalizeStandardFilteringSettings(normalizeStandardDnsSettings(settings)),
+      ),
     ),
   );
   const generated: PluginConfig[] = [];
   const skippedCapabilities: string[] = [];
   const tagMap: StandardTagMap = {
-    system: [],
     upstreamGroups: {},
     paths: {},
     routingRules: {},
@@ -177,21 +182,29 @@ export function generateStandardConfig(
       skippedCapabilities.push(capability);
       return false;
     }
-    generated.push(plugin(type, tag, args));
+    generated.push(plugin(kind, tag, args));
     return true;
   };
 
-  if (
-    pushIfSupported(
-      "metrics",
-      "executor",
-      "metrics_collector",
-      "standard_metrics",
-      {},
-    )
-  ) {
-    tagMap.system.push("standard_metrics");
-  }
+  const pushServerIfSupported = (
+    capability: string,
+    server: StandardServerSettings,
+    kind: string,
+    tag: string,
+    args?: unknown,
+  ) => {
+    if (
+      !isStandardServerProtocolSupported(
+        server.protocol,
+        buildInfo,
+        server,
+      )
+    ) {
+      skippedCapabilities.push(capability);
+      return false;
+    }
+    return pushIfSupported(capability, "server", kind, tag, args);
+  };
 
   if (
     shouldEnableQueryLogPlugin(generationSettings) &&
@@ -381,7 +394,7 @@ export function generateStandardConfig(
     if (
       pushIfSupported("forward", "executor", "forward", tag, {
         upstreams,
-        concurrent: concurrentCount(upstreams, group.strategy),
+        concurrent: concurrentCount(upstreams, group.concurrent),
       })
     ) {
       tagMap.upstreamGroups[group.id] = tag;
@@ -522,9 +535,6 @@ export function generateStandardConfig(
   }
 
   const mainSequence: Array<Record<string, unknown>> = [];
-  if (tagMap.system.includes("standard_metrics")) {
-    mainSequence.push({ exec: "$standard_metrics" });
-  }
   for (const exception of orderedExceptions(generationSettings.exceptions)) {
     const matchTag = tagMap.exceptionRules[exception.id];
     const execTag = exceptionExecTag(
@@ -572,17 +582,16 @@ export function generateStandardConfig(
     mainSequence,
   );
 
-  if (hasMainSequence && generationSettings.listen.udp) {
-    pushIfSupported("udp_server", "server", "udp_server", "standard_udp", {
-      listen: generationSettings.listen.address,
-      entry: "standard_main_sequence",
-    });
-  }
-  if (hasMainSequence && generationSettings.listen.tcp) {
-    pushIfSupported("tcp_server", "server", "tcp_server", "standard_tcp", {
-      listen: generationSettings.listen.address,
-      entry: "standard_main_sequence",
-    });
+  if (hasMainSequence) {
+    for (const server of generationSettings.listen.servers) {
+      pushServerIfSupported(
+        `${server.protocol}_server`,
+        server,
+        serverPluginKind(server.protocol),
+        serverTag(server),
+        serverPluginArgs(server),
+      );
+    }
   }
 
   const config: OxiDnsConfig = {
@@ -604,6 +613,57 @@ export function generateStandardConfig(
     generatedTags: generated.map((item) => item.tag),
     tagMap,
     summary: summarizeSettings(generationSettings),
+  };
+}
+
+function serverPluginKind(
+  protocol: StandardServerProtocol,
+): "udp_server" | "tcp_server" | "http_server" | "quic_server" {
+  if (protocol === "udp") return "udp_server";
+  if (protocol === "doh") return "http_server";
+  if (protocol === "doq") return "quic_server";
+  return "tcp_server";
+}
+
+function serverTag(server: StandardServerSettings): string {
+  if (server.id === "udp" && server.protocol === "udp") return "standard_udp";
+  if (server.id === "tcp" && server.protocol === "tcp") return "standard_tcp";
+  if (server.id === "dot" && server.protocol === "dot") return "standard_dot";
+  if (server.id === "doh" && server.protocol === "doh") return "standard_doh";
+  if (server.id === "doq" && server.protocol === "doq") return "standard_doq";
+  return standardTag("server", server.id);
+}
+
+function serverPluginArgs(server: StandardServerSettings): Record<string, unknown> {
+  if (server.protocol === "udp") {
+    return {
+      listen: server.listen,
+      entry: "standard_main_sequence",
+    };
+  }
+  if (server.protocol === "doh") {
+    return {
+      listen: server.listen,
+      entries: [
+        {
+          path: server.path || "/dns-query",
+          exec: "standard_main_sequence",
+        },
+      ],
+      cert: server.cert,
+      key: server.key,
+      ...(server.srcIpHeader ? { src_ip_header: server.srcIpHeader } : {}),
+      ...(server.idleTimeout ? { idle_timeout: server.idleTimeout } : {}),
+      ...(server.enableHttp3 ? { enable_http3: true } : {}),
+    };
+  }
+  return {
+    listen: server.listen,
+    entry: "standard_main_sequence",
+    ...(server.protocol === "dot" || server.protocol === "doq"
+      ? { cert: server.cert, key: server.key }
+      : {}),
+    ...(server.idleTimeout ? { idle_timeout: server.idleTimeout } : {}),
   };
 }
 

@@ -93,3 +93,22 @@ fn build_listen_socket(
 
     Ok(sock)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_listen_addr_accepts_port_only_shorthand() {
+        let addr = parse_listen_addr(":5337").expect("port-only shorthand should parse");
+
+        assert_eq!(addr, SocketAddr::from((Ipv6Addr::UNSPECIFIED, 5337)));
+    }
+
+    #[test]
+    fn parse_listen_addr_rejects_invalid_port_only_shorthand() {
+        let err = parse_listen_addr(":not-a-port").unwrap_err();
+
+        assert!(err.to_string().contains("Invalid listen address"));
+    }
+}

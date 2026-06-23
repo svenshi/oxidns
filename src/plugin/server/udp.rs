@@ -21,11 +21,11 @@ use tracing::{debug, error, info, warn};
 use crate::config::types::PluginConfig;
 use crate::core::context::RequestMeta;
 use crate::infra::error::{DnsError, Result};
-use crate::infra::network::listen;
+use crate::infra::network::listen::{self, parse_listen_addr};
 use crate::infra::network::transport::udp_transport::UdpTransport;
 use crate::infra::observability::metrics::{register_metric_source, unregister_metric_source};
 use crate::plugin::dependency::DependencySpec;
-use crate::plugin::server::{RequestHandle, Server, ServerMetrics, parse_listen_addr};
+use crate::plugin::server::{RequestHandle, Server, ServerMetrics};
 use crate::plugin::{Plugin, PluginFactory};
 use crate::plugin_factory;
 

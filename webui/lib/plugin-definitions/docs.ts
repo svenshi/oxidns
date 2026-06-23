@@ -17,7 +17,7 @@ export const pluginFieldDocs = {
   },
   http_server: {
     entries:
-      "- 类型：`array`；必填：是；默认值：无\n- 作用：定义 HTTP 路径到执行器的映射关系。\n- 每个元素包含以下字段：\n  - `path`\n    - 类型：`string`\n    - 必填：是\n    - 作用：指定 DoH 请求路径。\n    - 约束：必须以 `/` 开头。\n  - `exec`\n    - 类型：`string`\n    - 必填：是\n    - 作用：指定处理该路径请求的执行器。\n    - 约束：必须引用已定义的执行器插件。\n- 运行影响：\n  - 不同路径可进入不同策略链。",
+      "- 类型：`array`；必填：是；默认值：无\n- 作用：定义 HTTP 路径到执行器的映射关系。\n- 每个元素包含以下字段：\n  - `path`\n    - 类型：`string`\n    - 必填：是\n    - 作用：指定 DoH 请求路径。\n    - 约束：必须以 `/` 开头。\n  - `exec`\n    - 类型：`string`\n    - 必填：是\n    - 作用：指定处理该路径请求的执行器。\n    - 约束：必须引用已定义的执行器插件。\n  - `json_api`\n    - 类型：`boolean`\n    - 必填：否\n    - 默认值：`false`\n    - 作用：控制该路径是否接受 JSON DNS API。\n- 运行影响：\n  - 不同路径可进入不同策略链。",
     listen:
       "- 类型：`string`；必填：是；默认值：无\n- 作用：指定 HTTP/HTTPS 监听地址。",
     src_ip_header:
@@ -44,7 +44,7 @@ export const pluginFieldDocs = {
     "args[].matches":
       "- 类型：`string` 或 `array`\n- 必填：否\n- 默认值：无\n- 作用：定义当前规则的匹配条件。\n- 支持形式：\n  - 单个 matcher 字符串\n  - 多个 matcher 组成的列表\n- 运行影响：\n  - 多个条件之间为逻辑与关系。\n  - 未配置时表示无前置匹配条件。",
     "args[].exec":
-      "- 类型：`string`；必填：否；默认值：无\n- 作用：定义规则命中后要执行的动作。\n- 支持内容：\n  - 插件引用\n  - 快捷表达式\n  - 内建控制流\n- 运行影响：\n  - 直接决定当前规则的执行行为。",
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：定义规则命中后要执行的动作。\n- 支持内容：\n  - 插件引用\n  - 快捷表达式\n  - 内建控制流，例如 `accept`、`reject SERVFAIL`、`reject NOERROR`、`reject 3`、`jump <tag>`\n- 说明：`reject` 的 RCODE 参数支持大小写不敏感的英文名称和十进制数字。\n- 运行影响：\n  - 直接决定当前规则的执行行为。",
   },
   forward: {
     concurrent:
@@ -59,6 +59,8 @@ export const pluginFieldDocs = {
       "- 类型：`string`；必填：否；默认值：无\n- 作用：为单个上游提供日志标识，便于排查多上游竞争结果。",
     "upstreams[].dial_addr":
       "- 类型：`ip`；必填：否；默认值：无\n- 作用：指定实际连接 IP，同时保留 `addr` 中的主机名用于 SNI、Host 和证书校验。\n- 适用场景：固定拨号地址、绕过本机解析或配合自定义路由出口。",
+    "upstreams[].outbound":
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：引用 `network.outbound.profiles` 中的出站配置，为该上游注入 resolver 和 proxy。\n- 覆盖规则：本地 `dial_addr` 优先于 resolver；本地 `bootstrap` 优先于 outbound resolver；本地 `socks5` 优先于 profile proxy。",
     "upstreams[].port":
       "- 类型：`integer`；必填：否；默认值：协议默认端口\n- 作用：覆盖协议默认端口。",
     "upstreams[].bootstrap":
@@ -286,6 +288,8 @@ export const pluginFieldDocs = {
     form: "- 类型：`map<string,string>`；必填：否\n- 作用：以 `application/x-www-form-urlencoded` 方式发送表单。\n- 说明：value 支持 `${key}` 占位符插值；会自动设置对应的 `Content-Type`。",
     content_type:
       "- 类型：`string`；必填：否\n- 作用：为原始 `args.body` 指定 `Content-Type`。\n- 说明：只能和 `args.body` 搭配，不能与 `args.json` 或 `args.form` 同时使用。",
+    outbound:
+      "- 类型：`string`；必填：否\n- 作用：引用 `network.outbound.profiles` 中的出站配置，统一控制该 HTTP 请求使用的解析器和代理。\n- 说明：未配置时使用 `network.outbound.default`；若也配置了 `args.socks5`，`socks5` 只覆盖代理设置，resolver 仍来自 outbound profile。",
     socks5:
       "- 类型：`string`；必填：否\n- 作用：指定 SOCKS5 代理。\n- 说明：格式与 `upstream[].socks5` 一致，支持 `host:port`、`username:password@host:port` 和带中括号的 IPv6。",
     insecure_skip_verify:
@@ -398,6 +402,8 @@ export const pluginFieldDocs = {
       "- 类型：`bool`；必填：否；默认值：`false`\n- 作用：设为 `true` 时，升级成功后不触发自动重启。",
     timeout:
       "- 类型：`duration`；必填：否；默认值：`30s`\n- 作用：限制升级过程的总等待时间。",
+    outbound:
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：引用 `network.outbound.profiles` 中的出站配置，用于升级下载。\n- 说明：旧 `socks5` 字段继续兼容，且会覆盖 profile 里的代理设置。",
     socks5:
       "- 类型：`string`；必填：否；默认值：无\n- 作用：升级下载时使用的 SOCKS5 代理。",
     insecure_skip_verify:
@@ -414,6 +420,8 @@ export const pluginFieldDocs = {
       "- 类型：`string`；必填：否；默认值：从 URL 路径推导\n- 作用：下载项的目标文件名。",
     timeout:
       "- 类型：`duration`；必填：否；默认值：`30s`\n- 作用：下载超时时间。",
+    outbound:
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：引用 `network.outbound.profiles` 中的出站配置，用于统一控制下载解析器和代理。\n- 说明：同时配置 `outbound` 和 `socks5` 时，`socks5` 会覆盖 profile 代理但保留 profile resolver。",
     socks5:
       '- 类型：`string`；必填：否；默认值：无\n- 作用：所有下载连接都会通过该 SOCKS5 代理发起。\n- 支持格式：`host:port`、`username:password@host:port`，IPv6 需写成 `"[::1]:1080"`。',
     startup_if_missing:

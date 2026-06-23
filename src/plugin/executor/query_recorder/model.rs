@@ -18,6 +18,7 @@ pub(super) struct QueryRecorderConfig {
     pub(super) memory_tail: Option<usize>,
     pub(super) retention_days: Option<u64>,
     pub(super) cleanup_interval_hours: Option<u64>,
+    pub(super) reader_concurrency: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -29,12 +30,15 @@ pub(super) struct ResolvedRecorderConfig {
     pub(super) memory_tail: usize,
     pub(super) retention_days: u64,
     pub(super) cleanup_interval_hours: u64,
+    pub(super) reader_concurrency: usize,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct TableNames {
     pub(super) records: String,
     pub(super) steps: String,
+    pub(super) questions: String,
+    pub(super) meta: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

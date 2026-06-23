@@ -72,15 +72,22 @@ const topLevelKeys = [
   "runtime",
   "api",
   "log",
+  "network",
   "plugins",
   "init_order",
 ];
 const sequenceControls = ["accept", "return", "reject", "mark", "jump", "goto"];
+const sequenceControlExamples = [
+  "reject SERVFAIL",
+  "reject servfail",
+  "reject NOERROR",
+  "reject 3",
+];
 const logLevels = ["off", "trace", "debug", "info", "warn", "error"];
 
 // Sub-keys for top-level config sections derived from the Rust config structs.
 function configSubKeysForPath(path: string[]): string[] | null {
-  const [p0, p1, p2] = path;
+  const [p0, p1, p2, p3, p4, p5] = path;
   if (p0 === "log") return p1 ? null : ["level", "file", "rotation"];
   if (p0 === "runtime") return p1 ? null : ["worker_threads"];
   if (p0 === "api") {
@@ -92,6 +99,20 @@ function configSubKeysForPath(path: string[]): string[] | null {
       if (p2 === "auth") return ["type", "username", "password"];
       if (p2 === "cors") return ["allowed_origins"];
       if (p2 === "webui") return ["root", "index"];
+    }
+  }
+  if (p0 === "network") {
+    if (!p1) return ["outbound"];
+    if (p1 === "outbound") {
+      if (!p2) return ["default", "profiles"];
+      if (p2 === "profiles") {
+        if (!p3) return null;
+        if (!p4) return ["resolver", "proxy"];
+        if (p4 === "proxy") return p5 ? null : ["socks5"];
+        if (p4 === "resolver") {
+          if (!p5) return ["nameservers", "ip_version", "timeout", "proxy"];
+        }
+      }
     }
   }
   return null;
@@ -647,7 +668,7 @@ function controlSuggestions(
   monaco: MonacoApi,
   range: MonacoRange,
 ): CompletionItem[] {
-  return sequenceControls.map((control) => ({
+  const controls = sequenceControls.map((control) => ({
     label: control,
     kind: monaco.languages.CompletionItemKind.Keyword,
     insertText: control,
@@ -655,6 +676,15 @@ function controlSuggestions(
     detail: "sequence control",
     sortText: `3-${control}`,
   }));
+  const examples = sequenceControlExamples.map((control) => ({
+    label: control,
+    kind: monaco.languages.CompletionItemKind.Snippet,
+    insertText: control,
+    range,
+    detail: "sequence control example",
+    sortText: `3-${control}`,
+  }));
+  return [...controls, ...examples];
 }
 
 // Detects whether the line prefix ends with "jump " or "goto " (plus optional

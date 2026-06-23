@@ -1,6 +1,6 @@
 [package]
 name = "oxidns-zoneparser"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["Sven Shi <isvenshi@gmail.com>"]
 license = "MIT"

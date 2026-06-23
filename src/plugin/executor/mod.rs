@@ -74,6 +74,7 @@ pub mod ros_address_list;
 pub mod script;
 pub mod sequence;
 pub mod sleep;
+pub(crate) mod synthetic_response;
 #[cfg(any(feature = "plugin-http-request", feature = "plugin-script"))]
 pub(crate) mod template;
 pub mod ttl;

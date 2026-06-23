@@ -20,6 +20,7 @@ use hyper::body::Frame;
 use serde::Serialize;
 use tokio::sync::broadcast;
 
+use crate::api::query::{parse_usize_param, visit_query_params};
 use crate::api::{ApiHandler, ApiRegister, json_error, json_ok, streaming_response};
 use crate::infra::error::Result;
 use crate::infra::observability::log_buffer::{
@@ -159,23 +160,21 @@ fn parse_logs_params(
 ) -> std::result::Result<(usize, Option<LevelFilter>), String> {
     let mut limit = DEFAULT_FETCH_LIMIT;
     let mut min_level = None;
-    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
-        match key.as_ref() {
+    visit_query_params(query, |key, value| {
+        match key {
             "limit" => {
-                limit = value
-                    .parse::<usize>()
-                    .map_err(|err| format!("invalid limit: {err}"))?
+                limit = parse_usize_param(value, |err| format!("invalid limit: {err}"))?
                     .clamp(1, MAX_FETCH_LIMIT);
             }
             "level" => {
                 min_level = Some(
-                    LevelFilter::parse(value.as_ref())
-                        .ok_or_else(|| format!("invalid level: {}", value.as_ref()))?,
+                    LevelFilter::parse(value).ok_or_else(|| format!("invalid level: {}", value))?,
                 );
             }
             _ => {}
         }
-    }
+        Ok(())
+    })?;
     Ok((limit, min_level))
 }
 
@@ -184,23 +183,21 @@ fn parse_stream_params(
 ) -> std::result::Result<(usize, Option<LevelFilter>), String> {
     let mut tail = 0;
     let mut min_level = None;
-    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
-        match key.as_ref() {
+    visit_query_params(query, |key, value| {
+        match key {
             "tail" => {
-                tail = value
-                    .parse::<usize>()
-                    .map_err(|err| format!("invalid tail: {err}"))?
-                    .min(MAX_TAIL);
+                tail =
+                    parse_usize_param(value, |err| format!("invalid tail: {err}"))?.min(MAX_TAIL);
             }
             "level" => {
                 min_level = Some(
-                    LevelFilter::parse(value.as_ref())
-                        .ok_or_else(|| format!("invalid level: {}", value.as_ref()))?,
+                    LevelFilter::parse(value).ok_or_else(|| format!("invalid level: {}", value))?,
                 );
             }
             _ => {}
         }
-    }
+        Ok(())
+    })?;
     Ok((tail, min_level))
 }
 

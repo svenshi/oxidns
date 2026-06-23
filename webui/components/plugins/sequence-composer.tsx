@@ -1525,10 +1525,25 @@ function ActionEditor({
                   onChange({
                     mode: "control",
                     control: action.control,
-                    value: `${action.control} ${event.target.value}`.trim(),
+                    value: `${action.control} ${event.target.value
+                      .replace(/\s+/g, " ")
+                      .trimStart()}`,
                   })
                 }
-                placeholder={action.control === "reject" ? "3" : "1,2,3"}
+                onBlur={(event) =>
+                  onChange({
+                    mode: "control",
+                    control: action.control,
+                    value: `${action.control} ${event.target.value}`
+                      .replace(/\s+/g, " ")
+                      .trim(),
+                  })
+                }
+                placeholder={
+                  action.control === "reject"
+                    ? "NOERROR / SERVFAIL / 3"
+                    : "1,2,3"
+                }
                 className="h-8 max-w-[16rem] w-full font-mono text-xs"
                 disabled={readOnly}
               />
@@ -1677,13 +1692,14 @@ function parseCondition(value: string, conditionId: string): SequenceCondition {
 }
 
 function parseAction(value: unknown): SequenceAction {
-  const text = typeof value === "string" ? value.trim() : "";
+  const rawText = typeof value === "string" ? value : "";
+  const text = rawText.trim();
   const control = inferControlKind(text);
   if (text.startsWith("$")) {
     return { mode: "reference", value: text, control: "accept" };
   }
   if (control) {
-    return { mode: "control", value: text, control };
+    return { mode: "control", value: rawText.trimStart(), control };
   }
   // quick_setup detection — recognise inline executor forms like
   // `query_summary main pipeline` or `drop_resp` before falling back to text.
@@ -1731,7 +1747,10 @@ function serializeAction(action: SequenceAction) {
     if (action.control === "accept" || action.control === "return") {
       return action.control;
     }
-    return `${action.control} ${arg}`.trim();
+    const normalizedArg = arg.replace(/\s+/g, " ").trimStart();
+    return normalizedArg.trim()
+      ? `${action.control} ${normalizedArg}`
+      : action.control;
   }
   // `quick_setup` and `text` modes both store the raw form already.
   return action.value.trim();

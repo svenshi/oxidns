@@ -109,7 +109,9 @@ import Admonition from "@theme/Admonition";
 
 - 立即生成响应并结束当前 `sequence`。
 - 默认 `rcode` 为 `REFUSED`。
-- 只支持十进制数值，例如 `reject 2`、`reject 3`。
+- 支持十进制数值和大小写不敏感的英文 RCODE 名称，例如 `reject 2`、`reject SERVFAIL`、`reject servfail`、`reject NXDOMAIN`；常见映射与含义见 [DNS 编码速查表](../dns-codes.md#rcode-响应码)。
+- 只支持基础 DNS RCODE `0..15`；扩展 RCODE 需要 EDNS OPT，不会由该内建动作自动生成。
+- `reject 0` 返回普通 `NOERROR` 响应，不会自动附加 SOA。
 - 会中断后续规则，不再继续执行。
 
 #### `mark ...`
@@ -1655,6 +1657,8 @@ old-static.example.com static.example.net
     retention_days: 7
     # 定时清理周期，单位小时；最小 1
     cleanup_interval_hours: 1
+    # SQLite 读取侧最大并发数；最小 1
+    reader_concurrency: 2
 ```
 
 ### 配置项
@@ -1696,6 +1700,12 @@ old-static.example.com static.example.net
 - 最小值：`1`
 - 作用：定义过期清理任务的执行周期。
 
+#### `reader_concurrency`
+
+- 类型：`integer`；必填：否；默认值：`2`
+- 最小值：`1`
+- 作用：限制 WebUI / API 统计与历史查询同时运行的 SQLite reader 数量，避免突发读取在大库上占用过多阻塞线程和内存。
+
 ### 行为说明
 
 - 这是纯 executor 观察器，不会修改 `server` 收口逻辑。
@@ -1703,10 +1713,12 @@ old-static.example.com static.example.net
 - `next` 返回后立即提交记录；成功时记录当前 response，失败时记录 `error` 和空 response。
 - request / response 不保存 wire 数据，而是把问题区、RR、EDNS 等字段拆成 JSON 文本列。
 - `client_ip` 字段来自 OxiDNS 看到的传输层来源地址；如果前面有 systemd-resolved、dnsmasq、AdGuardHome、dae、clash 等本机转发链路，记录中可能只看到 `127.0.0.1`。
-- 每个 recorder 只使用两张表：
+- 每个 recorder 使用同一前缀下的版本化表：
   - `qr_<safe_tag>_<fnv64hex>_v1_records`
   - `qr_<safe_tag>_<fnv64hex>_v1_steps`
-- `records` 主表只保存固定字段集合；`steps` 表保存 `sequence` 路径事件，用于执行路径分析和命中率统计。
+  - `qr_<safe_tag>_<fnv64hex>_v1_questions`
+  - `qr_<safe_tag>_<fnv64hex>_v1_meta`
+- `records` 主表只保存固定字段集合；`steps` 表保存 `sequence` 路径事件，用于执行路径分析和命中率统计；`questions` 表是从 `questions_json` 派生的索引表，用于加速 qname/qtype 查询；`meta` 表记录已完成的派生表迁移。
 - 每个 recorder 独占自己的有界队列、SQLite 连接、后台写线程、内存 tail 和 SSE 广播器。
 - 默认假定不同 recorder 使用不同 `path`；v1 不做跨 recorder 写线程复用或路径协调。
 
@@ -2027,6 +2039,12 @@ old-static.example.com static.example.net
 - 类型：`string`；必填：否
 - 作用：为原始 `args.body` 指定 `Content-Type`。
 - 说明：只能和 `args.body` 搭配，不能与 `args.json` 或 `args.form` 同时使用。
+
+#### `args.outbound`
+
+- 类型：`string`；必填：否
+- 作用：引用 `network.outbound.profiles` 中的出站配置，统一控制该 HTTP 请求使用的解析器和代理。
+- 说明：未配置时使用 `network.outbound.default`；若也配置了 `args.socks5`，`socks5` 只覆盖代理设置，resolver 仍来自 outbound profile。
 
 #### `args.socks5`
 
@@ -2582,6 +2600,7 @@ old-static.example.com static.example.net
       force: false
       cleanup: true
       timeout: 30s
+      outbound: oversea
       socks5: 127.0.0.1:1080
       insecure_skip_verify: false
 ```
@@ -2623,8 +2642,9 @@ old-static.example.com static.example.net
     - 默认值：`false`
     - 设为 `true` 时，升级成功后不触发自动重启。
     - 默认值 `false` 会在升级成功后自动重启：CLI `apply` 通过系统服务管理器重启已安装服务，插件内执行时通过应用控制通道触发优雅重启并加载新二进制。
-- `timeout`、`socks5`、`insecure_skip_verify`
+- `timeout`、`outbound`、`socks5`、`insecure_skip_verify`
     - 与 CLI `upgrade` 参数含义一致。
+    - `outbound` 引用 `network.outbound.profiles` 中的出站配置；旧 `socks5` 字段继续兼容，且会覆盖 profile 里的代理设置。
 
 ### 行为说明
 
@@ -2664,6 +2684,7 @@ old-static.example.com static.example.net
   type: download
   args:
     timeout: 30s
+    outbound: oversea
     socks5: "127.0.0.1:1080"
     downloads:
       - url: "https://example.com/geosite.dat"
@@ -2685,6 +2706,7 @@ old-static.example.com static.example.net
 - 单个下载失败只会写 warning 日志，不会阻止后续项继续下载。
 - 目标目录不存在时会自动创建。
 - 文件会先写入临时文件，再覆盖目标文件，避免半写入状态。
+- 配置 `outbound` 后，下载使用 `network.outbound.profiles` 中定义的解析器和代理。
 - 配置 `socks5` 后，所有下载连接都会通过该 SOCKS5 代理发起，格式与 `upstream[].socks5` 一致。
 - 默认会在启动时检查目标文件；缺失项会在其它插件初始化前自动下载，失败会直接中止启动。
 - 如需关闭该行为，可显式配置 `startup_if_missing: false`。
@@ -2692,6 +2714,7 @@ old-static.example.com static.example.net
 <Admonition type="note" title="注意事项">
 
 - 只支持 `http` / `https`。
+- `outbound` 未配置时使用 `network.outbound.default`；同时配置 `outbound` 和 `socks5` 时，`socks5` 会覆盖 profile 代理但保留 profile resolver。
 - `socks5` 支持 `host:port` 和 `username:password@host:port`，IPv6 需写成 `"[::1]:1080"`。
 - `startup_if_missing` 只会补齐缺失文件，不会在每次启动时强制覆盖已有文件。
 - 放进普通 `sequence` 时会直接占用该次请求的执行时间。

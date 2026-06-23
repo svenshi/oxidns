@@ -231,7 +231,7 @@ Listens for DNS over TCP. If `cert` and `key` are both configured, it can also s
 
 ### Purpose
 
-Provides DNS over HTTPS and can serve HTTP/2 plus optional HTTP/3.
+Provides DNS over HTTPS and can serve HTTP/1.1, HTTP/2, and optional HTTP/3.
 
 ### Example Configuration
 
@@ -249,12 +249,14 @@ Provides DNS over HTTPS and can serve HTTP/2 plus optional HTTP/3.
     enable_http3: true
     # Restore the real client IP from a reverse-proxy header
     src_ip_header: "X-Forwarded-For"
-    # Idle timeout for HTTP/2 and HTTP/3 connections
+    # Idle timeout for HTTP/1.1, HTTP/2, and HTTP/3 connections
     idle_timeout: 30
     entries:
       # Standard RFC 8484 endpoint
       - path: "/dns-query"
         exec: "seq_main"
+        # Enable the JSON DNS API for this entry
+        json_api: true
       # Alternate path for a different policy chain
       - path: "/dns-alt"
         exec: "seq_alt"
@@ -280,6 +282,11 @@ Provides DNS over HTTPS and can serve HTTP/2 plus optional HTTP/3.
     - Required: yes
     - Purpose: Executor for requests hitting that path.
     - Constraint: must reference an existing executor plugin.
+  - `json_api`
+    - Type: `boolean`
+    - Required: no
+    - Default: `false`
+    - Purpose: Enables or disables the JSON DNS API for this path.
 - Runtime impact:
   - Different paths can enter different policy chains.
 
@@ -328,7 +335,7 @@ Provides DNS over HTTPS and can serve HTTP/2 plus optional HTTP/3.
 - Purpose: Controls idle HTTP connection lifetime.
 - Example: `idle_timeout: 30`
 - Runtime impact:
-  - Affects HTTP/2 long-lived connection behavior.
+  - Affects HTTP/1.1 / HTTP/2 long-lived connection behavior.
 
 #### `enable_http3`
 
@@ -339,14 +346,18 @@ Provides DNS over HTTPS and can serve HTTP/2 plus optional HTTP/3.
   - `cert` and `key` must both be configured.
 - Runtime impact:
   - Starts an additional QUIC-based DoH listener task.
-  - HTTP/2 responses include `Alt-Svc: h3=":<listen-port>"; ma=86400` so clients can discover HTTP/3 on the same port.
+  - HTTP/1.1 / HTTP/2 responses include `Alt-Svc: h3=":<listen-port>"; ma=86400` so clients can discover HTTP/3 on the same port.
 
 ### Behavior
 
 - Each `path` can route to a different `exec`, which is useful for multi-entry policies.
 - Registers both GET and POST DoH access methods commonly used for RFC 8484.
+- With `json_api` enabled, GET requests can use JSON API parameters: `name` (required), `type` (optional, defaults to `1`, numeric or text RR type), `cd`, `do`, `edns_client_subnet`, and `random_padding` (accepted and ignored).
+- If a GET request includes both `dns=` and `name/type`, RFC 8484 `dns=` takes precedence.
+- `ct=application/dns-message` returns DNS wire format; otherwise the JSON API returns `application/dns-json`.
+- HTTP/1.1 and HTTP/2 are negotiated automatically on the same listener with no extra configuration.
 - When HTTP/3 is enabled, an extra QUIC listener is started.
-- When HTTP/3 is enabled, HTTP/2 responses advertise the same listen port through the `Alt-Svc` header.
+- When HTTP/3 is enabled, HTTP/1.1 / HTTP/2 responses advertise the same listen port through the `Alt-Svc` header.
 
 ### Good Fits
 

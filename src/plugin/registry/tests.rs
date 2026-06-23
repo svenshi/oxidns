@@ -26,6 +26,7 @@ fn test_config(plugins: Vec<PluginConfig>) -> Config {
         runtime: Default::default(),
         api: Default::default(),
         log: Default::default(),
+        network: Default::default(),
         plugins,
     }
 }

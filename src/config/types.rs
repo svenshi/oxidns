@@ -6,10 +6,14 @@
 //! Defines the schema for OxiDNS configuration files (YAML format).
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 
 use serde::Deserialize;
 use serde_yaml_ng::Value;
 use thiserror::Error;
+
+use crate::infra::network::proxy::validate_socks5_syntax;
+use crate::infra::system::parse_simple_duration;
 
 /// Configuration validation errors
 #[derive(Debug, Error)]
@@ -47,6 +51,9 @@ pub enum ConfigError {
     #[error("api.http.webui.index cannot be empty")]
     EmptyApiWebUiIndex,
 
+    #[error("Invalid network outbound config: {0}")]
+    InvalidNetworkOutbound(String),
+
     #[error(
         "Duplicate plugin tag '{tag}' found at plugins[{first_index}] and plugins[{duplicate_index}]"
     )]
@@ -75,6 +82,10 @@ pub struct Config {
     /// Logging configuration (level, file output)
     #[serde(default)]
     pub log: LogConfig,
+
+    /// Shared network policy configuration.
+    #[serde(default)]
+    pub network: NetworkConfig,
 
     /// List of plugins to load and their configurations
     #[serde(default)]
@@ -134,6 +145,8 @@ impl Config {
             }
         }
 
+        self.network.validate()?;
+
         // Validate plugins - basic structure checks
         let mut seen_tags = HashMap::new();
         for (idx, plugin) in self.plugins.iter().enumerate() {
@@ -156,6 +169,363 @@ impl Config {
         }
 
         Ok(())
+    }
+}
+
+/// Shared network configuration.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct NetworkConfig {
+    /// Named outbound connection profiles shared by HTTP clients and upstreams.
+    #[serde(default)]
+    pub outbound: NetworkOutboundConfig,
+}
+
+impl NetworkConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        self.outbound.validate()
+    }
+}
+
+/// Global outbound profile registry.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct NetworkOutboundConfig {
+    /// Optional default profile used when a caller does not name one.
+    pub default: Option<String>,
+
+    /// Named outbound profiles.
+    #[serde(default)]
+    pub profiles: HashMap<String, OutboundProfileConfig>,
+}
+
+impl NetworkOutboundConfig {
+    pub(crate) fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(default) = self.default.as_deref() {
+            if default.trim().is_empty() {
+                return Err(ConfigError::InvalidNetworkOutbound(
+                    "default profile name cannot be empty".to_string(),
+                ));
+            }
+            if default != default.trim() {
+                return Err(ConfigError::InvalidNetworkOutbound(format!(
+                    "default profile '{}' cannot contain leading or trailing whitespace",
+                    default
+                )));
+            }
+            if !self.profiles.contains_key(default) {
+                return Err(ConfigError::InvalidNetworkOutbound(format!(
+                    "default profile '{}' is not defined",
+                    default
+                )));
+            }
+        }
+
+        for (name, profile) in &self.profiles {
+            if name.trim().is_empty() {
+                return Err(ConfigError::InvalidNetworkOutbound(
+                    "profile name cannot be empty".to_string(),
+                ));
+            }
+            if name != name.trim() {
+                return Err(ConfigError::InvalidNetworkOutbound(format!(
+                    "profile name '{}' cannot contain leading or trailing whitespace",
+                    name
+                )));
+            }
+            profile.validate(name)?;
+        }
+        Ok(())
+    }
+}
+
+/// One named outbound connection profile.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutboundProfileConfig {
+    pub resolver: Option<OutboundResolverConfig>,
+    pub proxy: Option<OutboundProxyConfig>,
+}
+
+impl OutboundProfileConfig {
+    fn validate(&self, profile_name: &str) -> Result<(), ConfigError> {
+        if let Some(resolver) = &self.resolver {
+            resolver.validate(profile_name)?;
+        }
+        if let Some(proxy) = &self.proxy {
+            proxy.validate(profile_name)?;
+        }
+        if self.resolver_uses_profile_proxy()
+            && !matches!(self.proxy, Some(OutboundProxyConfig::Socks5 { .. }))
+        {
+            return Err(ConfigError::InvalidNetworkOutbound(format!(
+                "profile '{}' resolver.proxy profile requires a socks5 proxy",
+                profile_name
+            )));
+        }
+        Ok(())
+    }
+
+    fn resolver_uses_profile_proxy(&self) -> bool {
+        matches!(
+            self.resolver,
+            Some(OutboundResolverConfig::Nameservers(
+                OutboundResolverDetailedConfig {
+                    proxy: Some(OutboundResolverProxyConfig::Profile),
+                    ..
+                }
+            ))
+        )
+    }
+}
+
+/// Resolver policy for an outbound profile.
+///
+/// This resolver is used by OxiDNS-owned outbound clients and opt-in upstreams.
+/// It is intentionally separate from legacy upstream `bootstrap`, whose field
+/// remains available on each upstream for local override compatibility.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum OutboundResolverConfig {
+    Mode(String),
+    Nameservers(OutboundResolverDetailedConfig),
+}
+
+impl OutboundResolverConfig {
+    fn validate(&self, profile_name: &str) -> Result<(), ConfigError> {
+        match self {
+            Self::Mode(mode) if mode.trim().eq_ignore_ascii_case("system") => Ok(()),
+            Self::Mode(mode) => Err(ConfigError::InvalidNetworkOutbound(format!(
+                "profile '{}' has invalid resolver mode '{}'",
+                profile_name, mode
+            ))),
+            Self::Nameservers(config) => config.validate(profile_name),
+        }
+    }
+}
+
+/// Detailed resolver policy for an outbound profile.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutboundResolverDetailedConfig {
+    pub nameservers: Vec<OutboundNameserverConfig>,
+    pub ip_version: Option<u8>,
+    pub timeout: Option<String>,
+    pub proxy: Option<OutboundResolverProxyConfig>,
+}
+
+impl OutboundResolverDetailedConfig {
+    fn validate(&self, profile_name: &str) -> Result<(), ConfigError> {
+        if self.nameservers.is_empty() {
+            return Err(ConfigError::InvalidNetworkOutbound(format!(
+                "profile '{}' resolver.nameservers requires at least one server",
+                profile_name
+            )));
+        }
+        if !matches!(self.ip_version, None | Some(4) | Some(6)) {
+            return Err(ConfigError::InvalidNetworkOutbound(format!(
+                "profile '{}' resolver.ip_version must be 4 or 6",
+                profile_name
+            )));
+        }
+        if let Some(timeout) = &self.timeout {
+            parse_simple_duration(timeout).map_err(|err| {
+                ConfigError::InvalidNetworkOutbound(format!(
+                    "profile '{}' resolver.timeout is invalid: {}",
+                    profile_name, err
+                ))
+            })?;
+        }
+
+        let resolver_uses_profile_proxy = matches!(
+            self.proxy
+                .as_ref()
+                .unwrap_or(&OutboundResolverProxyConfig::None),
+            OutboundResolverProxyConfig::Profile
+        );
+        for nameserver in &self.nameservers {
+            nameserver.validate(profile_name, resolver_uses_profile_proxy)?;
+        }
+        Ok(())
+    }
+}
+
+/// One outbound resolver nameserver endpoint.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutboundNameserverConfig {
+    pub addr: String,
+    pub dial_addr: Option<IpAddr>,
+}
+
+impl OutboundNameserverConfig {
+    fn validate(
+        &self,
+        profile_name: &str,
+        resolver_uses_profile_proxy: bool,
+    ) -> Result<(), ConfigError> {
+        if self.addr.trim().is_empty() {
+            return Err(ConfigError::InvalidNetworkOutbound(format!(
+                "profile '{}' resolver.nameservers addr cannot be empty",
+                profile_name
+            )));
+        }
+
+        let parsed = parse_nameserver_addr(self.addr.as_str()).ok_or_else(|| {
+            ConfigError::InvalidNetworkOutbound(format!(
+                "profile '{}' resolver.nameservers has invalid addr '{}'",
+                profile_name, self.addr
+            ))
+        })?;
+        if let Some(hint) = parsed.rebuild_hint() {
+            return Err(ConfigError::InvalidNetworkOutbound(format!(
+                "profile '{}' resolver.nameservers addr '{}': {}",
+                profile_name, self.addr, hint
+            )));
+        }
+
+        if parsed.host.parse::<IpAddr>().is_err() && self.dial_addr.is_none() {
+            return Err(ConfigError::InvalidNetworkOutbound(format!(
+                "profile '{}' resolver.nameservers domain addr '{}' requires dial_addr",
+                profile_name, self.addr
+            )));
+        }
+
+        if resolver_uses_profile_proxy && parsed.proxy_unsupported {
+            return Err(ConfigError::InvalidNetworkOutbound(format!(
+                "profile '{}' resolver proxy cannot be used with {} nameserver '{}'",
+                profile_name, parsed.scheme, self.addr
+            )));
+        }
+
+        Ok(())
+    }
+}
+
+struct ParsedNameserverAddr {
+    scheme: String,
+    host: String,
+    proxy_unsupported: bool,
+}
+
+impl ParsedNameserverAddr {
+    fn rebuild_hint(&self) -> Option<&'static str> {
+        match self.scheme.as_str() {
+            "tls" | "tls+pipeline" if !cfg!(feature = "resolver-dot") => Some(
+                "nameserver DoT is not compiled into this build; rebuild with --features resolver-dot",
+            ),
+            "https" | "doh" if !cfg!(feature = "resolver-doh") => Some(
+                "nameserver DoH is not compiled into this build; rebuild with --features resolver-doh",
+            ),
+            "h3" if !cfg!(feature = "resolver-doh3") => Some(
+                "nameserver DoH3 is not compiled into this build; rebuild with --features resolver-doh3",
+            ),
+            "quic" | "doq" if !cfg!(feature = "resolver-doq") => Some(
+                "nameserver DoQ is not compiled into this build; rebuild with --features resolver-doq",
+            ),
+            _ => None,
+        }
+    }
+}
+
+fn parse_nameserver_addr(addr: &str) -> Option<ParsedNameserverAddr> {
+    let raw = addr.trim();
+    let normalized;
+    let candidate = if raw.contains("//") {
+        raw
+    } else {
+        normalized = format!("udp://{raw}");
+        normalized.as_str()
+    };
+    let url = url::Url::parse(candidate).ok()?;
+    let host = match url.host()? {
+        url::Host::Domain(domain) => domain.to_string(),
+        url::Host::Ipv4(ip) => ip.to_string(),
+        url::Host::Ipv6(ip) => ip.to_string(),
+    };
+    let scheme = url.scheme().to_ascii_lowercase();
+    if !matches!(
+        scheme.as_str(),
+        "udp"
+            | "tcp"
+            | "tcp+pipeline"
+            | "tls"
+            | "tls+pipeline"
+            | "https"
+            | "doh"
+            | "h3"
+            | "quic"
+            | "doq"
+    ) {
+        return None;
+    }
+    let proxy_unsupported = matches!(scheme.as_str(), "udp" | "doq" | "quic" | "h3");
+    Some(ParsedNameserverAddr {
+        scheme,
+        host,
+        proxy_unsupported,
+    })
+}
+
+/// Resolver proxy policy for outbound profile nameservers.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OutboundResolverProxyConfig {
+    #[default]
+    None,
+    Profile,
+}
+
+/// One or more legacy upstream bootstrap DNS servers.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum BootstrapServerConfig {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl BootstrapServerConfig {
+    pub fn servers(&self) -> Vec<&str> {
+        match self {
+            Self::One(server) => vec![server.as_str()],
+            Self::Many(servers) => servers.iter().map(String::as_str).collect(),
+        }
+    }
+}
+
+/// Proxy policy for an outbound profile.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum OutboundProxyConfig {
+    Mode(String),
+    Socks5 { socks5: String },
+}
+
+impl OutboundProxyConfig {
+    fn validate(&self, profile_name: &str) -> Result<(), ConfigError> {
+        match self {
+            Self::Mode(mode)
+                if mode.trim().eq_ignore_ascii_case("none")
+                    || mode.trim().eq_ignore_ascii_case("direct") =>
+            {
+                Ok(())
+            }
+            Self::Mode(mode) => Err(ConfigError::InvalidNetworkOutbound(format!(
+                "profile '{}' has invalid proxy mode '{}'",
+                profile_name, mode
+            ))),
+            Self::Socks5 { socks5 } if socks5.trim().is_empty() => {
+                Err(ConfigError::InvalidNetworkOutbound(format!(
+                    "profile '{}' socks5 proxy cannot be empty",
+                    profile_name
+                )))
+            }
+            Self::Socks5 { socks5 } if !validate_socks5_syntax(socks5) => {
+                Err(ConfigError::InvalidNetworkOutbound(format!(
+                    "profile '{}' has invalid socks5 proxy '{}'",
+                    profile_name, socks5
+                )))
+            }
+            Self::Socks5 { .. } => Ok(()),
+        }
     }
 }
 
@@ -386,6 +756,7 @@ mod tests {
             runtime: RuntimeConfig::default(),
             api: ApiConfig::default(),
             log: LogConfig::default(),
+            network: NetworkConfig::default(),
             plugins: vec![plugin("dup", "debug_print"), plugin("dup", "ttl")],
         };
 
@@ -402,6 +773,7 @@ mod tests {
             runtime: RuntimeConfig::default(),
             api: ApiConfig::default(),
             log: LogConfig::default(),
+            network: NetworkConfig::default(),
             plugins: vec![plugin("test", "")],
         };
 
@@ -418,6 +790,7 @@ mod tests {
             runtime: RuntimeConfig::default(),
             api: ApiConfig::default(),
             log: LogConfig::default(),
+            network: NetworkConfig::default(),
             plugins: vec![plugin("ok", "debug_print")],
         };
 
@@ -433,6 +806,7 @@ mod tests {
             },
             api: ApiConfig::default(),
             log: LogConfig::default(),
+            network: NetworkConfig::default(),
             plugins: vec![plugin("ok", "debug_print")],
         };
 
@@ -463,6 +837,7 @@ mod tests {
                 http: Some(ApiHttpConfig::Listen("0.0.0.0:8080".to_string())),
             },
             log: LogConfig::default(),
+            network: NetworkConfig::default(),
             plugins: vec![plugin("ok", "debug_print")],
         };
 
@@ -489,6 +864,7 @@ mod tests {
                 }))),
             },
             log: LogConfig::default(),
+            network: NetworkConfig::default(),
             plugins: vec![plugin("ok", "debug_print")],
         };
 
@@ -496,6 +872,431 @@ mod tests {
             .validate()
             .expect_err("should reject mtls config without client_ca");
         assert!(matches!(err, ConfigError::MissingApiTlsClientCa));
+    }
+
+    #[test]
+    fn test_validate_accepts_network_outbound_profile() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    default: oversea
+    profiles:
+      oversea:
+        resolver:
+          nameservers:
+            - addr: 1.1.1.1:53
+            - addr: 8.8.8.8:53
+          ip_version: 4
+        proxy:
+          socks5: 127.0.0.1:1080
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_padded_default_outbound_profile() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    default: " oversea "
+    profiles:
+      oversea:
+        resolver: system
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = config
+            .validate()
+            .expect_err("padded outbound default profile should fail");
+        assert!(matches!(err, ConfigError::InvalidNetworkOutbound(_)));
+    }
+
+    #[test]
+    fn test_validate_rejects_padded_outbound_profile_name() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    profiles:
+      " oversea ":
+        resolver: system
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = config
+            .validate()
+            .expect_err("padded outbound profile name should fail");
+        assert!(matches!(err, ConfigError::InvalidNetworkOutbound(_)));
+    }
+
+    #[test]
+    fn test_validate_rejects_profile_resolver_proxy_without_socks5() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    profiles:
+      oversea:
+        resolver:
+          nameservers:
+            - addr: tcp://1.1.1.1:53
+          proxy: profile
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = config
+            .validate()
+            .expect_err("profile resolver proxy without socks5 should fail");
+        assert!(matches!(err, ConfigError::InvalidNetworkOutbound(_)));
+    }
+
+    #[test]
+    fn test_validate_accepts_bracketed_ipv6_outbound_nameserver() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    profiles:
+      oversea:
+        resolver:
+          nameservers:
+            - addr: udp://[2001:4860:4860::8888]:53
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_unbracketed_ipv6_outbound_nameserver() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    profiles:
+      oversea:
+        resolver:
+          nameservers:
+            - addr: udp://2001:4860:4860::8888:53
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = config
+            .validate()
+            .expect_err("unbracketed IPv6 nameserver should fail");
+        assert!(matches!(err, ConfigError::InvalidNetworkOutbound(_)));
+    }
+
+    #[test]
+    fn test_validate_rejects_outbound_resolver_bootstrap() {
+        let err = serde_yaml_ng::from_str::<Config>(
+            r#"
+network:
+  outbound:
+    profiles:
+      oversea:
+        resolver:
+          bootstrap:
+            - 1.1.1.1:53
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect_err("outbound resolver.bootstrap should not deserialize");
+
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn test_validate_rejects_domain_nameserver_without_dial_addr() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    profiles:
+      oversea:
+        resolver:
+          nameservers:
+            - addr: tls://dns.google:853
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = config
+            .validate()
+            .expect_err("domain nameserver without dial_addr should fail");
+        assert!(matches!(err, ConfigError::InvalidNetworkOutbound(_)));
+    }
+
+    #[test]
+    fn test_validate_rejects_profile_proxy_with_doq_nameserver() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    profiles:
+      oversea:
+        resolver:
+          nameservers:
+            - addr: doq://94.140.14.14:853
+          proxy: profile
+        proxy:
+          socks5: 127.0.0.1:1080
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = config
+            .validate()
+            .expect_err("DoQ nameserver cannot use profile proxy");
+        assert!(matches!(err, ConfigError::InvalidNetworkOutbound(_)));
+    }
+
+    #[test]
+    fn test_validate_rejects_unsupported_outbound_nameserver_scheme() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    profiles:
+      oversea:
+        resolver:
+          nameservers:
+            - addr: ftp://1.1.1.1:53
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = config
+            .validate()
+            .expect_err("unsupported nameserver scheme should fail");
+        assert!(matches!(err, ConfigError::InvalidNetworkOutbound(_)));
+    }
+
+    #[cfg(not(feature = "resolver-dot"))]
+    #[test]
+    fn test_validate_rejects_feature_disabled_dot_nameserver() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    profiles:
+      oversea:
+        resolver:
+          nameservers:
+            - addr: tls://1.1.1.1:853
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = config
+            .validate()
+            .expect_err("DoT nameserver should require resolver-dot");
+        assert!(err.to_string().contains("resolver-dot"), "{err}");
+    }
+
+    #[cfg(not(feature = "resolver-doh"))]
+    #[test]
+    fn test_validate_rejects_feature_disabled_doh_nameserver() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    profiles:
+      oversea:
+        resolver:
+          nameservers:
+            - addr: https://1.1.1.1/dns-query
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = config
+            .validate()
+            .expect_err("DoH nameserver should require resolver-doh");
+        assert!(err.to_string().contains("resolver-doh"), "{err}");
+    }
+
+    #[cfg(not(feature = "resolver-doq"))]
+    #[test]
+    fn test_validate_rejects_feature_disabled_doq_nameserver() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    profiles:
+      oversea:
+        resolver:
+          nameservers:
+            - addr: doq://94.140.14.14:853
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = config
+            .validate()
+            .expect_err("DoQ nameserver should require resolver-doq");
+        assert!(err.to_string().contains("resolver-doq"), "{err}");
+    }
+
+    #[cfg(not(feature = "resolver-doh3"))]
+    #[test]
+    fn test_validate_rejects_feature_disabled_doh3_nameserver() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    profiles:
+      oversea:
+        resolver:
+          nameservers:
+            - addr: h3://1.1.1.1/dns-query
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = config
+            .validate()
+            .expect_err("DoH3 nameserver should require resolver-doh3");
+        assert!(err.to_string().contains("resolver-doh3"), "{err}");
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_outbound_resolver_timeout() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    profiles:
+      oversea:
+        resolver:
+          nameservers:
+            - addr: 1.1.1.1:53
+          timeout: nope
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = config
+            .validate()
+            .expect_err("invalid resolver timeout should fail");
+        assert!(matches!(err, ConfigError::InvalidNetworkOutbound(_)));
+    }
+
+    #[test]
+    fn test_validate_accepts_hostname_socks5_outbound_proxy_syntax() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    profiles:
+      oversea:
+        proxy:
+          socks5: user:pass@proxy.example.com:1080
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_malformed_socks5_outbound_proxy() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    profiles:
+      oversea:
+        proxy:
+          socks5: 127.0.0.1
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = config
+            .validate()
+            .expect_err("malformed socks5 proxy should fail validation");
+        assert!(matches!(err, ConfigError::InvalidNetworkOutbound(_)));
+    }
+
+    #[test]
+    fn test_validate_rejects_unknown_default_outbound_profile() {
+        let config: Config = serde_yaml_ng::from_str(
+            r#"
+network:
+  outbound:
+    default: missing
+plugins:
+  - tag: ok
+    type: debug_print
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = config
+            .validate()
+            .expect_err("missing outbound default profile should fail");
+        assert!(matches!(err, ConfigError::InvalidNetworkOutbound(_)));
     }
 
     #[test]

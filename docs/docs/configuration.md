@@ -5,7 +5,7 @@ sidebar_position: 2
 
 ## 写在最前
 
-OxiDNS 的配置文件是 YAML。日常修改配置时，可以先把它理解为五个顶层部分：
+OxiDNS 的配置文件是 YAML。日常修改配置时，可以先把它理解为六个顶层部分：
 
 ```yaml
 runtime:
@@ -17,6 +17,14 @@ api:
 log:
   level: info
   file: ./oxidns.log
+
+network:
+  outbound:
+    default: direct
+    profiles:
+      direct:
+        resolver: system
+        proxy: none
 
 include: []
 
@@ -35,6 +43,8 @@ plugins:
   - 管理 API。
 - `log`
   - 日志输出。
+- `network`
+  - 共享网络出站配置，例如 HTTP 下载、升级检查和 webhook 请求使用的解析器与代理。
 - `include`
   - 从其他配置文件载入插件定义。
 - `plugins`
@@ -168,6 +178,53 @@ log:
 - `type: weekly`
   - 按周轮转。
   - 可选配置 `max_files`，表示最多保留多少个历史文件；`0` 表示不自动删除。
+
+### `network`
+
+`network.outbound` 用于集中管理项目内部 HTTP client 与显式接入的 upstream 出站策略。未配置时保持兼容行为：HTTP client 使用系统 DNS 解析并直连目标地址，upstream 保持自身配置。
+
+```yaml
+network:
+  outbound:
+    default: direct
+    profiles:
+      direct:
+        resolver: system
+        proxy: none
+      oversea:
+        resolver:
+          nameservers:
+            - addr: "1.1.1.1:53"
+            - addr: "tls://dns.google:853"
+              dial_addr: 8.8.8.8
+            - addr: "https://cloudflare-dns.com/dns-query"
+              dial_addr: 1.1.1.1
+          ip_version: 4
+          timeout: 5s
+          proxy: none
+        proxy:
+          socks5: 127.0.0.1:1080
+```
+
+字段说明：
+
+- `outbound.default`
+  - 含义：未显式配置 `outbound` 的 HTTP client 默认使用哪个 profile。
+  - 默认：无；无默认 profile 时使用系统 DNS + 直连。
+  - 限制：如果配置，必须引用 `profiles` 中存在的名称。
+- `outbound.profiles.<name>.resolver`
+  - `system`：使用系统 DNS。HTTP client 中该解析是异步执行，不会阻塞运行时工作线程。
+  - `nameservers`：使用指定 DNS nameserver 解析目标域名。支持 `udp://`、`tcp://`、`tls://`、`https://`、`doh://`、`h3://`、`quic://`、`doq://`；未写协议时按 UDP 处理。
+  - 协议 feature：UDP/TCP 总是可用；DoT 需要 `resolver-dot`，DoH 需要 `resolver-doh`，DoQ 需要 `resolver-doq`，DoH3 需要 `resolver-doh3`。旧的 `upstream-*` feature 仍会启用共享 DNS client 依赖以兼容既有构建脚本，但新配置建议显式启用 `resolver-*`。
+  - `ip_version`：可选，`4` 查询 A 记录，`6` 查询 AAAA 记录；未配置时默认 IPv4。
+  - `timeout`：可选，resolver 查询超时，默认 `5s`。
+  - `proxy`：可选，`none` 表示 nameserver 直连，`profile` 表示 TCP/DoT/DoH nameserver 复用当前 profile 的 SOCKS5。UDP/DoQ/DoH3 nameserver 不支持 SOCKS5。
+  - 域名型 nameserver 必须配置 `dial_addr`，`addr` 中的域名用于 SNI/证书校验，`dial_addr` 用于实际连接，避免 resolver 解析自身。
+- `outbound.profiles.<name>.proxy`
+  - `none` 或 `direct`：直连。
+  - `socks5`：通过 SOCKS5 代理连接目标地址，格式与上游 `socks5` 一致。
+
+当前 `download`、`upgrade`、`http_request` 可通过 `args.outbound: oversea` 引用 profile。旧字段 `socks5` 继续兼容；当同一个插件同时配置 `outbound` 和 `socks5` 时，`socks5` 会覆盖 profile 中的代理设置，但 resolver 仍来自该 outbound profile。`forward` upstream 也可通过 `outbound: oversea` 显式接入 profile；upstream 本地 `dial_addr`、`bootstrap`、`socks5` 优先于 profile 注入值。
 
 ### `api`
 
@@ -431,11 +488,20 @@ api:
 
 - 立即基于当前 request 构造一个 DNS 响应，并结束当前 `sequence`。
 - 默认 `rcode` 为 `REFUSED`，所以 `reject` 等价于拒绝请求。
-- 可以显式写十进制数值，例如：
+- 可以显式写十进制数值或英文 RCODE 名称；英文名称大小写不敏感。常见映射与含义见 [DNS 编码速查表](dns-codes.md#rcode-响应码)，例如：
   - `reject 2` => `SERVFAIL`
+  - `reject SERVFAIL` / `reject servfail` => `SERVFAIL`
   - `reject 3` => `NXDOMAIN`
-- 当前参数只支持十进制数字，不支持 `SERVFAIL`、`NXDOMAIN` 这类名字。
+  - `reject NXDOMAIN` => `NXDOMAIN`
+- `reject` 只支持基础 DNS RCODE `0..15`；扩展 RCODE 需要 EDNS OPT，不会由该内建动作自动生成。
+- `reject 0` 只返回普通 `NOERROR` 响应，不会自动附加 SOA。
 - 调用方不会继续执行后续规则。
+- 典型用法是直接返回指定错误码，例如：
+
+```yaml
+- matches: "qtype HTTPS"
+  exec: "reject NXDOMAIN"
+```
 
 ### `mark ...`
 
@@ -557,6 +623,7 @@ args:
 upstreams:
   - addr: "udp://1.1.1.1:53"
   - addr: "https://resolver.example/dns-query"
+    outbound: oversea
     bootstrap: "8.8.8.8:53"
     timeout: 5s
     enable_http3: true
@@ -573,6 +640,9 @@ upstreams:
   - 指定实际连接 IP，但仍保留 `addr` 中的主机名用于 SNI/校验。
 - `port`
   - 覆盖端口。
+- `outbound`
+  - 引用 `network.outbound.profiles` 中的 profile，为该 upstream 注入 resolver/proxy 默认值。
+  - upstream 本地 `dial_addr`、`bootstrap`、`socks5` 优先于 profile。
 - `bootstrap`
   - 当上游地址是域名时，用于解析上游域名的引导 DNS，必须写为 `IP:port`。
 - `bootstrap_version`

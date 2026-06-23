@@ -32,7 +32,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::types::PluginConfig;
 use crate::infra::error::{DnsError, Result};
-use crate::infra::network::listen;
+use crate::infra::network::listen::{self, parse_listen_addr};
 #[cfg(feature = "server-dot")]
 use crate::infra::network::tls_config::load_tls_config;
 use crate::infra::network::transport::tcp_transport::{TcpTransport, TcpTransportWriter};
@@ -40,8 +40,7 @@ use crate::infra::observability::metrics::{register_metric_source, unregister_me
 use crate::infra::system::deserialize_duration_option;
 use crate::plugin::dependency::DependencySpec;
 use crate::plugin::server::{
-    ConnectionGuard, DEFAULT_SERVER_IDLE_TIMEOUT, RequestHandle, RequestMeta, Server,
-    ServerMetrics, parse_listen_addr,
+    ConnectionGuard, DEFAULT_SERVER_IDLE_TIMEOUT, RequestHandle, RequestMeta, Server, ServerMetrics,
 };
 use crate::plugin::{Plugin, PluginFactory};
 use crate::plugin_factory;
