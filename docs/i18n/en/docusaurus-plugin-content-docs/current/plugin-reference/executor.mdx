@@ -244,6 +244,14 @@ Sends DNS queries to upstreams.
 - Purpose: Actual connection IP while preserving the hostname from `addr` for SNI, Host, and certificate validation.
 - Notes: Takes precedence over `bootstrap` when both are configured.
 
+#### `upstreams[].outbound`
+
+- Type: `string`; Required: no
+- Purpose: References a profile from `network.outbound.profiles` to inject resolver and proxy defaults into this upstream.
+- Default: When omitted, `network.outbound.default` is used. Without a default, the upstream keeps system resolution/direct dialing.
+- Override rules: local `dial_addr` takes precedence over resolver use; local `bootstrap` takes precedence over the outbound resolver; local `socks5` takes precedence over the profile proxy.
+- Note: Profile proxying is strict; UDP, DoQ, and DoH3 upstreams do not support profile SOCKS5 proxying.
+
 #### `upstreams[].port`
 
 - Type: `integer`; Required: no

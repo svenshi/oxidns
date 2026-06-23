@@ -79,7 +79,7 @@ OxiDNS 不试图替你隐藏复杂性。
 | 执行器 | `forward`、`cache`、`fallback`、`hosts`、`arbitrary`、`redirect`、`ecs_handler`、`ttl`、`black_hole`、`ip_selector`、`download`、`upgrade`、`reload`、`reload_provider`、`script`、`http_request`、`learn_domain`、`query_summary`、`query_recorder`、`metrics_collector` |
 | 匹配器 | `qname`、`question`、`qtype`、`qclass`、`client_ip`、`resp_ip`、`rcode`、`rate_limiter` 等 |
 | 数据集 | `domain_set`、`dynamic_domain_set`、`ip_set`、`geoip`、`geosite`、`adguard_rule` |
-| 出站网络 | `network.outbound` 统一配置 HTTP 下载、升级检查、webhook 与可选 upstream 使用的 nameservers 与 SOCKS5 |
+| 出站网络 | `network.outbound` 统一配置 HTTP 下载、升级检查、webhook 与 upstream 使用的 nameservers 与 SOCKS5 |
 | 系统联动 | `ipset`、`nftset`、`ros_address_list`、`reverse_lookup` |
 | 调试与运维 | 健康检查、配置校验、热重载、查询记录、Prometheus 插件指标、实时日志 |
 | 部署能力 | 多平台构建、Debian 包、独立 WebUI 托管、服务化安装 |

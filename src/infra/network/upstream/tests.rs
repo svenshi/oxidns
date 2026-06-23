@@ -170,6 +170,32 @@ fn install_test_outbound_config() {
     outbound::install_global(&config).expect("outbound config should install");
 }
 
+fn install_test_default_outbound_config() {
+    let config = NetworkOutboundConfig {
+        default: Some("oversea".to_string()),
+        profiles: HashMap::from([(
+            "oversea".to_string(),
+            OutboundProfileConfig {
+                resolver: Some(OutboundResolverConfig::Nameservers(
+                    OutboundResolverDetailedConfig {
+                        nameservers: vec![OutboundNameserverConfig {
+                            addr: "1.1.1.1:53".to_string(),
+                            dial_addr: None,
+                        }],
+                        ip_version: Some(4),
+                        timeout: Some("500ms".to_string()),
+                        proxy: None,
+                    },
+                )),
+                proxy: Some(OutboundProxyConfig::Socks5 {
+                    socks5: "127.0.0.1:1080".to_string(),
+                }),
+            },
+        )]),
+    };
+    outbound::install_global(&config).expect("default outbound config should install");
+}
+
 fn install_test_outbound_resolver_only_config() {
     let config = NetworkOutboundConfig {
         default: None,
@@ -192,6 +218,30 @@ fn install_test_outbound_resolver_only_config() {
         )]),
     };
     outbound::install_global(&config).expect("outbound config should install");
+}
+
+fn install_test_default_outbound_resolver_only_config() {
+    let config = NetworkOutboundConfig {
+        default: Some("oversea".to_string()),
+        profiles: HashMap::from([(
+            "oversea".to_string(),
+            OutboundProfileConfig {
+                resolver: Some(OutboundResolverConfig::Nameservers(
+                    OutboundResolverDetailedConfig {
+                        nameservers: vec![OutboundNameserverConfig {
+                            addr: "1.1.1.1:53".to_string(),
+                            dial_addr: None,
+                        }],
+                        ip_version: Some(4),
+                        timeout: Some("500ms".to_string()),
+                        proxy: None,
+                    },
+                )),
+                proxy: None,
+            },
+        )]),
+    };
+    outbound::install_global(&config).expect("default outbound config should install");
 }
 
 #[test]
@@ -271,6 +321,37 @@ fn test_connection_info_uses_outbound_resolver_for_domain() {
     outbound::clear_global();
 }
 
+#[test]
+fn test_connection_info_without_default_outbound_keeps_domain_resolution_deferred() {
+    let _guard = outbound_test_lock()
+        .lock()
+        .expect("outbound test lock should not be poisoned");
+    outbound::clear_global();
+
+    let cfg = make_upstream_config("tls://dns.example.invalid:853");
+    let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
+
+    assert!(info.remote_ip.is_none());
+    assert!(info.bootstrap.is_none());
+    outbound::clear_global();
+}
+
+#[test]
+fn test_connection_info_uses_default_outbound_resolver_for_domain() {
+    let _guard = outbound_test_lock()
+        .lock()
+        .expect("outbound test lock should not be poisoned");
+    install_test_default_outbound_resolver_only_config();
+
+    let cfg = make_upstream_config("tls://dns.example.invalid:853");
+    let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
+
+    assert!(info.remote_ip.is_none());
+    assert!(info.bootstrap.is_some());
+    assert_eq!(info.bootstrap_timeout, Some(Duration::from_millis(500)));
+    outbound::clear_global();
+}
+
 #[tokio::test]
 async fn test_udp_upstream_with_outbound_resolver_keeps_truncated_fallback() {
     let _guard = outbound_test_lock()
@@ -333,6 +414,27 @@ fn test_connection_info_uses_outbound_proxy_when_local_socks5_absent() {
 }
 
 #[test]
+fn test_connection_info_uses_default_outbound_proxy_when_local_socks5_absent() {
+    let _guard = outbound_test_lock()
+        .lock()
+        .expect("outbound test lock should not be poisoned");
+    install_test_default_outbound_config();
+
+    let cfg = make_upstream_config("tcp://1.1.1.1:53");
+    let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
+
+    assert_eq!(
+        info.socks5
+            .as_ref()
+            .expect("default outbound proxy should be injected")
+            .socket_addr
+            .port(),
+        1080
+    );
+    outbound::clear_global();
+}
+
+#[test]
 fn test_connection_info_rejects_outbound_proxy_for_udp_upstream() {
     let _guard = outbound_test_lock()
         .lock()
@@ -342,6 +444,21 @@ fn test_connection_info_rejects_outbound_proxy_for_udp_upstream() {
     let mut cfg = make_upstream_config("8.8.8.8");
     cfg.outbound = Some("oversea".to_string());
     let err = ConnectionInfo::try_from(cfg).expect_err("UDP upstream should reject profile proxy");
+
+    assert!(err.to_string().contains("does not support UDP"), "{err}");
+    outbound::clear_global();
+}
+
+#[test]
+fn test_connection_info_rejects_default_outbound_proxy_for_udp_upstream() {
+    let _guard = outbound_test_lock()
+        .lock()
+        .expect("outbound test lock should not be poisoned");
+    install_test_default_outbound_config();
+
+    let cfg = make_upstream_config("8.8.8.8");
+    let err = ConnectionInfo::try_from(cfg)
+        .expect_err("UDP upstream should reject default profile proxy");
 
     assert!(err.to_string().contains("does not support UDP"), "{err}");
     outbound::clear_global();
@@ -367,6 +484,44 @@ fn test_connection_info_local_socks5_overrides_outbound_proxy() {
             .port(),
         1081
     );
+    outbound::clear_global();
+}
+
+#[test]
+fn test_connection_info_local_socks5_overrides_default_outbound_proxy() {
+    let _guard = outbound_test_lock()
+        .lock()
+        .expect("outbound test lock should not be poisoned");
+    install_test_default_outbound_config();
+
+    let mut cfg = make_upstream_config("tcp://1.1.1.1:53");
+    cfg.socks5 = Some("127.0.0.1:1081".to_string());
+    let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
+
+    assert_eq!(
+        info.socks5
+            .as_ref()
+            .expect("local proxy should be retained")
+            .socket_addr
+            .port(),
+        1081
+    );
+    outbound::clear_global();
+}
+
+#[test]
+fn test_connection_info_local_bootstrap_overrides_default_outbound_resolver() {
+    let _guard = outbound_test_lock()
+        .lock()
+        .expect("outbound test lock should not be poisoned");
+    install_test_default_outbound_resolver_only_config();
+
+    let mut cfg = make_upstream_config("tls://dns.example.invalid:853");
+    cfg.bootstrap = Some("8.8.8.8:53".to_string());
+    let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
+
+    assert!(info.bootstrap.is_some());
+    assert!(info.bootstrap_timeout.is_none());
     outbound::clear_global();
 }
 

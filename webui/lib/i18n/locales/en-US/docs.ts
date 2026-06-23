@@ -63,7 +63,7 @@ export const enUSDocs = {
     "upstreams[].dial_addr":
       "- Type: `ip`; Required: No; Default: None\n- Function: Specify the actual connection IP, while retaining the host name in `addr` for SNI, Host and certificate verification.\n- Applicable scenarios: fixed dial-up address, bypassing local resolution or matching with custom routing exports.",
     "upstreams[].outbound":
-      "- Type: `string`; Required: No; Default: None\n- Function: Reference a profile from `network.outbound.profiles` to inject resolver and proxy defaults into this upstream.\n- Override rules: local `dial_addr` takes precedence over resolver use; local `bootstrap` takes precedence over the outbound resolver; local `socks5` takes precedence over the profile proxy.",
+      "- Type: `string`; Required: No\n- Default: `network.outbound.default`; none when no default is configured\n- Function: Reference a profile from `network.outbound.profiles` to inject resolver and proxy defaults into this upstream.\n- Override rules: local `dial_addr` takes precedence over resolver use; local `bootstrap` takes precedence over the outbound resolver; local `socks5` takes precedence over the profile proxy.\n- Note: Profile proxying is strict; UDP, DoQ, and DoH3 upstreams do not support profile SOCKS5 proxying.",
     "upstreams[].port":
       "- Type: `integer`; required: no; default value: protocol default port\n- Function: Override the protocol default port.",
     "upstreams[].bootstrap":

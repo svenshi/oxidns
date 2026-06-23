@@ -446,7 +446,7 @@ impl TryFrom<UpstreamConfig> for ConnectionInfo {
                 ));
             }
             Some(name) => Some(outbound::global().resolve_policy(Some(name), None)?),
-            None => None,
+            None => Some(outbound::global().resolve_policy(None, None)?),
         };
 
         let dial_addr_configured = dial_addr.is_some();

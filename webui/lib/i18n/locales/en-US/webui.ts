@@ -821,10 +821,10 @@ export const enUSWebui = {
     workerThreadsPlaceholder: "Leave empty for system default",
     outboundCard: "Outbound Network",
     outboundCardDesc:
-      "Configure network.outbound profiles shared by HTTP clients, upgrades, downloads, and opt-in upstreams.",
+      "Configure network.outbound profiles shared by HTTP clients, upgrades, downloads, and upstreams.",
     defaultOutboundProfile: "Default Outbound Profile",
     defaultOutboundProfileDesc:
-      "Clients without an explicit outbound selection use this profile. Leave empty for direct connections with the system resolver.",
+      "HTTP clients and upstreams without an explicit outbound selection use this profile. Leave empty for direct connections with the system resolver.",
     addOutboundProfile: "Add Outbound Profile",
     noOutboundProfiles: "No outbound profiles configured yet",
     outboundProfileTitle: "Profile {index}",

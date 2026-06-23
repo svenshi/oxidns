@@ -16,15 +16,15 @@ use crate::infra::error::Result;
 use crate::infra::network::deadline::{DeadlineOutcome, QueryDeadline};
 use crate::proto::{Message, Name};
 
-#[derive(Clone, Debug)]
-pub(super) struct CachedIp {
-    pub(super) ip: IpAddr,
-    pub(super) expires_at: u64,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ResolvedIp {
+    pub(crate) ip: IpAddr,
+    pub(crate) expires_at_ms: u64,
 }
 
-impl CachedIp {
+impl ResolvedIp {
     fn is_valid(&self) -> bool {
-        AppClock::elapsed_millis() < self.expires_at
+        AppClock::elapsed_millis() < self.expires_at_ms
     }
 }
 
@@ -32,7 +32,7 @@ impl CachedIp {
 pub(super) struct ResolveEntry {
     pub(super) domain: String,
     query: ResolveQuery,
-    pub(super) cache: RwLock<Option<CachedIp>>,
+    pub(super) cache: RwLock<Option<ResolvedIp>>,
     refresh: Mutex<()>,
     expires_at_hint: AtomicU64,
     last_accessed_at: AtomicU64,
@@ -69,13 +69,13 @@ impl ResolveEntry {
         &self,
         deadline: QueryDeadline,
         refresh: F,
-    ) -> Result<IpAddr>
+    ) -> Result<ResolvedIp>
     where
         F: FnOnce(Message, Name, QueryDeadline) -> Fut,
         Fut: Future<Output = Result<ResolvedAnswer>>,
     {
-        if let Some(ip) = self.cached_ip().await {
-            return Ok(ip);
+        if let Some(resolved) = self.cached_ip().await {
+            return Ok(resolved);
         }
 
         let _guard = match deadline.run(self.refresh.lock()).await {
@@ -83,8 +83,8 @@ impl ResolveEntry {
             DeadlineOutcome::Expired => return Err(deadline.timeout_error()),
         };
 
-        if let Some(ip) = self.cached_ip().await {
-            return Ok(ip);
+        if let Some(resolved) = self.cached_ip().await {
+            return Ok(resolved);
         }
 
         debug!(
@@ -98,24 +98,25 @@ impl ResolveEntry {
             deadline,
         )
         .await?;
-        self.store(answer).await;
-        Ok(answer.ip)
+        Ok(self.store(answer).await)
     }
 
-    async fn cached_ip(&self) -> Option<IpAddr> {
+    async fn cached_ip(&self) -> Option<ResolvedIp> {
         let cache = self.cache.read().await;
         cache
             .as_ref()
-            .and_then(|cached| cached.is_valid().then_some(cached.ip))
+            .and_then(|cached| cached.is_valid().then_some(*cached))
     }
 
-    async fn store(&self, answer: ResolvedAnswer) {
+    async fn store(&self, answer: ResolvedAnswer) -> ResolvedIp {
         let ttl = answer.ttl_seconds as u64 * 1000;
-        let expires_at = AppClock::elapsed_millis().saturating_add(ttl);
-        self.expires_at_hint.store(expires_at, Ordering::Relaxed);
-        *self.cache.write().await = Some(CachedIp {
+        let expires_at_ms = AppClock::elapsed_millis().saturating_add(ttl);
+        self.expires_at_hint.store(expires_at_ms, Ordering::Relaxed);
+        let resolved = ResolvedIp {
             ip: answer.ip,
-            expires_at,
-        });
+            expires_at_ms,
+        };
+        *self.cache.write().await = Some(resolved);
+        resolved
     }
 }

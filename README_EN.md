@@ -79,7 +79,7 @@ It is better suited for users who want explicit control over DNS behavior, rathe
 | Executors | `forward`, `cache`, `fallback`, `hosts`, `arbitrary`, `redirect`, `ecs_handler`, `ttl`, `black_hole`, `ip_selector`, `download`, `upgrade`, `reload`, `reload_provider`, `script`, `http_request`, `learn_domain`, `query_summary`, `query_recorder`, `metrics_collector` |
 | Matchers | `qname`, `question`, `qtype`, `qclass`, `client_ip`, `resp_ip`, `rcode`, `rate_limiter`, and more |
 | Data sets | `domain_set`, `dynamic_domain_set`, `ip_set`, `geoip`, `geosite`, `adguard_rule` |
-| Outbound networking | `network.outbound` centralizes nameservers and SOCKS5 settings for HTTP downloads, upgrade checks, webhooks, and opt-in upstreams |
+| Outbound networking | `network.outbound` centralizes nameservers and SOCKS5 settings for HTTP downloads, upgrade checks, webhooks, and upstreams |
 | System integrations | `ipset`, `nftset`, `ros_address_list`, `reverse_lookup` |
 | Debugging and operations | Health checks, config validation, hot reload, query records, Prometheus plugin metrics, real-time logs |
 | Deployment | Multi-platform builds, Debian packages, standalone WebUI hosting, service installation |

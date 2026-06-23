@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use rand::random;
 use tracing::{debug, error, info, warn};
 
-use super::cache::ResolveEntry;
+use super::cache::{ResolveEntry, ResolvedIp};
 use super::client::{NameserverClient, build_clients};
 use super::endpoint::NameserverConfig;
 use super::query::{ResolvedAnswer, select_answer};
@@ -64,6 +64,17 @@ impl NameResolver {
 
     #[inline]
     pub(crate) async fn resolve(&self, host: &str, deadline: QueryDeadline) -> Result<IpAddr> {
+        self.resolve_with_expiry(host, deadline)
+            .await
+            .map(|resolved| resolved.ip)
+    }
+
+    #[inline]
+    pub(crate) async fn resolve_with_expiry(
+        &self,
+        host: &str,
+        deadline: QueryDeadline,
+    ) -> Result<ResolvedIp> {
         let domain = resolver_domain(host);
         let entry = self.entry_for(domain)?;
         entry
@@ -71,6 +82,14 @@ impl NameResolver {
                 self.query_nameservers(request, query_name, deadline)
             })
             .await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_entries_for_test(&self) {
+        self.entries
+            .lock()
+            .expect("resolver entries lock should not be poisoned")
+            .clear();
     }
 
     fn entry_for(&self, domain: String) -> Result<Arc<ResolveEntry>> {
@@ -202,7 +221,7 @@ mod tests {
 
     use super::*;
     use crate::infra::clock::AppClock;
-    use crate::infra::network::resolver::cache::CachedIp;
+    use crate::infra::network::resolver::ResolvedIp;
     use crate::proto::rdata::A;
     use crate::proto::{RData, Record};
 
@@ -413,9 +432,9 @@ mod tests {
         let entry = resolver
             .entry_for("example.com.".to_string())
             .expect("entry should exist");
-        *entry.cache.write().await = Some(CachedIp {
+        *entry.cache.write().await = Some(ResolvedIp {
             ip: first,
-            expires_at: 0,
+            expires_at_ms: 0,
         });
         let second = resolver
             .resolve(

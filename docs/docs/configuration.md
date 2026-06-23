@@ -181,7 +181,7 @@ log:
 
 ### `network`
 
-`network.outbound` 用于集中管理项目内部 HTTP client 与显式接入的 upstream 出站策略。未配置时保持兼容行为：HTTP client 使用系统 DNS 解析并直连目标地址，upstream 保持自身配置。
+`network.outbound` 用于集中管理项目内部 HTTP client 与 upstream 出站策略。未配置时保持兼容行为：HTTP client 使用系统 DNS 解析并直连目标地址，upstream 保持自身配置。
 
 ```yaml
 network:
@@ -209,9 +209,10 @@ network:
 字段说明：
 
 - `outbound.default`
-  - 含义：未显式配置 `outbound` 的 HTTP client 默认使用哪个 profile。
+  - 含义：未显式配置 `outbound` 的 HTTP client 和 upstream 默认使用哪个 profile。
   - 默认：无；无默认 profile 时使用系统 DNS + 直连。
   - 限制：如果配置，必须引用 `profiles` 中存在的名称。
+  - 注意：默认 profile 的 proxy 会严格应用到 upstream；如果默认 SOCKS5 proxy 遇到 UDP、DoQ 或 DoH3 upstream，启动会失败，因为这些连接模型不支持 profile proxy。
 - `outbound.profiles.<name>.resolver`
   - `system`：使用系统 DNS。HTTP client 中该解析是异步执行，不会阻塞运行时工作线程。
   - `nameservers`：使用指定 DNS nameserver 解析目标域名。支持 `udp://`、`tcp://`、`tls://`、`https://`、`doh://`、`h3://`、`quic://`、`doq://`；未写协议时按 UDP 处理。
@@ -224,7 +225,7 @@ network:
   - `none` 或 `direct`：直连。
   - `socks5`：通过 SOCKS5 代理连接目标地址，格式与上游 `socks5` 一致。
 
-当前 `download`、`upgrade`、`http_request` 可通过 `args.outbound: oversea` 引用 profile。旧字段 `socks5` 继续兼容；当同一个插件同时配置 `outbound` 和 `socks5` 时，`socks5` 会覆盖 profile 中的代理设置，但 resolver 仍来自该 outbound profile。`forward` upstream 也可通过 `outbound: oversea` 显式接入 profile；upstream 本地 `dial_addr`、`bootstrap`、`socks5` 优先于 profile 注入值。
+当前 `download`、`upgrade`、`http_request` 可通过 `args.outbound: oversea` 引用 profile。旧字段 `socks5` 继续兼容；当同一个插件同时配置 `outbound` 和 `socks5` 时，`socks5` 会覆盖 profile 中的代理设置，但 resolver 仍来自该 outbound profile。`forward` upstream 未配置 `outbound` 时会使用 `network.outbound.default`；也可通过 `outbound: oversea` 显式接入其他 profile。upstream 本地 `dial_addr`、`bootstrap`、`socks5` 优先于 profile 注入值。
 
 ### `api`
 
@@ -642,7 +643,9 @@ upstreams:
   - 覆盖端口。
 - `outbound`
   - 引用 `network.outbound.profiles` 中的 profile，为该 upstream 注入 resolver/proxy 默认值。
+  - 未配置时使用 `network.outbound.default`；没有 default 时保持系统解析/直连。
   - upstream 本地 `dial_addr`、`bootstrap`、`socks5` 优先于 profile。
+  - profile proxy 严格应用；UDP、DoQ、DoH3 upstream 不支持 profile SOCKS5 proxy。
 - `bootstrap`
   - 当上游地址是域名时，用于解析上游域名的引导 DNS，必须写为 `IP:port`。
 - `bootstrap_version`

@@ -180,7 +180,7 @@ Field notes:
 
 ### `network`
 
-`network.outbound` centralizes outbound policy for internal HTTP clients and upstreams that opt in. When omitted, behavior stays compatible: HTTP clients use system DNS with direct connections, and upstreams keep their own settings.
+`network.outbound` centralizes outbound policy for internal HTTP clients and upstreams. When omitted, behavior stays compatible: HTTP clients use system DNS with direct connections, and upstreams keep their own settings.
 
 ```yaml
 network:
@@ -208,9 +208,10 @@ network:
 Field notes:
 
 - `outbound.default`
-  - Meaning: Which profile HTTP clients use when they do not set `outbound` explicitly.
+  - Meaning: Which profile HTTP clients and upstreams use when they do not set `outbound` explicitly.
   - Default: none; without a default profile, OxiDNS uses system DNS + direct connections.
   - Constraint: If set, it must reference an existing entry in `profiles`.
+  - Note: The default profile proxy is applied strictly to upstreams. Startup fails if a default SOCKS5 proxy is applied to UDP, DoQ, or DoH3 upstreams, because those connection models do not support profile proxying.
 - `outbound.profiles.<name>.resolver`
   - `system`: Use system DNS. HTTP clients perform this lookup asynchronously so it does not block runtime worker threads.
   - `nameservers`: Resolve target names through configured DNS nameservers. Supports `udp://`, `tcp://`, `tls://`, `https://`, `doh://`, `h3://`, `quic://`, and `doq://`; no scheme defaults to UDP.
@@ -223,7 +224,7 @@ Field notes:
   - `none` or `direct`: Connect directly.
   - `socks5`: Connect through a SOCKS5 proxy. The format is the same as upstream `socks5`.
 
-`download`, `upgrade`, and `http_request` can reference a profile with `args.outbound: oversea`. The legacy `socks5` field remains supported. When both `outbound` and `socks5` are set on the same plugin, `socks5` overrides the profile proxy while the resolver still comes from the outbound profile. `forward` upstreams can also opt in with `outbound: oversea`; local upstream `dial_addr`, `bootstrap`, and `socks5` fields override profile-injected values.
+`download`, `upgrade`, and `http_request` can reference a profile with `args.outbound: oversea`. The legacy `socks5` field remains supported. When both `outbound` and `socks5` are set on the same plugin, `socks5` overrides the profile proxy while the resolver still comes from the outbound profile. `forward` upstreams use `network.outbound.default` when `outbound` is omitted; they can also set `outbound: oversea` to select another profile. Local upstream `dial_addr`, `bootstrap`, and `socks5` fields override profile-injected values.
 
 ### `api`
 
@@ -643,7 +644,9 @@ Common fields:
   - Overrides the port.
 - `outbound`
   - References a profile under `network.outbound.profiles` to inject resolver/proxy defaults for this upstream.
+  - When omitted, `network.outbound.default` is used; without a default, the upstream keeps system resolution/direct dialing.
   - Local `dial_addr`, `bootstrap`, and `socks5` fields take precedence over the profile.
+  - Profile proxying is strict; UDP, DoQ, and DoH3 upstreams do not support profile SOCKS5 proxying.
 - `bootstrap`
   - Bootstrap DNS used to resolve the upstream hostname when `addr` is domain-based. Must be `IP:port`.
 - `bootstrap_version`

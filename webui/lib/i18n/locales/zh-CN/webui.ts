@@ -791,10 +791,10 @@ export const zhCNWebui = {
     workerThreadsPlaceholder: "留空使用系统默认",
     outboundCard: "出站网络",
     outboundCardDesc:
-      "配置 network.outbound profiles，供 HTTP 客户端、升级、下载和 opt-in 上游复用",
+      "配置 network.outbound profiles，供 HTTP 客户端、升级、下载和上游复用",
     defaultOutboundProfile: "默认出站配置",
     defaultOutboundProfileDesc:
-      "未显式选择 outbound 的客户端会使用该 profile；留空则直连并使用系统解析",
+      "未显式选择 outbound 的 HTTP 客户端和上游会使用该 profile；留空则直连并使用系统解析",
     addOutboundProfile: "添加出站配置",
     noOutboundProfiles: "尚未配置出站 profile",
     outboundProfileTitle: "Profile {index}",

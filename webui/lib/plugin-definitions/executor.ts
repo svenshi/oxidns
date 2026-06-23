@@ -152,7 +152,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
             {
               key: "outbound",
               description:
-                "引用 network.outbound.profiles 中的出站配置，为该上游注入 resolver 和 proxy；本地 dial_addr、bootstrap、socks5 优先生效。",
+                "引用 network.outbound.profiles 中的出站配置；留空时使用 network.outbound.default，本地 dial_addr、bootstrap、socks5 优先生效。",
               label: "出站配置",
               type: "select",
               dynamicOptions: "outboundProfiles",
