@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -284,7 +284,19 @@ fn validate_probe_config(config: &UpstreamProbeConfig) -> Result<()> {
             "probe pipeline_rounds must be <= {MAX_PROBE_SAMPLES}"
         )));
     }
+    if pipeline_sample_count(config)? > MAX_PROBE_SAMPLES {
+        return Err(DnsError::config(format!(
+            "probe pipeline_concurrency * pipeline_rounds must be <= {MAX_PROBE_SAMPLES}"
+        )));
+    }
     Ok(())
+}
+
+fn pipeline_sample_count(config: &UpstreamProbeConfig) -> Result<usize> {
+    config
+        .pipeline_concurrency
+        .checked_mul(config.pipeline_rounds)
+        .ok_or_else(|| DnsError::config("probe pipeline sample count overflowed"))
 }
 
 async fn resolve_remote_ip(info: &ConnectionInfo, has_dial_addr: bool) -> ResolutionProbe {
@@ -325,17 +337,38 @@ async fn resolve_remote_ip(info: &ConnectionInfo, has_dial_addr: bool) -> Resolu
         };
     }
 
-    match try_lookup_server_name(&info.server_name) {
-        Ok(ip) => ResolutionProbe {
+    let server_name = info.server_name.clone();
+    match tokio::time::timeout(
+        info.timeout,
+        tokio::task::spawn_blocking(move || try_lookup_server_name(&server_name)),
+    )
+    .await
+    {
+        Ok(Ok(Ok(ip))) => ResolutionProbe {
             ip: Some(ip),
             source: Some("system".to_string()),
             error: None,
             apply_to_connection: info.socks5.is_none(),
         },
-        Err(err) => ResolutionProbe {
+        Ok(Ok(Err(err))) => ResolutionProbe {
             ip: None,
             source: Some("system".to_string()),
             error: Some(err.to_string()),
+            apply_to_connection: false,
+        },
+        Ok(Err(err)) => ResolutionProbe {
+            ip: None,
+            source: Some("system".to_string()),
+            error: Some(format!("system resolver task failed: {err}")),
+            apply_to_connection: false,
+        },
+        Err(_) => ResolutionProbe {
+            ip: None,
+            source: Some("system".to_string()),
+            error: Some(format!(
+                "system resolver timed out after {:?}",
+                info.timeout
+            )),
             apply_to_connection: false,
         },
     }
@@ -436,7 +469,8 @@ where
         );
     }
 
-    let mut results = Vec::with_capacity(config.pipeline_concurrency * config.pipeline_rounds);
+    let capacity = pipeline_sample_count(config).unwrap_or(MAX_PROBE_SAMPLES);
+    let mut results = Vec::with_capacity(capacity);
     let mut stage_errors = Vec::new();
     if uses_single_connection_pipeline(connection_info.connection_type) {
         for round in 0..config.pipeline_rounds {
@@ -505,7 +539,8 @@ where
     let upstream: Arc<dyn Upstream> = Arc::from(UpstreamBuilder::with_connection_info(
         connection_info.clone(),
     )?);
-    let mut results = Vec::with_capacity(config.pipeline_concurrency * config.pipeline_rounds);
+    let capacity = pipeline_sample_count(config).unwrap_or(MAX_PROBE_SAMPLES);
+    let mut results = Vec::with_capacity(capacity);
 
     for round in 0..config.pipeline_rounds {
         let mut futures = FuturesUnordered::new();
@@ -596,11 +631,13 @@ async fn run_pipeline_round(
                 TcpTransportWriter::new(writer),
                 config,
                 round,
-                connection_info.timeout,
+                &deadline,
             )
             .await
         }
-        ConnectionType::DoT => run_dot_pipeline_round(stream, connection_info, config, round).await,
+        ConnectionType::DoT => {
+            run_dot_pipeline_round(stream, connection_info, config, round, &deadline).await
+        }
         _ => Err(DnsError::protocol(
             "pipeline probe reached non-TCP upstream",
         )),
@@ -613,8 +650,8 @@ async fn run_dot_pipeline_round(
     connection_info: &ConnectionInfo,
     config: &UpstreamProbeConfig,
     round: usize,
+    deadline: &QueryDeadline,
 ) -> Result<Vec<ProbeQueryResult>> {
-    let deadline = QueryDeadline::new(connection_info.timeout);
     let tls_stream = connect_tls(
         stream,
         TlsDialOptions::new(
@@ -633,7 +670,7 @@ async fn run_dot_pipeline_round(
     .await?;
     let transport = TcpTransport::new(tls_stream);
     let (reader, writer) = transport.into_split();
-    run_pipeline_round_with_io(reader, writer, config, round, connection_info.timeout).await
+    run_pipeline_round_with_io(reader, writer, config, round, deadline).await
 }
 
 #[cfg(not(feature = "upstream-dot"))]
@@ -642,6 +679,7 @@ async fn run_dot_pipeline_round(
     _connection_info: &ConnectionInfo,
     _config: &UpstreamProbeConfig,
     _round: usize,
+    _deadline: &QueryDeadline,
 ) -> Result<Vec<ProbeQueryResult>> {
     Err(DnsError::plugin(
         "upstream DoT is not compiled into this build; rebuild with --features upstream-dot",
@@ -653,7 +691,7 @@ async fn run_pipeline_round_with_io<R, W>(
     mut writer: TcpTransportWriter<W>,
     config: &UpstreamProbeConfig,
     round: usize,
-    timeout: Duration,
+    deadline: &QueryDeadline,
 ) -> Result<Vec<ProbeQueryResult>>
 where
     R: AsyncRead + Unpin,
@@ -661,13 +699,18 @@ where
 {
     let mut pending = HashMap::with_capacity(config.pipeline_concurrency);
     let mut results = Vec::with_capacity(config.pipeline_concurrency);
+    let mut unexpected_count = 0usize;
+    let max_unexpected = config.pipeline_concurrency;
 
     for index in 0..config.pipeline_concurrency {
         let global_index = round * config.pipeline_concurrency + index;
         let query_id = probe_query_id(round + 1, index);
         let query_name = pipeline_name(&config.qname, round, index)?;
         let request = make_query(query_id, query_name.clone(), config.qtype);
-        writer.write_message(&request).await?;
+        match deadline.run(writer.write_message(&request)).await {
+            DeadlineOutcome::Completed(result) => result?,
+            DeadlineOutcome::Expired => return Err(deadline.timeout_error()),
+        }
         pending.insert(
             query_id,
             PendingQuery {
@@ -679,18 +722,32 @@ where
         );
     }
 
-    let round_deadline = tokio::time::Instant::now() + timeout;
     while !pending.is_empty() {
-        let now = tokio::time::Instant::now();
-        if now >= round_deadline {
+        let Some(remaining) = deadline.remaining() else {
             break;
-        }
-        let remaining = round_deadline.saturating_duration_since(now);
+        };
         match tokio::time::timeout(remaining, reader.read_message()).await {
             Ok(Ok(response)) => {
                 let response_id = response.id();
                 let Some(pending_query) = pending.remove(&response_id) else {
-                    results.push(unexpected_response_result(response));
+                    unexpected_count += 1;
+                    if unexpected_count <= max_unexpected {
+                        results.push(unexpected_response_result(response));
+                    }
+                    if unexpected_count >= max_unexpected {
+                        results.extend(pending.drain().map(|(query_id, pending_query)| {
+                            query_error_result(
+                                pending_query.index,
+                                query_id,
+                                pending_query.query_name,
+                                ERROR_KIND_PROTOCOL,
+                                "too many unexpected pipeline responses".to_string(),
+                                Some(pending_query.sent_at.elapsed().as_millis()),
+                            )
+                        }));
+                        results.sort_by_key(|result| result.index);
+                        return Ok(results);
+                    }
                     continue;
                 };
                 results.push(result_from_response(
@@ -1092,6 +1149,7 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
@@ -1103,6 +1161,7 @@ mod tests {
         Reverse,
         DropPipelined,
         SwapQuestions,
+        UnexpectedFlood,
     }
 
     fn make_upstream_config(addr: String, timeout: Duration) -> UpstreamConfig {
@@ -1204,6 +1263,19 @@ mod tests {
                 requests.into_iter().map(response_for_request).collect()
             }
             FakeBehavior::DropPipelined => requests.into_iter().map(response_for_request).collect(),
+            FakeBehavior::UnexpectedFlood if requests.len() > 1 => {
+                let question = requests
+                    .first()
+                    .and_then(Message::first_question)
+                    .expect("request should have question")
+                    .clone();
+                (0..requests.len().saturating_mul(4))
+                    .map(|index| response_with_question(0x7000 + index as u16, question.clone()))
+                    .collect()
+            }
+            FakeBehavior::UnexpectedFlood => {
+                requests.into_iter().map(response_for_request).collect()
+            }
             FakeBehavior::SwapQuestions if requests.len() > 1 => {
                 let questions = requests
                     .iter()
@@ -1296,6 +1368,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn probe_pipeline_caps_unexpected_responses() {
+        let addr = start_fake_tcp_server(FakeBehavior::UnexpectedFlood).await;
+
+        let report = probe_fake_server(addr, Duration::from_millis(500)).await;
+
+        assert_eq!(report.serial.verdict, ProbeVerdict::Reachable);
+        assert_eq!(report.pipeline.verdict, ProbeVerdict::Unstable);
+        assert_eq!(report.pipeline.mismatch_count, 4);
+        assert_eq!(report.pipeline.error_count, 4);
+        assert_eq!(report.pipeline.total_queries, 8);
+        assert!(
+            report
+                .pipeline
+                .errors
+                .iter()
+                .any(|error| error == "too many unexpected pipeline responses")
+        );
+    }
+
+    #[tokio::test]
     async fn probe_udp_concurrency_supported() {
         let addr = start_fake_udp_server().await;
 
@@ -1343,6 +1435,27 @@ mod tests {
     #[test]
     fn pipeline_verdict_marks_mismatch_unstable() {
         assert_eq!(pipeline_verdict(4, 3, 0, 1), ProbeVerdict::Unstable);
+    }
+
+    #[test]
+    fn validate_probe_config_rejects_excessive_pipeline_sample_product() {
+        let config = UpstreamProbeConfig {
+            upstream: make_upstream_config(
+                "tcp://127.0.0.1:53".to_string(),
+                Duration::from_millis(10),
+            ),
+            qname: "example.com.".to_string(),
+            qtype: RecordType::A,
+            serial_samples: 1,
+            pipeline_concurrency: MAX_PROBE_SAMPLES,
+            pipeline_rounds: 2,
+        };
+
+        let error = validate_probe_config(&config)
+            .expect_err("excessive pipeline sample product should fail")
+            .to_string();
+
+        assert!(error.contains("pipeline_concurrency * pipeline_rounds"));
     }
 
     #[test]

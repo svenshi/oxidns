@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde_yaml_ng::{Mapping, Value};
 
 use crate::cli::{ProbeCommand, ProbeOptions, ProbeUpstreamOptions};
 use crate::config::env_expand;
@@ -105,40 +105,57 @@ fn read_probe_outbound_config(config_path: &Path) -> Result<NetworkOutboundConfi
             err
         ))
     })?;
-    let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&string).map_err(|err| {
+    let value: Value = serde_yaml_ng::from_str(&string).map_err(|err| {
         DnsError::config(format!(
             "failed to parse probe config {}: {}",
             config_path.display(),
             err
         ))
     })?;
-    env_expand::expand_env_in_value(&mut value).map_err(|err| {
+    let mut outbound_value = extract_probe_outbound_value(value).map_err(|err| {
         DnsError::config(format!(
-            "env expansion failed in probe config {}: {}",
+            "failed to read network.outbound from probe config {}: {}",
             config_path.display(),
             err
         ))
     })?;
-    let config: ProbeRuntimeConfig = serde_yaml_ng::from_value(value).map_err(|err| {
+    env_expand::expand_env_in_value(&mut outbound_value).map_err(|err| {
+        DnsError::config(format!(
+            "env expansion failed in probe network.outbound config {}: {}",
+            config_path.display(),
+            err
+        ))
+    })?;
+    serde_yaml_ng::from_value(outbound_value).map_err(|err| {
         DnsError::config(format!(
             "failed to deserialize network.outbound from probe config {}: {}",
             config_path.display(),
             err
         ))
-    })?;
-    Ok(config.network.outbound)
+    })
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct ProbeRuntimeConfig {
-    #[serde(default)]
-    network: ProbeNetworkConfig,
+fn extract_probe_outbound_value(value: Value) -> std::result::Result<Value, &'static str> {
+    let mut root = match value {
+        Value::Mapping(root) => root,
+        Value::Null => return Ok(empty_mapping_value()),
+        _ => return Err("root must be a mapping"),
+    };
+    let Some(network) = root.remove("network") else {
+        return Ok(empty_mapping_value());
+    };
+    let mut network = match network {
+        Value::Mapping(network) => network,
+        Value::Null => return Ok(empty_mapping_value()),
+        _ => return Err("network must be a mapping"),
+    };
+    Ok(network
+        .remove("outbound")
+        .unwrap_or_else(empty_mapping_value))
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct ProbeNetworkConfig {
-    #[serde(default)]
-    outbound: NetworkOutboundConfig,
+fn empty_mapping_value() -> Value {
+    Value::Mapping(Mapping::new())
 }
 
 fn print_human_report(report: &UpstreamProbeReport) {
@@ -377,6 +394,8 @@ network:
 plugins:
   - tag: ""
     type: ""
+    args:
+      path: ${OXIDNS_PROBE_REVIEW_UNSET_DO_NOT_DEFINE}
 "#,
         )
         .expect("config should write");
