@@ -267,6 +267,12 @@ struct ResolutionProbe {
     apply_to_connection: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlockingProbeError {
+    TimedOut,
+    Canceled,
+}
+
 fn validate_probe_config(config: &UpstreamProbeConfig) -> Result<()> {
     if config.serial_samples == 0 {
         return Err(DnsError::config(
@@ -332,22 +338,36 @@ where
     F: FnOnce(String) -> Option<Socks5Opt> + Send + 'static,
 {
     let raw_owned = raw.to_string();
-    match tokio::time::timeout(
-        timeout,
-        tokio::task::spawn_blocking(move || parse(raw_owned)),
-    )
-    .await
-    {
-        Ok(Ok(Some(socks5))) => Ok(socks5.to_resolved_config_string()),
-        Ok(Ok(None)) => Err(DnsError::plugin(format!(
+    match run_probe_blocking_with_timeout(timeout, move || parse(raw_owned)).await {
+        Ok(Some(socks5)) => Ok(socks5.to_resolved_config_string()),
+        Ok(None) => Err(DnsError::plugin(format!(
             "upstream has invalid socks5 proxy '{raw}'"
         ))),
-        Ok(Err(err)) => Err(DnsError::plugin(format!(
-            "SOCKS5 proxy resolver task failed: {err}"
-        ))),
-        Err(_) => Err(DnsError::plugin(format!(
+        Err(BlockingProbeError::Canceled) => Err(DnsError::plugin(
+            "SOCKS5 proxy resolver task was canceled".to_string(),
+        )),
+        Err(BlockingProbeError::TimedOut) => Err(DnsError::plugin(format!(
             "SOCKS5 proxy resolution timed out after {timeout:?}"
         ))),
+    }
+}
+
+async fn run_probe_blocking_with_timeout<T, F>(
+    timeout: Duration,
+    operation: F,
+) -> std::result::Result<T, BlockingProbeError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(operation());
+    });
+    match tokio::time::timeout(timeout, receiver).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(_)) => Err(BlockingProbeError::Canceled),
+        Err(_) => Err(BlockingProbeError::TimedOut),
     }
 }
 
@@ -390,31 +410,30 @@ async fn resolve_remote_ip(info: &ConnectionInfo, has_dial_addr: bool) -> Resolu
     }
 
     let server_name = info.server_name.clone();
-    match tokio::time::timeout(
-        info.timeout,
-        tokio::task::spawn_blocking(move || try_lookup_server_name(&server_name)),
-    )
+    match run_probe_blocking_with_timeout(info.timeout, move || {
+        try_lookup_server_name(&server_name)
+    })
     .await
     {
-        Ok(Ok(Ok(ip))) => ResolutionProbe {
+        Ok(Ok(ip)) => ResolutionProbe {
             ip: Some(ip),
             source: Some("system".to_string()),
             error: None,
             apply_to_connection: info.socks5.is_none(),
         },
-        Ok(Ok(Err(err))) => ResolutionProbe {
+        Ok(Err(err)) => ResolutionProbe {
             ip: None,
             source: Some("system".to_string()),
             error: Some(err.to_string()),
             apply_to_connection: false,
         },
-        Ok(Err(err)) => ResolutionProbe {
+        Err(BlockingProbeError::Canceled) => ResolutionProbe {
             ip: None,
             source: Some("system".to_string()),
-            error: Some(format!("system resolver task failed: {err}")),
+            error: Some("system resolver task was canceled".to_string()),
             apply_to_connection: false,
         },
-        Err(_) => ResolutionProbe {
+        Err(BlockingProbeError::TimedOut) => ResolutionProbe {
             ip: None,
             source: Some("system".to_string()),
             error: Some(format!(
@@ -1176,12 +1195,21 @@ fn parse_name(raw: &str) -> Result<Name> {
 
 fn pipeline_name(base: &str, round: usize, index: usize) -> Result<Name> {
     let base = base.trim_end_matches('.');
+    let fallback = if base.is_empty() {
+        None
+    } else {
+        Some(parse_name(format!("{base}.").as_str())?)
+    };
     let raw = if base.is_empty() {
         format!("oxidns-probe-{round}-{index}.")
     } else {
         format!("oxidns-probe-{round}-{index}.{base}.")
     };
-    parse_name(&raw)
+    match parse_name(&raw) {
+        Ok(name) => Ok(name),
+        Err(_) => fallback
+            .ok_or_else(|| DnsError::protocol(format!("invalid probe pipeline qname '{}'", raw))),
+    }
 }
 
 fn probe_query_id(round: usize, index: usize) -> u16 {
@@ -1519,6 +1547,29 @@ mod tests {
     #[test]
     fn parse_record_type_accepts_lowercase() {
         assert_eq!(parse_record_type("aaaa").unwrap(), RecordType::AAAA);
+    }
+
+    #[test]
+    fn pipeline_name_uses_synthetic_prefix_when_it_fits() {
+        let name = pipeline_name("example.com.", 1, 2).expect("pipeline name should parse");
+
+        assert_eq!(name.to_fqdn(), "oxidns-probe-1-2.example.com.");
+    }
+
+    #[test]
+    fn pipeline_name_falls_back_to_base_when_prefix_exceeds_dns_limit() {
+        let base = format!(
+            "{}.{}.{}.{}.",
+            "a".repeat(63),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(61)
+        );
+        parse_name(&base).expect("base qname should be valid");
+
+        let name = pipeline_name(&base, 0, 0).expect("fallback name should parse");
+
+        assert_eq!(name.to_fqdn(), base);
     }
 
     #[test]

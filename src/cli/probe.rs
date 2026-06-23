@@ -3,15 +3,20 @@
 
 //! CLI support for runtime diagnostics.
 
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::RecvTimeoutError;
+use std::time::Duration;
 
 use serde_yaml_ng::{Mapping, Value};
 
 use crate::cli::{ProbeCommand, ProbeOptions, ProbeUpstreamOptions};
 use crate::config::env_expand;
-use crate::config::types::NetworkOutboundConfig;
+use crate::config::types::{NetworkOutboundConfig, OutboundProxyConfig};
 use crate::infra::error::{DnsError, Result};
+use crate::infra::network::dial::try_lookup_server_name;
 use crate::infra::network::outbound;
+use crate::infra::network::proxy::parse_socks5_opt_with_resolver;
 use crate::infra::network::upstream::UpstreamConfig;
 use crate::infra::network::upstream::probe::{
     ProbeProgress, ProbeStageReport, ProbeVerdict, UpstreamProbeConfig, UpstreamProbeReport,
@@ -26,7 +31,7 @@ pub fn run(options: ProbeOptions) -> Result<()> {
 
 fn run_upstream(options: ProbeUpstreamOptions) -> Result<()> {
     prepare_working_dir(options.working_dir.as_ref())?;
-    prepare_outbound(options.config.as_ref())?;
+    prepare_outbound(options.config.as_ref(), options.timeout)?;
 
     let qtype = parse_record_type(&options.qtype)?;
     let probe_config = UpstreamProbeConfig {
@@ -87,9 +92,9 @@ fn prepare_working_dir(working_dir: Option<&PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn prepare_outbound(config_path: Option<&PathBuf>) -> Result<()> {
+fn prepare_outbound(config_path: Option<&PathBuf>, timeout: Duration) -> Result<()> {
     if let Some(config_path) = config_path {
-        let outbound_config = read_probe_outbound_config(config_path)?;
+        let outbound_config = read_probe_outbound_config(config_path, timeout)?;
         outbound::install_global(&outbound_config)?;
     } else {
         outbound::clear_global();
@@ -97,7 +102,10 @@ fn prepare_outbound(config_path: Option<&PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn read_probe_outbound_config(config_path: &Path) -> Result<NetworkOutboundConfig> {
+fn read_probe_outbound_config(
+    config_path: &Path,
+    timeout: Duration,
+) -> Result<NetworkOutboundConfig> {
     let string = std::fs::read_to_string(config_path).map_err(|err| {
         DnsError::config(format!(
             "failed to read probe config {}: {}",
@@ -126,13 +134,71 @@ fn read_probe_outbound_config(config_path: &Path) -> Result<NetworkOutboundConfi
             err
         ))
     })?;
-    serde_yaml_ng::from_value(outbound_value).map_err(|err| {
+    let mut config: NetworkOutboundConfig =
+        serde_yaml_ng::from_value(outbound_value).map_err(|err| {
+            DnsError::config(format!(
+                "failed to deserialize network.outbound from probe config {}: {}",
+                config_path.display(),
+                err
+            ))
+        })?;
+    config.validate().map_err(|err| {
         DnsError::config(format!(
-            "failed to deserialize network.outbound from probe config {}: {}",
+            "invalid network.outbound in probe config {}: {}",
             config_path.display(),
             err
         ))
-    })
+    })?;
+    normalize_probe_outbound_proxies(&mut config, timeout)?;
+    Ok(config)
+}
+
+fn normalize_probe_outbound_proxies(
+    config: &mut NetworkOutboundConfig,
+    timeout: Duration,
+) -> Result<()> {
+    normalize_probe_outbound_proxies_with(config, timeout, lookup_host_with_timeout)
+}
+
+fn normalize_probe_outbound_proxies_with<F>(
+    config: &mut NetworkOutboundConfig,
+    timeout: Duration,
+    mut resolve_host: F,
+) -> Result<()>
+where
+    F: FnMut(&str, Duration) -> Result<IpAddr>,
+{
+    for (profile_name, profile) in &mut config.profiles {
+        let Some(OutboundProxyConfig::Socks5 { socks5 }) = &mut profile.proxy else {
+            continue;
+        };
+        let resolved = parse_socks5_opt_with_resolver(socks5, |host| resolve_host(host, timeout))
+            .ok_or_else(|| {
+            DnsError::config(format!(
+                "network.outbound profile '{}' has invalid socks5 proxy '{}'",
+                profile_name, socks5
+            ))
+        })?;
+        *socks5 = resolved.to_resolved_config_string();
+    }
+    Ok(())
+}
+
+fn lookup_host_with_timeout(host: &str, timeout: Duration) -> Result<IpAddr> {
+    let host = host.to_string();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(try_lookup_server_name(&host));
+    });
+    match receiver.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => Err(DnsError::plugin(format!(
+            "system resolver timed out after {timeout:?}"
+        ))),
+        Err(RecvTimeoutError::Disconnected) => Err(DnsError::plugin(
+            "system resolver task was canceled".to_string(),
+        )),
+    }
 }
 
 fn extract_probe_outbound_value(value: Value) -> std::result::Result<Value, &'static str> {
@@ -370,9 +436,12 @@ fn verdict_label(verdict: ProbeVerdict) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::net::Ipv4Addr;
     use std::time::Duration;
 
     use super::*;
+    use crate::config::types::OutboundProfileConfig;
     use crate::infra::network::outbound::TestGlobalGuard;
     use crate::infra::network::upstream::ConnectionInfo;
 
@@ -400,7 +469,8 @@ plugins:
         )
         .expect("config should write");
 
-        prepare_outbound(Some(&config_path)).expect("outbound-only config should load");
+        prepare_outbound(Some(&config_path), Duration::from_secs(1))
+            .expect("outbound-only config should load");
 
         let info = ConnectionInfo::try_from(UpstreamConfig {
             tag: None,
@@ -430,5 +500,67 @@ plugins:
                 .profile(),
             "remote"
         );
+    }
+
+    #[test]
+    fn read_probe_outbound_config_validates_network_outbound() {
+        let tmp = tempfile::TempDir::new().expect("temp dir should create");
+        let config_path = tmp.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+network:
+  outbound:
+    profiles:
+      remote:
+        resolver:
+          nameservers:
+            - addr: tls://dns.google:853
+"#,
+        )
+        .expect("config should write");
+
+        let error = read_probe_outbound_config(&config_path, Duration::from_millis(10))
+            .expect_err("invalid outbound config should fail validation")
+            .to_string();
+
+        assert!(error.contains("requires dial_addr"), "{error}");
+    }
+
+    #[test]
+    fn normalize_probe_outbound_proxies_resolves_profile_proxy_hostname() {
+        let mut config = NetworkOutboundConfig {
+            default: None,
+            profiles: HashMap::from([(
+                "remote".to_string(),
+                OutboundProfileConfig {
+                    resolver: None,
+                    proxy: Some(OutboundProxyConfig::Socks5 {
+                        socks5: "user:pass@proxy.example.com:1080".to_string(),
+                    }),
+                },
+            )]),
+        };
+
+        normalize_probe_outbound_proxies_with(
+            &mut config,
+            Duration::from_millis(10),
+            |host, timeout| {
+                assert_eq!(host, "proxy.example.com");
+                assert_eq!(timeout, Duration::from_millis(10));
+                Ok(IpAddr::from(Ipv4Addr::LOCALHOST))
+            },
+        )
+        .expect("proxy should normalize");
+
+        let proxy = config
+            .profiles
+            .get("remote")
+            .and_then(|profile| profile.proxy.as_ref())
+            .expect("profile proxy should exist");
+        let OutboundProxyConfig::Socks5 { socks5 } = proxy else {
+            panic!("profile proxy should remain socks5");
+        };
+        assert_eq!(socks5, "user:pass@127.0.0.1:1080");
     }
 }
