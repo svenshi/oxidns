@@ -236,7 +236,7 @@ where
     let pipeline = run_pipeline_probe(
         &mut connection_info,
         &config,
-        serial.success_count > 0,
+        serial_baseline_is_clean(&serial),
         &mut progress,
     )
     .await;
@@ -410,7 +410,7 @@ async fn resolve_remote_ip(info: &ConnectionInfo, has_dial_addr: bool) -> Resolu
         };
     }
 
-    if info.socks5.is_some() {
+    if should_delegate_name_resolution_to_socks5(info) {
         return ResolutionProbe {
             ip: None,
             source: Some("proxy".to_string()),
@@ -453,6 +453,12 @@ async fn resolve_remote_ip(info: &ConnectionInfo, has_dial_addr: bool) -> Resolu
             apply_to_connection: false,
         },
     }
+}
+
+fn should_delegate_name_resolution_to_socks5(info: &ConnectionInfo) -> bool {
+    // Match upstream dialing: SOCKS5 receives the domain only when no configured
+    // resolver or static remote IP can provide a concrete connection address.
+    info.remote_ip.is_none() && info.bootstrap.is_none() && info.socks5.is_some()
 }
 
 fn resolution_blocks_direct_probe(info: &ConnectionInfo, resolution: &ResolutionProbe) -> bool {
@@ -560,10 +566,14 @@ where
     ProbeStageReport::from_results(ProbeVerdict::Unreachable, results)
 }
 
+fn serial_baseline_is_clean(serial: &ProbeStageReport) -> bool {
+    serial.total_queries > 0 && serial.success_count == serial.total_queries
+}
+
 async fn run_pipeline_probe<F>(
     connection_info: &mut ConnectionInfo,
     config: &UpstreamProbeConfig,
-    serial_reachable: bool,
+    serial_baseline_clean: bool,
     progress: &mut F,
 ) -> PipelineProbeReport
 where
@@ -581,11 +591,12 @@ where
         rounds: config.pipeline_rounds,
     });
 
-    if !serial_reachable {
+    if !serial_baseline_clean {
         return PipelineProbeReport::inconclusive(
             config.pipeline_concurrency,
             config.pipeline_rounds,
-            "serial baseline failed; pipeline behavior cannot be isolated".to_string(),
+            "serial baseline was not fully successful; concurrency behavior cannot be isolated"
+                .to_string(),
         );
     }
 
@@ -1626,6 +1637,71 @@ mod tests {
         assert_eq!(report.pipeline.verdict, ProbeVerdict::Inconclusive);
     }
 
+    #[tokio::test]
+    async fn probe_concurrency_is_inconclusive_when_serial_is_partial() {
+        let config = UpstreamProbeConfig {
+            upstream: make_upstream_config(
+                "tcp://127.0.0.1:9".to_string(),
+                Duration::from_millis(10),
+            ),
+            qname: "example.com.".to_string(),
+            qtype: RecordType::A,
+            serial_samples: 2,
+            pipeline_concurrency: 2,
+            pipeline_rounds: 1,
+        };
+        let serial = ProbeStageReport::from_results(
+            ProbeVerdict::Reachable,
+            vec![
+                ProbeQueryResult {
+                    index: 0,
+                    query_name: "example.com.".to_string(),
+                    query_id: 1,
+                    ok: true,
+                    latency_ms: Some(1),
+                    response_id: Some(1),
+                    rcode: Some("NoError".to_string()),
+                    answer_count: Some(1),
+                    authoritative: Some(false),
+                    truncated: Some(false),
+                    recursion_available: Some(true),
+                    error_kind: None,
+                    error: None,
+                },
+                query_error_result(
+                    1,
+                    2,
+                    "example.com.".to_string(),
+                    ERROR_KIND_TIMEOUT,
+                    "timed out waiting for serial response".to_string(),
+                    Some(10),
+                ),
+            ],
+        );
+        let mut connection_info =
+            ConnectionInfo::with_addr("tcp://127.0.0.1:9").expect("addr should parse");
+        let mut progress = |_| {};
+
+        let pipeline = run_pipeline_probe(
+            &mut connection_info,
+            &config,
+            serial_baseline_is_clean(&serial),
+            &mut progress,
+        )
+        .await;
+
+        assert_eq!(serial.success_count, 1);
+        assert!(!serial_baseline_is_clean(&serial));
+        assert_eq!(pipeline.verdict, ProbeVerdict::Inconclusive);
+        assert_eq!(pipeline.total_queries, 0);
+        assert!(
+            pipeline
+                .errors
+                .iter()
+                .any(|error| error.contains("serial baseline was not fully successful"))
+        );
+    }
+
     #[test]
     fn parse_record_type_accepts_lowercase() {
         assert_eq!(parse_record_type("aaaa").unwrap(), RecordType::AAAA);
@@ -1709,6 +1785,32 @@ mod tests {
         assert_eq!(resolution.source.as_deref(), Some("proxy"));
         assert_eq!(resolution.error, None);
         assert!(!resolution.apply_to_connection);
+    }
+
+    #[tokio::test]
+    async fn resolve_remote_ip_prefers_bootstrap_over_proxy_resolution() {
+        let answer_ip = Ipv4Addr::new(192, 0, 2, 54);
+        let resolver_addr = start_fake_bootstrap_resolver(answer_ip).await;
+        let resolver = Arc::new(
+            NameResolver::new(vec![resolver_addr.to_string()], Some(4))
+                .expect("bootstrap resolver should build"),
+        );
+        let mut info =
+            ConnectionInfo::with_addr("tcp://dns.example.invalid:53").expect("addr should parse");
+        info.bootstrap = Some(resolver);
+        info.socks5 = Some(Socks5Opt {
+            username: None,
+            password: None,
+            socket_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1080)),
+        });
+        info.timeout = Duration::from_millis(500);
+
+        let resolution = resolve_remote_ip(&info, false).await;
+
+        assert_eq!(resolution.ip, Some(IpAddr::V4(answer_ip)));
+        assert_eq!(resolution.source.as_deref(), Some("bootstrap"));
+        assert_eq!(resolution.error, None);
+        assert!(resolution.apply_to_connection);
     }
 
     #[tokio::test]
