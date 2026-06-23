@@ -553,7 +553,7 @@ mod tests {
 
         let after = network_metrics::snapshot_for_profile_for_tests("oversea");
         assert!(
-            after.resolver_cache_hit_total >= before.resolver_cache_hit_total + 1,
+            after.resolver_cache_hit_total > before.resolver_cache_hit_total,
             "expected resolver cache hit metric to increase: before={before:?}, after={after:?}"
         );
         assert!(
@@ -565,7 +565,7 @@ mod tests {
             "expected resolver refresh metric to increase: before={before:?}, after={after:?}"
         );
         assert!(
-            after.resolver_error_total >= before.resolver_error_total + 1,
+            after.resolver_error_total > before.resolver_error_total,
             "expected resolver error metric to increase: before={before:?}, after={after:?}"
         );
     }

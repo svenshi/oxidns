@@ -825,24 +825,21 @@ mod tests {
         let after = network_metrics::snapshot_for_profile_for_tests(OUTBOUND_PROFILE_LOCAL);
         assert!(
             after.upstream_pool_refresh_total(NetworkProtocol::Udp, PoolRefreshReason::Init)
-                >= before
-                    .upstream_pool_refresh_total(NetworkProtocol::Udp, PoolRefreshReason::Init)
-                    + 1,
+                > before.upstream_pool_refresh_total(NetworkProtocol::Udp, PoolRefreshReason::Init),
             "expected init pool refresh metric to increase: before={before:?}, after={after:?}"
         );
         assert!(
             after.upstream_pool_refresh_total(NetworkProtocol::Udp, PoolRefreshReason::TtlOnly)
-                >= before
-                    .upstream_pool_refresh_total(NetworkProtocol::Udp, PoolRefreshReason::TtlOnly)
-                    + 1,
+                > before
+                    .upstream_pool_refresh_total(NetworkProtocol::Udp, PoolRefreshReason::TtlOnly),
             "expected ttl_only pool refresh metric to increase: before={before:?}, after={after:?}"
         );
         assert!(
             after.upstream_pool_refresh_total(NetworkProtocol::Udp, PoolRefreshReason::IpChanged)
-                >= before.upstream_pool_refresh_total(
+                > before.upstream_pool_refresh_total(
                     NetworkProtocol::Udp,
                     PoolRefreshReason::IpChanged
-                ) + 1,
+                ),
             "expected ip_changed pool refresh metric to increase: before={before:?}, after={after:?}"
         );
     }
