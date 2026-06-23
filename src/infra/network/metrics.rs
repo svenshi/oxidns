@@ -420,7 +420,7 @@ mod tests {
         reset_metrics_for_tests();
         init().expect("network metrics should register");
 
-        let profile = profile_scope("oversea");
+        let profile = profile_scope("remote");
         resolver_cache_hit(&profile);
         resolver_cache_miss(&profile);
         let started_at_ms = AppClock::elapsed_millis();
@@ -439,7 +439,7 @@ mod tests {
         assert!(output.contains("network_resolver_refresh_total"));
         assert!(output.contains("network_resolver_error_total"));
         assert!(output.contains("network_upstream_pool_refresh_total"));
-        assert!(output.contains("outbound_profile=\"oversea\""));
-        assert!(output.contains("outbound_profile=\"oversea\",protocol=\"udp\",reason=\"init\""));
+        assert!(output.contains("outbound_profile=\"remote\""));
+        assert!(output.contains("outbound_profile=\"remote\",protocol=\"udp\",reason=\"init\""));
     }
 }

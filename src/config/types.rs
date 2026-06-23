@@ -880,9 +880,9 @@ mod tests {
             r#"
 network:
   outbound:
-    default: oversea
+    default: remote
     profiles:
-      oversea:
+      remote:
         resolver:
           nameservers:
             - addr: 1.1.1.1:53
@@ -906,9 +906,9 @@ plugins:
             r#"
 network:
   outbound:
-    default: " oversea "
+    default: " remote "
     profiles:
-      oversea:
+      remote:
         resolver: system
 plugins:
   - tag: ok
@@ -930,7 +930,7 @@ plugins:
 network:
   outbound:
     profiles:
-      " oversea ":
+      " remote ":
         resolver: system
 plugins:
   - tag: ok
@@ -952,7 +952,7 @@ plugins:
 network:
   outbound:
     profiles:
-      oversea:
+      remote:
         resolver:
           nameservers:
             - addr: tcp://1.1.1.1:53
@@ -977,7 +977,7 @@ plugins:
 network:
   outbound:
     profiles:
-      oversea:
+      remote:
         resolver:
           nameservers:
             - addr: udp://[2001:4860:4860::8888]:53
@@ -998,7 +998,7 @@ plugins:
 network:
   outbound:
     profiles:
-      oversea:
+      remote:
         resolver:
           nameservers:
             - addr: udp://2001:4860:4860::8888:53
@@ -1022,7 +1022,7 @@ plugins:
 network:
   outbound:
     profiles:
-      oversea:
+      remote:
         resolver:
           bootstrap:
             - 1.1.1.1:53
@@ -1043,7 +1043,7 @@ plugins:
 network:
   outbound:
     profiles:
-      oversea:
+      remote:
         resolver:
           nameservers:
             - addr: tls://dns.google:853
@@ -1067,7 +1067,7 @@ plugins:
 network:
   outbound:
     profiles:
-      oversea:
+      remote:
         resolver:
           nameservers:
             - addr: doq://94.140.14.14:853
@@ -1094,7 +1094,7 @@ plugins:
 network:
   outbound:
     profiles:
-      oversea:
+      remote:
         resolver:
           nameservers:
             - addr: ftp://1.1.1.1:53
@@ -1119,7 +1119,7 @@ plugins:
 network:
   outbound:
     profiles:
-      oversea:
+      remote:
         resolver:
           nameservers:
             - addr: tls://1.1.1.1:853
@@ -1144,7 +1144,7 @@ plugins:
 network:
   outbound:
     profiles:
-      oversea:
+      remote:
         resolver:
           nameservers:
             - addr: https://1.1.1.1/dns-query
@@ -1169,7 +1169,7 @@ plugins:
 network:
   outbound:
     profiles:
-      oversea:
+      remote:
         resolver:
           nameservers:
             - addr: doq://94.140.14.14:853
@@ -1194,7 +1194,7 @@ plugins:
 network:
   outbound:
     profiles:
-      oversea:
+      remote:
         resolver:
           nameservers:
             - addr: h3://1.1.1.1/dns-query
@@ -1218,7 +1218,7 @@ plugins:
 network:
   outbound:
     profiles:
-      oversea:
+      remote:
         resolver:
           nameservers:
             - addr: 1.1.1.1:53
@@ -1243,7 +1243,7 @@ plugins:
 network:
   outbound:
     profiles:
-      oversea:
+      remote:
         proxy:
           socks5: user:pass@proxy.example.com:1080
 plugins:
@@ -1263,7 +1263,7 @@ plugins:
 network:
   outbound:
     profiles:
-      oversea:
+      remote:
         proxy:
           socks5: 127.0.0.1
 plugins:

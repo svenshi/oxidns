@@ -632,7 +632,7 @@ api:
 network:
   outbound:
     profiles:
-      oversea:
+      remote:
         resolver:
           nameservers:
             - addr: tls://dns.google:853

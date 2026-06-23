@@ -39,6 +39,21 @@ pub struct Socks5Opt {
     pub(crate) socket_addr: SocketAddr,
 }
 
+impl Socks5Opt {
+    pub(crate) fn to_resolved_config_string(&self) -> String {
+        let host = match self.socket_addr.ip() {
+            IpAddr::V4(ip) => ip.to_string(),
+            IpAddr::V6(ip) => format!("[{ip}]"),
+        };
+        match (self.username.as_deref(), self.password.as_deref()) {
+            (Some(username), Some(password)) => {
+                format!("{username}:{password}@{host}:{}", self.socket_addr.port())
+            }
+            _ => format!("{host}:{}", self.socket_addr.port()),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Socks5Parts {
     username: Option<String>,

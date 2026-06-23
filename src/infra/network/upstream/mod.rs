@@ -14,6 +14,7 @@ mod config;
 mod conn;
 mod pool;
 mod pooled;
+pub mod probe;
 mod traits;
 
 pub use builder::UpstreamBuilder;

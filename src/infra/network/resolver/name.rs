@@ -510,8 +510,8 @@ mod tests {
     #[tokio::test]
     async fn resolver_metrics_record_hit_miss_refresh_and_error() {
         start_clock();
-        let profile = network_metrics::profile_scope("oversea");
-        let before = network_metrics::snapshot_for_profile_for_tests("oversea");
+        let profile = network_metrics::profile_scope("remote");
+        let before = network_metrics::snapshot_for_profile_for_tests("remote");
         let client = Arc::new(FakeClient::new(
             "fake",
             vec![
@@ -551,7 +551,7 @@ mod tests {
         assert_eq!(second, first);
         assert!(err.to_string().contains("boom"));
 
-        let after = network_metrics::snapshot_for_profile_for_tests("oversea");
+        let after = network_metrics::snapshot_for_profile_for_tests("remote");
         assert!(
             after.resolver_cache_hit_total > before.resolver_cache_hit_total,
             "expected resolver cache hit metric to increase: before={before:?}, after={after:?}"

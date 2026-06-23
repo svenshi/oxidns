@@ -159,7 +159,7 @@ fn install_test_outbound_config() {
     let config = NetworkOutboundConfig {
         default: None,
         profiles: HashMap::from([(
-            "oversea".to_string(),
+            "remote".to_string(),
             OutboundProfileConfig {
                 resolver: Some(OutboundResolverConfig::Nameservers(
                     OutboundResolverDetailedConfig {
@@ -183,9 +183,9 @@ fn install_test_outbound_config() {
 
 fn install_test_default_outbound_config() {
     let config = NetworkOutboundConfig {
-        default: Some("oversea".to_string()),
+        default: Some("remote".to_string()),
         profiles: HashMap::from([(
-            "oversea".to_string(),
+            "remote".to_string(),
             OutboundProfileConfig {
                 resolver: Some(OutboundResolverConfig::Nameservers(
                     OutboundResolverDetailedConfig {
@@ -211,7 +211,7 @@ fn install_test_outbound_resolver_only_config() {
     let config = NetworkOutboundConfig {
         default: None,
         profiles: HashMap::from([(
-            "oversea".to_string(),
+            "remote".to_string(),
             OutboundProfileConfig {
                 resolver: Some(OutboundResolverConfig::Nameservers(
                     OutboundResolverDetailedConfig {
@@ -233,9 +233,9 @@ fn install_test_outbound_resolver_only_config() {
 
 fn install_test_default_outbound_resolver_only_config() {
     let config = NetworkOutboundConfig {
-        default: Some("oversea".to_string()),
+        default: Some("remote".to_string()),
         profiles: HashMap::from([(
-            "oversea".to_string(),
+            "remote".to_string(),
             OutboundProfileConfig {
                 resolver: Some(OutboundResolverConfig::Nameservers(
                     OutboundResolverDetailedConfig {
@@ -323,7 +323,7 @@ fn test_connection_info_uses_outbound_resolver_for_domain() {
     install_test_outbound_resolver_only_config();
 
     let mut cfg = make_upstream_config("tls://dns.example.invalid:853");
-    cfg.outbound = Some("oversea".to_string());
+    cfg.outbound = Some("remote".to_string());
     let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
 
     assert!(info.remote_ip.is_none());
@@ -334,7 +334,7 @@ fn test_connection_info_uses_outbound_resolver_for_domain() {
             .as_ref()
             .expect("outbound resolver should be injected")
             .profile(),
-        "oversea"
+        "remote"
     );
     outbound::clear_global();
 }
@@ -372,7 +372,7 @@ fn test_connection_info_uses_default_outbound_resolver_for_domain() {
             .as_ref()
             .expect("default outbound resolver should be injected")
             .profile(),
-        "oversea"
+        "remote"
     );
     outbound::clear_global();
 }
@@ -385,7 +385,7 @@ async fn test_udp_upstream_with_outbound_resolver_keeps_truncated_fallback() {
     install_test_outbound_resolver_only_config();
 
     let mut cfg = make_upstream_config("udp://dns.example.invalid:53");
-    cfg.outbound = Some("oversea".to_string());
+    cfg.outbound = Some("remote".to_string());
     let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
     let upstream = UpstreamBuilder::with_connection_info(info).expect("upstream should build");
 
@@ -404,7 +404,7 @@ fn test_connection_info_dial_addr_takes_precedence_over_outbound_resolver() {
     install_test_outbound_config();
 
     let mut cfg = make_upstream_config("tls://dns.example.invalid:853");
-    cfg.outbound = Some("oversea".to_string());
+    cfg.outbound = Some("remote".to_string());
     cfg.dial_addr = Some(IpAddr::from_str("203.0.113.53").unwrap());
     let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
 
@@ -424,7 +424,7 @@ fn test_connection_info_uses_outbound_proxy_when_local_socks5_absent() {
     install_test_outbound_config();
 
     let mut cfg = make_upstream_config("tcp://1.1.1.1:53");
-    cfg.outbound = Some("oversea".to_string());
+    cfg.outbound = Some("remote".to_string());
     let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
 
     assert_eq!(
@@ -467,7 +467,7 @@ fn test_connection_info_rejects_outbound_proxy_for_udp_upstream() {
     install_test_outbound_config();
 
     let mut cfg = make_upstream_config("8.8.8.8");
-    cfg.outbound = Some("oversea".to_string());
+    cfg.outbound = Some("remote".to_string());
     let err = ConnectionInfo::try_from(cfg).expect_err("UDP upstream should reject profile proxy");
 
     assert!(err.to_string().contains("does not support UDP"), "{err}");
@@ -497,7 +497,7 @@ fn test_connection_info_local_socks5_overrides_outbound_proxy() {
     install_test_outbound_config();
 
     let mut cfg = make_upstream_config("tcp://1.1.1.1:53");
-    cfg.outbound = Some("oversea".to_string());
+    cfg.outbound = Some("remote".to_string());
     cfg.socks5 = Some("127.0.0.1:1081".to_string());
     let info = ConnectionInfo::try_from(cfg).expect("upstream config should parse");
 
@@ -565,7 +565,7 @@ fn test_connection_info_rejects_invalid_local_socks5_with_outbound_proxy() {
     install_test_outbound_config();
 
     let mut cfg = make_upstream_config("tcp://1.1.1.1:53");
-    cfg.outbound = Some("oversea".to_string());
+    cfg.outbound = Some("remote".to_string());
     cfg.socks5 = Some("127.0.0.1".to_string());
     let err = ConnectionInfo::try_from(cfg).expect_err("malformed local proxy should fail");
 

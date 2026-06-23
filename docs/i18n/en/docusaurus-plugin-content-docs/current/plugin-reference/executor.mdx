@@ -311,6 +311,8 @@ Sends DNS queries to upstreams.
 - Type: `boolean`; Required: no; Default: `false`
 - Purpose: Enable pipelining for TCP or DoT.
 - Notes: `tcp+pipeline://` and `tls+pipeline://` force this on.
+- Recommendation: Before enabling it, run `oxidns probe upstream <addr>` against the target upstream. For TCP/DoT, the probe forces concurrent queries through one connection so you can decide whether that upstream is safe for pipeline mode and catch timeouts, connection closes, response ID confusion, or crossed questions first.
+- Verdict: If the probe reports `supported`, enabling pipeline is reasonable. If it reports `unsupported`, `unstable`, or `inconclusive`, keep pipeline disabled or retest with lower concurrency / a longer timeout.
 
 #### `upstreams[].enable_http3`
 
@@ -2498,7 +2500,7 @@ Runs the OxiDNS upgrade flow from the executor pipeline. It is suitable for main
       force: false
       cleanup: true
       timeout: 30s
-      outbound: oversea
+      outbound: remote
       socks5: 127.0.0.1:1080
       insecure_skip_verify: false
 ```
@@ -2577,7 +2579,7 @@ Downloads one or more `http/https` files into a local directory and overwrites t
   type: download
   args:
     timeout: 30s
-    outbound: oversea
+    outbound: remote
     socks5: "127.0.0.1:1080"
     downloads:
       - url: "https://example.com/geosite.dat"

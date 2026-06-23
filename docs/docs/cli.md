@@ -13,6 +13,7 @@ sidebar_position: 3
 - `check`
 - `build-info`
 - `export-dat`
+- `probe`
 - `service`
 - `upgrade`
 
@@ -25,6 +26,7 @@ sidebar_position: 3
 | 临时开启调试日志 | `oxidns start -c config.yaml -l debug` |
 | 查看插件依赖图 | `oxidns check -c config.yaml --graph` |
 | 查看当前二进制编译能力 | `oxidns build-info` |
+| 探测上游连通性和并发行为 | `oxidns probe upstream tcp://1.1.1.1:53` |
 | 安装系统服务 | `sudo oxidns service install -d /var/lib/oxidns -c /etc/oxidns/config.yaml` |
 | 检查新版本 | `oxidns upgrade check` |
 | 从 dat 导出规则文件 | `oxidns export-dat --file ./rules/geosite.dat --kind geosite --selector cn --out-dir ./rules/exported` |
@@ -44,6 +46,8 @@ oxidns start --help
 oxidns check --help
 oxidns build-info --help
 oxidns export-dat --help
+oxidns probe --help
+oxidns probe upstream --help
 oxidns service --help
 oxidns upgrade --help
 ```
@@ -114,6 +118,82 @@ oxidns check -c config.yaml --graph
 - 校验成功时返回退出码 `0`，并输出简短成功信息。
 - 传入 `--graph` 时，会额外按插件初始化顺序输出纯文本依赖图。
 - 校验失败时返回非零退出码，并输出具体错误原因。
+
+## `probe`
+
+主动探测运行时外部目标。当前提供 `probe upstream`，用于检查单个 DNS 上游的连通性、基础响应信息、域名解析结果，以及并发 / pipeline 行为。
+
+### `probe upstream`
+
+典型用法：
+
+```bash
+oxidns probe upstream udp://1.1.1.1:53
+oxidns probe upstream tcp://1.1.1.1:53
+oxidns probe upstream tls://dns.google:853 --qname example.com. --qtype A
+oxidns probe upstream https://dns.google/dns-query --json
+oxidns probe upstream tcp://dns.example.com:53 -c config.yaml --outbound remote
+```
+
+参数说明：
+
+- `<addr>`
+  - 要探测的 upstream 地址。
+  - 支持与 forward upstream 一致的地址写法，例如 `udp://`、`tcp://`、`tcp+pipeline://`、`tls://`、`tls+pipeline://`、`https://`、`doh://`、`h3://`、`quic://`、`doq://`。
+  - 不带 scheme 时按 UDP 处理。
+- `-c, --config <PATH>`
+  - 可选读取配置文件，只复用其中的 `network.outbound` profile。
+  - 未指定时不会读取运行配置。
+- `-d, --working-dir <PATH>`
+  - 读取配置前切换工作目录。
+- `--outbound <NAME>`
+  - 使用指定 outbound profile 的 resolver / proxy 设置。
+- `--dial-addr <IP>`
+  - 直接连接指定 IP，同时保留 `<addr>` 中的主机名用于 TLS SNI 和 HTTP Host。
+- `--bootstrap <ADDR>`
+  - 使用指定 bootstrap DNS 解析域名型 upstream。
+- `--bootstrap-version <4|6>`
+  - bootstrap 解析时偏好的 IP 版本。
+- `--socks5 <ADDR>`
+  - 对支持代理的上游连接使用 SOCKS5。
+- `--port <PORT>`
+  - 覆盖 upstream 端口。
+- `--insecure-skip-verify`
+  - 跳过 TLS 证书校验，仅建议测试时使用。
+- `--timeout <DURATION>`
+  - 单次查询超时。
+  - 默认值：`5s`
+- `--qname <NAME>`
+  - 串行基线查询域名。
+  - 默认值：`example.com.`
+- `--qtype <TYPE>`
+  - 查询类型。
+  - 默认值：`A`
+- `--serial-samples <N>`
+  - 串行基线查询次数。
+  - 默认值：`2`
+- `--pipeline-concurrency <N>`
+  - 并发探测的查询数量；TCP / DoT 会强制在同一条连接上发送这些查询。
+  - 默认值：`16`
+- `--pipeline-rounds <N>`
+  - 并发探测轮数。
+  - 默认值：`2`
+- `--json`
+  - 输出结构化 JSON 报告。
+
+输出内容：
+
+- 目标信息：地址、协议、服务名、端口、超时。
+- 域名型 upstream 的解析结果：`resolved_ip` 和 `resolution_source`，来源可能是 `literal`、`dial_addr`、`configured`、`bootstrap`、`system` 或 `proxy`。
+- 串行基线：reachable / unreachable、平均延迟、rcode、answer 数量、TC / RA 标志和错误摘要。
+- 并发探测：supported / unsupported / unstable / inconclusive、成功数、超时数、响应 ID / question / qtype 不匹配数、其它错误和建议。
+- 非 JSON 模式会在探测过程中向 stderr 输出进度，最终报告输出到 stdout；JSON 模式只向 stdout 输出报告。
+
+协议行为：
+
+- UDP、DoH、DoH3 和 DoQ 使用对应 upstream 实现发起并发查询，用来评估该协议下的并发或多路复用表现。
+- TCP 和 DoT 会额外强制使用同一条连接发送并发查询，用来发现开启 pipeline 后可能出现的超时、连接关闭、协议错误、响应 ID 错乱或 question 串线。
+- 如果串行基线失败，并发结论会是 `inconclusive`，避免把基础连通性问题误判成 pipeline 问题。
 
 ## `build-info`
 

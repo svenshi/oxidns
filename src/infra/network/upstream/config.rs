@@ -311,7 +311,7 @@ impl ConnectionInfo {
     pub(crate) const DEFAULT_MAX_CONNS_LOAD: u16 = 64;
     pub(crate) const DEFAULT_MAX_CONNS_SIZE: usize = 64;
     pub(crate) const DEFAULT_MIN_CONNS_SIZE: usize = 0;
-    const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+    pub(crate) const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
     pub(crate) const MAX_CONFIGURED_CONNS_SIZE: usize = 4096;
 
     pub fn with_addr(addr: &str) -> Result<Self> {

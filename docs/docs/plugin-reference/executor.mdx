@@ -359,6 +359,8 @@ import Admonition from "@theme/Admonition";
 - 作用：控制 TCP 或 DoT 流水线。
 - 示例：`enable_pipeline: true`
 - 说明：也可直接通过 `tcp+pipeline://` 或 `tls+pipeline://` 在 `addr` 中启用。
+- 建议：开启前先用 `oxidns probe upstream <addr>` 探测目标上游。该命令会对 TCP/DoT 强制同一条连接并发查询，帮助判断该上游是否适合启用 pipeline，避免遇到超时、连接关闭、响应 ID 错乱或 question 串线。
+- 判定：探测结果为 `supported` 时再考虑开启；如果为 `unsupported`、`unstable` 或 `inconclusive`，建议保持关闭，或降低并发 / 延长超时后重新测试。
 
 #### `upstreams[].enable_http3`
 
@@ -2608,7 +2610,7 @@ old-static.example.com static.example.net
       force: false
       cleanup: true
       timeout: 30s
-      outbound: oversea
+      outbound: remote
       socks5: 127.0.0.1:1080
       insecure_skip_verify: false
 ```
@@ -2692,7 +2694,7 @@ old-static.example.com static.example.net
   type: download
   args:
     timeout: 30s
-    outbound: oversea
+    outbound: remote
     socks5: "127.0.0.1:1080"
     downloads:
       - url: "https://example.com/geosite.dat"

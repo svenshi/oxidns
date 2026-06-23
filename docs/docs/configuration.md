@@ -191,7 +191,7 @@ network:
       direct:
         resolver: system
         proxy: none
-      oversea:
+      remote:
         resolver:
           nameservers:
             - addr: "1.1.1.1:53"
@@ -225,7 +225,7 @@ network:
   - `none` 或 `direct`：直连。
   - `socks5`：通过 SOCKS5 代理连接目标地址，格式与上游 `socks5` 一致。
 
-当前 `download`、`upgrade`、`http_request` 可通过 `args.outbound: oversea` 引用 profile。旧字段 `socks5` 继续兼容；当同一个插件同时配置 `outbound` 和 `socks5` 时，`socks5` 会覆盖 profile 中的代理设置，但 resolver 仍来自该 outbound profile。`forward` upstream 未配置 `outbound` 时会使用 `network.outbound.default`；也可通过 `outbound: oversea` 显式接入其他 profile。upstream 本地 `dial_addr`、`bootstrap`、`socks5` 优先于 profile 注入值。
+当前 `download`、`upgrade`、`http_request` 可通过 `args.outbound: remote` 引用 profile。旧字段 `socks5` 继续兼容；当同一个插件同时配置 `outbound` 和 `socks5` 时，`socks5` 会覆盖 profile 中的代理设置，但 resolver 仍来自该 outbound profile。`forward` upstream 未配置 `outbound` 时会使用 `network.outbound.default`；也可通过 `outbound: remote` 显式接入其他 profile。upstream 本地 `dial_addr`、`bootstrap`、`socks5` 优先于 profile 注入值。
 
 ### `api`
 
@@ -613,62 +613,3 @@ args:
   - "$core_domains"
   - "&/etc/oxidns/domains.txt"
 ```
-
-## 上游统一结构
-
-`forward` 的 `upstreams` 使用统一的 `UpstreamConfig`。
-
-示例：
-
-```yaml
-upstreams:
-  - addr: "udp://1.1.1.1:53"
-  - addr: "https://resolver.example/dns-query"
-    outbound: oversea
-    bootstrap: "8.8.8.8:53"
-    timeout: 5s
-    enable_http3: true
-```
-
-常用字段：
-
-- `addr`
-  - 上游地址。
-  - 未写协议时按 UDP 处理。
-  - 支持 `udp://`、`tcp://`、`tcp+pipeline://`、`tls://`、`tls+pipeline://`、`quic://`、`doq://`、`https://`、`doh://`、`h3://`。
-  - DoH 应写完整路径，例如 `https://resolver.example/dns-query`。
-- `dial_addr`
-  - 指定实际连接 IP，但仍保留 `addr` 中的主机名用于 SNI/校验。
-- `port`
-  - 覆盖端口。
-- `outbound`
-  - 引用 `network.outbound.profiles` 中的 profile，为该 upstream 注入 resolver/proxy 默认值。
-  - 未配置时使用 `network.outbound.default`；没有 default 时保持系统解析/直连。
-  - upstream 本地 `dial_addr`、`bootstrap`、`socks5` 优先于 profile。
-  - profile proxy 严格应用；UDP、DoQ、DoH3 upstream 不支持 profile SOCKS5 proxy。
-- `bootstrap`
-  - 当上游地址是域名时，用于解析上游域名的引导 DNS，必须写为 `IP:port`。
-- `bootstrap_version`
-  - `4` 或 `6`。
-- `socks5`
-  - SOCKS5 代理。
-  - 支持 `host:port` 与 `user:pass@host:port`。
-  - IPv6 需写成 `[addr]:port`。
-- `idle_timeout`
-  - 空闲连接超时，单位秒。
-- `min_conns`
-  - 连接池最小预热连接数，默认 `0`，范围 `0..4096`，且不能大于 `max_conns`。
-- `max_conns`
-  - 连接池最大连接数，范围 `1..4096`。
-- `insecure_skip_verify`
-  - 跳过 TLS 证书校验，仅建议测试环境使用。
-- `timeout`
-  - 单次查询超时，默认 `5s`。
-- `enable_pipeline`
-  - TCP/DoT 请求流水线。
-- `enable_http3`
-  - DoH 使用 HTTP/3。
-- `so_mark`
-  - Linux `SO_MARK`。
-- `bind_to_device`
-  - Linux `SO_BINDTODEVICE`。

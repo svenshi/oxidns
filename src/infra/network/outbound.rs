@@ -361,7 +361,7 @@ mod tests {
         let config = NetworkOutboundConfig {
             default: None,
             profiles: HashMap::from([(
-                "oversea".to_string(),
+                "remote".to_string(),
                 OutboundProfileConfig {
                     resolver: Some(OutboundResolverConfig::Nameservers(
                         OutboundResolverDetailedConfig {
@@ -382,21 +382,21 @@ mod tests {
         };
         let runtime = OutboundRuntime::from_config(&config).expect("outbound config should parse");
         let policy = runtime
-            .resolve_policy(Some("oversea"), None)
+            .resolve_policy(Some("remote"), None)
             .expect("profile should resolve");
         assert!(policy.proxy().is_some());
         let (resolver, _) = policy
             .resolver()
             .expect("profile resolver should be configured");
-        assert_eq!(resolver.profile(), "oversea");
+        assert_eq!(resolver.profile(), "remote");
     }
 
     #[test]
     fn test_resolve_policy_default_keeps_profile_metric_label() {
         let config = NetworkOutboundConfig {
-            default: Some("oversea".to_string()),
+            default: Some("remote".to_string()),
             profiles: HashMap::from([(
-                "oversea".to_string(),
+                "remote".to_string(),
                 OutboundProfileConfig {
                     resolver: Some(OutboundResolverConfig::Nameservers(
                         OutboundResolverDetailedConfig {
@@ -421,7 +421,7 @@ mod tests {
         let (resolver, _) = policy
             .resolver()
             .expect("default profile resolver should be configured");
-        assert_eq!(resolver.profile(), "oversea");
+        assert_eq!(resolver.profile(), "remote");
     }
 
     #[test]
