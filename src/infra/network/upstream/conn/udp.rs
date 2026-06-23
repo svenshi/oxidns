@@ -16,7 +16,7 @@ use tracing::{debug, error, trace, warn};
 use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::network::dial::{DialTarget, SocketOptions, UdpDialOptions, connect_udp};
-use crate::infra::network::transport::udp_transport::UdpTransport;
+use crate::infra::network::transport::udp::UdpTransport;
 use crate::infra::network::upstream::ConnectionInfo;
 use crate::infra::network::upstream::conn::request_map::RequestMap;
 use crate::infra::network::upstream::pool::{Connection, ConnectionBuilder, QueryDeadline};

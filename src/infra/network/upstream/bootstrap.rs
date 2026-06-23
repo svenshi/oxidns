@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::fmt::Debug;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,208 +8,36 @@ use std::time::Duration;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::network::metrics::{self as network_metrics, NetworkProtocol, PoolRefreshReason};
 use crate::infra::network::resolver::{NameResolver, ResolvedIp};
-use crate::infra::network::upstream::builder::{
-    main_pool_min_conns, pipeline_request_map_capacity, reuse_request_map_capacity,
+#[cfg(feature = "upstream-doh")]
+use crate::infra::network::upstream::bootstrap_factory::H2BootstrapPoolFactory;
+#[cfg(feature = "upstream-doh3")]
+use crate::infra::network::upstream::bootstrap_factory::H3BootstrapPoolFactory;
+#[cfg(feature = "upstream-doq")]
+use crate::infra::network::upstream::bootstrap_factory::QuicBootstrapPoolFactory;
+use crate::infra::network::upstream::bootstrap_factory::{
+    BootstrapPoolFactory, TcpBootstrapPoolFactory, UdpBootstrapPoolFactory,
 };
 use crate::infra::network::upstream::config::{ConnectionInfo, ConnectionType};
 #[cfg(feature = "upstream-doh")]
-use crate::infra::network::upstream::conn::{H2Connection, H2ConnectionBuilder};
+use crate::infra::network::upstream::conn::H2Connection;
 #[cfg(feature = "upstream-doh3")]
-use crate::infra::network::upstream::conn::{H3Connection, H3ConnectionBuilder};
+use crate::infra::network::upstream::conn::H3Connection;
 #[cfg(feature = "upstream-doq")]
-use crate::infra::network::upstream::conn::{QuicConnection, QuicConnectionBuilder};
-use crate::infra::network::upstream::conn::{
-    TcpConnection, TcpConnectionBuilder, UdpConnection, UdpConnectionBuilder,
-};
-use crate::infra::network::upstream::pool::pool_pipeline::PipelinePool;
-use crate::infra::network::upstream::pool::pool_reuse::ReusePool;
+use crate::infra::network::upstream::conn::QuicConnection;
+use crate::infra::network::upstream::conn::{TcpConnection, UdpConnection};
+use crate::infra::network::upstream::pool::reuse::ReusePool;
 use crate::infra::network::upstream::pool::{
     Connection, ConnectionBuilder, ConnectionPool, DeadlineOutcome, QueryDeadline,
     QueryTimeoutPolicy,
 };
+use crate::infra::network::upstream::traits::Upstream;
 use crate::proto::Message;
-
-#[async_trait]
-#[allow(unused)]
-pub trait Upstream: Send + Sync + Debug {
-    /// **Internal API - Do not call directly!**
-    ///
-    /// Send a DNS query using the provided end-to-end query deadline.
-    ///
-    /// # For Implementors
-    /// Implement this method to provide the actual DNS query logic.
-    ///
-    /// # For Callers
-    /// **Always use `query()` or `query_with_deadline()` instead!**
-    #[doc(hidden)]
-    async fn inner_query(&self, request: Message, deadline: QueryDeadline) -> Result<Message>;
-
-    /// Return the connection configuration information
-    ///
-    /// Provides access to all upstream connection parameters including
-    /// connection type, timeout, addresses, and protocol-specific settings.
-    fn connection_info(&self) -> &ConnectionInfo;
-
-    /// Return the timeout duration for this upstream
-    ///
-    /// Default implementation reads from connection_info.
-    /// Can be overridden if custom timeout logic is needed.
-    #[inline]
-    fn timeout(&self) -> Duration {
-        self.connection_info().timeout
-    }
-
-    /// Return the connection type of this upstream
-    ///
-    /// Convenience method for accessing connection_info.connection_type.
-    #[inline]
-    fn connection_type(&self) -> ConnectionType {
-        self.connection_info().connection_type
-    }
-
-    /// Whether `inner_query` owns deadline enforcement and timeout cleanup.
-    ///
-    /// Pool-backed implementations must return `true` so the pool can observe
-    /// deadline expiry and apply its connection retirement/close policy.
-    #[inline]
-    fn handles_query_deadline(&self) -> bool {
-        false
-    }
-
-    /// Send a DNS query with an existing upstream deadline.
-    async fn query_with_deadline(
-        &self,
-        message: Message,
-        deadline: QueryDeadline,
-    ) -> Result<Message> {
-        if deadline.remaining().is_none() {
-            warn!(
-                timeout_secs = self.timeout().as_secs_f64(),
-                "Upstream DNS query timeout"
-            );
-            return Err(deadline.timeout_error());
-        }
-        if self.handles_query_deadline() {
-            return self.inner_query(message, deadline).await;
-        }
-        match deadline.run(self.inner_query(message, deadline)).await {
-            DeadlineOutcome::Completed(result) => result,
-            DeadlineOutcome::Expired => {
-                warn!(
-                    timeout_secs = self.timeout().as_secs_f64(),
-                    "Upstream DNS query timeout"
-                );
-                Err(deadline.timeout_error())
-            }
-        }
-    }
-
-    /// Send a DNS query with unified deadline handling
-    ///
-    /// This is the **recommended API** for all DNS queries.
-    /// Automatically applies timeout based on `timeout()` configuration.
-    ///
-    /// # Performance Notes
-    /// - Message is moved (not cloned) to avoid allocation overhead
-    /// - Timeout error logging uses structured fields for zero-copy
-    /// - Only logs on timeout, not on successful queries (hot path
-    ///   optimization)
-    ///
-    /// # Errors
-    /// - Returns `DnsError::plugin` on timeout
-    /// - Returns upstream-specific errors on query failures
-    async fn query(&self, message: Message) -> Result<Message> {
-        let deadline = QueryDeadline::new(self.timeout());
-        self.query_with_deadline(message, deadline).await
-    }
-}
-
-/// Pooled upstream resolver implementation
-///
-/// Uses connection pooling to efficiently reuse connections for multiple
-/// queries. The pool type (pipeline or reuse) is determined during creation
-/// based on protocol capabilities and configuration.
-#[allow(unused)]
-#[derive(Debug)]
-pub(crate) struct PooledUpstream<C: Connection> {
-    /// Connection metadata (remote address, port, etc.)
-    pub(crate) connection_info: ConnectionInfo,
-    /// Connection pool for load balancing and connection reuse
-    pub(crate) pool: Arc<dyn ConnectionPool<C>>,
-}
-
-#[async_trait]
-impl<C: Connection> Upstream for PooledUpstream<C> {
-    /// Execute DNS query through the connection pool
-    ///
-    /// The pool handles connection selection, creation, and lifecycle
-    /// management. No additional logging here as the pool layer already
-    /// logs connection events.
-    async fn inner_query(&self, request: Message, deadline: QueryDeadline) -> Result<Message> {
-        self.pool.query(request, deadline).await
-    }
-
-    fn connection_info(&self) -> &ConnectionInfo {
-        &self.connection_info
-    }
-
-    fn handles_query_deadline(&self) -> bool {
-        true
-    }
-}
-
-/// UDP upstream with automatic TCP fallback on truncation
-///
-/// DNS over UDP has a 512-byte size limit (or EDNS extended size).
-/// When responses exceed this limit, the TC (truncated) bit is set,
-/// indicating the client should retry over TCP to get the full response.
-///
-/// This upstream automatically handles this fallback:
-/// 1. Try UDP first (fast, low overhead)
-/// 2. If truncated, automatically retry over TCP
-#[derive(Debug)]
-pub(crate) struct UdpTruncatedUpstream {
-    /// Connection configuration (includes timeout)
-    pub(crate) connection_info: ConnectionInfo,
-    /// Primary UDP connection pool (fast path)
-    pub(crate) main_pool: Arc<dyn ConnectionPool<UdpConnection>>,
-    /// Fallback TCP connection pool (used when UDP response is truncated)
-    pub(crate) fallback_pool: Arc<dyn ConnectionPool<TcpConnection>>,
-}
-
-#[async_trait]
-impl Upstream for UdpTruncatedUpstream {
-    async fn inner_query(&self, request: Message, deadline: QueryDeadline) -> Result<Message> {
-        // Try UDP first (most DNS queries fit in UDP packets)
-        let response = self.main_pool.query(request.clone(), deadline).await?;
-
-        // Check if response was truncated (TC bit set)
-        if response.truncated() {
-            // Log fallback event (only happens occasionally, minimal performance impact)
-            debug!("UDP response truncated, falling back to TCP");
-
-            // Retry over TCP to get the full response
-            self.fallback_pool.query(request, deadline).await
-        } else {
-            // UDP response was complete, return it
-            Ok(response)
-        }
-    }
-
-    fn connection_info(&self) -> &ConnectionInfo {
-        &self.connection_info
-    }
-
-    fn handles_query_deadline(&self) -> bool {
-        true
-    }
-}
 
 /// Bootstrap-resolved UDP upstream with automatic TCP fallback on truncation.
 #[derive(Debug)]
@@ -251,153 +78,6 @@ impl Upstream for BootstrapUdpTruncatedUpstream {
     fn handles_query_deadline(&self) -> bool {
         true
     }
-}
-
-trait BootstrapPoolFactory<C: Connection>: Debug + Send + Sync {
-    fn create_pool(
-        &self,
-        connection_info: &ConnectionInfo,
-        ip: IpAddr,
-    ) -> Arc<dyn ConnectionPool<C>>;
-}
-
-#[derive(Debug)]
-struct UdpBootstrapPoolFactory;
-
-impl BootstrapPoolFactory<UdpConnection> for UdpBootstrapPoolFactory {
-    fn create_pool(
-        &self,
-        connection_info: &ConnectionInfo,
-        ip: IpAddr,
-    ) -> Arc<dyn ConnectionPool<UdpConnection>> {
-        let info = connection_info_with_ip(connection_info, ip);
-        let builder = UdpConnectionBuilder::new(&info, pipeline_request_map_capacity());
-        PipelinePool::new(
-            main_pool_min_conns(&info),
-            info.max_conns_or_default(),
-            ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
-            info.idle_timeout,
-            Box::new(builder),
-            QueryTimeoutPolicy::Reuse,
-            info.timeout,
-        )
-    }
-}
-
-#[derive(Debug)]
-struct TcpBootstrapPoolFactory;
-
-impl BootstrapPoolFactory<TcpConnection> for TcpBootstrapPoolFactory {
-    fn create_pool(
-        &self,
-        connection_info: &ConnectionInfo,
-        ip: IpAddr,
-    ) -> Arc<dyn ConnectionPool<TcpConnection>> {
-        let info = connection_info_with_ip(connection_info, ip);
-        if info.enable_pipeline.unwrap_or(false) {
-            let builder = TcpConnectionBuilder::new(&info, pipeline_request_map_capacity());
-            PipelinePool::new(
-                main_pool_min_conns(&info),
-                info.max_conns_or_default(),
-                ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
-                info.idle_timeout,
-                Box::new(builder),
-                QueryTimeoutPolicy::Retire,
-                info.timeout,
-            )
-        } else {
-            let builder = TcpConnectionBuilder::new(&info, reuse_request_map_capacity());
-            ReusePool::new(
-                main_pool_min_conns(&info),
-                info.max_conns_or_default(),
-                info.idle_timeout,
-                Box::new(builder),
-                QueryTimeoutPolicy::Close,
-                info.timeout,
-            )
-        }
-    }
-}
-
-#[cfg(feature = "upstream-doq")]
-#[derive(Debug)]
-struct QuicBootstrapPoolFactory;
-
-#[cfg(feature = "upstream-doq")]
-impl BootstrapPoolFactory<QuicConnection> for QuicBootstrapPoolFactory {
-    fn create_pool(
-        &self,
-        connection_info: &ConnectionInfo,
-        ip: IpAddr,
-    ) -> Arc<dyn ConnectionPool<QuicConnection>> {
-        let info = connection_info_with_ip(connection_info, ip);
-        let builder = QuicConnectionBuilder::new(&info);
-        PipelinePool::new(
-            main_pool_min_conns(&info),
-            info.max_conns_or_default(),
-            ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
-            info.idle_timeout,
-            Box::new(builder),
-            QueryTimeoutPolicy::Retire,
-            info.timeout,
-        )
-    }
-}
-
-#[cfg(feature = "upstream-doh")]
-#[derive(Debug)]
-struct H2BootstrapPoolFactory;
-
-#[cfg(feature = "upstream-doh")]
-impl BootstrapPoolFactory<H2Connection> for H2BootstrapPoolFactory {
-    fn create_pool(
-        &self,
-        connection_info: &ConnectionInfo,
-        ip: IpAddr,
-    ) -> Arc<dyn ConnectionPool<H2Connection>> {
-        let info = connection_info_with_ip(connection_info, ip);
-        let builder = H2ConnectionBuilder::new(&info);
-        PipelinePool::new(
-            main_pool_min_conns(&info),
-            info.max_conns_or_default(),
-            ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
-            info.idle_timeout,
-            Box::new(builder),
-            QueryTimeoutPolicy::Retire,
-            info.timeout,
-        )
-    }
-}
-
-#[cfg(feature = "upstream-doh3")]
-#[derive(Debug)]
-struct H3BootstrapPoolFactory;
-
-#[cfg(feature = "upstream-doh3")]
-impl BootstrapPoolFactory<H3Connection> for H3BootstrapPoolFactory {
-    fn create_pool(
-        &self,
-        connection_info: &ConnectionInfo,
-        ip: IpAddr,
-    ) -> Arc<dyn ConnectionPool<H3Connection>> {
-        let info = connection_info_with_ip(connection_info, ip);
-        let builder = H3ConnectionBuilder::new(&info);
-        PipelinePool::new(
-            main_pool_min_conns(&info),
-            info.max_conns_or_default(),
-            ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
-            info.idle_timeout,
-            Box::new(builder),
-            QueryTimeoutPolicy::Retire,
-            info.timeout,
-        )
-    }
-}
-
-fn connection_info_with_ip(connection_info: &ConnectionInfo, ip: IpAddr) -> ConnectionInfo {
-    let mut info = connection_info.clone();
-    info.remote_ip = Some(ip);
-    info
 }
 
 /// Domain-based upstream resolver that uses bootstrap to resolve domain names

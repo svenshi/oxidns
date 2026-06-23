@@ -32,7 +32,7 @@ use oxidns::core::context::DnsContext;
 use oxidns::core::context::RequestMeta;
 use oxidns::infra::clock::AppClock;
 use oxidns::infra::error::{DnsError, Result};
-use oxidns::infra::network::transport::udp_transport::UdpTransport;
+use oxidns::infra::network::transport::udp::UdpTransport;
 use oxidns::plugin;
 use oxidns::plugin::executor::ExecStep;
 use oxidns::plugin::{PluginRegistry, PluginType};

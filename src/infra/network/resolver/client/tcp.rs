@@ -12,7 +12,7 @@ use crate::infra::error::Result;
 use crate::infra::network::deadline::{DeadlineOutcome, QueryDeadline};
 use crate::infra::network::dial::SocketOptions;
 use crate::infra::network::proxy::connect_tcp as proxy_connect_tcp;
-use crate::infra::network::transport::tcp_transport::{TcpTransportReader, TcpTransportWriter};
+use crate::infra::network::transport::tcp::{TcpTransportReader, TcpTransportWriter};
 use crate::proto::Message;
 
 #[derive(Debug)]

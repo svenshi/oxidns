@@ -47,8 +47,8 @@ pub use crate::infra::network::deadline::{DeadlineOutcome, QueryDeadline};
 use crate::infra::task as task_center;
 use crate::proto::Message;
 
-pub(crate) mod pool_pipeline;
-pub(crate) mod pool_reuse;
+pub(crate) mod pipeline;
+pub(crate) mod reuse;
 
 /// Pool-owned policy for handling a single query timeout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

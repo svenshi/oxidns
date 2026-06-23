@@ -15,7 +15,7 @@ use crate::infra::error::{DnsError, Result};
 use crate::infra::network::dial::{
     DialTarget, QuicDialOptions, SocketOptions, UdpDialOptions, connect_quic, connect_udp,
 };
-use crate::infra::network::transport::quic_transport::QuicTransport;
+use crate::infra::network::transport::quic::QuicTransport;
 use crate::infra::network::upstream::pool::{ConnectionBuilder, QueryDeadline};
 use crate::infra::network::upstream::{Connection, ConnectionInfo};
 use crate::proto::Message;

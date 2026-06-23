@@ -20,8 +20,8 @@ use crate::infra::network::dial::connect_tls;
 use crate::infra::network::dial::{DialTarget, SocketOptions};
 use crate::infra::network::proxy::{Socks5Opt, connect_tcp};
 #[cfg(feature = "upstream-dot")]
-use crate::infra::network::transport::tcp_transport::TcpTransport;
-use crate::infra::network::transport::tcp_transport::{TcpTransportReader, TcpTransportWriter};
+use crate::infra::network::transport::tcp::TcpTransport;
+use crate::infra::network::transport::tcp::{TcpTransportReader, TcpTransportWriter};
 use crate::infra::network::upstream::conn::request_map::RequestMap;
 use crate::infra::network::upstream::pool::{
     Connection, ConnectionBuilder, DeadlineOutcome, QueryDeadline,

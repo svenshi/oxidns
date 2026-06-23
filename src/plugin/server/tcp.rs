@@ -35,7 +35,7 @@ use crate::infra::error::{DnsError, Result};
 use crate::infra::network::listen::{self, parse_listen_addr};
 #[cfg(feature = "server-dot")]
 use crate::infra::network::tls_config::load_tls_config;
-use crate::infra::network::transport::tcp_transport::{TcpTransport, TcpTransportWriter};
+use crate::infra::network::transport::tcp::{TcpTransport, TcpTransportWriter};
 use crate::infra::observability::metrics::{register_metric_source, unregister_metric_source};
 use crate::infra::system::deserialize_duration_option;
 use crate::plugin::dependency::DependencySpec;

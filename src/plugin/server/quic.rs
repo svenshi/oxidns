@@ -24,7 +24,7 @@ use crate::config::types::PluginConfig;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::network::listen::parse_listen_addr;
 use crate::infra::network::tls_config::load_tls_config;
-use crate::infra::network::transport::quic_transport::{
+use crate::infra::network::transport::quic::{
     QuicTransport, QuicTransportReader, QuicTransportWriter,
 };
 use crate::infra::observability::metrics::{register_metric_source, unregister_metric_source};

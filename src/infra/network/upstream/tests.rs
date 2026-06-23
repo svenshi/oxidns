@@ -26,7 +26,8 @@ use crate::infra::network::upstream::config::{ConnectionInfo, ConnectionType, Up
 use crate::infra::network::upstream::pool::{
     Connection, ConnectionBuilder, ConnectionPool, QueryDeadline,
 };
-use crate::infra::network::upstream::resolver::{PooledUpstream, Upstream};
+use crate::infra::network::upstream::pooled::PooledUpstream;
+use crate::infra::network::upstream::traits::Upstream;
 use crate::proto::Message;
 
 #[derive(Debug)]

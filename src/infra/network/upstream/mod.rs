@@ -7,11 +7,14 @@
 //! It turns upstream configuration into protocol-specific clients with shared
 //! pooling, bootstrap resolution, timeout handling, and fallback behavior.
 
+mod bootstrap;
+mod bootstrap_factory;
 mod builder;
 mod config;
 mod conn;
 mod pool;
-mod resolver;
+mod pooled;
+mod traits;
 
 pub use builder::UpstreamBuilder;
 pub use config::{ConnectionInfo, ConnectionType, UpstreamConfig};
@@ -22,7 +25,7 @@ pub use config::{ConnectionInfo, ConnectionType, UpstreamConfig};
 ))]
 pub(crate) use pool::Connection;
 pub use pool::QueryDeadline;
-pub use resolver::Upstream;
+pub use traits::Upstream;
 
 #[cfg(test)]
 mod tests;

@@ -20,7 +20,7 @@ use crate::infra::network::dial::{
     QuicDialOptions, SocketOptions, UdpDialOptions, connect_quic, connect_udp,
 };
 #[cfg(feature = "resolver-doq")]
-use crate::infra::network::transport::quic_transport::QuicTransport;
+use crate::infra::network::transport::quic::QuicTransport;
 use crate::proto::Message;
 
 #[derive(Debug)]

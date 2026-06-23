@@ -14,7 +14,7 @@ use super::{NameserverClient, effective_deadline};
 use crate::infra::error::Result;
 use crate::infra::network::deadline::{DeadlineOutcome, QueryDeadline};
 use crate::infra::network::dial::{SocketOptions, UdpDialOptions, connect_udp};
-use crate::infra::network::transport::udp_transport::UdpTransport;
+use crate::infra::network::transport::udp::UdpTransport;
 use crate::proto::Message;
 
 const UDP_RECV_BUFFER_SIZE: usize = 8_196;

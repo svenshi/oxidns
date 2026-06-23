@@ -20,7 +20,7 @@ use crate::infra::network::dial::{SocketOptions, TlsDialOptions, connect_tls};
 #[cfg(feature = "resolver-dot")]
 use crate::infra::network::proxy::connect_tcp as proxy_connect_tcp;
 #[cfg(feature = "resolver-dot")]
-use crate::infra::network::transport::tcp_transport::TcpTransport;
+use crate::infra::network::transport::tcp::TcpTransport;
 use crate::proto::Message;
 
 #[derive(Debug)]
