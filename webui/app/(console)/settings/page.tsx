@@ -7,6 +7,7 @@ import { useAuthStore } from "@/lib/auth-store";
 import {
   useUpdateStore,
   DEFAULT_UPGRADE_CONFIG,
+  type UpgradeApplyPhase,
   type UpgradeBundle,
 } from "@/lib/update-store";
 import { stringifyOxiDnsConfig, type OxiDnsConfig } from "@/lib/oxidns-config";
@@ -38,6 +39,7 @@ import {
   Cpu,
   FileCode2,
   Globe,
+  Loader2,
   Network,
   PlugZap,
   Plus,
@@ -341,7 +343,9 @@ export default function SettingsPage() {
   const updateInfo = useUpdateStore((s) => s.updateInfo);
   const isChecking = useUpdateStore((s) => s.isChecking);
   const isApplying = useUpdateStore((s) => s.isApplying);
+  const applyPhase = useUpdateStore((s) => s.applyPhase);
   const lastCheckedAt = useUpdateStore((s) => s.lastCheckedAt);
+  const lastAppliedVersion = useUpdateStore((s) => s.lastAppliedVersion);
   const checkError = useUpdateStore((s) => s.checkError);
   const applyError = useUpdateStore((s) => s.applyError);
   const checkForUpdates = useUpdateStore((s) => s.checkForUpdates);
@@ -1905,8 +1909,24 @@ export default function SettingsPage() {
                   {applyError && (
                     <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                       <CircleAlert className="h-4 w-4 shrink-0" />
-                      {t(WEBUI.settings.upgradeStartFailed, {
+                      {t(WEBUI.settings.upgradeFailed, {
                         error: applyError,
+                      })}
+                    </div>
+                  )}
+
+                  {isApplying && applyPhase && (
+                    <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-sm text-primary">
+                      <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+                      {upgradePhaseStatusText(applyPhase, t)}
+                    </div>
+                  )}
+
+                  {!isApplying && lastAppliedVersion && (
+                    <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-sm text-primary">
+                      <CheckCircle2 className="h-4 w-4 shrink-0" />
+                      {t(WEBUI.settings.upgradeCompletedMsg, {
+                        version: lastAppliedVersion,
                       })}
                     </div>
                   )}
@@ -1918,6 +1938,7 @@ export default function SettingsPage() {
                         onClick={handleCheckUpdates}
                         disabled={
                           isChecking ||
+                          isApplying ||
                           !runtimeVersionForCheck ||
                           backendSupportsUpgrade === null
                         }
@@ -1934,7 +1955,11 @@ export default function SettingsPage() {
                           onClick={() => void triggerUpgrade()}
                           disabled={isApplying || isRestarting}
                         >
-                          <ArrowUpCircle className="h-4 w-4 mr-1.5" />
+                          {isApplying ? (
+                            <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                          ) : (
+                            <ArrowUpCircle className="h-4 w-4 mr-1.5" />
+                          )}
                           {isApplying
                             ? t(WEBUI.settings.upgrading)
                             : t(WEBUI.settings.upgradeNow)}
@@ -2339,6 +2364,24 @@ function rewritePluginArgsOutboundReferences(
     });
   }
   return nextArgs;
+}
+
+function upgradePhaseStatusText(
+  phase: UpgradeApplyPhase,
+  t: ReturnType<typeof useI18n>["t"],
+) {
+  switch (phase) {
+    case "requesting":
+      return t(WEBUI.settings.upgradePhaseRequesting);
+    case "applying":
+      return t(WEBUI.settings.upgradePhaseApplying);
+    case "waiting_up":
+      return t(WEBUI.settings.upgradePhaseWaitingUp);
+    case "verifying":
+      return t(WEBUI.settings.upgradePhaseVerifying);
+    case "completed":
+      return t(WEBUI.settings.upgradePhaseCompleted);
+  }
 }
 
 function createOutboundNameserverForm(): OutboundNameserverForm {

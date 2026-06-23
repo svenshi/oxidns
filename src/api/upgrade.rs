@@ -4,12 +4,13 @@
 //! HTTP handlers for the upgrade check and apply endpoints.
 
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use http::{Request, StatusCode};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 use tracing::{error, info};
 
 use crate::api::{ApiHandler, ApiRegister, json_error, json_ok, json_response};
@@ -65,6 +66,85 @@ struct UpgradeApplyResponse {
     action: &'static str,
     status: &'static str,
     message: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct UpgradeStatusResponse {
+    ok: bool,
+    state: &'static str,
+    started_at_ms: Option<u64>,
+    completed_at_ms: Option<u64>,
+    error: Option<String>,
+    installed_version: Option<String>,
+    restart_required: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct UpgradeTaskStatus {
+    state: UpgradeTaskState,
+    started_at_ms: Option<u64>,
+    completed_at_ms: Option<u64>,
+    error: Option<String>,
+    installed_version: Option<String>,
+    restart_required: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpgradeTaskState {
+    Idle,
+    Running,
+    Restarting,
+    Completed,
+    Skipped,
+    Failed,
+}
+
+impl Default for UpgradeTaskStatus {
+    fn default() -> Self {
+        Self {
+            state: UpgradeTaskState::Idle,
+            started_at_ms: None,
+            completed_at_ms: None,
+            error: None,
+            installed_version: None,
+            restart_required: None,
+        }
+    }
+}
+
+impl UpgradeTaskStatus {
+    fn running(now_ms: u64) -> Self {
+        Self {
+            state: UpgradeTaskState::Running,
+            started_at_ms: Some(now_ms),
+            ..Self::default()
+        }
+    }
+
+    fn response(&self) -> UpgradeStatusResponse {
+        UpgradeStatusResponse {
+            ok: self.state != UpgradeTaskState::Failed,
+            state: self.state.as_str(),
+            started_at_ms: self.started_at_ms,
+            completed_at_ms: self.completed_at_ms,
+            error: self.error.clone(),
+            installed_version: self.installed_version.clone(),
+            restart_required: self.restart_required,
+        }
+    }
+}
+
+impl UpgradeTaskState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Running => "running",
+            Self::Restarting => "restarting",
+            Self::Completed => "completed",
+            Self::Skipped => "skipped",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -124,6 +204,11 @@ impl ApiHandler for UpgradeCheckHandler {
 
 struct UpgradeApplyHandler {
     apply_semaphore: Arc<Semaphore>,
+    status: Arc<Mutex<UpgradeTaskStatus>>,
+}
+
+struct UpgradeStatusHandler {
+    status: Arc<Mutex<UpgradeTaskStatus>>,
 }
 
 #[async_trait]
@@ -165,17 +250,47 @@ impl ApiHandler for UpgradeApplyHandler {
             }
         };
 
+        {
+            let mut status = self.status.lock().await;
+            *status = UpgradeTaskStatus::running(now_ms());
+        }
+
+        let status = self.status.clone();
         tokio::spawn(async move {
             let _permit = permit;
             match crate::infra::upgrade::apply(&config, UpgradeContext::Plugin).await {
                 Ok(ApplyRunOutcome::Applied { outcome, .. }) if outcome.restart_required => {
+                    {
+                        let mut status = status.lock().await;
+                        status.state = UpgradeTaskState::Restarting;
+                        status.installed_version = Some(outcome.installed_version.clone());
+                        status.restart_required = Some(true);
+                    }
                     info!("requesting app restart after API-triggered upgrade");
                     crate::plugin::request_app_restart()
                         .unwrap_or_else(|_| std::process::exit(EXIT_RESTART_REQUIRED));
                 }
-                Ok(_) => {}
+                Ok(ApplyRunOutcome::Applied { outcome, .. }) => {
+                    let mut status = status.lock().await;
+                    status.state = UpgradeTaskState::Completed;
+                    status.completed_at_ms = Some(now_ms());
+                    status.installed_version = Some(outcome.installed_version);
+                    status.restart_required = Some(false);
+                }
+                Ok(ApplyRunOutcome::Skipped { check }) => {
+                    let mut status = status.lock().await;
+                    status.state = UpgradeTaskState::Skipped;
+                    status.completed_at_ms = Some(now_ms());
+                    status.installed_version = Some(check.current_version);
+                    status.restart_required = Some(false);
+                }
                 Err(err) => {
                     error!(error = %err, "upgrade apply failed");
+                    let mut status = status.lock().await;
+                    status.state = UpgradeTaskState::Failed;
+                    status.completed_at_ms = Some(now_ms());
+                    status.error = Some(err.to_string());
+                    status.restart_required = Some(false);
                 }
             }
         });
@@ -192,12 +307,37 @@ impl ApiHandler for UpgradeApplyHandler {
     }
 }
 
+#[async_trait]
+impl ApiHandler for UpgradeStatusHandler {
+    async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
+        let status = self.status.lock().await;
+        json_ok(StatusCode::OK, &status.response())
+    }
+}
+
 pub fn register_upgrade_routes(register: &ApiRegister) -> Result<()> {
     let apply_semaphore = Arc::new(Semaphore::new(1));
+    let status = Arc::new(Mutex::new(UpgradeTaskStatus::default()));
     register.register_post("/upgrade/check", Arc::new(UpgradeCheckHandler))?;
+    register.register_get(
+        "/upgrade/status",
+        Arc::new(UpgradeStatusHandler {
+            status: status.clone(),
+        }),
+    )?;
     register.register_post(
         "/upgrade/apply",
-        Arc::new(UpgradeApplyHandler { apply_semaphore }),
+        Arc::new(UpgradeApplyHandler {
+            apply_semaphore,
+            status,
+        }),
     )?;
     Ok(())
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }

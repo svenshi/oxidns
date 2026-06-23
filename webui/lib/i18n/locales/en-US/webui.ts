@@ -674,6 +674,12 @@ export const enUSWebui = {
       "Restart did not take effect: service shutdown was not observed. Check backend logs.",
     restartTimeout:
       "Restart timed out. Refresh the page and reconnect manually.",
+    upgradeRestartNotObserved:
+      "Upgrade did not complete: the backend did not restart within the expected time. Check backend logs.",
+    upgradeRestartTimeout:
+      "Upgrade restart timed out. Refresh the page and reconnect manually.",
+    upgradeVerifyTimeout:
+      "The backend came back online, but version {version} was not confirmed.",
     configHasErrorsBeforeDelete:
       "The current config has errors. Fix them in the editor before deleting a plugin.",
     pluginMissing: "Plugin does not exist or has already been deleted",
@@ -696,6 +702,7 @@ export const enUSWebui = {
     invalidJsonResponse: "Response is not valid JSON: {preview}",
     updateCheckFailed: "Failed to check for updates",
     upgradeStartFailed: "Failed to start upgrade",
+    upgradeFailed: "Upgrade failed",
     shortcutNestedReferenceManual:
       "Nested references in quick config must be adjusted or replaced manually",
     entryActionCannotRemove:
@@ -922,10 +929,20 @@ export const enUSWebui = {
     releaseNotes: "Release Notes",
     alreadyLatest: "Already up to date: {version}",
     upgradeStartFailed: "Failed to start upgrade: {error}",
+    upgradeFailed: "Upgrade failed or incomplete: {error}",
     checkingUpdates: "Checking…",
     checkUpdates: "Check for Updates",
     upgrading: "Upgrading…",
     upgradeNow: "Upgrade Now",
+    upgradeProgressTitle: "Upgrading OxiDNS",
+    upgradeProgressDesc:
+      "The backend is applying the new release and will reconnect automatically. Do not refresh or close this page.",
+    upgradePhaseRequesting: "Sending upgrade request",
+    upgradePhaseApplying: "Downloading and applying release",
+    upgradePhaseWaitingUp: "Waiting for backend to come back online",
+    upgradePhaseVerifying: "Verifying upgraded backend version",
+    upgradePhaseCompleted: "Upgrade verified; reloading console",
+    upgradeCompletedMsg: "Upgrade completed: now running {version}",
     upgradeConfigSection: "Upgrade Configuration",
     githubRepo: "GitHub Repository",
     githubRepoDesc: "Format: owner/repo. Default: {default}",

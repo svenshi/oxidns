@@ -917,6 +917,16 @@ export interface UpgradeApplyResponse {
   message: string;
 }
 
+export interface UpgradeStatusResponse {
+  ok: boolean;
+  state: "idle" | "running" | "restarting" | "completed" | "skipped" | "failed";
+  started_at_ms?: number;
+  completed_at_ms?: number;
+  error?: string;
+  installed_version?: string;
+  restart_required?: boolean;
+}
+
 export async function fetchUpgradeCheck(
   options: UpgradeCheckOptions = {},
 ): Promise<UpgradeCheckResponse> {
@@ -953,6 +963,14 @@ export async function triggerUpgradeApply(
     body: JSON.stringify(body),
   });
   return readJsonResponse<UpgradeApplyResponse>(response);
+}
+
+export async function fetchUpgradeStatus(): Promise<UpgradeStatusResponse> {
+  const response = await fetch(apiUrl("/upgrade/status"), {
+    method: "GET",
+    headers: apiHeaders(),
+  });
+  return readJsonResponse<UpgradeStatusResponse>(response);
 }
 
 export function apiUrl(path: string) {
