@@ -13,26 +13,30 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
    <ReleaseCard version="v1.4.0" badge="Minor Release" date="2026-06-24" defaultOpen>
        **Release Scope**
 
-       - Minor Release. The main focus is introducing `network.outbound` as a unified outbound stack, adding configurable multi-upstream response selection, hardening cache hot paths, and extending DoH with HTTP/1.1 plus entry-level JSON DNS API support. New options are optional-first and should be a mostly non-disruptive upgrade from `v1.3.0`.
+       - Minor Release. v1.4.0 focuses on egress control, upstream diagnostics, and concurrent upstream decision making for complex network environments. It introduces `network.outbound` as a unified egress layer, adds the `oxidns probe upstream` diagnostics command, extends `forward` with configurable concurrent response selection, and improves cache behavior, DoH serving, WebUI upgrade flow, and query recorder read performance.
+       - Existing configurations that do not set `network.outbound.default` usually upgrade directly. When a default outbound profile is configured, upstreams without explicit `outbound` inherit it. SOCKS5 proxying applies only to TCP, DoT, and DoH2; UDP, DoQ, and DoH3 upstreams ignore SOCKS5 proxy settings.
 
        **Changes**
 
-       - `feat(network)`: Added `network.outbound` as a unified outbound layer for HTTP clients, upgrade checks, webhooks, and upstream dialing, with nameserver profiles for UDP/TCP/DoT/DoH/DoQ/DoH3 and SOCKS5-aware policy. Upstreams now apply default outbound settings when no local outbound override is set.
-       - `feat(network)`: Added resolver/upstream cold-path metrics (resolver cache hits/misses/refreshes and upstream pool refresh latency) with low-cardinality labels keyed by outbound profile.
-       - `feat(forward)`: Added configurable concurrent upstream response selection modes (`fastest` / `balanced` / `prefer_positive` / `consensus`) and refined concurrent fan-out behavior.
-       - `feat(cache)`: Added `cache.min_positive_ttl` and optimized cache hit/TTL rewrite hot paths, with coverage updates for low-positive-TTL behavior.
-       - `feat(server)`: DoH now supports HTTP/1.1 and HTTP/2 in the same ingress path; added entry-level `json_api` for handling JSON-style query requests alongside RFC 8484.
-       - `feat(proto)`: Extended `Rcode` / `DNSClass` / `RecordType` parsing from user-facing tokens and added TTL rewrite helpers for records/messages to keep EDNS and signature sections unchanged while cloning.
-       - `feat(sequence)`: Added named RCODE support to `reject` and explicit `0` SOA handling path updates.
-       - `feat(webui)`：Exposed outbound profile configuration and runtime outbound metrics in settings, with related localizations and UI updates for new fields.
+       - `feat(network)`: add `network.outbound` for centralized resolver nameservers, default egress profiles, and SOCKS5 proxy settings. `download`, `upgrade`, `http_request`, forward upstreams, outbound resolvers, webhooks, and related network paths can now reuse the same egress policy.
+       - `feat(cli)`: add `oxidns probe upstream <addr>` for upstream reachability checks, resolved IP reporting, protocol handshake checks, TCP / DoT pipeline behavior detection, concurrent behavior classification, and human / JSON summaries. This is useful before enabling `network.outbound`, `bootstrap`, `pipeline`, or mixed-protocol upstreams.
+       - `feat(forward)`: add `response_selection` for concurrent upstreams, with `fastest`, `balanced`, `prefer_positive`, and `consensus` modes. `forward.concurrent` is raised to a bounded `1..=32` range and is clamped to the number of configured upstreams.
+       - `feat(cache)` / `perf(cache)`: add `cache.min_positive_ttl` to skip caching positive responses with low effective TTLs. Cache hit and TTL rewrite hot paths are optimized, and lazy refresh no longer removes newer cache entries when an older refresh returns a low-TTL response.
+       - `feat(server)`: DoH serving now supports HTTP/1.1 and HTTP/2 negotiation on the same listener. `http_server.entries[]` also supports entry-level `json_api` for `name` / `type` style DNS queries.
+       - `feat(webui)` / `fix(webui)`: WebUI can configure `network.outbound` profiles and show outbound runtime metrics. Upgrade flow now has status display and an overlay, restart / upgrade polling detects fresh backend instances, and HTML entry points use `no-cache` to avoid stale shells after upgrades.
+       - `feat(query_recorder)`: add a derived `questions` index table and `reader_concurrency` to improve qname / qtype filters, top qname / qtype / latency queries, and large SQLite recorder reads.
+       - `feat(sequence)` / `docs`: `reject` supports named RCODEs such as `reject NXDOMAIN` and `reject SERVFAIL`; add explicit `reject 0 soa`; add a DNS code reference for common RCODE, QCLASS, and QTYPE values.
+       - `refactor` / `deps` / `ci`: clarify upstream, transport, and forward module boundaries; update `hotpath`, `jiff`, `bytes`, `h2`, `webpki-roots`, and `syn`; update GitHub Actions to `actions/checkout@v7`.
 
        **Compatibility and Upgrade Notes**
 
-       - Root crate version bumped to `1.4.0`; `oxidns-proto` bumped to `0.1.3`; `crates/macros`, `crates/ripset`, and `crates/zoneparser` remain unchanged this cycle; use release tag `v1.4.0`.
-       - `v1.3.0` configurations can generally be upgraded directly; new settings are optional.
-       - `forward` users can adopt `response_selection` progressively; default remains `balanced`.
-       - Cache users may optionally set `min_positive_ttl` if low-TTL positive responses cause churn; leaving it unset keeps prior cache admission behavior.
-       - If you use `network.outbound`, verify resolver/upstream profile and SOCKS5 precedence in your environment after the upgrade.
+       - The root crate version is `1.4.0`; `oxidns-proto` is updated to `0.1.3`; the release tag should be `v1.4.0`.
+       - Configurations from `v1.3.0` usually upgrade directly if `network.outbound.default` is not set.
+       - If `network.outbound.default` is configured, review all upstreams without explicit `outbound`, because they inherit the default profile.
+       - SOCKS5 proxying applies only to TCP, DoT, and DoH2. UDP, DoQ, and DoH3 upstreams ignore SOCKS5 proxy settings.
+       - Custom builds that use outbound resolver DoT / DoH / DoQ / DoH3 should enable the corresponding `resolver-*` features.
+       - After upgrading, run `oxidns probe upstream <addr>` against critical upstreams, especially when using `network.outbound`, `bootstrap`, `pipeline`, DoH / DoQ / DoH3, or proxy egress.
+       - `forward.response_selection`, `cache.min_positive_ttl`, and `query_recorder.reader_concurrency` are optional and keep default behavior when omitted.
    </ReleaseCard>
 
    <ReleaseCard version="v1.3.0" badge="Minor Release" date="2026-06-16">

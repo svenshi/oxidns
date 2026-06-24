@@ -13,26 +13,30 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
    <ReleaseCard version="v1.4.0" badge="Minor Release" date="2026-06-24" defaultOpen>
        **版本定位**
 
-       - Minor Release。核心变更是把 `network.outbound` 作为统一出口层引入到网络栈，扩展并发上游结果裁决策略，优化缓存热路径，并补充 DoH HTTP/1.1 与入口级 JSON API。新增配置项均默认兼容原有行为，`v1.3.0` 配置可直接升级。
+       - Minor Release。v1.4.0 的核心是补齐复杂网络环境下的“出口控制、上游诊断和并发裁决”能力：新增 `network.outbound` 统一出口层，新增 `oxidns probe upstream` 上游诊断命令，增强 `forward` 多上游并发结果选择，并优化缓存、DoH 入站、WebUI 升级体验和查询记录读取性能。
+       - 未配置 `network.outbound.default` 的旧配置通常可以直接升级。若配置了默认 outbound profile，未显式设置 `outbound` 的 upstream 会继承该默认 profile；SOCKS5 仅作用于 TCP、DoT 和 DoH2，UDP、DoQ、DoH3 会忽略 SOCKS5 proxy。
 
        **主要变更**
 
-       - `feat(network)`：新增 `network.outbound` 配置域，支持 HTTP 客户端、升级检查、Webhook 与上游共用的 nameserver profile；支持 SOCKS5 与 nameserver profile 组合，并可通过默认 profile 自动应用到未显式指定 profile 的上游。resolver 流程重构，加入 nameserver profile 单次查询共享缓存，降低重复解析开销。
-       - `feat(network)`：补齐 outbound 相关冷路径可观测性，新增 resolver 缓存命中/未命中、刷新和 upstream pool 刷新延迟指标，按出口 profile 聚合，便于排障。
-       - `feat(forward)`：并发上游新增 `response_selection` 模式（`fastest` / `balanced` / `prefer_positive` / `consensus`），可在首速、负向答案置信度与一致性之间进行权衡；并发上限上调以增强链路分发弹性。
-       - `feat(cache)`：新增 `cache` 的 `min_positive_ttl`，可过滤低 TTL 正响应入缓存；同步优化 cache hit 与 TTL 重写热路径，并补充缓存压测场景。
-       - `feat(server)`：DoH 入站开始支持 HTTP/1.1 与 HTTP/2 统一处理，新增入口级 `json_api` 能力，可在入口路径直接处理 RFC8484 风格查询参数。
-       - `feat(proto)`：`oxidns-proto` 新增 `Rcode` / `DNSClass` / `RecordType` token 解析器；新增 TTL 重写工具，支持高效复制记录与消息时保持 EDNS/签名段不变。
-       - `feat(sequence)`：`reject` 规则新增命名 RCODE 支持与 `0` SOA 细化处理，增强可读性与表达能力。
-       - `feat(webui)`：新增 `network.outbound` 配置展示与运行时出口指标展示，支持 outbound profile 在 WebUI 配置、持久化和运行期查看；补齐相关英文/中文本地化文本。
+       - `feat(network)`：新增 `network.outbound` 统一出口配置，支持集中管理 resolver nameserver、默认出口 profile 和 SOCKS5 proxy。`download`、`upgrade`、`http_request`、forward upstream、outbound resolver、Webhook 等网络路径可以复用同一套出口策略，减少多处重复配置。
+       - `feat(cli)`：新增 `oxidns probe upstream <addr>` 上游诊断命令，支持上游可达性检测、域名型 upstream 解析结果展示、协议握手检查、TCP / DoT pipeline 行为判断、并发行为分类，以及 human / JSON summary。适合在启用 `network.outbound`、`bootstrap`、`pipeline` 或多协议 upstream 前验证真实链路。
+       - `feat(forward)`：并发上游新增 `response_selection`，支持 `fastest`、`balanced`、`prefer_positive`、`consensus` 四种模式；`forward.concurrent` 上限提升到 `1..=32`，并按实际 upstream 数量自动裁剪。该能力用于在速度、正向答案优先、负向答案置信度和多上游一致性之间取舍。
+       - `feat(cache)` / `perf(cache)`：新增 `cache.min_positive_ttl`，可跳过低有效 TTL 的正响应入缓存；同时优化 cache hit 与 TTL rewrite 热路径，降低高命中场景下的写竞争和记录复制开销，并修复 lazy refresh 低 TTL 场景下可能误删新缓存项的问题。
+       - `feat(server)`：DoH 入站支持 HTTP/1.1 与 HTTP/2 自动协商，并新增入口级 `json_api`，可在 `http_server.entries[]` 上开启 RFC8484 风格以外的 `name` / `type` 查询参数支持。
+       - `feat(webui)` / `fix(webui)`：WebUI 支持配置 `network.outbound` profile，并展示 outbound 相关运行时指标；升级流程新增状态展示与 Overlay，重启 / 升级检测改为识别新的 backend instance，减少快速 handoff 场景下的误判；HTML 入口改为 `no-cache`，避免升级后浏览器缓存旧页面壳。
+       - `feat(query_recorder)`：query recorder 新增派生 `questions` 索引表和 `reader_concurrency`，优化 qname / qtype 过滤、top qname / qtype / latency 等 SQLite 读路径，降低大库场景下 WebUI / API 查询压力。
+       - `feat(sequence)` / `docs`：`reject` 支持英文 RCODE 名称，例如 `reject NXDOMAIN`、`reject SERVFAIL`；新增显式 `reject 0 soa`；补充 DNS 编码速查表，统一说明常见 RCODE、QCLASS、QTYPE 的数字值和英文助记名。
+       - `refactor` / `deps` / `ci`：整理 upstream、transport、forward 内部模块边界；升级 `hotpath`、`jiff`、`bytes`、`h2`、`webpki-roots`、`syn` 等依赖；GitHub Actions 升级到 `actions/checkout@v7`。
 
        **配置与升级说明**
 
-       - 根 crate 版本号升级为 `1.4.0`；`crates/proto` 升级为 `0.1.3`；`crates/macros`、`crates/ripset`、`crates/zoneparser` 均无变更，无需同步升级；release tag 应使用 `v1.4.0`。
-       - `v1.3.0` 配置通常可直接升级到 `v1.4.0`，新增配置项均为可选。
-       - 使用 `forward` 时可按需开启 `response_selection`，默认值为 `balanced`；未配置时行为保持 1.3 系列兼容。
-       - 已开启缓存的部署可评估 `min_positive_ttl`；不设置该字段时按既有 `max_positive_ttl` / TTL 行为运行。
-       - 若在自建出口网络中使用 `network.outbound`，建议同时检查 `resolver`/`upstream` profile 与 proxy 的覆盖关系，避免出现意外的本地 SOCKS5 覆盖或回退路径。
+       - 根 crate 版本号升级为 `1.4.0`；`oxidns-proto` 升级为 `0.1.3`；release tag 应使用 `v1.4.0`。
+       - 从 `v1.3.0` 升级时，未配置 `network.outbound.default` 的旧配置通常可以直接升级。
+       - 如果配置了 `network.outbound.default`，请检查所有未显式设置 `outbound` 的 upstream，因为它们会继承默认 profile。
+       - SOCKS5 proxy 仅作用于 TCP、DoT、DoH2；UDP、DoQ、DoH3 upstream 会忽略 SOCKS5 proxy。
+       - 使用自定义编译时，如需 outbound resolver 的 DoT / DoH / DoQ / DoH3 能力，请确认启用了对应 `resolver-*` feature。
+       - 建议升级后对关键上游执行 `oxidns probe upstream <addr>`，尤其是使用 `network.outbound`、`bootstrap`、`pipeline`、DoH / DoQ / DoH3 或代理出口的部署。
+       - `forward.response_selection`、`cache.min_positive_ttl`、`query_recorder.reader_concurrency` 均为可选配置，不设置时保持默认行为。
    </ReleaseCard>
 
    <ReleaseCard version="v1.3.0" badge="Minor Release" date="2026-06-16">
