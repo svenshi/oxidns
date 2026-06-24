@@ -48,7 +48,9 @@ export const zhCNDocs = {
   },
   forward: {
     concurrent:
-      "- 类型：`integer`；必填：否；默认值：`1`\n- 取值范围：实际运行时会限制在 `1..=3`\n- 作用：定义多上游模式下的并发查询扇出数。\n- 运行影响：\n  - 值越大，多上游竞争越积极，但同时会增加上游请求量。",
+      "- 类型：`integer`；必填：否；默认值：`1`\n- 取值范围：实际运行时会限制在 `1..=32`，且不会超过 upstream 数量。\n- 建议范围：`2..=8`；更高值适合高级观测或特殊部署。\n- 作用：定义多上游模式下的并发查询扇出数。\n- 运行影响：\n  - 值越大，多上游竞争越积极，但同时会增加上游请求量。",
+    response_selection:
+      "- 类型：`string`；必填：否；默认值：`balanced`\n- 可选值：`fastest`、`balanced`、`prefer_positive`、`consensus`\n- 作用：定义并发上游返回多个响应时的选择策略。\n- 运行影响：\n  - `fastest`：第一个成功返回的 DNS 响应胜出。\n  - `balanced`：正向响应立即胜出；负向响应会短暂等待可能的正向响应。\n  - `prefer_positive`：正向响应优先；负向响应需要等待本轮并发完成。\n  - `consensus`：正向响应优先；负向响应需要兼容结果确认。",
     upstreams:
       "- 类型：`array`；必填：是；默认值：无\n- 作用：定义一个或多个上游目标。\n- 运行影响：\n  - 数组长度为 `1` 时使用单上游模式。\n  - 数组长度大于 `1` 时使用竞争式查询模式。",
     short_circuit:
@@ -60,7 +62,7 @@ export const zhCNDocs = {
     "upstreams[].dial_addr":
       "- 类型：`ip`；必填：否；默认值：无\n- 作用：指定实际连接 IP，同时保留 `addr` 中的主机名用于 SNI、Host 和证书校验。\n- 适用场景：固定拨号地址、绕过本机解析或配合自定义路由出口。",
     "upstreams[].outbound":
-      "- 类型：`string`；必填：否\n- 默认值：`network.outbound.default`；没有 default 时为无\n- 作用：引用 `network.outbound.profiles` 中的出站配置，为该上游注入 resolver 和 proxy。\n- 覆盖规则：本地 `dial_addr` 优先于 resolver；本地 `bootstrap` 优先于 outbound resolver；本地 `socks5` 优先于 profile proxy。\n- 注意：profile proxy 会严格应用；UDP、DoQ、DoH3 upstream 不支持 profile SOCKS5 proxy。",
+      "- 类型：`string`；必填：否\n- 默认值：`network.outbound.default`；没有 default 时为无\n- 作用：引用 `network.outbound.profiles` 中的出站配置，为该上游注入 resolver 和 proxy。\n- 覆盖规则：本地 `dial_addr` 优先于 resolver；本地 `bootstrap` 优先于 outbound resolver；本地 `socks5` 优先于 profile proxy。\n- 注意：profile proxy 只应用于 TCP、DoT 和 DoH2；UDP、DoQ、DoH3 upstream 会忽略 SOCKS5 proxy。",
     "upstreams[].port":
       "- 类型：`integer`；必填：否；默认值：协议默认端口\n- 作用：覆盖协议默认端口。",
     "upstreams[].bootstrap":
@@ -68,7 +70,7 @@ export const zhCNDocs = {
     "upstreams[].bootstrap_version":
       "- 类型：`integer`；必填：否；默认值：无\n- 作用：指定 bootstrap 优先使用 IPv4 或 IPv6。\n- 取值：`4` 或 `6`。",
     "upstreams[].socks5":
-      "- 类型：`string`；必填：否；默认值：无\n- 作用：为上游连接指定 SOCKS5 代理。\n- 支持格式：\n  - `host:port`\n  - `username:password@host:port`\n  - IPv6 需写成 `[addr]:port`\n  - 带认证的 IPv6 需写成 `username:password@[addr]:port`\n- 规则说明：\n  - 代理主机可以是 IP，也可以是主机名；主机名会使用系统解析。\n  - 认证部分只按第一个 `:` 分割用户名和密码，因此格式必须是 `username:password@...`。\n  - 上游启用 `enable_http3` 时不应再配置 `socks5`，两者不属于同一连接模型。\n- 注意事项：格式错误、端口非法或代理主机解析失败时，该上游不会被正常创建。",
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：为上游连接指定 SOCKS5 代理。\n- 支持格式：\n  - `host:port`\n  - `username:password@host:port`\n  - IPv6 需写成 `[addr]:port`\n  - 带认证的 IPv6 需写成 `username:password@[addr]:port`\n- 规则说明：\n  - 代理主机可以是 IP，也可以是主机名；主机名会使用系统解析。\n  - 认证部分只按第一个 `:` 分割用户名和密码，因此格式必须是 `username:password@...`。\n  - SOCKS5 仅应用于 TCP、DoT 和 DoH2；UDP、DoQ、DoH3 upstream 会忽略该代理。\n- 注意事项：格式错误、端口非法或代理主机解析失败时，该上游不会被正常创建。",
     "upstreams[].idle_timeout":
       "- 类型：`integer`；必填：否；默认值：无\n- 单位：秒\n- 作用：定义连接池空闲连接保留时间。",
     "upstreams[].max_conns":
@@ -167,6 +169,10 @@ export const zhCNDocs = {
       "- 类型：`string`；必填：否；默认值：`first_success`\n- 可选值：\n  - `first_success`：在总等待预算内，第一个成功探测的地址优先\n  - `best_within_budget`：在总等待预算内收集成功探测结果，选择延迟最低的地址\n  - `background`：本次响应保持原始顺序，后台异步预热探测评分缓存\n- 作用：定义已有 A / AAAA 响应中的地址优选策略。\n- 运行影响：\n  - 插件只处理已有 DNS response，不负责上游竞速。\n  - 探测失败、超时或无评分时会保留原始响应作为兜底。\n- 配置要求：只接受 OxiDNS 原生命名，不提供兼容别名。",
     probe_methods:
       '- 类型：`array<string>` 或逗号分隔 `string`；必填：否；默认值：`["tcp:443", "tcp:80"]`\n- 支持值：\n  - `tcp:<port>`：对目标 IP 的指定端口做 TCP connect 探测\n  - `ping`：best-effort ICMP 探测，受平台与权限影响\n  - `none`：不主动探测，只使用已有缓存评分或原始顺序\n- 作用：定义用于给响应 IP 评分的探测方式。\n- 配置要求：\n  - `none` 不能与其它探测方式组合。\n  - `tcp:<port>` 的端口必须大于 0。\n  - 方法顺序会影响错峰启动顺序。',
+    outbound:
+      "- 类型：`string`；必填：否；默认值：`network.outbound.default`\n- 作用：引用 `network.outbound.profiles` 中的出站配置，为 TCP 探测复用 profile proxy。\n- 说明：\n  - 仅 `tcp:<port>` 探测使用 proxy；`ping` 始终走本机命令。\n  - 目标 IP 已经来自 DNS response，不会再使用 profile resolver 解析。",
+    socks5:
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：为 TCP 探测指定局部 SOCKS5 代理。\n- 说明：\n  - 格式与 `upstreams[].socks5` 一致。\n  - 同时配置 `outbound` 和 `socks5` 时，局部 `socks5` 覆盖 profile proxy。\n  - 仅 `tcp:<port>` 探测使用 SOCKS5；`ping` 始终走本机命令。",
     probe_stagger:
       "- 类型：`integer`；必填：否；默认值：`200`\n- 单位：毫秒\n- 作用：定义多种探测方式之间的错峰启动间隔。\n- 运行影响：\n  - 较小值会让多种方法更快并发启动。\n  - 较大值会让靠前方法获得更明显的优先机会，尤其影响 `first_success`。",
     probe_timeout:

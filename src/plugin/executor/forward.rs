@@ -487,6 +487,18 @@ enum ResponseClass {
     Other,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum NegativeResponseKey {
+    NxDomain,
+    NoData,
+}
+
+#[derive(Debug)]
+struct NegativeVote {
+    key: NegativeResponseKey,
+    count: usize,
+}
+
 #[derive(Debug)]
 struct SelectionState {
     completed: usize,
@@ -494,6 +506,7 @@ struct SelectionState {
     last_timeout: bool,
     best_response: Option<Message>,
     negative_votes: usize,
+    negative_vote_buckets: Vec<NegativeVote>,
 }
 
 impl SelectionState {
@@ -504,6 +517,7 @@ impl SelectionState {
             last_timeout: false,
             best_response: None,
             negative_votes: 0,
+            negative_vote_buckets: Vec::new(),
         }
     }
 
@@ -511,6 +525,9 @@ impl SelectionState {
         let class = classify_response(&response);
         if class == ResponseClass::Negative {
             self.negative_votes += 1;
+            if let Some(key) = negative_response_key(&response) {
+                self.record_negative_vote(key);
+            }
         }
         if should_replace_best(self.best_response.as_ref(), &response) {
             self.best_response = Some(response);
@@ -530,6 +547,25 @@ impl SelectionState {
 
     fn finish(self) -> (Option<Message>, Option<String>, bool) {
         (self.best_response, self.last_error, self.last_timeout)
+    }
+
+    fn record_negative_vote(&mut self, key: NegativeResponseKey) {
+        if let Some(bucket) = self
+            .negative_vote_buckets
+            .iter_mut()
+            .find(|bucket| bucket.key == key)
+        {
+            bucket.count += 1;
+            return;
+        }
+        self.negative_vote_buckets
+            .push(NegativeVote { key, count: 1 });
+    }
+
+    fn has_negative_consensus(&self, required_votes: usize) -> bool {
+        self.negative_vote_buckets
+            .iter()
+            .any(|bucket| bucket.count >= required_votes)
     }
 }
 
@@ -645,7 +681,7 @@ async fn select_consensus(
                 join_set.abort_all();
                 return (state.best_response, None, false);
             }
-            ResponseClass::Negative if state.negative_votes >= CONSENSUS_NEGATIVE_VOTES => {
+            ResponseClass::Negative if state.has_negative_consensus(CONSENSUS_NEGATIVE_VOTES) => {
                 join_set.abort_all();
                 return (state.best_response, None, false);
             }
@@ -695,6 +731,14 @@ fn classify_response(response: &Message) -> ResponseClass {
         Rcode::NoError if !response.answers().is_empty() => ResponseClass::Positive,
         Rcode::NoError | Rcode::NXDomain => ResponseClass::Negative,
         _ => ResponseClass::Other,
+    }
+}
+
+fn negative_response_key(response: &Message) -> Option<NegativeResponseKey> {
+    match response.rcode() {
+        Rcode::NXDomain => Some(NegativeResponseKey::NxDomain),
+        Rcode::NoError if response.answers().is_empty() => Some(NegativeResponseKey::NoData),
+        _ => None,
     }
 }
 
@@ -1462,5 +1506,34 @@ upstreams:
             context.response().expect("response must exist").rcode(),
             Rcode::NXDomain
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn consensus_selection_waits_when_negative_votes_disagree() {
+        let forwarder = ConcurrentForwarder {
+            tag: "forward-test".to_string(),
+            active_concurrent: 3,
+            upstreams: vec![
+                Arc::new(MockUpstream::response(Rcode::NXDomain, Duration::ZERO)),
+                Arc::new(MockUpstream::response(
+                    Rcode::NoError,
+                    Duration::from_millis(20),
+                )),
+                Arc::new(MockUpstream::ok_with_answer(Duration::from_millis(200))),
+            ],
+            short_circuit: false,
+            response_selection: ResponseSelectionMode::Consensus,
+            metrics: Arc::new(ForwardMetrics::new(
+                "forward-test".to_string(),
+                vec!["u0".to_string(), "u1".to_string(), "u2".to_string()],
+            )),
+        };
+
+        let mut context = make_context();
+        let step = forwarder.execute(&mut context).await.unwrap();
+        let response = context.response().expect("response must exist");
+        assert!(matches!(step, ExecStep::Next));
+        assert_eq!(response.rcode(), Rcode::NoError);
+        assert_eq!(response.answers().len(), 1);
     }
 }
