@@ -314,7 +314,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         cache_expired_total: "查找时发现并移除过期条目的次数。",
         cache_insert_total: "缓存条目插入或更新的总次数。",
         cache_skip_total:
-          "因写入策略（截断响应、无 TTL）而跳过缓存的响应总数。",
+          "因写入策略（截断响应、无 TTL、正响应 TTL 过低）而跳过缓存的响应总数。",
         cache_lazy_refresh_total:
           "Lazy Cache 后台刷新尝试总数（按结果：started / success / failed）。",
         cache_entry_count: "当前缓存中的条目数量。",
@@ -392,6 +392,12 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         key: "max_positive_ttl",
         description: "定义正响应 TTL 上限。",
         label: "正响应 TTL 上限",
+        type: "number",
+      },
+      {
+        key: "min_positive_ttl",
+        description: "定义正响应进入缓存所需的最小 TTL。",
+        label: "正响应最小缓存 TTL",
         type: "number",
       },
       {

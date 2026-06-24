@@ -108,6 +108,8 @@ export const pluginFieldDocs = {
       "- 类型：`integer`；必填：否；默认值：`60`\n- 单位：秒\n- 作用：定义无 SOA 负响应的回退 TTL。",
     max_positive_ttl:
       "- 类型：`integer`；必填：否；默认值：无\n- 单位：秒\n- 作用：定义正响应 TTL 上限。",
+    min_positive_ttl:
+      "- 类型：`integer`；必填：否；默认值：无\n- 单位：秒\n- 作用：定义正响应进入缓存所需的最小 TTL。\n- 说明：正响应的有效缓存 TTL 低于该值时不会写入缓存。该判断在 `max_positive_ttl` 裁剪之后执行。",
     ecs_in_key:
       "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：控制 ECS scope 是否参与缓存键计算。",
   },

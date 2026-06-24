@@ -111,6 +111,8 @@ export const enUSDocs = {
       "- Type: `integer`; required: no; default value: `60`\n- Unit: seconds\n- Function: Define the fallback TTL for negative responses without SOA.",
     max_positive_ttl:
       "- Type: `integer`; required: no; default value: none\n- Unit: seconds\n- Function: Define the upper TTL limit for positive responses.",
+    min_positive_ttl:
+      "- Type: `integer`; Required: No; Default: None\n- Unit: seconds\n- Function: Define the minimum TTL required before writing a positive response to cache.\n- Notes: Positive responses whose effective cache TTL is lower than this value are not cached. The check runs after `max_positive_ttl` capping.",
     ecs_in_key:
       "- Type: `boolean`; required: no; default value: `false`\n- Function: Control whether the ECS scope is included in cache key calculation.",
   },

@@ -180,6 +180,7 @@ export const enUSWebui = {
     stale: "Stale",
     truncated: "Truncated response",
     noTtl: "No TTL",
+    lowPositiveTtl: "Low positive TTL",
     started: "Started",
     success: "Success",
     failed: "Failed",

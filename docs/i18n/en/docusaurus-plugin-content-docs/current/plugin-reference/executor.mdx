@@ -421,6 +421,8 @@ Provides TTL-aware response caching with negative cache support and persistence.
     negative_ttl_without_soa: 60
     # Upper bound for positive TTL
     max_positive_ttl: 600
+    # Minimum positive TTL required for cache admission
+    min_positive_ttl: 4
     # Exclude ECS from the cache key for a better hit ratio
     ecs_in_key: false
     # Persist cache contents to disk
@@ -484,6 +486,12 @@ Provides TTL-aware response caching with negative cache support and persistence.
 - Type: `duration`; Required: no
 - Purpose: Cap positive-cache TTL.
 
+#### `min_positive_ttl`
+
+- Type: `duration`; Required: no
+- Purpose: Require a minimum positive TTL before writing a response to cache.
+- Notes: Positive responses whose effective cache TTL is lower than this value are not cached. The check runs after `max_positive_ttl` capping.
+
 #### `ecs_in_key`
 
 - Type: `boolean`; Required: no; Default: `false`
@@ -523,7 +531,7 @@ Exported through the global `GET /api/metrics` endpoint. The cache plugin does n
 - `cache_miss_total`
 - `cache_expired_total`
 - `cache_insert_total`
-- `cache_skip_total{reason="truncated|no_ttl"}`
+- `cache_skip_total{reason="truncated|no_ttl|low_positive_ttl"}`
 - `cache_lazy_refresh_total{result="started|success|failed"}`
 - `cache_entry_count`
 

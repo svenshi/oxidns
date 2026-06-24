@@ -106,6 +106,9 @@ pub struct CacheConfig {
     /// Optional upper bound TTL (seconds) for positive responses.
     max_positive_ttl: Option<u32>,
 
+    /// Optional lower bound TTL (seconds) for positive responses to be cached.
+    min_positive_ttl: Option<u32>,
+
     /// Whether ECS scope is part of cache key.
     ///
     /// Default: false.
@@ -142,10 +145,30 @@ enum CacheHitKind {
     Stale,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CacheSkipReason {
+    NoTtl,
+    LowPositiveTtl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CacheTtlDecision {
+    Cache(u32),
+    Skip(CacheSkipReason),
+}
+
 #[derive(Debug, Clone)]
 struct CacheLookup {
     key: CacheKey,
     hit_kind: Option<CacheHitKind>,
+    refresh_entry: Option<CacheEntryIdentity>,
+}
+
+#[derive(Debug, Clone)]
+struct CacheEntryIdentity {
+    value: Arc<CacheItem>,
+    cache_time_ms: u64,
+    expire_at_ms: u64,
 }
 
 #[derive(Debug)]
@@ -160,6 +183,7 @@ struct CacheMetrics {
     insert_total: AtomicU64,
     skip_truncated_total: AtomicU64,
     skip_no_ttl_total: AtomicU64,
+    skip_low_positive_ttl_total: AtomicU64,
     lazy_refresh_started_total: AtomicU64,
     lazy_refresh_success_total: AtomicU64,
     lazy_refresh_failed_total: AtomicU64,
@@ -178,6 +202,7 @@ impl CacheMetrics {
             insert_total: AtomicU64::new(0),
             skip_truncated_total: AtomicU64::new(0),
             skip_no_ttl_total: AtomicU64::new(0),
+            skip_low_positive_ttl_total: AtomicU64::new(0),
             lazy_refresh_started_total: AtomicU64::new(0),
             lazy_refresh_success_total: AtomicU64::new(0),
             lazy_refresh_failed_total: AtomicU64::new(0),
@@ -186,6 +211,18 @@ impl CacheMetrics {
 
     fn set_cache_map(&self, cache_map: CacheMap) {
         let _ = self.cache_map.set(cache_map);
+    }
+
+    fn record_skip(&self, reason: CacheSkipReason) {
+        match reason {
+            CacheSkipReason::NoTtl => {
+                self.skip_no_ttl_total.fetch_add(1, Ordering::Relaxed);
+            }
+            CacheSkipReason::LowPositiveTtl => {
+                self.skip_low_positive_ttl_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 }
 
@@ -263,6 +300,16 @@ impl MetricSource for CacheMetrics {
             "Total responses skipped by cache write policy.",
             &skip_no_ttl,
             self.skip_no_ttl_total.load(Ordering::Relaxed),
+        ));
+        let skip_low_positive_ttl = [
+            MetricLabel::new("plugin_tag", self.tag.as_str()),
+            MetricLabel::new("reason", "low_positive_ttl"),
+        ];
+        sink.emit(MetricSample::counter(
+            "cache_skip_total",
+            "Total responses skipped by cache write policy.",
+            &skip_low_positive_ttl,
+            self.skip_low_positive_ttl_total.load(Ordering::Relaxed),
         ));
         let lazy_started = [
             MetricLabel::new("plugin_tag", self.tag.as_str()),
@@ -682,7 +729,10 @@ impl Cache {
         self.config.lazy_cache_ttl.is_some()
             && response.rcode() == Rcode::NoError
             && !response.answers().is_empty()
-            && self.compute_positive_ttl(response).is_some()
+            && matches!(
+                self.compute_positive_ttl(response),
+                CacheTtlDecision::Cache(_)
+            )
     }
 
     #[inline]
@@ -734,10 +784,16 @@ impl Cache {
                     return Some(CacheLookup {
                         key,
                         hit_kind: Some(CacheHitKind::Fresh),
+                        refresh_entry: None,
                     });
                 }
 
                 if self.config.lazy_cache_ttl.is_some() && now < item.expire_at_ms {
+                    let refresh_entry = CacheEntryIdentity {
+                        value: item.value.clone(),
+                        cache_time_ms: item.cache_time_ms,
+                        expire_at_ms: item.expire_at_ms,
+                    };
                     self.metrics.stale_hit_total.fetch_add(1, Ordering::Relaxed);
                     let resp = Self::restore_cached_message(
                         &item.value,
@@ -758,6 +814,7 @@ impl Cache {
                     return Some(CacheLookup {
                         key,
                         hit_kind: Some(CacheHitKind::Stale),
+                        refresh_entry: Some(refresh_entry),
                     });
                 }
             }
@@ -775,6 +832,7 @@ impl Cache {
                 return Some(CacheLookup {
                     key,
                     hit_kind: None,
+                    refresh_entry: None,
                 });
             }
             None => {}
@@ -807,6 +865,7 @@ impl Cache {
         Some(CacheLookup {
             key,
             hit_kind: None,
+            refresh_entry: None,
         })
     }
 
@@ -824,19 +883,31 @@ impl Cache {
     }
 
     #[inline]
-    fn compute_positive_ttl(&self, response: &Message) -> Option<u32> {
+    fn compute_positive_ttl(&self, response: &Message) -> CacheTtlDecision {
         if response.rcode() != Rcode::NoError {
-            return None;
+            return CacheTtlDecision::Skip(CacheSkipReason::NoTtl);
         }
 
-        let ttl = response.min_answer_ttl()?;
+        let Some(ttl) = response.min_answer_ttl() else {
+            return CacheTtlDecision::Skip(CacheSkipReason::NoTtl);
+        };
         let ttl = if let Some(max) = self.config.max_positive_ttl {
             ttl.min(max)
         } else {
             ttl
         };
 
-        if ttl == 0 { None } else { Some(ttl) }
+        if ttl == 0 {
+            return CacheTtlDecision::Skip(CacheSkipReason::NoTtl);
+        }
+
+        if let Some(min) = self.config.min_positive_ttl
+            && ttl < min
+        {
+            return CacheTtlDecision::Skip(CacheSkipReason::LowPositiveTtl);
+        }
+
+        CacheTtlDecision::Cache(ttl)
     }
 
     #[inline]
@@ -865,9 +936,20 @@ impl Cache {
     }
 
     #[inline]
-    fn compute_cache_ttl(&self, response: &Message) -> Option<u32> {
-        self.compute_positive_ttl(response)
-            .or_else(|| self.compute_negative_ttl(response))
+    fn compute_cache_ttl(&self, response: &Message) -> CacheTtlDecision {
+        match self.compute_positive_ttl(response) {
+            CacheTtlDecision::Cache(ttl) => CacheTtlDecision::Cache(ttl),
+            CacheTtlDecision::Skip(CacheSkipReason::LowPositiveTtl) => {
+                CacheTtlDecision::Skip(CacheSkipReason::LowPositiveTtl)
+            }
+            CacheTtlDecision::Skip(CacheSkipReason::NoTtl) => {
+                if let Some(ttl) = self.compute_negative_ttl(response) {
+                    CacheTtlDecision::Cache(ttl)
+                } else {
+                    CacheTtlDecision::Skip(CacheSkipReason::NoTtl)
+                }
+            }
+        }
     }
 
     #[inline]
@@ -891,6 +973,7 @@ impl Cache {
     fn try_start_lazy_refresh(
         &self,
         key: &CacheKey,
+        refresh_entry: &CacheEntryIdentity,
         cache_map: &CacheMap,
         context: &DnsContext,
         next: Option<&ExecutorNext>,
@@ -913,12 +996,14 @@ impl Cache {
             .fetch_add(1, Ordering::Relaxed);
 
         let key = key.clone();
+        let refresh_entry = refresh_entry.clone();
         let cache_map = cache_map.clone();
         let inflight = self.lazy_refresh_inflight.clone();
         let mut sub_ctx = context.copy_for_subquery();
         sub_ctx.clear_response();
         let lazy_cache_ttl = self.config.lazy_cache_ttl;
         let max_positive_ttl = self.config.max_positive_ttl;
+        let min_positive_ttl = self.config.min_positive_ttl;
         let cache_negative = self.cache_negative;
         let max_negative_ttl = self.max_negative_ttl;
         let negative_ttl_without_soa = self.negative_ttl_without_soa;
@@ -937,17 +1022,25 @@ impl Cache {
                     let ttl = compute_cache_ttl_with_policy(
                         &response,
                         max_positive_ttl,
+                        min_positive_ttl,
                         cache_negative,
                         max_negative_ttl,
                         negative_ttl_without_soa,
                     );
-                    if let Some(ttl) = ttl {
+                    if let CacheTtlDecision::Cache(ttl) = ttl {
                         let now = AppClock::elapsed_millis();
                         let fresh_until_ms = Cache::compute_fresh_until_ms(now, ttl);
                         let enable_lazy = lazy_cache_ttl.is_some()
                             && response.rcode() == Rcode::NoError
                             && !response.answers().is_empty()
-                            && compute_positive_ttl_with_cap(&response, max_positive_ttl).is_some();
+                            && matches!(
+                                compute_positive_ttl_with_policy(
+                                    &response,
+                                    max_positive_ttl,
+                                    min_positive_ttl
+                                ),
+                                CacheTtlDecision::Cache(_)
+                            );
                         let expire_at_ms = if enable_lazy {
                             now.saturating_add(
                                 u64::from(ttl.max(lazy_cache_ttl.unwrap_or(ttl))) * 1000,
@@ -967,6 +1060,22 @@ impl Cache {
                             .lazy_refresh_success_total
                             .fetch_add(1, Ordering::Relaxed);
                     } else {
+                        if let CacheTtlDecision::Skip(reason) = ttl {
+                            if reason == CacheSkipReason::LowPositiveTtl
+                                && cache_map.remove_if(&key, |existing| {
+                                    existing.cache_time_ms == refresh_entry.cache_time_ms
+                                        && existing.expire_at_ms == refresh_entry.expire_at_ms
+                                        && Arc::ptr_eq(&existing.value, &refresh_entry.value)
+                                })
+                            {
+                                updated_keys.fetch_add(1, Ordering::Relaxed);
+                                debug!(
+                                    "evicted stale lazy cache entry after low positive TTL refresh: domain={}, type={:?}, class={:?}",
+                                    key.domain, key.record_type, key.dns_class
+                                );
+                            }
+                            metrics.record_skip(reason);
+                        }
                         metrics
                             .lazy_refresh_failed_total
                             .fetch_add(1, Ordering::Relaxed);
@@ -1103,8 +1212,15 @@ impl Executor for Cache {
 
         if let Some(lookup) = cache_lookup.as_ref()
             && lookup.hit_kind == Some(CacheHitKind::Stale)
+            && let Some(refresh_entry) = lookup.refresh_entry.as_ref()
         {
-            self.try_start_lazy_refresh(&lookup.key, cache_map, context, next.as_ref());
+            self.try_start_lazy_refresh(
+                &lookup.key,
+                refresh_entry,
+                cache_map,
+                context,
+                next.as_ref(),
+            );
         }
 
         if self.should_short_circuit(cache_hit) {
@@ -1137,26 +1253,43 @@ impl Executor for Cache {
                 return Ok(next_step);
             }
 
-            if let Some(ttl) = self.compute_cache_ttl(response) {
-                self.update_cache_entry(cache_map, key, response.clone(), ttl);
-            } else {
-                self.metrics
-                    .skip_no_ttl_total
-                    .fetch_add(1, Ordering::Relaxed);
+            match self.compute_cache_ttl(response) {
+                CacheTtlDecision::Cache(ttl) => {
+                    self.update_cache_entry(cache_map, key, response.clone(), ttl);
+                }
+                CacheTtlDecision::Skip(reason) => {
+                    self.metrics.record_skip(reason);
+                }
             }
         }
         Ok(next_step)
     }
 }
 
-fn compute_positive_ttl_with_cap(response: &Message, max_positive_ttl: Option<u32>) -> Option<u32> {
+fn compute_positive_ttl_with_policy(
+    response: &Message,
+    max_positive_ttl: Option<u32>,
+    min_positive_ttl: Option<u32>,
+) -> CacheTtlDecision {
     if response.rcode() != Rcode::NoError {
-        return None;
+        return CacheTtlDecision::Skip(CacheSkipReason::NoTtl);
     }
 
-    let ttl = response.min_answer_ttl()?;
+    let Some(ttl) = response.min_answer_ttl() else {
+        return CacheTtlDecision::Skip(CacheSkipReason::NoTtl);
+    };
     let ttl = max_positive_ttl.map(|max| ttl.min(max)).unwrap_or(ttl);
-    if ttl == 0 { None } else { Some(ttl) }
+    if ttl == 0 {
+        return CacheTtlDecision::Skip(CacheSkipReason::NoTtl);
+    }
+
+    if let Some(min) = min_positive_ttl
+        && ttl < min
+    {
+        return CacheTtlDecision::Skip(CacheSkipReason::LowPositiveTtl);
+    }
+
+    CacheTtlDecision::Cache(ttl)
 }
 
 fn compute_negative_ttl_with_policy(
@@ -1187,18 +1320,29 @@ fn compute_negative_ttl_with_policy(
 fn compute_cache_ttl_with_policy(
     response: &Message,
     max_positive_ttl: Option<u32>,
+    min_positive_ttl: Option<u32>,
     cache_negative: bool,
     max_negative_ttl: u32,
     negative_ttl_without_soa: u32,
-) -> Option<u32> {
-    compute_positive_ttl_with_cap(response, max_positive_ttl).or_else(|| {
-        compute_negative_ttl_with_policy(
-            response,
-            cache_negative,
-            max_negative_ttl,
-            negative_ttl_without_soa,
-        )
-    })
+) -> CacheTtlDecision {
+    match compute_positive_ttl_with_policy(response, max_positive_ttl, min_positive_ttl) {
+        CacheTtlDecision::Cache(ttl) => CacheTtlDecision::Cache(ttl),
+        CacheTtlDecision::Skip(CacheSkipReason::LowPositiveTtl) => {
+            CacheTtlDecision::Skip(CacheSkipReason::LowPositiveTtl)
+        }
+        CacheTtlDecision::Skip(CacheSkipReason::NoTtl) => {
+            if let Some(ttl) = compute_negative_ttl_with_policy(
+                response,
+                cache_negative,
+                max_negative_ttl,
+                negative_ttl_without_soa,
+            ) {
+                CacheTtlDecision::Cache(ttl)
+            } else {
+                CacheTtlDecision::Skip(CacheSkipReason::NoTtl)
+            }
+        }
+    }
 }
 
 fn parse_cache_config(args: Option<Value>) -> Result<CacheConfig> {
@@ -1217,6 +1361,7 @@ fn parse_cache_config(args: Option<Value>) -> Result<CacheConfig> {
         max_negative_ttl: None,
         negative_ttl_without_soa: None,
         max_positive_ttl: None,
+        min_positive_ttl: None,
         ecs_in_key: None,
     })
 }
@@ -1258,6 +1403,22 @@ fn validate_cache_config(config: &CacheConfig) -> Result<()> {
     {
         return Err(DnsError::plugin(
             "cache max_positive_ttl must be greater than 0",
+        ));
+    }
+
+    if let Some(ttl) = config.min_positive_ttl
+        && ttl == 0
+    {
+        return Err(DnsError::plugin(
+            "cache min_positive_ttl must be greater than 0",
+        ));
+    }
+
+    if let (Some(min), Some(max)) = (config.min_positive_ttl, config.max_positive_ttl)
+        && min > max
+    {
+        return Err(DnsError::plugin(
+            "cache min_positive_ttl must be less than or equal to max_positive_ttl",
         ));
     }
 
@@ -1340,6 +1501,7 @@ fn parse_cache_quick_setup(raw: &str) -> Result<CacheConfig> {
         max_negative_ttl: None,
         negative_ttl_without_soa: None,
         max_positive_ttl: None,
+        min_positive_ttl: None,
         ecs_in_key: None,
     };
 
@@ -1439,6 +1601,7 @@ mod tests {
             max_negative_ttl: Some(DEFAULT_MAX_NEGATIVE_TTL),
             negative_ttl_without_soa: Some(DEFAULT_NEGATIVE_TTL_WITHOUT_SOA),
             max_positive_ttl: None,
+            min_positive_ttl: None,
             ecs_in_key: None,
         }
     }
@@ -1640,6 +1803,69 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct LowTtlRefreshExecutor;
+
+    #[async_trait]
+    impl Plugin for LowTtlRefreshExecutor {
+        fn tag(&self) -> &str {
+            "low_ttl_refresh_executor"
+        }
+    }
+
+    #[async_trait]
+    impl Executor for LowTtlRefreshExecutor {
+        async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
+            let mut response = Message::new();
+            response.set_rcode(Rcode::NoError);
+            response.add_question(Question::new(
+                Name::from_ascii("example.com.").unwrap(),
+                RecordType::A,
+                DNSClass::IN,
+            ));
+            response.add_answer(Record::from_rdata(
+                Name::from_ascii("example.com.").unwrap(),
+                3,
+                RData::A(crate::proto::rdata::A(Ipv4Addr::new(9, 9, 9, 9))),
+            ));
+            context.set_response(response);
+            Ok(ExecStep::Next)
+        }
+    }
+
+    #[derive(Debug)]
+    struct BlockingLowTtlRefreshExecutor {
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl Plugin for BlockingLowTtlRefreshExecutor {
+        fn tag(&self) -> &str {
+            "blocking_low_ttl_refresh_executor"
+        }
+    }
+
+    #[async_trait]
+    impl Executor for BlockingLowTtlRefreshExecutor {
+        async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
+            self.release.notified().await;
+            let mut response = Message::new();
+            response.set_rcode(Rcode::NoError);
+            response.add_question(Question::new(
+                Name::from_ascii("example.com.").unwrap(),
+                RecordType::A,
+                DNSClass::IN,
+            ));
+            response.add_answer(Record::from_rdata(
+                Name::from_ascii("example.com.").unwrap(),
+                3,
+                RData::A(crate::proto::rdata::A(Ipv4Addr::new(9, 9, 9, 9))),
+            ));
+            context.set_response(response);
+            Ok(ExecStep::Next)
+        }
+    }
+
     #[test]
     fn cache_key_uses_normalized_domain_from_query_view() {
         let mut ctx_upper = make_context(make_request_with_query("Example.COM.", false, false));
@@ -1778,7 +2004,71 @@ mod tests {
         let mut response = Message::new();
         response.set_rcode(Rcode::ServFail);
 
-        assert_eq!(cache.compute_cache_ttl(&response), None);
+        assert_eq!(
+            cache.compute_cache_ttl(&response),
+            CacheTtlDecision::Skip(CacheSkipReason::NoTtl)
+        );
+    }
+
+    #[test]
+    fn min_positive_ttl_skips_low_ttl_positive_response() {
+        let mut cfg = default_test_config();
+        cfg.min_positive_ttl = Some(4);
+        let cache = test_cache(cfg);
+
+        let mut response = Message::new();
+        response.set_rcode(Rcode::NoError);
+        response.add_answer(Record::from_rdata(
+            Name::from_ascii("example.com.").unwrap(),
+            3,
+            RData::A(crate::proto::rdata::A(Ipv4Addr::new(1, 1, 1, 1))),
+        ));
+
+        assert_eq!(
+            cache.compute_cache_ttl(&response),
+            CacheTtlDecision::Skip(CacheSkipReason::LowPositiveTtl)
+        );
+    }
+
+    #[test]
+    fn min_positive_ttl_allows_equal_ttl_positive_response() {
+        let mut cfg = default_test_config();
+        cfg.min_positive_ttl = Some(4);
+        let cache = test_cache(cfg);
+
+        let mut response = Message::new();
+        response.set_rcode(Rcode::NoError);
+        response.add_answer(Record::from_rdata(
+            Name::from_ascii("example.com.").unwrap(),
+            4,
+            RData::A(crate::proto::rdata::A(Ipv4Addr::new(1, 1, 1, 1))),
+        ));
+
+        assert_eq!(
+            cache.compute_cache_ttl(&response),
+            CacheTtlDecision::Cache(4)
+        );
+    }
+
+    #[test]
+    fn max_positive_ttl_cap_is_checked_before_min_positive_ttl() {
+        let mut cfg = default_test_config();
+        cfg.max_positive_ttl = Some(10);
+        cfg.min_positive_ttl = Some(20);
+        let cache = test_cache(cfg);
+
+        let mut response = Message::new();
+        response.set_rcode(Rcode::NoError);
+        response.add_answer(Record::from_rdata(
+            Name::from_ascii("example.com.").unwrap(),
+            30,
+            RData::A(crate::proto::rdata::A(Ipv4Addr::new(1, 1, 1, 1))),
+        ));
+
+        assert_eq!(
+            cache.compute_cache_ttl(&response),
+            CacheTtlDecision::Skip(CacheSkipReason::LowPositiveTtl)
+        );
     }
 
     #[tokio::test]
@@ -1964,6 +2254,39 @@ mod tests {
             cache
                 .metrics
                 .skip_no_ttl_total
+                .load(AtomicOrdering::Relaxed),
+            1
+        );
+        assert_eq!(cache.metrics.insert_total.load(AtomicOrdering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn cache_metrics_record_low_positive_ttl_skip() {
+        AppClock::start();
+        let mut cfg = default_test_config();
+        cfg.min_positive_ttl = Some(4);
+        let mut cache = test_cache(cfg);
+        let _ = cache.init_for_test().await;
+
+        let mut context = make_context(make_request_with_query("example.com.", false, false));
+        context.set_response({
+            let mut response = Message::new();
+            response.set_rcode(Rcode::NoError);
+            response.add_answer(Record::from_rdata(
+                Name::from_ascii("example.com.").unwrap(),
+                3,
+                RData::A(crate::proto::rdata::A(Ipv4Addr::new(1, 1, 1, 1))),
+            ));
+            response
+        });
+
+        cache.execute_with_next(&mut context, None).await.unwrap();
+
+        assert_eq!(cache.cache_map.get().unwrap().len(), 0);
+        assert_eq!(
+            cache
+                .metrics
+                .skip_low_positive_ttl_total
                 .load(AtomicOrdering::Relaxed),
             1
         );
@@ -2175,6 +2498,182 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn lazy_refresh_skips_low_positive_ttl_response() {
+        AppClock::start();
+        let mut cfg = default_test_config();
+        cfg.lazy_cache_ttl = Some(30);
+        cfg.min_positive_ttl = Some(4);
+        cfg.short_circuit = Some(true);
+        let mut cache = test_cache(cfg);
+        let _ = cache.init_for_test().await;
+
+        let program =
+            ChainProgram::single_with_next_executor_for_test(Arc::new(LowTtlRefreshExecutor));
+        let next = ExecutorNext::from_program_for_test(program, 0);
+
+        let mut context = make_context(make_request_with_query("example.com.", false, false));
+        let key = Cache::build_cache_key(&mut context, false).unwrap();
+        let mut response = Message::new();
+        response.set_rcode(Rcode::NoError);
+        response.add_question(Question::new(
+            Name::from_ascii("example.com.").unwrap(),
+            RecordType::A,
+            DNSClass::IN,
+        ));
+        response.add_answer(Record::from_rdata(
+            Name::from_ascii("example.com.").unwrap(),
+            120,
+            RData::A(crate::proto::rdata::A(Ipv4Addr::new(1, 1, 1, 1))),
+        ));
+
+        let now = AppClock::elapsed_millis();
+        cache.cache_map.get().unwrap().insert_or_update_with_meta(
+            key.clone(),
+            Arc::new(CacheItem::new(response, 120, now.saturating_sub(1_000))),
+            now.saturating_sub(121_000),
+            now.saturating_add(10_000),
+            now.saturating_sub(100),
+        );
+
+        let _ = cache
+            .execute_with_next(&mut context, Some(next))
+            .await
+            .unwrap();
+        wait_until("lazy refresh low ttl skip should be recorded", || {
+            cache
+                .metrics
+                .skip_low_positive_ttl_total
+                .load(AtomicOrdering::Relaxed)
+                == 1
+        })
+        .await;
+
+        assert_eq!(
+            cache
+                .metrics
+                .lazy_refresh_failed_total
+                .load(AtomicOrdering::Relaxed),
+            1
+        );
+        assert!(
+            cache
+                .cache_map
+                .get()
+                .unwrap()
+                .get_retained_cloned(&key, AppClock::elapsed_millis(), 0)
+                .is_none(),
+            "low TTL refresh should evict the old stale cache entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn lazy_refresh_low_ttl_skip_does_not_remove_newer_cache_entry() {
+        AppClock::start();
+        let mut cfg = default_test_config();
+        cfg.lazy_cache_ttl = Some(30);
+        cfg.min_positive_ttl = Some(4);
+        cfg.short_circuit = Some(true);
+        let mut cache = test_cache(cfg);
+        let _ = cache.init_for_test().await;
+
+        let release = Arc::new(tokio::sync::Notify::new());
+        let program = ChainProgram::single_with_next_executor_for_test(Arc::new(
+            BlockingLowTtlRefreshExecutor {
+                release: release.clone(),
+            },
+        ));
+        let next = ExecutorNext::from_program_for_test(program, 0);
+
+        let mut context = make_context(make_request_with_query("example.com.", false, false));
+        let key = Cache::build_cache_key(&mut context, false).unwrap();
+        let mut stale_response = Message::new();
+        stale_response.set_rcode(Rcode::NoError);
+        stale_response.add_question(Question::new(
+            Name::from_ascii("example.com.").unwrap(),
+            RecordType::A,
+            DNSClass::IN,
+        ));
+        stale_response.add_answer(Record::from_rdata(
+            Name::from_ascii("example.com.").unwrap(),
+            120,
+            RData::A(crate::proto::rdata::A(Ipv4Addr::new(1, 1, 1, 1))),
+        ));
+
+        let now = AppClock::elapsed_millis();
+        cache.cache_map.get().unwrap().insert_or_update_with_meta(
+            key.clone(),
+            Arc::new(CacheItem::new(
+                stale_response,
+                120,
+                now.saturating_sub(1_000),
+            )),
+            now.saturating_sub(121_000),
+            now.saturating_add(10_000),
+            now.saturating_sub(100),
+        );
+
+        let _ = cache
+            .execute_with_next(&mut context, Some(next))
+            .await
+            .unwrap();
+        wait_until("lazy refresh should be waiting", || {
+            cache
+                .metrics
+                .lazy_refresh_started_total
+                .load(AtomicOrdering::Relaxed)
+                == 1
+        })
+        .await;
+
+        let mut newer_response = Message::new();
+        newer_response.set_rcode(Rcode::NoError);
+        newer_response.add_question(Question::new(
+            Name::from_ascii("example.com.").unwrap(),
+            RecordType::A,
+            DNSClass::IN,
+        ));
+        newer_response.add_answer(Record::from_rdata(
+            Name::from_ascii("example.com.").unwrap(),
+            90,
+            RData::A(crate::proto::rdata::A(Ipv4Addr::new(2, 2, 2, 2))),
+        ));
+        cache.cache_map.get().unwrap().insert_or_update_with_meta(
+            key.clone(),
+            Arc::new(CacheItem::new(
+                newer_response,
+                90,
+                now.saturating_add(90_000),
+            )),
+            now.saturating_add(1),
+            now.saturating_add(90_000),
+            now.saturating_add(1),
+        );
+
+        release.notify_one();
+        wait_until("lazy refresh low ttl skip should be recorded", || {
+            cache
+                .metrics
+                .skip_low_positive_ttl_total
+                .load(AtomicOrdering::Relaxed)
+                == 1
+        })
+        .await;
+
+        let stored = cache
+            .cache_map
+            .get()
+            .unwrap()
+            .get_retained_cloned(&key, AppClock::elapsed_millis(), 0)
+            .expect("newer cache entry should remain present");
+        assert!(
+            stored
+                .value
+                .resp
+                .has_answer_ip(|ip| ip == std::net::IpAddr::V4(Ipv4Addr::new(2, 2, 2, 2)))
+        );
+    }
+
     #[test]
     fn validate_config_rejects_zero_dump_interval_when_dump_file_is_set() {
         let cfg = CacheConfig {
@@ -2187,8 +2686,26 @@ mod tests {
             max_negative_ttl: Some(60),
             negative_ttl_without_soa: Some(60),
             max_positive_ttl: None,
+            min_positive_ttl: None,
             ecs_in_key: None,
         };
+
+        assert!(validate_cache_config(&cfg).is_err());
+    }
+
+    #[test]
+    fn validate_config_rejects_zero_min_positive_ttl() {
+        let mut cfg = default_test_config();
+        cfg.min_positive_ttl = Some(0);
+
+        assert!(validate_cache_config(&cfg).is_err());
+    }
+
+    #[test]
+    fn validate_config_rejects_min_positive_ttl_above_max_positive_ttl() {
+        let mut cfg = default_test_config();
+        cfg.min_positive_ttl = Some(11);
+        cfg.max_positive_ttl = Some(10);
 
         assert!(validate_cache_config(&cfg).is_err());
     }

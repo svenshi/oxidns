@@ -538,6 +538,11 @@ export const enUSPluginDefined = {
           label: "Positive response TTL cap",
           description: "Defines the upper TTL limit for positive responses.",
         },
+        min_positive_ttl: {
+          label: "Minimum positive cache TTL",
+          description:
+            "Defines the minimum positive response TTL required for cache admission.",
+        },
         ecs_in_key: {
           label: "Include ECS in cache key",
           description:
@@ -569,7 +574,7 @@ export const enUSPluginDefined = {
           cache_insert_total:
             "The total number of times cache entries have been inserted or updated.",
           cache_skip_total:
-            "The total number of responses that were skipped from cache due to write policy (truncated responses, no TTL).",
+            "The total number of responses that were skipped from cache due to write policy (truncated responses, no TTL, low positive TTL).",
           cache_lazy_refresh_total:
             "Total number of Lazy Cache background refresh attempts (by result: started / success / failed).",
           cache_entry_count: "The number of entries currently in the cache.",

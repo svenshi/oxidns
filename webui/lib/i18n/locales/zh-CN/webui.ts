@@ -174,6 +174,7 @@ export const zhCNWebui = {
     stale: "过期可用",
     truncated: "截断响应",
     noTtl: "无 TTL",
+    lowPositiveTtl: "正响应 TTL 过低",
     started: "已启动",
     success: "成功",
     failed: "失败",
