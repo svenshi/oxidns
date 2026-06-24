@@ -63,6 +63,13 @@ impl AppClock {
         Self::base_timestamp_ms().saturating_add(Self::elapsed_millis())
     }
 
+    /// Unix timestamp in milliseconds captured when the application clock was
+    /// initialized.
+    #[inline(always)]
+    pub fn started_at_ms() -> u64 {
+        Self::base_timestamp_ms()
+    }
+
     /// Get milliseconds elapsed since application start.
     #[inline(always)]
     pub fn elapsed_millis() -> u64 {

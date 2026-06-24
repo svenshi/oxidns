@@ -655,10 +655,10 @@ export const zhCNWebui = {
     hotReloadTriggerFailed: "应用失败：无法触发热重载",
     hotReloadNotSuccessful: "应用失败：热重载未成功",
     restartFailed: "重启失败",
-    restartNotObserved: "重启未生效：未观察到服务停机，请检查后端日志",
+    restartNotObserved: "重启未生效：未观察到新的后端实例，请检查后端日志",
     restartTimeout: "重启超时，请刷新页面后手动重新连接",
     upgradeRestartNotObserved:
-      "升级未完成：在预期时间内没有观察到后端重启，请检查后端日志",
+      "升级未完成：在预期时间内没有观察到新的后端实例，请检查后端日志",
     upgradeRestartTimeout: "升级后的重启等待超时，请刷新页面后手动重新连接",
     upgradeVerifyTimeout: "后端已重新上线，但未能确认版本 {version}",
     configHasErrorsBeforeDelete:
@@ -725,7 +725,7 @@ export const zhCNWebui = {
     description: "DNS 解析会短暂中断，完成后页面会自动恢复，请勿刷新或关闭。",
     saving: "保存配置到磁盘",
     requesting: "发起重启请求",
-    waitingDown: "等待旧进程退出",
+    waitingDown: "等待服务切换",
     waitingUp: "等待新进程就绪",
     reloading: "重新加载配置",
   },

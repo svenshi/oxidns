@@ -19,7 +19,7 @@ use crate::infra::error::Result;
 
 #[derive(Debug)]
 pub struct HealthState {
-    started_at_ms: u64,
+    instance_id: String,
     api_listening: AtomicBool,
     plugins_initialized: AtomicBool,
     server_startup_complete: AtomicBool,
@@ -29,8 +29,9 @@ pub struct HealthState {
 
 impl HealthState {
     pub fn new() -> Self {
+        let started_at_ms = AppClock::started_at_ms();
         Self {
-            started_at_ms: AppClock::elapsed_millis(),
+            instance_id: generate_instance_id(started_at_ms),
             api_listening: AtomicBool::new(false),
             plugins_initialized: AtomicBool::new(false),
             server_startup_complete: AtomicBool::new(false),
@@ -63,7 +64,9 @@ impl HealthState {
             },
             version: VERSION,
             build_bundle: PRIMARY_BUNDLE,
-            uptime_ms: AppClock::elapsed_millis().saturating_sub(self.started_at_ms),
+            instance_id: self.instance_id.clone(),
+            started_at_ms: AppClock::started_at_ms(),
+            uptime_ms: AppClock::elapsed_millis(),
             checks: HealthChecks {
                 api: bool_status(api_listening),
                 plugin_init: bool_status(plugins_initialized),
@@ -88,6 +91,8 @@ struct HealthSnapshot {
     status: &'static str,
     version: &'static str,
     build_bundle: &'static str,
+    instance_id: String,
+    started_at_ms: u64,
     uptime_ms: u64,
     checks: HealthChecks,
     plugins: HealthPluginCounts,
@@ -163,6 +168,12 @@ impl ApiHandler for HealthHandler {
 
 fn bool_status(value: bool) -> &'static str {
     if value { "ok" } else { "not_ready" }
+}
+
+fn generate_instance_id(started_at_ms: u64) -> String {
+    let random = rand::random::<u128>();
+    let pid = std::process::id();
+    format!("{started_at_ms:016x}-{pid:08x}-{random:032x}")
 }
 
 pub fn register_builtin_routes(register: &ApiRegister, health: Arc<HealthState>) -> Result<()> {
@@ -242,6 +253,8 @@ mod tests {
         assert!(body.contains("\"status\":\"ok\""));
         assert!(body.contains(&format!("\"version\":\"{}\"", VERSION)));
         assert!(body.contains(&format!("\"build_bundle\":\"{}\"", PRIMARY_BUNDLE)));
+        assert!(body.contains("\"instance_id\":\""));
+        assert!(body.contains("\"started_at_ms\":"));
         assert!(body.contains("\"api\":\"ok\""));
         assert!(body.contains("\"plugin_init\":\"ok\""));
         assert!(body.contains("\"server_startup\":\"ok\""));

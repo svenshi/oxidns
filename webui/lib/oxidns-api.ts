@@ -36,6 +36,8 @@ export interface HealthResponse {
   status: string;
   version: string;
   build_bundle?: string;
+  instance_id?: string;
+  started_at_ms?: number;
   uptime_ms: number;
   checks: {
     api: string;

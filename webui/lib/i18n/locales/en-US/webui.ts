@@ -672,11 +672,11 @@ export const enUSWebui = {
     hotReloadNotSuccessful: "Apply failed: hot reload did not complete",
     restartFailed: "Restart failed",
     restartNotObserved:
-      "Restart did not take effect: service shutdown was not observed. Check backend logs.",
+      "Restart did not take effect: a new backend instance was not observed. Check backend logs.",
     restartTimeout:
       "Restart timed out. Refresh the page and reconnect manually.",
     upgradeRestartNotObserved:
-      "Upgrade did not complete: the backend did not restart within the expected time. Check backend logs.",
+      "Upgrade did not complete: a new backend instance was not observed within the expected time. Check backend logs.",
     upgradeRestartTimeout:
       "Upgrade restart timed out. Refresh the page and reconnect manually.",
     upgradeVerifyTimeout:
@@ -752,7 +752,7 @@ export const enUSWebui = {
       "DNS resolution will be briefly interrupted. The page will recover automatically after restart; do not refresh or close it.",
     saving: "Saving config to disk",
     requesting: "Sending restart request",
-    waitingDown: "Waiting for old process to exit",
+    waitingDown: "Waiting for service handoff",
     waitingUp: "Waiting for new process to become ready",
     reloading: "Reloading config",
   },

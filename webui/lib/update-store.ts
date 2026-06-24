@@ -9,6 +9,12 @@ import {
   triggerUpgradeApply,
 } from "./oxidns-api";
 import { WEBUI, tClient } from "./i18n";
+import {
+  createProcessInstanceBaseline,
+  hasProcessIdentityBaseline,
+  processInstanceChanged,
+  type ProcessInstanceBaseline,
+} from "./process-instance";
 import { useAppStore } from "./store";
 
 const STORAGE_KEY = "oxidns:upgrade-config";
@@ -188,11 +194,12 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   triggerUpgrade: async () => {
     const { upgradeConfig, updateInfo } = get();
     const targetVersion = updateInfo?.latestVersion ?? null;
-    let baselineUptimeMs: number | undefined;
+    let baseline = createProcessInstanceBaseline();
     try {
-      baselineUptimeMs = (await fetchHealth()).uptime_ms;
+      baseline = createProcessInstanceBaseline(await fetchHealth());
     } catch {
-      baselineUptimeMs = undefined;
+      // Upgrade completion can still be detected through a temporary outage or
+      // a fresh uptime signature if the initial health probe is unavailable.
     }
 
     set({
@@ -211,7 +218,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
         allowPrerelease: upgradeConfig.allowPrerelease,
       });
       const installedVersion = await pollUpgradeCompletion({
-        baselineUptimeMs,
+        baseline,
         targetVersion,
         onPhase: (phase) => set({ applyPhase: phase }),
       });
@@ -268,22 +275,20 @@ class UpgradeApplyFailedError extends Error {
 
 const UPGRADE_APPLY_TIMEOUT_MS = 10 * 60_000;
 const UPGRADE_RECONNECT_TIMEOUT_MS = 2 * 60_000;
-const FRESH_PROCESS_BUFFER_MS = 2_000;
 
 async function pollUpgradeCompletion({
-  baselineUptimeMs,
+  baseline,
   targetVersion,
   onPhase,
 }: {
-  baselineUptimeMs?: number;
+  baseline: ProcessInstanceBaseline;
   targetVersion: string | null;
   onPhase: (phase: UpgradeApplyPhase) => void;
 }): Promise<string> {
-  const startTime = Date.now();
   let sawDown = false;
 
   onPhase("applying");
-  const applyDeadline = startTime + UPGRADE_APPLY_TIMEOUT_MS;
+  const applyDeadline = Date.now() + UPGRADE_APPLY_TIMEOUT_MS;
   while (Date.now() < applyDeadline) {
     await delay(1500);
     try {
@@ -304,7 +309,7 @@ async function pollUpgradeCompletion({
       if (
         targetVersion &&
         versionsEqual(health.version, targetVersion) &&
-        processLooksFresh(health.uptime_ms, baselineUptimeMs, startTime)
+        processInstanceChanged(health, baseline)
       ) {
         return verifyUpgradeVersion(targetVersion, health.version, onPhase);
       }
@@ -328,8 +333,8 @@ async function pollUpgradeCompletion({
     try {
       const health = await fetchHealth();
       const fresh =
-        sawDown ||
-        processLooksFresh(health.uptime_ms, baselineUptimeMs, startTime);
+        processInstanceChanged(health, baseline) ||
+        (sawDown && !hasProcessIdentityBaseline(baseline));
       if (!fresh) continue;
       return verifyUpgradeVersion(targetVersion, health.version, onPhase);
     } catch {
@@ -370,17 +375,6 @@ async function verifyUpgradeVersion(
     tClient(WEBUI.storeErrors.upgradeVerifyTimeout, {
       version: targetVersion ?? lastVersion,
     }),
-  );
-}
-
-function processLooksFresh(
-  uptimeMs: number,
-  baselineUptimeMs: number | undefined,
-  startTime: number,
-): boolean {
-  return (
-    (baselineUptimeMs !== undefined && uptimeMs < baselineUptimeMs) ||
-    uptimeMs < Date.now() - startTime + FRESH_PROCESS_BUFFER_MS
   );
 }
 
