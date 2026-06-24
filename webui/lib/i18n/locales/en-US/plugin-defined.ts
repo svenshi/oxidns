@@ -829,6 +829,18 @@ export const enUSPluginDefined = {
           label: "Enter value",
           placeholder: "tcp:443",
         },
+        outbound: {
+          label: "Outbound Profile",
+          description:
+            "Reference a profile from network.outbound.profiles so TCP probes can reuse the profile proxy.",
+          placeholder: "profile-1",
+        },
+        socks5: {
+          label: "SOCKS5 Proxy",
+          description:
+            "Specify a local SOCKS5 proxy for TCP probes, overriding the outbound profile proxy.",
+          placeholder: "127.0.0.1:1080",
+        },
         probe_stagger: {
           label: "Speed ​​peak deviation (ms)",
           description:

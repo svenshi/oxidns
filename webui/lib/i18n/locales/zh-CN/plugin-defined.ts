@@ -749,6 +749,18 @@ export const zhCNPluginDefined = {
           label: "输入值",
           placeholder: "tcp:443",
         },
+        outbound: {
+          label: "出站配置",
+          description:
+            "引用 network.outbound.profiles 中的出站配置，为 TCP 探测复用 profile proxy。",
+          placeholder: "profile-1",
+        },
+        socks5: {
+          label: "SOCKS5 代理",
+          description:
+            "为 TCP 探测指定局部 SOCKS5 代理，优先于 outbound profile proxy。",
+          placeholder: "127.0.0.1:1080",
+        },
         probe_stagger: {
           label: "测速错峰(ms)",
           description: "多种测速方式之间的错峰启动间隔。",
