@@ -52,8 +52,16 @@ const MINIMUM_CHANGES_TO_DUMP: u64 = 1024;
 const DEFAULT_NEGATIVE_TTL_WITHOUT_SOA: u32 = 60;
 // Default max TTL (seconds) for negative cache entries.
 const DEFAULT_MAX_NEGATIVE_TTL: u32 = 300;
-// Minimum interval for updating LRU timestamp on cache hit.
-const LAST_ACCESS_TOUCH_INTERVAL_MS: u64 = 1000;
+// Adaptive minimum intervals for updating LRU timestamp on cache hit.
+const TOUCH_INTERVAL_REFRESH_MS: u64 = 1000;
+const TOUCH_LOW_OCCUPANCY_PERCENT: usize = 50;
+const TOUCH_MEDIUM_OCCUPANCY_PERCENT: usize = 75;
+const TOUCH_HIGH_OCCUPANCY_PERCENT: usize = 90;
+const TOUCH_MEDIUM_INTERVAL_MS: u64 = 30_000;
+const TOUCH_HIGH_INTERVAL_MS: u64 = 5_000;
+const TOUCH_CRITICAL_INTERVAL_MS: u64 = 1_000;
+const SMALL_CACHE_TOUCH_SIZE: usize = 4096;
+const MEDIUM_CACHE_TOUCH_SIZE: usize = 32_768;
 
 // Cleanup tuning.
 const MAX_INITIAL_CACHE_CAPACITY: usize = 16_384;
@@ -402,6 +410,12 @@ pub struct Cache {
 
     /// Next timestamp when an inline write-side maintenance pass may run.
     next_inline_maintenance_ms: AtomicU64,
+
+    /// Cached hit-side last-access touch interval.
+    touch_interval_ms: AtomicU64,
+
+    /// Next timestamp when the hit-side touch interval may be recomputed.
+    next_touch_interval_refresh_ms: AtomicU64,
 }
 
 impl Cache {
@@ -493,6 +507,65 @@ impl Cache {
     #[inline]
     fn initial_cache_capacity(cache_size: usize) -> usize {
         cache_size.clamp(1, MAX_INITIAL_CACHE_CAPACITY)
+    }
+
+    #[inline]
+    fn adaptive_touch_interval_ms(cache_len: usize, cache_size: usize) -> u64 {
+        let occupancy_percent = cache_len.saturating_mul(100) / cache_size.max(1);
+        let interval = if occupancy_percent < TOUCH_LOW_OCCUPANCY_PERCENT {
+            0
+        } else if occupancy_percent < TOUCH_MEDIUM_OCCUPANCY_PERCENT {
+            TOUCH_MEDIUM_INTERVAL_MS
+        } else if occupancy_percent < TOUCH_HIGH_OCCUPANCY_PERCENT {
+            TOUCH_HIGH_INTERVAL_MS
+        } else {
+            TOUCH_CRITICAL_INTERVAL_MS
+        };
+
+        Self::scale_touch_interval_ms(interval, cache_size)
+    }
+
+    #[inline]
+    fn scale_touch_interval_ms(interval_ms: u64, cache_size: usize) -> u64 {
+        if interval_ms == 0 {
+            return 0;
+        }
+
+        if cache_size <= SMALL_CACHE_TOUCH_SIZE {
+            return (interval_ms / 4).max(TOUCH_CRITICAL_INTERVAL_MS);
+        }
+        if cache_size <= MEDIUM_CACHE_TOUCH_SIZE {
+            return (interval_ms / 2).max(TOUCH_CRITICAL_INTERVAL_MS);
+        }
+
+        interval_ms
+    }
+
+    #[inline]
+    fn current_touch_interval_ms(&self, cache_map: &CacheMap, now: u64) -> u64 {
+        let cached = self.touch_interval_ms.load(Ordering::Relaxed);
+        let next_refresh = self.next_touch_interval_refresh_ms.load(Ordering::Relaxed);
+        if now < next_refresh {
+            return cached;
+        }
+
+        let new_next_refresh = now.saturating_add(TOUCH_INTERVAL_REFRESH_MS);
+        if self
+            .next_touch_interval_refresh_ms
+            .compare_exchange(
+                next_refresh,
+                new_next_refresh,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            return cached;
+        }
+
+        let interval = Self::adaptive_touch_interval_ms(cache_map.len(), self.cache_size);
+        self.touch_interval_ms.store(interval, Ordering::Relaxed);
+        interval
     }
 
     #[inline]
@@ -696,24 +769,9 @@ impl Cache {
     }
 
     #[inline]
-    fn rewrite_message_ttls(message: &mut Message, ttl: u32) {
-        for record in message.answers_mut() {
-            record.set_ttl(ttl);
-        }
-        for record in message.authorities_mut() {
-            record.set_ttl(ttl);
-        }
-        for record in message.additionals_mut() {
-            record.set_ttl(ttl);
-        }
-    }
-
-    #[inline]
     fn restore_cached_message(item: &CacheItem, request_id: u16, remaining_ttl: u32) -> Message {
-        let mut response = item.resp.clone();
-        response.set_id(request_id);
-        Self::rewrite_message_ttls(&mut response, remaining_ttl);
-        response
+        item.resp
+            .clone_with_id_and_record_ttl(request_id, remaining_ttl)
     }
 
     #[inline]
@@ -755,8 +813,9 @@ impl Cache {
         self.metrics.lookup_total.fetch_add(1, Ordering::Relaxed);
 
         let now = AppClock::elapsed_millis();
+        let touch_interval_ms = self.current_touch_interval_ms(cache_map, now);
 
-        match cache_map.get_retained_cloned_status(&key, now, LAST_ACCESS_TOUCH_INTERVAL_MS) {
+        match cache_map.get_retained_cloned_status(&key, now, touch_interval_ms) {
             Some(TtlCacheLookup::Hit(item)) => {
                 if now < item.value.fresh_until_ms {
                     self.metrics.fresh_hit_total.fetch_add(1, Ordering::Relaxed);
@@ -1471,6 +1530,8 @@ impl CacheFactory {
             cleanup_task_id: Mutex::new(None),
             lazy_refresh_inflight: Arc::new(Mutex::new(AHashSet::new())),
             next_inline_maintenance_ms: AtomicU64::new(0),
+            touch_interval_ms: AtomicU64::new(0),
+            next_touch_interval_refresh_ms: AtomicU64::new(0),
         })))
     }
 }
@@ -1587,6 +1648,8 @@ mod tests {
             cleanup_task_id: Mutex::new(None),
             lazy_refresh_inflight: Arc::new(Mutex::new(AHashSet::new())),
             next_inline_maintenance_ms: AtomicU64::new(0),
+            touch_interval_ms: AtomicU64::new(0),
+            next_touch_interval_refresh_ms: AtomicU64::new(0),
         }
     }
 
@@ -1620,6 +1683,70 @@ mod tests {
             Cache::initial_cache_capacity(MAX_INITIAL_CACHE_CAPACITY * 10),
             MAX_INITIAL_CACHE_CAPACITY
         );
+    }
+
+    #[test]
+    fn adaptive_touch_interval_tracks_occupancy_thresholds() {
+        assert_eq!(Cache::adaptive_touch_interval_ms(49_000, 100_000), 0);
+        assert_eq!(
+            Cache::adaptive_touch_interval_ms(50_000, 100_000),
+            TOUCH_MEDIUM_INTERVAL_MS
+        );
+        assert_eq!(
+            Cache::adaptive_touch_interval_ms(75_000, 100_000),
+            TOUCH_HIGH_INTERVAL_MS
+        );
+        assert_eq!(
+            Cache::adaptive_touch_interval_ms(90_000, 100_000),
+            TOUCH_CRITICAL_INTERVAL_MS
+        );
+    }
+
+    #[test]
+    fn adaptive_touch_interval_scales_for_small_caches() {
+        assert_eq!(Cache::adaptive_touch_interval_ms(50, 100), 7_500);
+        assert_eq!(Cache::adaptive_touch_interval_ms(75, 100), 1_250);
+        assert_eq!(
+            Cache::adaptive_touch_interval_ms(90, 100),
+            TOUCH_CRITICAL_INTERVAL_MS
+        );
+
+        assert_eq!(Cache::adaptive_touch_interval_ms(5_000, 10_000), 15_000);
+        assert_eq!(Cache::adaptive_touch_interval_ms(7_500, 10_000), 2_500);
+        assert_eq!(
+            Cache::adaptive_touch_interval_ms(9_000, 10_000),
+            TOUCH_CRITICAL_INTERVAL_MS
+        );
+    }
+
+    #[test]
+    fn current_touch_interval_recomputes_at_most_once_per_refresh_window() {
+        let mut cfg = default_test_config();
+        cfg.size = Some(4);
+        let cache = test_cache(cfg);
+        let cache_map = CacheMap::with_capacity(4);
+        for idx in 0..4 {
+            insert_test_cache_entry(
+                &cache_map,
+                format!("live-{idx}.example"),
+                100_000,
+                idx as u64,
+            );
+        }
+
+        assert_eq!(
+            cache.current_touch_interval_ms(&cache_map, 10_000),
+            TOUCH_CRITICAL_INTERVAL_MS
+        );
+        cache_map.remove(&cache_key_for_domain("live-0.example"));
+        cache_map.remove(&cache_key_for_domain("live-1.example"));
+        cache_map.remove(&cache_key_for_domain("live-2.example"));
+
+        assert_eq!(
+            cache.current_touch_interval_ms(&cache_map, 10_500),
+            TOUCH_CRITICAL_INTERVAL_MS
+        );
+        assert_eq!(cache.current_touch_interval_ms(&cache_map, 11_000), 0);
     }
 
     fn make_context(request: Message) -> DnsContext {
@@ -1661,6 +1788,22 @@ mod tests {
             expire_at,
             last,
         );
+    }
+
+    fn cacheable_response_for_domain(domain: &str, ttl: u32) -> Message {
+        let mut response = Message::new();
+        response.set_rcode(Rcode::NoError);
+        response.add_question(Question::new(
+            Name::from_ascii(domain).unwrap(),
+            RecordType::A,
+            DNSClass::IN,
+        ));
+        response.add_answer(Record::from_rdata(
+            Name::from_ascii(domain).unwrap(),
+            ttl,
+            RData::A(crate::proto::rdata::A(Ipv4Addr::new(1, 1, 1, 1))),
+        ));
+        response
     }
 
     #[test]
@@ -1940,12 +2083,54 @@ mod tests {
         edns.flags_mut().dnssec_ok = true;
         response.set_edns(edns);
 
-        Cache::rewrite_message_ttls(&mut response, 42);
+        response.rewrite_record_ttls(|_| 42);
 
         assert_eq!(response.answers()[0].ttl(), 42);
         let edns = response.edns().as_ref().expect("edns should exist");
         assert_eq!(edns.udp_payload_size(), 1232);
         assert!(edns.flags().dnssec_ok);
+    }
+
+    #[tokio::test]
+    async fn cache_hit_low_occupancy_does_not_update_last_access() {
+        AppClock::start();
+        let mut cfg = default_test_config();
+        cfg.size = Some(128);
+        let mut cache = test_cache(cfg);
+        let _ = cache.init_for_test().await;
+
+        let mut context = make_context(make_request_with_query("example.com.", false, false));
+        let key = Cache::build_cache_key(&mut context, false).unwrap();
+        let now = AppClock::elapsed_millis();
+        let last_access_ms = now.saturating_sub(60_000);
+
+        cache.cache_map.get().unwrap().insert_or_update_with_meta(
+            key.clone(),
+            Arc::new(CacheItem::new(
+                cacheable_response_for_domain("example.com.", 120),
+                120,
+                now.saturating_add(120_000),
+            )),
+            now,
+            now.saturating_add(120_000),
+            last_access_ms,
+        );
+
+        let lookup = cache
+            .try_cache_hit(&mut context, cache.cache_map.get().unwrap())
+            .expect("cache lookup should exist");
+        assert_eq!(lookup.hit_kind, Some(CacheHitKind::Fresh));
+
+        let stored = cache
+            .cache_map
+            .get()
+            .unwrap()
+            .iter_entries_cloned()
+            .into_iter()
+            .find(|(stored_key, _)| stored_key == &key)
+            .expect("entry should remain cached")
+            .1;
+        assert_eq!(stored.last_access_ms, last_access_ms);
     }
 
     #[test]

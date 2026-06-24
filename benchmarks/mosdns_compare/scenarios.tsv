@@ -2,6 +2,7 @@
 # Core macro scenarios with the highest selection value.
 01-baseline-udp-forward|01-baseline-udp-forward.yaml|01-baseline-udp-forward.yaml|queries/forward.txt|udp|macro-forward|-|core,macro,stable|Pure UDP forward baseline|Closest to a real recursive or proxy hot path.
 02-cache-hotpath|02-cache-hotpath.yaml|02-cache-hotpath.yaml|queries/cache-hotpath.txt|udp|macro-cache|-|core,macro,stable|Warm cache hit path|Use with 01 to separate in-memory hit cost from network forward cost.
+02-cache-hotpath-large|02-cache-hotpath.yaml|02-cache-hotpath.yaml|queries/cache-hotpath-large.txt|udp|macro-cache|-|core,macro,stable,large|Warm cache hit path with large working set|Use the same cache pipeline with a larger domain corpus for cache-table and lookup path stress.
 03-dual-entry-udp|03-dual-entry-udp-tcp.yaml|03-dual-entry-udp-tcp.yaml|queries/forward.txt|udp|macro-entry|-|core,macro,stable|Shared dual-listener config under UDP load|Entry path compare without changing business logic.
 03-dual-entry-tcp|03-dual-entry-udp-tcp.yaml|03-dual-entry-udp-tcp.yaml|queries/forward.txt|tcp|macro-entry|-|core,macro,stable|Shared dual-listener config under TCP load|Highlights TCP accept, session, and response path overhead.
 04-concurrent-upstreams|04-concurrent-upstreams.yaml|04-concurrent-upstreams.yaml|queries/forward.txt|udp|macro-upstream|-|core,macro,stable|Concurrent upstream race path|Good for multi-upstream hedged request compare.

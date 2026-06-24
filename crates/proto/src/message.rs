@@ -169,6 +169,41 @@ impl Message {
         Ok(out)
     }
 
+    /// Clone this message with a replacement ID and response-record TTL.
+    ///
+    /// This rewrites only the normal answer, authority, and additional record
+    /// sections. EDNS metadata and detached signature records are preserved as
+    /// stored.
+    pub fn clone_with_id_and_record_ttl(&self, id: u16, ttl: u32) -> Self {
+        Self {
+            header: {
+                let mut header = self.header;
+                header.set_id(id);
+                header
+            },
+            compress: self.compress,
+            questions: self.questions.clone(),
+            answers: clone_records_with_ttl(&self.answers, ttl),
+            authorities: clone_records_with_ttl(&self.authorities, ttl),
+            additionals: clone_records_with_ttl(&self.additionals, ttl),
+            signature: self.signature.clone(),
+            edns: self.edns.clone(),
+        }
+    }
+
+    /// Rewrite TTLs in answer, authority, and additional records in place.
+    pub fn rewrite_record_ttls(&mut self, mut policy: impl FnMut(u32) -> u32) {
+        for record in &mut self.answers {
+            record.set_ttl(policy(record.ttl()));
+        }
+        for record in &mut self.authorities {
+            record.set_ttl(policy(record.ttl()));
+        }
+        for record in &mut self.additionals {
+            record.set_ttl(policy(record.ttl()));
+        }
+    }
+
     /// Truncate this message in-place to the requested UDP payload budget.
     ///
     /// Behavior:
@@ -780,6 +815,12 @@ impl Message {
     }
 }
 
+fn clone_records_with_ttl(records: &[Record], ttl: u32) -> Vec<Record> {
+    let mut cloned = Vec::with_capacity(records.len());
+    cloned.extend(records.iter().map(|record| record.clone_with_ttl(ttl)));
+    cloned
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct TruncationLens {
     /// Total length after encoding the header and all questions.
@@ -809,6 +850,75 @@ impl Default for Message {
 mod tests {
     use super::*;
     use crate::proto::rdata::{Edns, TXT};
+
+    fn message_with_record_sections() -> Message {
+        let mut message = Message::new();
+        message.set_id(10);
+        message.add_question(Question::new(
+            Name::from_ascii("example.com.").unwrap(),
+            RecordType::A,
+            DNSClass::IN,
+        ));
+        message.add_answer(Record::from_rdata(
+            Name::from_ascii("example.com.").unwrap(),
+            300,
+            RData::A(A::new(1, 1, 1, 1)),
+        ));
+        message.add_authority(Record::from_rdata(
+            Name::from_ascii("ns.example.com.").unwrap(),
+            200,
+            RData::A(A::new(2, 2, 2, 2)),
+        ));
+        message.add_additional(Record::from_rdata(
+            Name::from_ascii("extra.example.com.").unwrap(),
+            100,
+            RData::A(A::new(3, 3, 3, 3)),
+        ));
+        message.signature_mut().push(Record::from_rdata(
+            Name::from_ascii("sig.example.com.").unwrap(),
+            999,
+            RData::TXT(TXT::new(Box::from([3u8, b's', b'i', b'g']))),
+        ));
+
+        let mut edns = Edns::new();
+        edns.set_udp_payload_size(1232);
+        edns.set_dnssec_ok(true);
+        message.set_edns(edns);
+        message
+    }
+
+    #[test]
+    fn clone_with_id_and_record_ttl_rewrites_sections_only() {
+        let message = message_with_record_sections();
+
+        let cloned = message.clone_with_id_and_record_ttl(77, 42);
+
+        assert_eq!(message.id(), 10);
+        assert_eq!(cloned.id(), 77);
+        assert_eq!(cloned.answers()[0].ttl(), 42);
+        assert_eq!(cloned.authorities()[0].ttl(), 42);
+        assert_eq!(cloned.additionals()[0].ttl(), 42);
+        assert_eq!(cloned.signature()[0].ttl(), 999);
+        assert_eq!(message.answers()[0].ttl(), 300);
+        let edns = cloned.edns().as_ref().expect("edns should be preserved");
+        assert_eq!(edns.udp_payload_size(), 1232);
+        assert!(edns.flags().dnssec_ok);
+    }
+
+    #[test]
+    fn rewrite_record_ttls_rewrites_sections_only() {
+        let mut message = message_with_record_sections();
+
+        message.rewrite_record_ttls(|ttl| ttl / 2);
+
+        assert_eq!(message.answers()[0].ttl(), 150);
+        assert_eq!(message.authorities()[0].ttl(), 100);
+        assert_eq!(message.additionals()[0].ttl(), 50);
+        assert_eq!(message.signature()[0].ttl(), 999);
+        let edns = message.edns().as_ref().expect("edns should be preserved");
+        assert_eq!(edns.udp_payload_size(), 1232);
+        assert!(edns.flags().dnssec_ok);
+    }
 
     #[test]
     // Verifies the classic DNS truncation rule that TC must be set and OPT must

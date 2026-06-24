@@ -88,18 +88,7 @@ impl Executor for TtlExecutor {
     #[hotpath::measure]
     async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
         if let Some(response) = context.response_mut() {
-            for record in response.answers_mut() {
-                let ttl = self.policy.apply(record.ttl());
-                record.set_ttl(ttl);
-            }
-            for record in response.authorities_mut() {
-                let ttl = self.policy.apply(record.ttl());
-                record.set_ttl(ttl);
-            }
-            for record in response.additionals_mut() {
-                let ttl = self.policy.apply(record.ttl());
-                record.set_ttl(ttl);
-            }
+            response.rewrite_record_ttls(|ttl| self.policy.apply(ttl));
         }
         Ok(ExecStep::Next)
     }
