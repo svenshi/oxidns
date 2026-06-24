@@ -26,6 +26,11 @@ export function processInstanceChanged(
   health: HealthResponse,
   baseline: ProcessInstanceBaseline,
 ): boolean {
+  const hasBaselineIdentity = hasProcessIdentityBaseline(baseline);
+  const hasHealthIdentity = Boolean(
+    health.instance_id || health.started_at_ms !== undefined,
+  );
+
   if (
     baseline.instanceId &&
     health.instance_id &&
@@ -40,6 +45,10 @@ export function processInstanceChanged(
     health.started_at_ms !== baseline.startedAtMs
   ) {
     return true;
+  }
+
+  if (hasBaselineIdentity && hasHealthIdentity) {
+    return false;
   }
 
   if (baseline.uptimeMs !== undefined && health.uptime_ms < baseline.uptimeMs) {
