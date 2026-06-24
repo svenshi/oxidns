@@ -161,6 +161,14 @@ enum CacheTtlDecision {
 struct CacheLookup {
     key: CacheKey,
     hit_kind: Option<CacheHitKind>,
+    refresh_entry: Option<CacheEntryIdentity>,
+}
+
+#[derive(Debug, Clone)]
+struct CacheEntryIdentity {
+    value: Arc<CacheItem>,
+    cache_time_ms: u64,
+    expire_at_ms: u64,
 }
 
 #[derive(Debug)]
@@ -776,10 +784,16 @@ impl Cache {
                     return Some(CacheLookup {
                         key,
                         hit_kind: Some(CacheHitKind::Fresh),
+                        refresh_entry: None,
                     });
                 }
 
                 if self.config.lazy_cache_ttl.is_some() && now < item.expire_at_ms {
+                    let refresh_entry = CacheEntryIdentity {
+                        value: item.value.clone(),
+                        cache_time_ms: item.cache_time_ms,
+                        expire_at_ms: item.expire_at_ms,
+                    };
                     self.metrics.stale_hit_total.fetch_add(1, Ordering::Relaxed);
                     let resp = Self::restore_cached_message(
                         &item.value,
@@ -800,6 +814,7 @@ impl Cache {
                     return Some(CacheLookup {
                         key,
                         hit_kind: Some(CacheHitKind::Stale),
+                        refresh_entry: Some(refresh_entry),
                     });
                 }
             }
@@ -817,6 +832,7 @@ impl Cache {
                 return Some(CacheLookup {
                     key,
                     hit_kind: None,
+                    refresh_entry: None,
                 });
             }
             None => {}
@@ -849,6 +865,7 @@ impl Cache {
         Some(CacheLookup {
             key,
             hit_kind: None,
+            refresh_entry: None,
         })
     }
 
@@ -956,6 +973,7 @@ impl Cache {
     fn try_start_lazy_refresh(
         &self,
         key: &CacheKey,
+        refresh_entry: &CacheEntryIdentity,
         cache_map: &CacheMap,
         context: &DnsContext,
         next: Option<&ExecutorNext>,
@@ -978,6 +996,7 @@ impl Cache {
             .fetch_add(1, Ordering::Relaxed);
 
         let key = key.clone();
+        let refresh_entry = refresh_entry.clone();
         let cache_map = cache_map.clone();
         let inflight = self.lazy_refresh_inflight.clone();
         let mut sub_ctx = context.copy_for_subquery();
@@ -1042,7 +1061,13 @@ impl Cache {
                             .fetch_add(1, Ordering::Relaxed);
                     } else {
                         if let CacheTtlDecision::Skip(reason) = ttl {
-                            if reason == CacheSkipReason::LowPositiveTtl && cache_map.remove(&key) {
+                            if reason == CacheSkipReason::LowPositiveTtl
+                                && cache_map.remove_if(&key, |existing| {
+                                    existing.cache_time_ms == refresh_entry.cache_time_ms
+                                        && existing.expire_at_ms == refresh_entry.expire_at_ms
+                                        && Arc::ptr_eq(&existing.value, &refresh_entry.value)
+                                })
+                            {
                                 updated_keys.fetch_add(1, Ordering::Relaxed);
                                 debug!(
                                     "evicted stale lazy cache entry after low positive TTL refresh: domain={}, type={:?}, class={:?}",
@@ -1187,8 +1212,15 @@ impl Executor for Cache {
 
         if let Some(lookup) = cache_lookup.as_ref()
             && lookup.hit_kind == Some(CacheHitKind::Stale)
+            && let Some(refresh_entry) = lookup.refresh_entry.as_ref()
         {
-            self.try_start_lazy_refresh(&lookup.key, cache_map, context, next.as_ref());
+            self.try_start_lazy_refresh(
+                &lookup.key,
+                refresh_entry,
+                cache_map,
+                context,
+                next.as_ref(),
+            );
         }
 
         if self.should_short_circuit(cache_hit) {
@@ -1784,6 +1816,39 @@ mod tests {
     #[async_trait]
     impl Executor for LowTtlRefreshExecutor {
         async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
+            let mut response = Message::new();
+            response.set_rcode(Rcode::NoError);
+            response.add_question(Question::new(
+                Name::from_ascii("example.com.").unwrap(),
+                RecordType::A,
+                DNSClass::IN,
+            ));
+            response.add_answer(Record::from_rdata(
+                Name::from_ascii("example.com.").unwrap(),
+                3,
+                RData::A(crate::proto::rdata::A(Ipv4Addr::new(9, 9, 9, 9))),
+            ));
+            context.set_response(response);
+            Ok(ExecStep::Next)
+        }
+    }
+
+    #[derive(Debug)]
+    struct BlockingLowTtlRefreshExecutor {
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl Plugin for BlockingLowTtlRefreshExecutor {
+        fn tag(&self) -> &str {
+            "blocking_low_ttl_refresh_executor"
+        }
+    }
+
+    #[async_trait]
+    impl Executor for BlockingLowTtlRefreshExecutor {
+        async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
+            self.release.notified().await;
             let mut response = Message::new();
             response.set_rcode(Rcode::NoError);
             response.add_question(Question::new(
@@ -2499,6 +2564,113 @@ mod tests {
                 .get_retained_cloned(&key, AppClock::elapsed_millis(), 0)
                 .is_none(),
             "low TTL refresh should evict the old stale cache entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn lazy_refresh_low_ttl_skip_does_not_remove_newer_cache_entry() {
+        AppClock::start();
+        let mut cfg = default_test_config();
+        cfg.lazy_cache_ttl = Some(30);
+        cfg.min_positive_ttl = Some(4);
+        cfg.short_circuit = Some(true);
+        let mut cache = test_cache(cfg);
+        let _ = cache.init_for_test().await;
+
+        let release = Arc::new(tokio::sync::Notify::new());
+        let program = ChainProgram::single_with_next_executor_for_test(Arc::new(
+            BlockingLowTtlRefreshExecutor {
+                release: release.clone(),
+            },
+        ));
+        let next = ExecutorNext::from_program_for_test(program, 0);
+
+        let mut context = make_context(make_request_with_query("example.com.", false, false));
+        let key = Cache::build_cache_key(&mut context, false).unwrap();
+        let mut stale_response = Message::new();
+        stale_response.set_rcode(Rcode::NoError);
+        stale_response.add_question(Question::new(
+            Name::from_ascii("example.com.").unwrap(),
+            RecordType::A,
+            DNSClass::IN,
+        ));
+        stale_response.add_answer(Record::from_rdata(
+            Name::from_ascii("example.com.").unwrap(),
+            120,
+            RData::A(crate::proto::rdata::A(Ipv4Addr::new(1, 1, 1, 1))),
+        ));
+
+        let now = AppClock::elapsed_millis();
+        cache.cache_map.get().unwrap().insert_or_update_with_meta(
+            key.clone(),
+            Arc::new(CacheItem::new(
+                stale_response,
+                120,
+                now.saturating_sub(1_000),
+            )),
+            now.saturating_sub(121_000),
+            now.saturating_add(10_000),
+            now.saturating_sub(100),
+        );
+
+        let _ = cache
+            .execute_with_next(&mut context, Some(next))
+            .await
+            .unwrap();
+        wait_until("lazy refresh should be waiting", || {
+            cache
+                .metrics
+                .lazy_refresh_started_total
+                .load(AtomicOrdering::Relaxed)
+                == 1
+        })
+        .await;
+
+        let mut newer_response = Message::new();
+        newer_response.set_rcode(Rcode::NoError);
+        newer_response.add_question(Question::new(
+            Name::from_ascii("example.com.").unwrap(),
+            RecordType::A,
+            DNSClass::IN,
+        ));
+        newer_response.add_answer(Record::from_rdata(
+            Name::from_ascii("example.com.").unwrap(),
+            90,
+            RData::A(crate::proto::rdata::A(Ipv4Addr::new(2, 2, 2, 2))),
+        ));
+        cache.cache_map.get().unwrap().insert_or_update_with_meta(
+            key.clone(),
+            Arc::new(CacheItem::new(
+                newer_response,
+                90,
+                now.saturating_add(90_000),
+            )),
+            now.saturating_add(1),
+            now.saturating_add(90_000),
+            now.saturating_add(1),
+        );
+
+        release.notify_one();
+        wait_until("lazy refresh low ttl skip should be recorded", || {
+            cache
+                .metrics
+                .skip_low_positive_ttl_total
+                .load(AtomicOrdering::Relaxed)
+                == 1
+        })
+        .await;
+
+        let stored = cache
+            .cache_map
+            .get()
+            .unwrap()
+            .get_retained_cloned(&key, AppClock::elapsed_millis(), 0)
+            .expect("newer cache entry should remain present");
+        assert!(
+            stored
+                .value
+                .resp
+                .has_answer_ip(|ip| ip == std::net::IpAddr::V4(Ipv4Addr::new(2, 2, 2, 2)))
         );
     }
 
