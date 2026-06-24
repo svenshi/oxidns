@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 use std::fmt::{Debug, Formatter};
-use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 
@@ -15,14 +14,16 @@ use tokio::select;
 use tokio::sync::Notify;
 use tracing::{debug, trace, warn};
 
-use super::UsingCountGuard;
+use super::{UsingCountGuard, quic_idle_timeout};
 use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::network::buffer_pool::wire_buffer_pool;
+use crate::infra::network::dial::{
+    DialTarget, QuicDialOptions, SocketOptions, UdpDialOptions, connect_quic, connect_udp,
+};
 use crate::infra::network::upstream::conn::doh::{
     build_dns_get_request, build_doh_request_uri, get_cap_buf_with_context_len,
 };
-use crate::infra::network::upstream::dial::{connect_quic, connect_socket};
 use crate::infra::network::upstream::pool::{ConnectionBuilder, DeadlineOutcome, QueryDeadline};
 use crate::infra::network::upstream::{Connection, ConnectionInfo};
 use crate::proto::Message;
@@ -137,27 +138,28 @@ impl H3Connection {
 /// Builder
 #[derive(Debug)]
 pub struct H3ConnectionBuilder {
-    remote_ip: Option<IpAddr>,
-    port: u16,
-    server_name: String,
+    target: DialTarget,
+    socket_options: SocketOptions,
     request_uri: String,
     insecure_skip_verify: bool,
     timeout: std::time::Duration,
-    so_mark: Option<u32>,
-    bind_to_device: Option<String>,
 }
 
 impl H3ConnectionBuilder {
     pub fn new(connection_info: &ConnectionInfo) -> Self {
         Self {
-            remote_ip: connection_info.remote_ip,
-            port: connection_info.port,
-            server_name: connection_info.server_name.clone(),
+            target: DialTarget::new(
+                connection_info.remote_ip,
+                connection_info.server_name.clone(),
+                connection_info.port,
+            ),
+            socket_options: SocketOptions::new(
+                connection_info.so_mark,
+                connection_info.bind_to_device.clone(),
+            ),
             request_uri: build_doh_request_uri(connection_info),
             insecure_skip_verify: connection_info.insecure_skip_verify,
             timeout: connection_info.timeout,
-            so_mark: connection_info.so_mark,
-            bind_to_device: connection_info.bind_to_device.clone(),
         }
     }
 }
@@ -169,23 +171,22 @@ impl ConnectionBuilder<H3Connection> for H3ConnectionBuilder {
         conn_id: u16,
         deadline: QueryDeadline,
     ) -> Result<Arc<H3Connection>> {
-        let socket = connect_socket(
-            self.remote_ip,
-            self.server_name.clone(),
-            self.port,
-            self.so_mark,
-            self.bind_to_device.clone(),
-        )?;
+        let socket = connect_udp(UdpDialOptions::new(
+            self.target.clone(),
+            self.socket_options.clone(),
+        ))?;
 
         let quic_conn = connect_quic(
             socket,
-            self.insecure_skip_verify,
-            self.server_name.clone(),
-            deadline
-                .remaining()
-                .ok_or_else(|| deadline.timeout_error())?,
-            self.timeout,
-            vec![b"h3".to_vec()],
+            QuicDialOptions::new(
+                self.target.clone(),
+                self.insecure_skip_verify,
+                deadline
+                    .remaining()
+                    .ok_or_else(|| deadline.timeout_error())?,
+                quic_idle_timeout(self.timeout),
+                vec![b"h3".to_vec()],
+            ),
         )
         .await?;
 
@@ -272,15 +273,15 @@ mod tests {
 
         let builder = H3ConnectionBuilder::new(&connection_info);
 
-        assert_eq!(builder.port, 443);
-        assert_eq!(builder.server_name, "dns.example.com");
+        assert_eq!(builder.target.port(), 443);
+        assert_eq!(builder.target.host(), "dns.example.com");
         assert_eq!(
             builder.request_uri,
             "https://dns.example.com/dns-query?dns="
         );
         assert!(builder.insecure_skip_verify);
         assert_eq!(builder.timeout, std::time::Duration::from_secs(4));
-        assert_eq!(builder.so_mark, Some(7));
-        assert_eq!(builder.bind_to_device.as_deref(), Some("utun1"));
+        assert_eq!(builder.socket_options.so_mark(), Some(7));
+        assert_eq!(builder.socket_options.bind_to_device(), Some("utun1"));
     }
 }

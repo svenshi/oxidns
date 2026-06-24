@@ -9,13 +9,32 @@
 //!
 //! It is intentionally lower level than server and upstream plugins:
 //!
-//! - [`udp_transport`] handles datagram-oriented message I/O;
-//! - [`tcp_transport`] handles length-prefixed DNS over TCP / TLS framing; and
-//! - [`quic_transport`] handles stream-based DNS over QUIC helpers.
+//! - [`udp`] handles datagram-oriented message I/O;
+//! - [`tcp`] handles length-prefixed DNS over TCP / TLS framing; and
+//! - [`quic`] handles stream-based DNS over QUIC helpers.
 //!
 //! Keeping these helpers small makes the protocol plugins easier to review and
 //! reduces duplication at transport boundaries.
-#[cfg(any(feature = "server-doq", feature = "upstream-doq"))]
-pub mod quic_transport;
-pub mod tcp_transport;
-pub mod udp_transport;
+#[cfg(any(feature = "server-doq", feature = "_dns-client-doq"))]
+pub mod quic;
+pub mod tcp;
+pub mod udp;
+
+#[cfg(any(feature = "server-doq", feature = "_dns-client-doq"))]
+#[deprecated(note = "use transport::quic instead")]
+#[doc(hidden)]
+pub mod quic_transport {
+    pub use super::quic::*;
+}
+
+#[deprecated(note = "use transport::tcp instead")]
+#[doc(hidden)]
+pub mod tcp_transport {
+    pub use super::tcp::*;
+}
+
+#[deprecated(note = "use transport::udp instead")]
+#[doc(hidden)]
+pub mod udp_transport {
+    pub use super::udp::*;
+}

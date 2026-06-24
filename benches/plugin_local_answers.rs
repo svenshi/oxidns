@@ -3,7 +3,9 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use oxidns::config::types::{ApiConfig, Config, LogConfig, PluginConfig, RuntimeConfig};
+use oxidns::config::types::{
+    ApiConfig, Config, LogConfig, NetworkConfig, PluginConfig, RuntimeConfig,
+};
 use oxidns::core::context::DnsContext;
 use oxidns::plugin::{PluginRegistry, init as init_plugins};
 use oxidns::proto::{DNSClass, Message, Name, Question, RecordType};
@@ -36,6 +38,7 @@ fn make_config(plugin: PluginConfig) -> Config {
         runtime: RuntimeConfig::default(),
         api: ApiConfig::default(),
         log: LogConfig::default(),
+        network: NetworkConfig::default(),
         plugins: vec![plugin],
         include: Vec::new(),
     }

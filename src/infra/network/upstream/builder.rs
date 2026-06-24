@@ -4,6 +4,9 @@
 use tracing::debug;
 
 use crate::infra::error::Result;
+use crate::infra::network::upstream::bootstrap::{
+    BootstrapUdpTruncatedUpstream, BootstrapUpstream,
+};
 use crate::infra::network::upstream::config::{ConnectionInfo, ConnectionType, UpstreamConfig};
 #[cfg(feature = "upstream-doh")]
 use crate::infra::network::upstream::conn::{H2Connection, H2ConnectionBuilder};
@@ -12,14 +15,13 @@ use crate::infra::network::upstream::conn::{H3Connection, H3ConnectionBuilder};
 #[cfg(feature = "upstream-doq")]
 use crate::infra::network::upstream::conn::{QuicConnection, QuicConnectionBuilder};
 use crate::infra::network::upstream::conn::{
-    TcpConnection, TcpConnectionBuilder, UdpConnection, UdpConnectionBuilder,
+    TcpConnection, TcpConnectionBuilder, UdpConnectionBuilder,
 };
-use crate::infra::network::upstream::pool::pool_pipeline::PipelinePool;
-use crate::infra::network::upstream::pool::pool_reuse::ReusePool;
+use crate::infra::network::upstream::pool::pipeline::PipelinePool;
+use crate::infra::network::upstream::pool::reuse::ReusePool;
 use crate::infra::network::upstream::pool::{Connection, ConnectionBuilder, QueryTimeoutPolicy};
-use crate::infra::network::upstream::resolver::{
-    BootstrapUpstream, PooledUpstream, UdpTruncatedUpstream, Upstream,
-};
+use crate::infra::network::upstream::pooled::{PooledUpstream, UdpTruncatedUpstream};
+use crate::infra::network::upstream::traits::Upstream;
 
 /// Builder for creating upstream instances
 pub struct UpstreamBuilder;
@@ -161,19 +163,17 @@ impl UpstreamBuilder {
             // Domain-based upstream: use bootstrap or system DNS for resolution
             let upstream: Box<dyn Upstream> = match &connection_info.connection_type {
                 ConnectionType::UDP => {
-                    let upstream: BootstrapUpstream<UdpConnection> =
-                        BootstrapUpstream::new(connection_info);
-                    Box::new(upstream)
+                    Box::new(BootstrapUdpTruncatedUpstream::new(connection_info))
                 }
                 ConnectionType::TCP => {
                     let upstream: BootstrapUpstream<TcpConnection> =
-                        BootstrapUpstream::new(connection_info);
+                        BootstrapUpstream::tcp(connection_info);
                     Box::new(upstream)
                 }
                 #[cfg(feature = "upstream-dot")]
                 ConnectionType::DoT => {
                     let upstream: BootstrapUpstream<TcpConnection> =
-                        BootstrapUpstream::new(connection_info);
+                        BootstrapUpstream::tcp(connection_info);
                     Box::new(upstream)
                 }
                 #[cfg(not(feature = "upstream-dot"))]
@@ -186,7 +186,7 @@ impl UpstreamBuilder {
                 #[cfg(feature = "upstream-doq")]
                 ConnectionType::DoQ => {
                     let upstream: BootstrapUpstream<QuicConnection> =
-                        BootstrapUpstream::new(connection_info);
+                        BootstrapUpstream::doq(connection_info);
                     Box::new(upstream)
                 }
                 #[cfg(not(feature = "upstream-doq"))]
@@ -202,7 +202,7 @@ impl UpstreamBuilder {
                         #[cfg(feature = "upstream-doh3")]
                         {
                             let upstream: BootstrapUpstream<H3Connection> =
-                                BootstrapUpstream::new(connection_info);
+                                BootstrapUpstream::doh3(connection_info);
                             Box::new(upstream)
                         }
                         #[cfg(not(feature = "upstream-doh3"))]
@@ -214,7 +214,7 @@ impl UpstreamBuilder {
                         }
                     } else {
                         let upstream: BootstrapUpstream<H2Connection> =
-                            BootstrapUpstream::new(connection_info);
+                            BootstrapUpstream::doh2(connection_info);
                         Box::new(upstream)
                     }
                 }

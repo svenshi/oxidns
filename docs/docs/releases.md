@@ -10,7 +10,32 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-06
 
 <div className="release-stack">
-   <ReleaseCard version="v1.3.0" badge="Minor Release" date="2026-06-16" defaultOpen>
+   <ReleaseCard version="v1.4.0" badge="Minor Release" date="2026-06-24" defaultOpen>
+       **版本定位**
+
+       - Minor Release。核心变更是把 `network.outbound` 作为统一出口层引入到网络栈，扩展并发上游结果裁决策略，优化缓存热路径，并补充 DoH HTTP/1.1 与入口级 JSON API。新增配置项均默认兼容原有行为，`v1.3.0` 配置可直接升级。
+
+       **主要变更**
+
+       - `feat(network)`：新增 `network.outbound` 配置域，支持 HTTP 客户端、升级检查、Webhook 与上游共用的 nameserver profile；支持 SOCKS5 与 nameserver profile 组合，并可通过默认 profile 自动应用到未显式指定 profile 的上游。resolver 流程重构，加入 nameserver profile 单次查询共享缓存，降低重复解析开销。
+       - `feat(network)`：补齐 outbound 相关冷路径可观测性，新增 resolver 缓存命中/未命中、刷新和 upstream pool 刷新延迟指标，按出口 profile 聚合，便于排障。
+       - `feat(forward)`：并发上游新增 `response_selection` 模式（`fastest` / `balanced` / `prefer_positive` / `consensus`），可在首速、负向答案置信度与一致性之间进行权衡；并发上限上调以增强链路分发弹性。
+       - `feat(cache)`：新增 `cache` 的 `min_positive_ttl`，可过滤低 TTL 正响应入缓存；同步优化 cache hit 与 TTL 重写热路径，并补充缓存压测场景。
+       - `feat(server)`：DoH 入站开始支持 HTTP/1.1 与 HTTP/2 统一处理，新增入口级 `json_api` 能力，可在入口路径直接处理 RFC8484 风格查询参数。
+       - `feat(proto)`：`oxidns-proto` 新增 `Rcode` / `DNSClass` / `RecordType` token 解析器；新增 TTL 重写工具，支持高效复制记录与消息时保持 EDNS/签名段不变。
+       - `feat(sequence)`：`reject` 规则新增命名 RCODE 支持与 `0` SOA 细化处理，增强可读性与表达能力。
+       - `feat(webui)`：新增 `network.outbound` 配置展示与运行时出口指标展示，支持 outbound profile 在 WebUI 配置、持久化和运行期查看；补齐相关英文/中文本地化文本。
+
+       **配置与升级说明**
+
+       - 根 crate 版本号升级为 `1.4.0`；`crates/proto` 升级为 `0.1.3`；`crates/macros`、`crates/ripset`、`crates/zoneparser` 均无变更，无需同步升级；release tag 应使用 `v1.4.0`。
+       - `v1.3.0` 配置通常可直接升级到 `v1.4.0`，新增配置项均为可选。
+       - 使用 `forward` 时可按需开启 `response_selection`，默认值为 `balanced`；未配置时行为保持 1.3 系列兼容。
+       - 已开启缓存的部署可评估 `min_positive_ttl`；不设置该字段时按既有 `max_positive_ttl` / TTL 行为运行。
+       - 若在自建出口网络中使用 `network.outbound`，建议同时检查 `resolver`/`upstream` profile 与 proxy 的覆盖关系，避免出现意外的本地 SOCKS5 覆盖或回退路径。
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.3.0" badge="Minor Release" date="2026-06-16">
        **版本定位**
 
        - Minor Release，核心变更是将 `black_hole` 升级为覆盖全 qtype 的完整拦截器，并系统性加固 upstream 连接池、bootstrap、deadline / cancel safety 和 RouterOS 联动路径。同时完成 Rust 包结构重构：新增 `cli` 与 `infra` 层，`core` 收敛为 DNS 执行核心。配置层面保持大体兼容，但 `black_hole` 的无参默认行为与非 A/AAAA 命中语义发生变化；Rust library embedders 需要迁移公开 module path。

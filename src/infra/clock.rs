@@ -12,6 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// Application start time, set once during initialization.
 static START_INSTANT: OnceLock<Instant> = OnceLock::new();
 static START_UNIX_TIMESTAMP_MS: OnceLock<u64> = OnceLock::new();
+static PROCESS_INSTANCE_ID: OnceLock<String> = OnceLock::new();
 
 /// Process-wide monotonic clock helper.
 pub struct AppClock;
@@ -42,6 +43,7 @@ impl AppClock {
 
         let _ = START_UNIX_TIMESTAMP_MS.set(unix_timestamp_ms);
         let _ = START_INSTANT.set(instant);
+        let _ = PROCESS_INSTANCE_ID.set(generate_instance_id(unix_timestamp_ms));
     }
 
     /// Get the current monotonic instant.
@@ -63,6 +65,21 @@ impl AppClock {
         Self::base_timestamp_ms().saturating_add(Self::elapsed_millis())
     }
 
+    /// Unix timestamp in milliseconds captured when the application clock was
+    /// initialized.
+    #[inline(always)]
+    pub fn started_at_ms() -> u64 {
+        Self::base_timestamp_ms()
+    }
+
+    /// Stable process instance identifier for this application run.
+    #[inline(always)]
+    pub fn instance_id() -> &'static str {
+        PROCESS_INSTANCE_ID
+            .get()
+            .expect("AppClock::start() must be called before using AppClock")
+    }
+
     /// Get milliseconds elapsed since application start.
     #[inline(always)]
     pub fn elapsed_millis() -> u64 {
@@ -81,6 +98,12 @@ fn unix_timestamp_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(duration_millis_u64)
         .unwrap_or(0)
+}
+
+fn generate_instance_id(started_at_ms: u64) -> String {
+    let random = rand::random::<u128>();
+    let pid = std::process::id();
+    format!("{started_at_ms:016x}-{pid:08x}-{random:032x}")
 }
 
 fn duration_millis_u64(duration: Duration) -> u64 {

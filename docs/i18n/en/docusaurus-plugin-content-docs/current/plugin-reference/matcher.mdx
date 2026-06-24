@@ -192,10 +192,7 @@ This example mixes text and numeric forms. Both formats are equivalent and can b
 
 - Type: `array`; Required: yes; Default: none
 - Supports both enum text and decimal numeric codes; text matching is case-insensitive, and both formats can be mixed in the same list.
-- Common mappings:
-  - `A` = `1`
-  - `AAAA` = `28`
-  - `PTR` = `12`
+- Common mappings and meanings are listed in the [DNS Code Reference](../dns-codes.md#qtype-query-types).
 - Unknown or future qtypes can still be matched with numeric codes.
 - Runtime impact:
   - Returns `true` if any question type matches the configured set.
@@ -234,10 +231,7 @@ This example mixes text and numeric forms. Both formats are equivalent and can b
 
 - Type: `array`; Required: yes; Default: none
 - Supports both enum text and decimal numeric codes; text matching is case-insensitive, and both formats can be mixed in the same list.
-- Common mappings:
-  - `IN` = `1`
-  - `CH` = `3`
-  - `HS` = `4`
+- Common mappings and meanings are listed in the [DNS Code Reference](../dns-codes.md#qclass-query-classes).
 - Unknown or future qclasses can still be matched with numeric codes.
 - Runtime impact:
   - Returns `true` if any question class matches the configured set.
@@ -429,10 +423,7 @@ This example mixes text and numeric forms. Both formats are equivalent and can b
 
 - Type: `array`; Required: yes; Default: none
 - Supports both enum text and decimal numeric codes; text matching is case-insensitive, and both formats can be mixed in the same list.
-- Common examples:
-  - `NOERROR` = `0`
-  - `SERVFAIL` = `2`
-  - `NXDOMAIN` = `3`
+- Common mappings and meanings are listed in the [DNS Code Reference](../dns-codes.md#rcode-response-codes).
 - Unknown or future rcodes can still be matched with numeric codes.
 - Runtime impact:
   - Returns `true` when the response rcode matches the configured set.

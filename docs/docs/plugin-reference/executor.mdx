@@ -109,7 +109,9 @@ import Admonition from "@theme/Admonition";
 
 - 立即生成响应并结束当前 `sequence`。
 - 默认 `rcode` 为 `REFUSED`。
-- 只支持十进制数值，例如 `reject 2`、`reject 3`。
+- 支持十进制数值和大小写不敏感的英文 RCODE 名称，例如 `reject 2`、`reject SERVFAIL`、`reject servfail`、`reject NXDOMAIN`；常见映射与含义见 [DNS 编码速查表](../dns-codes.md#rcode-响应码)。
+- 只支持基础 DNS RCODE `0..15`；扩展 RCODE 需要 EDNS OPT，不会由该内建动作自动生成。
+- `reject 0` 返回普通 `NOERROR` 响应，不会自动附加 SOA。
 - 会中断后续规则，不再继续执行。
 
 #### `mark ...`
@@ -160,6 +162,8 @@ import Admonition from "@theme/Admonition";
   args:
     # 多上游模式下实际并发扇出
     concurrent: 3
+    # 并发上游结果选择模式：fastest / balanced / prefer_positive / consensus
+    response_selection: balanced
     upstreams:
       # 最简单的 UDP 上游
       - tag: "cf_udp"
@@ -199,10 +203,22 @@ import Admonition from "@theme/Admonition";
 #### `concurrent`
 
 - 类型：`integer`；必填：否；默认值：`1`
-- 取值范围：实际运行时会限制在 `1..=3`
+- 取值范围：实际运行时会限制在 `1..=32`，且不会超过上游数量
 - 作用：定义多上游模式下的并发查询扇出数。
 - 运行影响：
   - 值越大，多上游竞争越积极，但同时会增加上游请求量。
+  - 推荐常规配置使用 `2..=8`；更高值适合短期观测或明确需要多协议竞速的场景。
+
+#### `response_selection`
+
+- 类型：`string`；必填：否；默认值：`balanced`
+- 取值：`fastest`、`balanced`、`prefer_positive`、`consensus`
+- 作用：定义多上游并发返回不一致时的结果选择策略。
+- 模式说明：
+  - `fastest`：第一个成功返回的 DNS 响应胜出，传输错误不会胜出。
+  - `balanced`：默认模式。`NOERROR` 且包含答案时立即胜出；`NXDOMAIN` 或 NODATA 会短暂等待是否有正向答案。
+  - `prefer_positive`：正向答案立即胜出；负向答案等待已发起的并发上游全部结束后再返回。
+  - `consensus`：正向答案立即胜出；负向答案需要两个上游确认，若并发数不足则退化为 `prefer_positive`。
 
 #### `upstreams`
 
@@ -260,6 +276,14 @@ import Admonition from "@theme/Admonition";
 - 适用场景：固定拨号地址、绕过本机解析或配合自定义路由出口。
 - 互斥规则：与 `bootstrap` 同时配置时，本字段优先生效。
 
+#### `upstreams[].outbound`
+
+- 类型：`string`；必填：否
+- 作用：引用 `network.outbound.profiles` 中的出站配置，为该上游注入 resolver 和 proxy。
+- 默认：未配置时使用 `network.outbound.default`；没有 default 时保持系统解析/直连。
+- 覆盖规则：本地 `dial_addr` 优先于 resolver；本地 `bootstrap` 优先于 outbound resolver；本地 `socks5` 优先于 profile proxy。
+- 注意：profile proxy 只应用于 TCP、DoT 和 DoH2；UDP、DoQ、DoH3 upstream 会忽略 SOCKS5 proxy。
+
 #### `upstreams[].port`
 
 - 类型：`integer`；必填：否；默认值：协议默认端口
@@ -305,7 +329,7 @@ import Admonition from "@theme/Admonition";
 - 规则说明：
   - 代理主机可以是 IP，也可以是主机名；主机名会使用系统解析。
   - 认证部分只按第一个 `:` 分割用户名和密码，因此格式必须是 `username:password@...`。
-  - 上游启用 `enable_http3` 时不应再配置 `socks5`，两者不属于同一连接模型。
+  - SOCKS5 只应用于 TCP、DoT 和 DoH2；UDP、DoQ、DoH3 upstream 会忽略该设置。
 - 注意事项：格式错误、端口非法或代理主机解析失败时，该上游不会被正常创建。
 
 #### `upstreams[].idle_timeout`
@@ -349,6 +373,8 @@ import Admonition from "@theme/Admonition";
 - 作用：控制 TCP 或 DoT 流水线。
 - 示例：`enable_pipeline: true`
 - 说明：也可直接通过 `tcp+pipeline://` 或 `tls+pipeline://` 在 `addr` 中启用。
+- 建议：开启前先用 `oxidns probe upstream <addr>` 探测目标上游。该命令会对 TCP/DoT 强制同一条连接并发查询，帮助判断该上游是否适合启用 pipeline，避免遇到超时、连接关闭、响应 ID 错乱或 question 串线。
+- 判定：探测结果为 `supported` 时再考虑开启；如果为 `unsupported`、`unstable` 或 `inconclusive`，建议保持关闭，或降低并发 / 延长超时后重新测试。
 
 #### `upstreams[].enable_http3`
 
@@ -451,6 +477,8 @@ import Admonition from "@theme/Admonition";
     negative_ttl_without_soa: 60
     # 正响应 TTL 上限
     max_positive_ttl: 600
+    # 正响应进入缓存所需的最小 TTL
+    min_positive_ttl: 4
     # ECS 不参与缓存键，提升命中率
     ecs_in_key: false
     # 启用缓存持久化
@@ -519,6 +547,13 @@ import Admonition from "@theme/Admonition";
 - 单位：秒
 - 作用：定义正响应 TTL 上限。
 
+#### `min_positive_ttl`
+
+- 类型：`integer`；必填：否；默认值：无
+- 单位：秒
+- 作用：定义正响应进入缓存所需的最小 TTL。
+- 说明：正响应的有效缓存 TTL 低于该值时不会写入缓存。该判断在 `max_positive_ttl` 裁剪之后执行。
+
 #### `ecs_in_key`
 
 - 类型：`boolean`；必填：否；默认值：`false`
@@ -563,7 +598,7 @@ import Admonition from "@theme/Admonition";
 - `cache_miss_total`
 - `cache_expired_total`
 - `cache_insert_total`
-- `cache_skip_total{reason="truncated|no_ttl"}`
+- `cache_skip_total{reason="truncated|no_ttl|low_positive_ttl"}`
 - `cache_lazy_refresh_total{result="started|success|failed"}`
 - `cache_entry_count`
 
@@ -1118,6 +1153,7 @@ old-static.example.com static.example.net
   type: ip_selector
   args:
     selection_mode: first_success
+    outbound: remote
     probe_methods: ["tcp:443", "tcp:80"]
     probe_stagger: 200
     probe_timeout: 600
@@ -1158,6 +1194,23 @@ old-static.example.com static.example.net
 - 类型：`array<string> | string`；必填：否；默认值：`["tcp:443", "tcp:80"]`
 - 可选值：`tcp:<port>`、`ping`、`none`
 - 作用：定义用于评分 IP 的探测方法。`ping` 为 best-effort；平台或权限不支持时会失败开放。
+
+#### `outbound`
+
+- 类型：`string`；必填：否；默认值：`network.outbound.default`
+- 作用：引用 `network.outbound.profiles` 中的出站配置，为 TCP 探测复用 profile proxy。
+- 说明：
+  - 仅 `tcp:<port>` 探测会使用 proxy；`ping` 始终走本机命令。
+  - 本字段只使用 profile proxy，不会对目标 IP 再做 resolver 解析。
+
+#### `socks5`
+
+- 类型：`string`；必填：否；默认值：无
+- 作用：为 TCP 探测指定局部 SOCKS5 代理。
+- 说明：
+  - 格式与 `upstreams[].socks5` 一致。
+  - 同时配置 `outbound` 和 `socks5` 时，局部 `socks5` 覆盖 profile proxy。
+  - 仅 `tcp:<port>` 探测会使用 SOCKS5；`ping` 始终走本机命令。
 
 #### `probe_stagger`
 
@@ -1655,6 +1708,8 @@ old-static.example.com static.example.net
     retention_days: 7
     # 定时清理周期，单位小时；最小 1
     cleanup_interval_hours: 1
+    # SQLite 读取侧最大并发数；最小 1
+    reader_concurrency: 2
 ```
 
 ### 配置项
@@ -1696,6 +1751,12 @@ old-static.example.com static.example.net
 - 最小值：`1`
 - 作用：定义过期清理任务的执行周期。
 
+#### `reader_concurrency`
+
+- 类型：`integer`；必填：否；默认值：`2`
+- 最小值：`1`
+- 作用：限制 WebUI / API 统计与历史查询同时运行的 SQLite reader 数量，避免突发读取在大库上占用过多阻塞线程和内存。
+
 ### 行为说明
 
 - 这是纯 executor 观察器，不会修改 `server` 收口逻辑。
@@ -1703,10 +1764,12 @@ old-static.example.com static.example.net
 - `next` 返回后立即提交记录；成功时记录当前 response，失败时记录 `error` 和空 response。
 - request / response 不保存 wire 数据，而是把问题区、RR、EDNS 等字段拆成 JSON 文本列。
 - `client_ip` 字段来自 OxiDNS 看到的传输层来源地址；如果前面有 systemd-resolved、dnsmasq、AdGuardHome、dae、clash 等本机转发链路，记录中可能只看到 `127.0.0.1`。
-- 每个 recorder 只使用两张表：
+- 每个 recorder 使用同一前缀下的版本化表：
   - `qr_<safe_tag>_<fnv64hex>_v1_records`
   - `qr_<safe_tag>_<fnv64hex>_v1_steps`
-- `records` 主表只保存固定字段集合；`steps` 表保存 `sequence` 路径事件，用于执行路径分析和命中率统计。
+  - `qr_<safe_tag>_<fnv64hex>_v1_questions`
+  - `qr_<safe_tag>_<fnv64hex>_v1_meta`
+- `records` 主表只保存固定字段集合；`steps` 表保存 `sequence` 路径事件，用于执行路径分析和命中率统计；`questions` 表是从 `questions_json` 派生的索引表，用于加速 qname/qtype 查询；`meta` 表记录已完成的派生表迁移。
 - 每个 recorder 独占自己的有界队列、SQLite 连接、后台写线程、内存 tail 和 SSE 广播器。
 - 默认假定不同 recorder 使用不同 `path`；v1 不做跨 recorder 写线程复用或路径协调。
 
@@ -2027,6 +2090,12 @@ old-static.example.com static.example.net
 - 类型：`string`；必填：否
 - 作用：为原始 `args.body` 指定 `Content-Type`。
 - 说明：只能和 `args.body` 搭配，不能与 `args.json` 或 `args.form` 同时使用。
+
+#### `args.outbound`
+
+- 类型：`string`；必填：否
+- 作用：引用 `network.outbound.profiles` 中的出站配置，统一控制该 HTTP 请求使用的解析器和代理。
+- 说明：未配置时使用 `network.outbound.default`；若也配置了 `args.socks5`，`socks5` 只覆盖代理设置，resolver 仍来自 outbound profile。
 
 #### `args.socks5`
 
@@ -2582,6 +2651,7 @@ old-static.example.com static.example.net
       force: false
       cleanup: true
       timeout: 30s
+      outbound: remote
       socks5: 127.0.0.1:1080
       insecure_skip_verify: false
 ```
@@ -2623,8 +2693,9 @@ old-static.example.com static.example.net
     - 默认值：`false`
     - 设为 `true` 时，升级成功后不触发自动重启。
     - 默认值 `false` 会在升级成功后自动重启：CLI `apply` 通过系统服务管理器重启已安装服务，插件内执行时通过应用控制通道触发优雅重启并加载新二进制。
-- `timeout`、`socks5`、`insecure_skip_verify`
+- `timeout`、`outbound`、`socks5`、`insecure_skip_verify`
     - 与 CLI `upgrade` 参数含义一致。
+    - `outbound` 引用 `network.outbound.profiles` 中的出站配置；旧 `socks5` 字段继续兼容，且会覆盖 profile 里的代理设置。
 
 ### 行为说明
 
@@ -2664,6 +2735,7 @@ old-static.example.com static.example.net
   type: download
   args:
     timeout: 30s
+    outbound: remote
     socks5: "127.0.0.1:1080"
     downloads:
       - url: "https://example.com/geosite.dat"
@@ -2685,6 +2757,7 @@ old-static.example.com static.example.net
 - 单个下载失败只会写 warning 日志，不会阻止后续项继续下载。
 - 目标目录不存在时会自动创建。
 - 文件会先写入临时文件，再覆盖目标文件，避免半写入状态。
+- 配置 `outbound` 后，下载使用 `network.outbound.profiles` 中定义的解析器和代理。
 - 配置 `socks5` 后，所有下载连接都会通过该 SOCKS5 代理发起，格式与 `upstream[].socks5` 一致。
 - 默认会在启动时检查目标文件；缺失项会在其它插件初始化前自动下载，失败会直接中止启动。
 - 如需关闭该行为，可显式配置 `startup_if_missing: false`。
@@ -2692,6 +2765,7 @@ old-static.example.com static.example.net
 <Admonition type="note" title="注意事项">
 
 - 只支持 `http` / `https`。
+- `outbound` 未配置时使用 `network.outbound.default`；同时配置 `outbound` 和 `socks5` 时，`socks5` 会覆盖 profile 代理但保留 profile resolver。
 - `socks5` 支持 `host:port` 和 `username:password@host:port`，IPv6 需写成 `"[::1]:1080"`。
 - `startup_if_missing` 只会补齐缺失文件，不会在每次启动时强制覆盖已有文件。
 - 放进普通 `sequence` 时会直接占用该次请求的执行时间。

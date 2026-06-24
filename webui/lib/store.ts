@@ -33,7 +33,11 @@ import {
   type ReloadSnapshot,
   type SystemResponse,
 } from "./oxidns-api";
-import { parsePrometheusMetrics, type PluginMetricsMap } from "./metrics";
+import {
+  parsePrometheusMetrics,
+  type OutboundMetricsMap,
+  type PluginMetricsMap,
+} from "./metrics";
 import {
   getIncomingPluginReferences,
   getReplacementCandidates,
@@ -52,6 +56,12 @@ import {
   type ConfigSnapshot,
 } from "./config-history";
 import { WEBUI, tClient } from "./i18n";
+import {
+  createProcessInstanceBaseline,
+  hasProcessIdentityBaseline,
+  processInstanceChanged,
+  type ProcessInstanceBaseline,
+} from "./process-instance";
 
 type StoreSet = (
   partial: Partial<AppState> | ((state: AppState) => Partial<AppState>),
@@ -90,6 +100,7 @@ interface AppState {
   system: SystemResponse | null;
   reloadStatus: ReloadSnapshot | null;
   pluginMetrics: PluginMetricsMap;
+  outboundMetrics: OutboundMetricsMap;
   dependencyGraph: DependencyGraphReport | null;
   configDiagnostics: string[];
   configHistory: ConfigSnapshot[];
@@ -187,6 +198,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   system: null,
   reloadStatus: null,
   pluginMetrics: {},
+  outboundMetrics: {},
   dependencyGraph: null,
   configDiagnostics: [],
   configHistory: [],
@@ -339,7 +351,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   refreshMetrics: async () => {
     try {
       const text = await fetchPrometheusMetrics();
-      set({ pluginMetrics: parsePrometheusMetrics(text).byTag });
+      const metrics = parsePrometheusMetrics(text);
+      set({ pluginMetrics: metrics.byTag, outboundMetrics: metrics.outbound });
     } catch {
       // Metrics are best-effort observability; keep the last snapshot on
       // transient errors (e.g. API hub torn down during reload).
@@ -478,28 +491,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   // Save the current config to disk and restart the server process. After the
-  // restart request is accepted the client polls the health endpoint until the
-  // old process has stopped and the new one has come back up, then reloads
-  // the config from the fresh process.
+  // restart request is accepted the client polls the health endpoint until a
+  // fresh backend instance is observed, then reloads the config from it.
   restartApp: async () => {
     set({ isRestarting: true, restartPhase: "saving" });
     let savedVersion: string | null = null;
     try {
       await get().saveConfig();
       savedVersion = get().configVersion;
-      // Capture the running process's uptime before the request: pollReconnect
-      // uses it to detect a uptime-reset signature when the down transition
-      // happens faster than the polling interval can observe.
-      let baselineUptimeMs: number | undefined;
+      let baseline = createProcessInstanceBaseline();
       try {
-        baselineUptimeMs = (await fetchHealth()).uptime_ms;
+        baseline = createProcessInstanceBaseline(await fetchHealth());
       } catch {
-        // Health probe failures here are fine; pollReconnect falls back to
-        // requiring an observed down transition.
+        // Health probe failures here are fine; pollReconnect can still use
+        // an observed outage or fresh uptime signature as fallback evidence.
       }
       set({ restartPhase: "requesting" });
       await requestRestart();
-      await pollReconnect(baselineUptimeMs, (phase) =>
+      await pollReconnect(baseline, (phase) =>
         set({ restartPhase: phase }),
       );
       set({ restartPhase: "reloading" });
@@ -980,80 +989,39 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Wait for the server to go down and then come back up after a restart request.
-//
-// Restart success requires positive evidence that the process actually
-// recycled — otherwise an ignored or silently-failed restart command would
-// look identical to a normal healthy response from the unchanged old process.
-//
-// Phase 1 (max 30s): poll until health fails (down transition observed).
-// Phase 2 (max 60s): poll until health succeeds AND we can prove the
-//   responding process is new. Three independent signals count as proof:
-//     1. sawDown        — phase 1 observed the old process going away.
-//     2. uptimeReset    — uptime_ms is strictly lower than the pre-restart
-//                         baseline (only possible across a process restart).
-//     3. freshProcess   — uptime_ms is smaller than the elapsed time since
-//                         pollReconnect started (plus a small clock-skew
-//                         buffer). The new process cannot have existed
-//                         before we began polling, so a tiny uptime relative
-//                         to our own wall-clock proves freshness even when
-//                         baselineUptimeMs was unavailable and the down
-//                         window was shorter than the phase-1 interval.
-// If phase 2 deadline passes without any signal, throw — this surfaces
-// "restart never happened" instead of silently returning success.
-const FRESH_PROCESS_BUFFER_MS = 2_000;
-
+// Wait for positive evidence that the backend instance changed after a restart
+// request. Unix restarts use exec(), so the API may never be observably down.
 async function pollReconnect(
-  baselineUptimeMs?: number,
+  baseline: ProcessInstanceBaseline,
   onPhase?: (phase: "waiting_down" | "waiting_up") => void,
 ): Promise<void> {
-  const startTime = Date.now();
   let sawDown = false;
 
-  // Phase 1: wait for the old process to shut down
   onPhase?.("waiting_down");
-  const downDeadline = startTime + 30_000;
-  while (Date.now() < downDeadline) {
-    await delay(800);
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    await delay(sawDown ? 1500 : 800);
     try {
-      await fetchHealth();
-      // Still up — keep waiting
+      const health = await fetchHealth();
+      const fresh =
+        processInstanceChanged(health, baseline) ||
+        (sawDown && !hasProcessIdentityBaseline(baseline));
+      if (fresh) {
+        return;
+      }
     } catch {
       sawDown = true;
-      break;
+      onPhase?.("waiting_up");
     }
   }
 
-  // Phase 2: wait for the new process to come up
-  onPhase?.("waiting_up");
-  const upDeadline = Date.now() + 60_000;
-  while (Date.now() < upDeadline) {
-    await delay(1500);
-    let health;
-    try {
-      health = await fetchHealth();
-    } catch {
-      // Not yet up, keep polling
-      continue;
-    }
-    // Healthy. Verify this is the *new* process via any of three signals
-    // (see the function-level comment for the full rationale).
-    const uptimeReset =
-      baselineUptimeMs !== undefined && health.uptime_ms < baselineUptimeMs;
-    const freshProcess =
-      health.uptime_ms < Date.now() - startTime + FRESH_PROCESS_BUFFER_MS;
-    if (sawDown || uptimeReset || freshProcess) {
-      return;
-    }
-    // Same process as before — restart request likely ignored/failed.
-    // Keep polling in case a delayed restart still happens; the deadline
-    // will surface the real failure if it never does.
-  }
-
-  if (!sawDown) {
-    throw new Error(tClient(WEBUI.storeErrors.restartNotObserved));
-  }
-  throw new Error(tClient(WEBUI.storeErrors.restartTimeout));
+  throw new Error(
+    tClient(
+      sawDown
+        ? WEBUI.storeErrors.restartTimeout
+        : WEBUI.storeErrors.restartNotObserved,
+    ),
+  );
 }
 
 // Poll the reload status until the backend settles on a new completion.

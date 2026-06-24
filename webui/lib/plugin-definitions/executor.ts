@@ -53,10 +53,12 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
             },
             {
               key: "exec",
-              description: "定义规则命中后要执行的动作。",
+              description:
+                "定义规则命中后要执行的动作，可引用执行器或使用 accept、return、reject、jump、goto、mark 等内置动作；reject 支持大小写不敏感的 RCODE 名称和数字。",
               label: "执行动作",
               type: "text",
-              placeholder: "$forward_main / accept / reject 3 / jump seq_tag",
+              placeholder:
+                "$forward_main / accept / reject SERVFAIL / reject NOERROR / reject 3 / jump seq_tag",
             },
           ],
         },
@@ -116,10 +118,23 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
     configSchema: [
       {
         key: "concurrent",
-        description: "定义多上游模式下的并发查询扇出数。",
+        description: "定义多上游模式下的并发查询扇出数，运行时上限为 32 且不超过上游数量。",
         label: "并发上游数",
         type: "number",
         default: 1,
+      },
+      {
+        key: "response_selection",
+        description: "定义多上游并发返回不一致时的结果选择策略。",
+        label: "结果选择",
+        type: "select",
+        default: "balanced",
+        options: [
+          { label: "最快响应", value: "fastest" },
+          { label: "平衡", value: "balanced" },
+          { label: "优先正向答案", value: "prefer_positive" },
+          { label: "负向共识", value: "consensus" },
+        ],
       },
       {
         key: "upstreams",
@@ -146,6 +161,15 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
               type: "text",
               required: true,
               placeholder: "udp://1.1.1.1:53",
+            },
+            {
+              key: "outbound",
+              description:
+                "引用 network.outbound.profiles 中的出站配置；留空时使用 network.outbound.default，本地 dial_addr、bootstrap、socks5 优先生效。",
+              label: "出站配置",
+              type: "select",
+              dynamicOptions: "outboundProfiles",
+              placeholder: "profile-1",
             },
             {
               key: "dial_addr",
@@ -290,7 +314,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         cache_expired_total: "查找时发现并移除过期条目的次数。",
         cache_insert_total: "缓存条目插入或更新的总次数。",
         cache_skip_total:
-          "因写入策略（截断响应、无 TTL）而跳过缓存的响应总数。",
+          "因写入策略（截断响应、无 TTL、正响应 TTL 过低）而跳过缓存的响应总数。",
         cache_lazy_refresh_total:
           "Lazy Cache 后台刷新尝试总数（按结果：started / success / failed）。",
         cache_entry_count: "当前缓存中的条目数量。",
@@ -368,6 +392,12 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         key: "max_positive_ttl",
         description: "定义正响应 TTL 上限。",
         label: "正响应 TTL 上限",
+        type: "number",
+      },
+      {
+        key: "min_positive_ttl",
+        description: "定义正响应进入缓存所需的最小 TTL。",
+        label: "正响应最小缓存 TTL",
         type: "number",
       },
       {
@@ -663,7 +693,8 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         ip_selector_probe_total: "按测速方式和结果统计的 IP 探测次数。",
         ip_selector_probe_latency_count: "成功测速的延迟样本数。",
         ip_selector_probe_latency_sum_ms: "成功测速延迟累计值（毫秒）。",
-        ip_selector_selected_total: "按 probe/cache/fallback 来源统计的优选次数。",
+        ip_selector_selected_total:
+          "按 probe/cache/fallback 来源统计的优选次数。",
         ip_selector_cache_entries: "当前 IP 探测评分缓存条目数量。",
         ip_selector_dropped_probe_total:
           "由于并发限制或已有 in-flight 探测而未新启动的探测次数。",
@@ -695,6 +726,22 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         false,
         "定义用于评分响应 IP 的探测方式，支持 tcp:<port>、ping、none。",
       ),
+      {
+        key: "outbound",
+        description:
+          "引用 network.outbound.profiles 中的出站配置，为 TCP 探测复用 profile proxy。",
+        label: "出站配置",
+        type: "select",
+        dynamicOptions: "outboundProfiles",
+        placeholder: "profile-1",
+      },
+      {
+        key: "socks5",
+        description: "为 TCP 探测指定局部 SOCKS5 代理，优先于 outbound profile proxy。",
+        label: "SOCKS5 代理",
+        type: "text",
+        placeholder: "127.0.0.1:1080",
+      },
       {
         key: "probe_stagger",
         description: "多种测速方式之间的错峰启动间隔。",
@@ -1112,6 +1159,14 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         type: "number",
         default: 1,
       },
+      {
+        key: "reader_concurrency",
+        description:
+          "限制 query_recorder API/统计读取侧同时运行的 SQLite reader 数量，避免 WebUI 或 API 突发请求占用过多阻塞线程和内存。",
+        label: "读取并发数",
+        type: "number",
+        default: 2,
+      },
     ],
   },
   {
@@ -1329,6 +1384,15 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         description: "为原始 args.body 指定 Content-Type。",
         label: "Content-Type",
         type: "text",
+      },
+      {
+        key: "outbound",
+        description:
+          "引用 network.outbound.profiles 中的出站配置，用于统一控制解析器和代理。",
+        label: "出站配置",
+        type: "select",
+        dynamicOptions: "outboundProfiles",
+        placeholder: "profile-1",
       },
       {
         key: "socks5",
@@ -1855,6 +1919,15 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         default: "30s",
       },
       {
+        key: "outbound",
+        description:
+          "引用 network.outbound.profiles 中的出站配置，用于升级下载。",
+        label: "出站配置",
+        type: "select",
+        dynamicOptions: "outboundProfiles",
+        placeholder: "profile-1",
+      },
+      {
         key: "socks5",
         description: "升级下载时使用的 SOCKS5 代理。",
         label: "SOCKS5 代理",
@@ -1943,6 +2016,15 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "超时",
         type: "duration",
         default: "30s",
+      },
+      {
+        key: "outbound",
+        description:
+          "引用 network.outbound.profiles 中的出站配置，用于统一控制下载解析器和代理。",
+        label: "出站配置",
+        type: "select",
+        dynamicOptions: "outboundProfiles",
+        placeholder: "profile-1",
       },
       {
         key: "socks5",

@@ -15,6 +15,7 @@ use serde::{Deserialize, Deserializer};
 use serde_yaml_ng::Value;
 
 use crate::infra::error::{DnsError, Result};
+use crate::infra::network::proxy::validate_socks5_syntax;
 
 const DEFAULT_SELECTION_MODE: SelectionMode = SelectionMode::FirstSuccess;
 const DEFAULT_PROBE_STAGGER_MS: u64 = 200;
@@ -93,6 +94,8 @@ impl Display for ProbeMethod {
 #[derive(Debug, Clone)]
 pub(super) struct IpSelectorConfig {
     pub(super) selection_mode: Option<String>,
+    pub(super) outbound: Option<String>,
+    pub(super) socks5: Option<String>,
     pub(super) probe_methods: Option<Vec<String>>,
     pub(super) probe_stagger: Option<u64>,
     pub(super) probe_timeout: Option<u64>,
@@ -114,6 +117,10 @@ pub(super) struct IpSelectorConfig {
 struct RawIpSelectorConfig {
     #[serde(default)]
     selection_mode: Option<String>,
+    #[serde(default)]
+    outbound: Option<String>,
+    #[serde(default)]
+    socks5: Option<String>,
     #[serde(default, deserialize_with = "deserialize_probe_methods")]
     probe_methods: Option<Vec<String>>,
     #[serde(default)]
@@ -138,6 +145,8 @@ impl From<RawIpSelectorConfig> for IpSelectorConfig {
     fn from(value: RawIpSelectorConfig) -> Self {
         Self {
             selection_mode: value.selection_mode,
+            outbound: value.outbound,
+            socks5: value.socks5,
             probe_methods: value.probe_methods,
             probe_stagger: value.probe_stagger,
             probe_timeout: value.probe_timeout,
@@ -168,6 +177,8 @@ pub(super) struct IpSelectorCacheConfig {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(super) struct IpSelectorSettings {
     pub(super) selection_mode: SelectionMode,
+    pub(super) outbound: Option<String>,
+    pub(super) socks5: Option<String>,
     pub(super) probe_methods: Vec<ProbeMethod>,
     pub(super) probe_stagger: Duration,
     pub(super) probe_timeout: Duration,
@@ -190,6 +201,8 @@ pub(super) fn parse_ip_selector_config(args: Option<Value>) -> Result<IpSelector
             .map_err(|e| DnsError::plugin(format!("failed to parse ip_selector config: {}", e)))?,
         None => IpSelectorConfig {
             selection_mode: None,
+            outbound: None,
+            socks5: None,
             probe_methods: None,
             probe_stagger: None,
             probe_timeout: None,
@@ -210,6 +223,8 @@ pub(super) fn parse_ip_selector_quick_setup(param: Option<String>) -> Result<IpS
     let mut tokens: Vec<&str> = raw.split_whitespace().collect();
     let mut config = IpSelectorConfig {
         selection_mode: None,
+        outbound: None,
+        socks5: None,
         probe_methods: None,
         probe_stagger: None,
         probe_timeout: None,
@@ -262,6 +277,8 @@ pub(super) fn settings_from_config(config: IpSelectorConfig) -> Result<IpSelecto
     let max_parallel_probes = config
         .max_parallel_probes
         .unwrap_or(DEFAULT_MAX_PARALLEL_PROBES);
+    let outbound = normalize_outbound(config.outbound)?;
+    let socks5 = normalize_socks5(config.socks5)?;
     let probe_timeout = config.probe_timeout.unwrap_or(DEFAULT_PROBE_TIMEOUT_MS);
     let max_wait = config.max_wait.unwrap_or(DEFAULT_MAX_WAIT_MS);
 
@@ -298,6 +315,8 @@ pub(super) fn settings_from_config(config: IpSelectorConfig) -> Result<IpSelecto
 
     Ok(IpSelectorSettings {
         selection_mode,
+        outbound,
+        socks5,
         probe_methods,
         probe_stagger: Duration::from_millis(
             config.probe_stagger.unwrap_or(DEFAULT_PROBE_STAGGER_MS),
@@ -315,6 +334,27 @@ pub(super) fn settings_from_config(config: IpSelectorConfig) -> Result<IpSelecto
         cache_ttl_ms: cache_ttl_secs.saturating_mul(1000),
         failure_ttl_ms: failure_ttl_secs.saturating_mul(1000),
     })
+}
+
+fn normalize_outbound(raw: Option<String>) -> Result<Option<String>> {
+    match raw {
+        Some(value) if value.trim().is_empty() => Err(DnsError::plugin(
+            "ip_selector outbound profile cannot be empty",
+        )),
+        Some(value) => Ok(Some(value.trim().to_string())),
+        None => Ok(None),
+    }
+}
+
+fn normalize_socks5(raw: Option<String>) -> Result<Option<String>> {
+    match raw {
+        Some(value) if !validate_socks5_syntax(value.trim()) => Err(DnsError::plugin(format!(
+            "ip_selector has invalid socks5 proxy '{}'",
+            value
+        ))),
+        Some(value) => Ok(Some(value.trim().to_string())),
+        None => Ok(None),
+    }
 }
 
 fn parse_selection_mode(raw: &str) -> Result<SelectionMode> {

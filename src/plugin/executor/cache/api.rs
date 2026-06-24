@@ -15,6 +15,7 @@ use tracing::{info, warn};
 use super::key::{CacheKey, EcsScopeDigest, normalize_domain_key};
 use super::persistence::{dump_cache_to_bytes, load_cache_from_bytes};
 use super::{Cache, CacheItem, CacheMap};
+use crate::api::query::{optional_text, parse_usize_param, visit_query_params};
 use crate::api::{ApiHandler, json_error, json_ok, simple_response};
 use crate::infra::clock::AppClock;
 use crate::infra::error::Result;
@@ -363,40 +364,30 @@ fn parse_cache_entries_query(
     let mut limit = 100usize;
     let mut cursor = 0usize;
     let mut qname = None;
-    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
-        match key.as_ref() {
+    visit_query_params(query, |key, value| {
+        match key {
             "limit" => {
-                limit = value
-                    .parse::<usize>()
-                    .map_err(|_| "limit must be a positive integer".to_string())?
-                    .clamp(1, 500);
+                limit =
+                    parse_usize_param(value, |_| "limit must be a positive integer".to_string())?
+                        .clamp(1, 500);
             }
             "cursor" => {
-                cursor = value
-                    .parse::<usize>()
-                    .map_err(|_| "cursor must be a non-negative integer".to_string())?;
+                cursor = parse_usize_param(value, |_| {
+                    "cursor must be a non-negative integer".to_string()
+                })?;
             }
             "qname" => {
-                qname = optional_cache_query_text(value.as_ref())
-                    .map(|value| normalize_domain_key(value.as_str()));
+                qname = optional_text(value).map(|value| normalize_domain_key(value.as_str()));
             }
             _ => {}
         }
-    }
+        Ok(())
+    })?;
     Ok(CacheEntriesQuery {
         limit,
         cursor,
         qname,
     })
-}
-
-fn optional_cache_query_text(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
 }
 
 fn cache_entry_matches_query(key: &CacheKey, query: &CacheEntriesQuery) -> bool {

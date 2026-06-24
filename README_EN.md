@@ -79,6 +79,7 @@ It is better suited for users who want explicit control over DNS behavior, rathe
 | Executors | `forward`, `cache`, `fallback`, `hosts`, `arbitrary`, `redirect`, `ecs_handler`, `ttl`, `black_hole`, `ip_selector`, `download`, `upgrade`, `reload`, `reload_provider`, `script`, `http_request`, `learn_domain`, `query_summary`, `query_recorder`, `metrics_collector` |
 | Matchers | `qname`, `question`, `qtype`, `qclass`, `client_ip`, `resp_ip`, `rcode`, `rate_limiter`, and more |
 | Data sets | `domain_set`, `dynamic_domain_set`, `ip_set`, `geoip`, `geosite`, `adguard_rule` |
+| Outbound networking | `network.outbound` centralizes nameservers and SOCKS5 settings for HTTP downloads, upgrade checks, webhooks, and upstreams |
 | System integrations | `ipset`, `nftset`, `ros_address_list`, `reverse_lookup` |
 | Debugging and operations | Health checks, config validation, hot reload, query records, Prometheus plugin metrics, real-time logs |
 | Deployment | Multi-platform builds, Debian packages, standalone WebUI hosting, service installation |
@@ -93,6 +94,7 @@ Typical use cases include:
 
 - Home gateways, side routers, OpenWrt, NAS, and homelab setups
 - Multi-upstream racing, fallback chains, and mixed protocol environments
+- Configurable concurrent upstream response selection to balance latency and negative-answer confidence
 - Fine-grained DNS policy routing based on domains, clients, and response results
 - DNS-result-driven `ipset` / `nftset` / MikroTik address list synchronization
 - Ad filtering, domain routing, local overrides, dual-stack preferences, and ECS control
@@ -207,6 +209,8 @@ cargo build --release                                                  # default
 cargo build --release --no-default-features --features minimal         # bare forwarder
 cargo build --release --no-default-features --features standard        # home / router
 ```
+
+Public protocol features are grouped by product capability: `resolver-*` enables `network.outbound.resolver.nameservers`, `upstream-*` enables DNS upstream forwarding, and `server-*` enables inbound serving protocols. `standard` includes the common DoT/DoH/DoQ resolver and upstream capabilities; `full` adds DoH3.
 
 See [Custom Build](https://oxidns.org/en/custom-build) for details.
 

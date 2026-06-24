@@ -5,7 +5,7 @@ sidebar_position: 2
 
 ## Before Starting
 
-OxiDNS uses YAML configuration. For day-to-day editing, it is easiest to understand the file as five top-level parts:
+OxiDNS uses YAML configuration. For day-to-day editing, it is easiest to understand the file as six top-level parts:
 
 ```yaml
 runtime:
@@ -17,6 +17,14 @@ api:
 log:
   level: info
   file: ./oxidns.log
+
+network:
+  outbound:
+    default: direct
+    profiles:
+      direct:
+        resolver: system
+        proxy: none
 
 include: []
 
@@ -35,6 +43,8 @@ Where:
   - Management API settings.
 - `log`
   - Log output settings.
+- `network`
+  - Shared outbound networking settings, such as resolver and proxy choices for HTTP downloads, upgrade checks, and webhook requests.
 - `include`
   - Load plugin definitions from other configuration files.
 - `plugins`
@@ -167,6 +177,54 @@ Field notes:
 - `type: weekly`
   - Rotate every week.
   - Optional `max_files` controls how many rotated files are retained; `0` disables automatic cleanup.
+
+### `network`
+
+`network.outbound` centralizes outbound policy for internal HTTP clients and upstreams. When omitted, behavior stays compatible: HTTP clients use system DNS with direct connections, and upstreams keep their own settings.
+
+```yaml
+network:
+  outbound:
+    default: direct
+    profiles:
+      direct:
+        resolver: system
+        proxy: none
+      remote:
+        resolver:
+          nameservers:
+            - addr: "1.1.1.1:53"
+            - addr: "tls://dns.google:853"
+              dial_addr: 8.8.8.8
+            - addr: "https://cloudflare-dns.com/dns-query"
+              dial_addr: 1.1.1.1
+          ip_version: 4
+          timeout: 5s
+          proxy: none
+        proxy:
+          socks5: 127.0.0.1:1080
+```
+
+Field notes:
+
+- `outbound.default`
+  - Meaning: Which profile HTTP clients and upstreams use when they do not set `outbound` explicitly.
+  - Default: none; without a default profile, OxiDNS uses system DNS + direct connections.
+  - Constraint: If set, it must reference an existing entry in `profiles`.
+  - Note: The default profile proxy is applied strictly to upstreams. Startup fails if a default SOCKS5 proxy is applied to UDP, DoQ, or DoH3 upstreams, because those connection models do not support profile proxying.
+- `outbound.profiles.<name>.resolver`
+  - `system`: Use system DNS. HTTP clients perform this lookup asynchronously so it does not block runtime worker threads.
+  - `nameservers`: Resolve target names through configured DNS nameservers. Supports `udp://`, `tcp://`, `tls://`, `https://`, `doh://`, `h3://`, `quic://`, and `doq://`; no scheme defaults to UDP.
+  - Protocol features: UDP/TCP are always available. DoT requires `resolver-dot`, DoH requires `resolver-doh`, DoQ requires `resolver-doq`, and DoH3 requires `resolver-doh3`. Legacy `upstream-*` features still enable the shared DNS client dependencies for existing build scripts, but new `network.outbound.resolver.nameservers` configs should enable `resolver-*` explicitly.
+  - `ip_version`: Optional, `4` queries A records and `6` queries AAAA records. When omitted, IPv4 is used.
+  - `timeout`: Optional resolver query timeout. Defaults to `5s`.
+  - `proxy`: Optional. `none` connects nameservers directly; `profile` lets TCP/DoT/DoH nameservers reuse this profile's SOCKS5 proxy. UDP/DoQ/DoH3 nameservers do not support SOCKS5.
+  - Domain-based nameservers must set `dial_addr`; the hostname in `addr` is kept for SNI/certificate validation and `dial_addr` is used for the actual connection.
+- `outbound.profiles.<name>.proxy`
+  - `none` or `direct`: Connect directly.
+  - `socks5`: Connect through a SOCKS5 proxy. The format is the same as upstream `socks5`.
+
+`download`, `upgrade`, and `http_request` can reference a profile with `args.outbound: remote`. The legacy `socks5` field remains supported. When both `outbound` and `socks5` are set on the same plugin, `socks5` overrides the profile proxy while the resolver still comes from the outbound profile. `forward` upstreams use `network.outbound.default` when `outbound` is omitted; they can also set `outbound: remote` to select another profile. Local upstream `dial_addr`, `bootstrap`, and `socks5` fields override profile-injected values.
 
 ### `api`
 
@@ -430,11 +488,20 @@ Besides calling plugins, `sequence.args[].exec` can also use built-in control fl
 
 - Builds a DNS response from the current request immediately and ends the current `sequence`.
 - The default `rcode` is `REFUSED`, so plain `reject` means “reject this request”.
-- A decimal numeric code can be provided explicitly, for example:
+- A decimal numeric code or English RCODE name can be provided explicitly; English names are case-insensitive. Common mappings and meanings are listed in the [DNS Code Reference](dns-codes.md#rcode-response-codes), for example:
   - `reject 2` => `SERVFAIL`
+  - `reject SERVFAIL` / `reject servfail` => `SERVFAIL`
   - `reject 3` => `NXDOMAIN`
-- The parameter currently accepts decimal integers only, not mnemonic names such as `SERVFAIL`.
+  - `reject NXDOMAIN` => `NXDOMAIN`
+- `reject` only supports base DNS RCODEs `0..15`; extended RCODEs require an EDNS OPT and are not generated by this built-in action.
+- `reject 0` returns a plain `NOERROR` response and does not add an SOA automatically.
 - Callers do not continue with later rules.
+- A typical use is returning a specific error code directly, for example:
+
+```yaml
+- matches: "qtype HTTPS"
+  exec: "reject NXDOMAIN"
+```
 
 ### `mark ...`
 
@@ -547,56 +614,3 @@ args:
   - "$core_domains"
   - "&/etc/oxidns/domains.txt"
 ```
-
-## Unified Upstream Structure
-
-`forward.upstreams` uses a shared `UpstreamConfig` shape.
-
-Example:
-
-```yaml
-upstreams:
-  - addr: "udp://1.1.1.1:53"
-  - addr: "https://resolver.example/dns-query"
-    bootstrap: "8.8.8.8:53"
-    timeout: 5s
-    enable_http3: true
-```
-
-Common fields:
-
-- `addr`
-  - Upstream address.
-  - Defaults to UDP when no scheme is given.
-  - Supports `udp://`, `tcp://`, `tcp+pipeline://`, `tls://`, `tls+pipeline://`, `quic://`, `doq://`, `https://`, `doh://`, and `h3://`.
-  - DoH should include the full path, for example `https://resolver.example/dns-query`.
-- `dial_addr`
-  - Actual connection IP, while keeping the hostname from `addr` for SNI and certificate validation.
-- `port`
-  - Overrides the port.
-- `bootstrap`
-  - Bootstrap DNS used to resolve the upstream hostname when `addr` is domain-based. Must be `IP:port`.
-- `bootstrap_version`
-  - `4` or `6`.
-- `socks5`
-  - SOCKS5 proxy.
-  - Supports `host:port` and `user:pass@host:port`.
-  - IPv6 must use `[addr]:port`.
-- `idle_timeout`
-  - Idle connection timeout in seconds.
-- `min_conns`
-  - Minimum warmed pool connections. Default: `0`; range: `0..4096`; must not exceed `max_conns`.
-- `max_conns`
-  - Maximum pool size, in the range `1..4096`.
-- `insecure_skip_verify`
-  - Skips TLS certificate validation. Recommended only for test environments.
-- `timeout`
-  - Per-query timeout. Default: `5s`.
-- `enable_pipeline`
-  - Enables TCP or DoT pipelining.
-- `enable_http3`
-  - Uses HTTP/3 for DoH.
-- `so_mark`
-  - Linux `SO_MARK`.
-- `bind_to_device`
-  - Linux `SO_BINDTODEVICE`.

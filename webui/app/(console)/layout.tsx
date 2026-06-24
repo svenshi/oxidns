@@ -18,6 +18,7 @@ import {
   LoginRequired,
 } from "@/components/shell/connection-required";
 import { RestartingOverlay } from "@/components/shell/restarting-overlay";
+import { UpgradeOverlay } from "@/components/shell/upgrade-overlay";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
@@ -186,6 +187,7 @@ export default function ConsoleLayout({
         <PluginDetailSheet />
         <ConfigHistorySheet open={historyOpen} onOpenChange={setHistoryOpen} />
         <RestartingOverlay />
+        <UpgradeOverlay />
       </SidebarProvider>
     </TooltipProvider>
   );

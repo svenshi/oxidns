@@ -78,7 +78,63 @@ plugins:
     )
 }
 
+#[allow(dead_code)]
+fn outbound_resolver(nameserver_addr: &str) -> String {
+    format!(
+        r#"
+network:
+  outbound:
+    default: test
+    profiles:
+      test:
+        resolver:
+          nameservers:
+            - addr: "{nameserver_addr}"
+"#
+    )
+}
+
 // --- Negative: protocol feature compiled out -------------------------------
+
+#[cfg(not(feature = "resolver-dot"))]
+#[tokio::test]
+async fn resolver_dot_not_compiled_reports_rebuild_hint() {
+    let err = start_error(&outbound_resolver("tls://1.1.1.1:853")).await;
+    assert!(
+        err.contains("resolver-dot"),
+        "expected a resolver-dot rebuild hint, got: {err}"
+    );
+}
+
+#[cfg(not(feature = "resolver-doh"))]
+#[tokio::test]
+async fn resolver_doh_not_compiled_reports_rebuild_hint() {
+    let err = start_error(&outbound_resolver("https://1.1.1.1/dns-query")).await;
+    assert!(
+        err.contains("resolver-doh"),
+        "expected a resolver-doh rebuild hint, got: {err}"
+    );
+}
+
+#[cfg(not(feature = "resolver-doq"))]
+#[tokio::test]
+async fn resolver_doq_not_compiled_reports_rebuild_hint() {
+    let err = start_error(&outbound_resolver("quic://1.1.1.1:853")).await;
+    assert!(
+        err.contains("resolver-doq"),
+        "expected a resolver-doq rebuild hint, got: {err}"
+    );
+}
+
+#[cfg(not(feature = "resolver-doh3"))]
+#[tokio::test]
+async fn resolver_doh3_not_compiled_reports_rebuild_hint() {
+    let err = start_error(&outbound_resolver("h3://1.1.1.1/dns-query")).await;
+    assert!(
+        err.contains("resolver-doh3"),
+        "expected a resolver-doh3 rebuild hint, got: {err}"
+    );
+}
 
 #[cfg(not(feature = "upstream-dot"))]
 #[tokio::test]

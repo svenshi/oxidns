@@ -158,6 +158,46 @@ pub enum Rcode {
 }
 
 impl Rcode {
+    /// Parse a user-facing RCODE token from either a decimal numeric value or
+    /// a standard mnemonic name. Name matching is ASCII case-insensitive.
+    #[inline]
+    pub fn from_token(raw: &str) -> Option<Self> {
+        if let Ok(code) = raw.parse::<u16>() {
+            return Some(Self::from(code));
+        }
+
+        Self::from_name(raw)
+    }
+
+    /// Parse a standard RCODE mnemonic name. Matching is ASCII
+    /// case-insensitive.
+    pub fn from_name(raw: &str) -> Option<Self> {
+        let rcode = match raw.to_ascii_uppercase().as_str() {
+            "NOERROR" => Self::NoError,
+            "FORMERR" => Self::FormErr,
+            "SERVFAIL" => Self::ServFail,
+            "NXDOMAIN" => Self::NXDomain,
+            "NOTIMP" => Self::NotImp,
+            "REFUSED" => Self::Refused,
+            "YXDOMAIN" => Self::YXDomain,
+            "YXRRSET" => Self::YXRRSet,
+            "NXRRSET" => Self::NXRRSet,
+            "NOTAUTH" => Self::NotAuth,
+            "NOTZONE" => Self::NotZone,
+            "BADVERS" => Self::BADVERS,
+            "BADSIG" => Self::BADSIG,
+            "BADKEY" => Self::BADKEY,
+            "BADTIME" => Self::BADTIME,
+            "BADMODE" => Self::BADMODE,
+            "BADNAME" => Self::BADNAME,
+            "BADALG" => Self::BADALG,
+            "BADTRUNC" => Self::BADTRUNC,
+            "BADCOOKIE" => Self::BADCOOKIE,
+            _ => return None,
+        };
+        Some(rcode)
+    }
+
     #[inline]
     pub fn value(self) -> u16 {
         u16::from(self)
@@ -356,6 +396,15 @@ mod tests {
         assert_eq!(Rcode::from_parts(0x3A, 0x0F), Rcode::Unknown(0x03AF));
         assert_eq!(Rcode::from_parts(1, 0), Rcode::BADVERS);
     }
+
+    #[test]
+    fn rcode_from_token_accepts_numbers_and_case_insensitive_names() {
+        assert_eq!(Rcode::from_token("2"), Some(Rcode::ServFail));
+        assert_eq!(Rcode::from_token("SERVFAIL"), Some(Rcode::ServFail));
+        assert_eq!(Rcode::from_token("servfail"), Some(Rcode::ServFail));
+        assert_eq!(Rcode::from_token("NoError"), Some(Rcode::NoError));
+        assert_eq!(Rcode::from_token("BAD_RCODE"), None);
+    }
 }
 
 /// DNS class values supported by OxiDNS.
@@ -428,6 +477,16 @@ impl From<DNSClass> for u16 {
 }
 
 impl DNSClass {
+    /// Parse a user-facing DNS class token from either a decimal numeric value
+    /// or a class mnemonic. Name matching is ASCII case-insensitive.
+    pub fn from_token(raw: &str) -> Option<Self> {
+        if let Ok(code) = raw.parse::<u16>() {
+            return Some(Self::from(code));
+        }
+
+        Self::from_str(&raw.to_ascii_uppercase()).ok()
+    }
+
     /// Return the OPT version from value
     pub fn for_opt(value: u16) -> Self {
         // From RFC 6891: `Values lower than 512 MUST be treated as equal to 512`
@@ -752,6 +811,19 @@ impl From<u16> for RecordType {
         }
     }
 }
+
+impl RecordType {
+    /// Parse a user-facing record type token from either a decimal numeric
+    /// value or a type mnemonic. Name matching is ASCII case-insensitive.
+    pub fn from_token(raw: &str) -> Option<Self> {
+        if let Ok(code) = raw.parse::<u16>() {
+            return Some(Self::from(code));
+        }
+
+        Self::from_str(&raw.to_ascii_uppercase()).ok()
+    }
+}
+
 impl From<RecordType> for u16 {
     fn from(rt: RecordType) -> Self {
         match rt {
@@ -1058,5 +1130,29 @@ impl From<RecordType> for &'static str {
 impl Display for RecordType {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
         f.write_str(Into::<&str>::into(*self))
+    }
+}
+
+#[cfg(test)]
+mod enum_token_tests {
+    use super::{DNSClass, RecordType};
+
+    #[test]
+    fn dns_class_from_token_accepts_numbers_and_case_insensitive_names() {
+        assert_eq!(DNSClass::from_token("1"), Some(DNSClass::IN));
+        assert_eq!(DNSClass::from_token("in"), Some(DNSClass::IN));
+        assert_eq!(DNSClass::from_token("CH"), Some(DNSClass::CH));
+        assert_eq!(DNSClass::from_token("*"), Some(DNSClass::ANY));
+        assert_eq!(DNSClass::from_token("70000"), None);
+        assert_eq!(DNSClass::from_token("bad_class"), None);
+    }
+
+    #[test]
+    fn record_type_from_token_accepts_numbers_and_case_insensitive_names() {
+        assert_eq!(RecordType::from_token("1"), Some(RecordType::A));
+        assert_eq!(RecordType::from_token("a"), Some(RecordType::A));
+        assert_eq!(RecordType::from_token("AAAA"), Some(RecordType::AAAA));
+        assert_eq!(RecordType::from_token("70000"), None);
+        assert_eq!(RecordType::from_token("bad_type"), None);
     }
 }

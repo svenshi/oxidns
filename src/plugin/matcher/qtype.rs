@@ -16,11 +16,11 @@ use crate::core::context::DnsContext;
 use crate::infra::error::Result as DnsResult;
 use crate::plugin::matcher::Matcher;
 use crate::plugin::matcher::matcher_utils::{
-    parse_enum_rules_from_value, parse_quick_setup_rules, parse_rr_type, parse_u16_rules,
-    validate_non_empty_rules,
+    parse_enum_rules_from_value, parse_quick_setup_rules, parse_u16_rules, validate_non_empty_rules,
 };
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;
+use crate::proto::RecordType;
 
 #[derive(Debug, Clone)]
 #[plugin_factory("qtype")]
@@ -44,7 +44,9 @@ impl PluginFactory for QtypeFactory {
 
 fn build_qtype_matcher(tag: String, rules: Vec<String>) -> DnsResult<UninitializedPlugin> {
     validate_non_empty_rules("qtype", &rules)?;
-    let qtypes = parse_u16_rules("qtype", &rules, parse_rr_type)?;
+    let qtypes = parse_u16_rules("qtype", &rules, |raw| {
+        RecordType::from_token(raw).map(u16::from)
+    })?;
     Ok(UninitializedPlugin::Matcher(Box::new(QtypeMatcher {
         tag,
         qtypes,

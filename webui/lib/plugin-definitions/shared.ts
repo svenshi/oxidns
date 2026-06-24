@@ -88,6 +88,7 @@ export interface ConfigField {
     label: string;
     value: string | number;
   }[];
+  dynamicOptions?: "outboundProfiles";
   referenceTypes?: PluginType[];
   referencePlugins?: string[];
   referencePrefix?: "$" | "";

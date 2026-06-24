@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::backend::DynamicDomainSetBackend;
 use super::rules::{DynamicDomainMutation, DynamicDomainRuleKind};
+use crate::api::query::{parse_usize_param, visit_query_params};
 use crate::api::{ApiHandler, json_error, json_ok};
 use crate::infra::error::Result as DnsResult;
 use crate::register_plugin_api;
@@ -195,17 +196,17 @@ struct ListQuery {
 fn parse_list_query(query: Option<&str>) -> std::result::Result<ListQuery, String> {
     let mut cursor = 0usize;
     let mut limit = DEFAULT_LIST_LIMIT;
-    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
-        match key.as_ref() {
+    visit_query_params(query, |key, value| {
+        match key {
             "cursor" => {
-                cursor = value
-                    .parse::<usize>()
-                    .map_err(|err| format!("invalid cursor query parameter: {err}"))?;
+                cursor = parse_usize_param(value, |err| {
+                    format!("invalid cursor query parameter: {err}")
+                })?;
             }
             "limit" => {
-                let parsed = value
-                    .parse::<usize>()
-                    .map_err(|err| format!("invalid limit query parameter: {err}"))?;
+                let parsed = parse_usize_param(value, |err| {
+                    format!("invalid limit query parameter: {err}")
+                })?;
                 if parsed == 0 {
                     return Err("limit must be greater than 0".to_string());
                 }
@@ -213,7 +214,8 @@ fn parse_list_query(query: Option<&str>) -> std::result::Result<ListQuery, Strin
             }
             _ => {}
         }
-    }
+        Ok(())
+    })?;
     Ok(ListQuery { cursor, limit })
 }
 

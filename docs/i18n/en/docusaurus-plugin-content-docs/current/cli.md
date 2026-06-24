@@ -13,6 +13,7 @@ Available top-level commands:
 - `check`
 - `build-info`
 - `export-dat`
+- `probe`
 - `service`
 - `upgrade`
 
@@ -25,6 +26,7 @@ Available top-level commands:
 | Temporarily enable debug logging | `oxidns start -c config.yaml -l debug` |
 | Print the plugin dependency graph | `oxidns check -c config.yaml --graph` |
 | Inspect compiled binary capabilities | `oxidns build-info` |
+| Probe upstream reachability and concurrency behavior | `oxidns probe upstream tcp://1.1.1.1:53` |
 | Install as a system service | `sudo oxidns service install -d /var/lib/oxidns -c /etc/oxidns/config.yaml` |
 | Check for a new release | `oxidns upgrade check` |
 | Export rules from a dat file | `oxidns export-dat --file ./rules/geosite.dat --kind geosite --selector cn --out-dir ./rules/exported` |
@@ -44,6 +46,8 @@ oxidns start --help
 oxidns check --help
 oxidns build-info --help
 oxidns export-dat --help
+oxidns probe --help
+oxidns probe upstream --help
 oxidns service --help
 oxidns upgrade --help
 ```
@@ -114,6 +118,82 @@ Behavior:
 - On success, exits with code `0` and prints a short success line.
 - With `--graph`, it also prints a plain-text dependency graph in plugin initialization order.
 - On failure, exits non-zero and prints the validation error.
+
+## `probe`
+
+Actively probes runtime-facing external targets. The current subcommand is `probe upstream`, which checks one DNS upstream for reachability, basic response details, hostname resolution, and concurrency / pipeline behavior.
+
+### `probe upstream`
+
+Typical usage:
+
+```bash
+oxidns probe upstream udp://1.1.1.1:53
+oxidns probe upstream tcp://1.1.1.1:53
+oxidns probe upstream tls://dns.google:853 --qname example.com. --qtype A
+oxidns probe upstream https://dns.google/dns-query --json
+oxidns probe upstream tcp://dns.example.com:53 -c config.yaml --outbound remote
+```
+
+Arguments:
+
+- `<addr>`
+  - Upstream address to probe.
+  - Accepts the same address forms as forward upstreams, including `udp://`, `tcp://`, `tcp+pipeline://`, `tls://`, `tls+pipeline://`, `https://`, `doh://`, `h3://`, `quic://`, and `doq://`.
+  - Addresses without a scheme are treated as UDP.
+- `-c, --config <PATH>`
+  - Optionally read a configuration file and reuse only its `network.outbound` profiles.
+  - When omitted, no runtime config is read.
+- `-d, --working-dir <PATH>`
+  - Change the working directory before reading the config.
+- `--outbound <NAME>`
+  - Use resolver / proxy settings from the named outbound profile.
+- `--dial-addr <IP>`
+  - Connect directly to the specified IP while preserving the hostname from `<addr>` for TLS SNI and HTTP Host.
+- `--bootstrap <ADDR>`
+  - Use the specified bootstrap DNS server to resolve hostname upstreams.
+- `--bootstrap-version <4|6>`
+  - Preferred IP version for bootstrap resolution.
+- `--socks5 <ADDR>`
+  - Use a SOCKS5 proxy for upstream transports that support proxying.
+- `--port <PORT>`
+  - Override the upstream port.
+- `--insecure-skip-verify`
+  - Skip TLS certificate verification. Use only for testing.
+- `--timeout <DURATION>`
+  - Per-query timeout.
+  - Default: `5s`
+- `--qname <NAME>`
+  - Query name used for the serial baseline.
+  - Default: `example.com.`
+- `--qtype <TYPE>`
+  - Query type.
+  - Default: `A`
+- `--serial-samples <N>`
+  - Number of serial baseline queries.
+  - Default: `2`
+- `--pipeline-concurrency <N>`
+  - Number of concurrent probe queries. For TCP / DoT, these queries are forced onto one connection.
+  - Default: `16`
+- `--pipeline-rounds <N>`
+  - Number of concurrency probe rounds.
+  - Default: `2`
+- `--json`
+  - Print a structured JSON report.
+
+Output includes:
+
+- Target details: address, protocol, server name, port, and timeout.
+- Hostname upstream resolution: `resolved_ip` and `resolution_source`; sources may be `literal`, `dial_addr`, `configured`, `bootstrap`, `system`, or `proxy`.
+- Serial baseline: reachable / unreachable, average latency, rcode, answer count, TC / RA flags, and error summary.
+- Concurrency probe: supported / unsupported / unstable / inconclusive, success count, timeout count, response ID / question / qtype mismatch count, other errors, and recommendation.
+- Non-JSON mode prints probe progress to stderr while the final report goes to stdout. JSON mode writes only the report to stdout.
+
+Protocol behavior:
+
+- UDP, DoH, DoH3, and DoQ use the matching upstream implementation to send concurrent queries and evaluate concurrency or multiplexing behavior for that protocol.
+- TCP and DoT additionally force concurrent queries through one connection to detect pipeline-specific timeouts, connection closes, protocol errors, response ID confusion, or crossed questions.
+- If the serial baseline fails, the concurrency verdict is `inconclusive` so a basic reachability problem is not misclassified as a pipeline problem.
 
 ## `build-info`
 

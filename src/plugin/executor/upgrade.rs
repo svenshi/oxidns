@@ -23,6 +23,8 @@ use crate::plugin::executor::{ExecStep, Executor};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;
 
+const EXIT_RESTART_REQUIRED: i32 = 75;
+
 #[derive(Debug)]
 struct UpgradeExecutor {
     tag: String,
@@ -107,6 +109,11 @@ impl Executor for UpgradeExecutor {
                         .map(|p| p.display().to_string()),
                     "upgrade apply completed"
                 );
+                if outcome.restart_required {
+                    info!(plugin = %self.tag, "requesting app restart after upgrade");
+                    crate::plugin::request_app_restart()
+                        .unwrap_or_else(|_| std::process::exit(EXIT_RESTART_REQUIRED));
+                }
             }
             upgrade::ApplyRunOutcome::Skipped { check } => {
                 info!(
@@ -164,6 +171,7 @@ struct UpgradePluginConfig {
     force: Option<bool>,
     cleanup: Option<bool>,
     timeout: Option<String>,
+    outbound: Option<String>,
     socks5: Option<String>,
     insecure_skip_verify: Option<bool>,
     github_token: Option<String>,
@@ -213,6 +221,7 @@ impl UpgradePluginConfig {
                 DnsError::plugin(format!("invalid upgrade timeout '{}': {}", value, err))
             })?;
         }
+        config.outbound = self.outbound;
         config.socks5 = self.socks5;
         if let Some(value) = self.insecure_skip_verify {
             config.insecure_skip_verify = value;

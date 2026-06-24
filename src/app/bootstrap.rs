@@ -22,6 +22,8 @@ pub async fn assemble(
     config: &Config,
     controller: Option<Arc<AppController>>,
 ) -> Result<AppAssembly> {
+    crate::infra::network::metrics::init()?;
+
     #[cfg(feature = "api")]
     let api_hub = ApiHub::from_config(&config.api)?;
     #[cfg(feature = "api")]
@@ -104,7 +106,7 @@ mod tests {
         ApiHub, ApiRegister, global_api_register, global_api_test_guard,
         set_global_api_register_for_test,
     };
-    use crate::config::types::{ApiConfig, ApiHttpConfig, LogConfig, RuntimeConfig};
+    use crate::config::types::{ApiConfig, ApiHttpConfig, LogConfig, NetworkConfig, RuntimeConfig};
     use crate::infra::clock::AppClock;
 
     #[tokio::test]
@@ -124,6 +126,7 @@ mod tests {
                 runtime: RuntimeConfig::default(),
                 api: ApiConfig::default(),
                 log: LogConfig::default(),
+                network: NetworkConfig::default(),
                 plugins: Vec::new(),
             },
             None,
@@ -141,7 +144,7 @@ mod tests {
 #[cfg(all(test, not(feature = "api")))]
 mod tests {
     use super::*;
-    use crate::config::types::{ApiConfig, ApiHttpConfig, LogConfig, RuntimeConfig};
+    use crate::config::types::{ApiConfig, ApiHttpConfig, LogConfig, NetworkConfig, RuntimeConfig};
     use crate::infra::clock::AppClock;
 
     /// Without the `api` feature, a config that still sets `api.http` is a
@@ -158,6 +161,7 @@ mod tests {
                     http: Some(ApiHttpConfig::Listen("127.0.0.1:0".to_string())),
                 },
                 log: LogConfig::default(),
+                network: NetworkConfig::default(),
                 plugins: Vec::new(),
             },
             None,

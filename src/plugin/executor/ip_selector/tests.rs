@@ -124,6 +124,8 @@ fn selector_with_runner(settings: IpSelectorSettings, runner: Arc<dyn ProbeRunne
 fn default_test_settings() -> IpSelectorSettings {
     settings_from_config(IpSelectorConfig {
         selection_mode: None,
+        outbound: None,
+        socks5: None,
         probe_methods: Some(vec!["tcp:443".to_string()]),
         probe_stagger: Some(0),
         probe_timeout: Some(50),
@@ -207,6 +209,41 @@ cache:
         settings.probe_methods,
         vec![ProbeMethod::Tcp(443), ProbeMethod::Tcp(80)]
     );
+}
+
+#[test]
+fn parse_config_accepts_outbound_and_socks5() {
+    let args = serde_yaml_ng::from_str::<Value>(
+        r#"
+outbound: remote
+socks5: 127.0.0.1:1080
+probe_methods: "tcp:443"
+"#,
+    )
+    .unwrap();
+
+    let settings = parse_ip_selector_config(Some(args)).unwrap();
+
+    assert_eq!(settings.outbound.as_deref(), Some("remote"));
+    assert_eq!(settings.socks5.as_deref(), Some("127.0.0.1:1080"));
+}
+
+#[test]
+fn parse_config_rejects_empty_outbound() {
+    let args = serde_yaml_ng::from_str::<Value>("outbound: ''").unwrap();
+
+    let err = parse_ip_selector_config(Some(args)).unwrap_err();
+
+    assert!(err.to_string().contains("outbound profile cannot be empty"));
+}
+
+#[test]
+fn parse_config_rejects_invalid_socks5() {
+    let args = serde_yaml_ng::from_str::<Value>("socks5: 127.0.0.1").unwrap();
+
+    let err = parse_ip_selector_config(Some(args)).unwrap_err();
+
+    assert!(err.to_string().contains("invalid socks5 proxy"));
 }
 
 #[test]

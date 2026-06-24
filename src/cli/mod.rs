@@ -8,12 +8,12 @@ mod check;
 #[cfg(feature = "provider-protobuf")]
 pub mod export_dat;
 mod graph;
+mod probe;
 pub mod service;
 #[cfg(feature = "plugin-upgrade")]
 mod upgrade;
 
 use std::path::PathBuf;
-#[cfg(feature = "plugin-upgrade")]
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
@@ -42,6 +42,8 @@ pub enum Command {
     /// Export selected rules from a dat file into text files.
     #[cfg(feature = "provider-protobuf")]
     ExportDat(ExportDatOptions),
+    /// Probe DNS upstream connectivity and behavior.
+    Probe(ProbeOptions),
     /// Manage the operating system service.
     Service(ServiceOptions),
     /// Check, download, or apply OxiDNS release upgrades.
@@ -132,6 +134,91 @@ pub enum ExportFormat {
     Original,
 }
 
+/// Runtime probe command options.
+#[derive(Args, Clone, Debug, PartialEq, Eq)]
+pub struct ProbeOptions {
+    #[command(subcommand)]
+    pub command: ProbeCommand,
+}
+
+/// Supported runtime probes.
+#[derive(Subcommand, Clone, Debug, PartialEq, Eq)]
+pub enum ProbeCommand {
+    /// Probe one DNS upstream endpoint.
+    Upstream(ProbeUpstreamOptions),
+}
+
+/// DNS upstream probe options.
+#[derive(Args, Clone, Debug, PartialEq, Eq)]
+pub struct ProbeUpstreamOptions {
+    /// Upstream address, e.g. 1.1.1.1, tcp://1.1.1.1:53, tls://dns.google:853.
+    pub addr: String,
+
+    /// Optional runtime configuration whose network.outbound profiles are used.
+    #[arg(short = 'c', long = "config")]
+    pub config: Option<PathBuf>,
+
+    /// Working directory for resolving relative config paths.
+    #[arg(short = 'd', long = "working-dir")]
+    pub working_dir: Option<PathBuf>,
+
+    /// Named network outbound profile for this probe.
+    #[arg(long = "outbound")]
+    pub outbound: Option<String>,
+
+    /// Direct IP address to dial while preserving the address host as SNI/name.
+    #[arg(long = "dial-addr")]
+    pub dial_addr: Option<std::net::IpAddr>,
+
+    /// Bootstrap DNS server used to resolve hostname upstreams.
+    #[arg(long = "bootstrap")]
+    pub bootstrap: Option<String>,
+
+    /// IP version preference for bootstrap resolution: 4 or 6.
+    #[arg(long = "bootstrap-version")]
+    pub bootstrap_version: Option<u8>,
+
+    /// SOCKS5 proxy for TCP-like upstream transports.
+    #[arg(long = "socks5")]
+    pub socks5: Option<String>,
+
+    /// Override the upstream port.
+    #[arg(long = "port")]
+    pub port: Option<u16>,
+
+    /// Disable TLS certificate verification for encrypted upstreams.
+    #[arg(long = "insecure-skip-verify", default_value_t = false)]
+    pub insecure_skip_verify: bool,
+
+    /// Per-query timeout such as 5s, 2s, or 500ms.
+    #[arg(long = "timeout", value_parser = parse_cli_duration, default_value = "5s")]
+    pub timeout: Duration,
+
+    /// Query name used for the serial baseline probe.
+    #[arg(long = "qname", default_value = "example.com.")]
+    pub qname: String,
+
+    /// Query record type used by the probe.
+    #[arg(long = "qtype", default_value = "A")]
+    pub qtype: String,
+
+    /// Number of serial baseline queries.
+    #[arg(long = "serial-samples", default_value_t = 2)]
+    pub serial_samples: usize,
+
+    /// Number of concurrent queries sent on one TCP/DoT connection.
+    #[arg(long = "pipeline-concurrency", default_value_t = 16)]
+    pub pipeline_concurrency: usize,
+
+    /// Number of pipeline probe rounds.
+    #[arg(long = "pipeline-rounds", default_value_t = 2)]
+    pub pipeline_rounds: usize,
+
+    /// Print JSON instead of the human-readable summary.
+    #[arg(long = "json", default_value_t = false)]
+    pub json: bool,
+}
+
 /// Upgrade command options.
 #[cfg(feature = "plugin-upgrade")]
 #[derive(Args, Clone, Debug, PartialEq, Eq)]
@@ -200,6 +287,10 @@ pub struct UpgradeOptions {
     #[arg(long = "timeout", value_parser = parse_cli_duration, default_value = "30s", global = true)]
     pub timeout: Duration,
 
+    /// Named network outbound profile for upgrade HTTP requests.
+    #[arg(long = "outbound", global = true)]
+    pub outbound: Option<String>,
+
     /// Optional SOCKS5 proxy address.
     #[arg(long = "socks5", global = true)]
     pub socks5: Option<String>,
@@ -222,7 +313,6 @@ pub enum UpgradeAction {
     Apply,
 }
 
-#[cfg(feature = "plugin-upgrade")]
 fn parse_cli_duration(raw: &str) -> std::result::Result<Duration, String> {
     crate::infra::system::parse_simple_duration(raw)
 }
@@ -279,6 +369,7 @@ pub fn run() -> Result<()> {
         Command::BuildInfo => build_info::run(),
         #[cfg(feature = "provider-protobuf")]
         Command::ExportDat(options) => export_dat::run(options),
+        Command::Probe(options) => probe::run(options),
         Command::Service(options) => service::run(options),
         #[cfg(feature = "plugin-upgrade")]
         Command::Upgrade(options) => upgrade::run(options),
@@ -391,6 +482,103 @@ mod tests {
         assert_eq!(cli.command, Command::BuildInfo);
     }
 
+    #[test]
+    fn parse_probe_upstream_defaults() {
+        let args = ["oxidns", "probe", "upstream", "tcp://1.1.1.1:53"];
+
+        let cli = Cli::parse_from(args);
+        assert_eq!(
+            cli.command,
+            Command::Probe(ProbeOptions {
+                command: ProbeCommand::Upstream(ProbeUpstreamOptions {
+                    addr: "tcp://1.1.1.1:53".to_string(),
+                    config: None,
+                    working_dir: None,
+                    outbound: None,
+                    dial_addr: None,
+                    bootstrap: None,
+                    bootstrap_version: None,
+                    socks5: None,
+                    port: None,
+                    insecure_skip_verify: false,
+                    timeout: Duration::from_secs(5),
+                    qname: "example.com.".to_string(),
+                    qtype: "A".to_string(),
+                    serial_samples: 2,
+                    pipeline_concurrency: 16,
+                    pipeline_rounds: 2,
+                    json: false,
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_probe_upstream_accepts_network_and_output_options() {
+        let args = [
+            "oxidns",
+            "probe",
+            "upstream",
+            "tls://dns.example.com:853",
+            "-c",
+            "config.yaml",
+            "-d",
+            "/tmp/oxidns",
+            "--outbound",
+            "remote",
+            "--dial-addr",
+            "203.0.113.53",
+            "--bootstrap",
+            "8.8.8.8:53",
+            "--bootstrap-version",
+            "4",
+            "--socks5",
+            "127.0.0.1:1080",
+            "--port",
+            "8853",
+            "--insecure-skip-verify",
+            "--timeout",
+            "500ms",
+            "--qname",
+            "cloudflare.com.",
+            "--qtype",
+            "AAAA",
+            "--serial-samples",
+            "3",
+            "--pipeline-concurrency",
+            "8",
+            "--pipeline-rounds",
+            "4",
+            "--json",
+        ];
+
+        let cli = Cli::parse_from(args);
+        assert_eq!(
+            cli.command,
+            Command::Probe(ProbeOptions {
+                command: ProbeCommand::Upstream(ProbeUpstreamOptions {
+                    addr: "tls://dns.example.com:853".to_string(),
+                    config: Some(PathBuf::from("config.yaml")),
+                    working_dir: Some(PathBuf::from("/tmp/oxidns")),
+                    outbound: Some("remote".to_string()),
+                    dial_addr: Some("203.0.113.53".parse().unwrap()),
+                    bootstrap: Some("8.8.8.8:53".to_string()),
+                    bootstrap_version: Some(4),
+                    socks5: Some("127.0.0.1:1080".to_string()),
+                    port: Some(8853),
+                    insecure_skip_verify: true,
+                    timeout: Duration::from_millis(500),
+                    qname: "cloudflare.com.".to_string(),
+                    qtype: "AAAA".to_string(),
+                    serial_samples: 3,
+                    pipeline_concurrency: 8,
+                    pipeline_rounds: 4,
+                    json: true,
+                }),
+            })
+        );
+    }
+
     #[cfg(feature = "plugin-upgrade")]
     #[test]
     fn parse_upgrade_apply_with_options() {
@@ -411,6 +599,8 @@ mod tests {
             "--allow-prerelease",
             "--timeout",
             "2m",
+            "--outbound",
+            "remote",
             "--socks5",
             "127.0.0.1:1080",
             "--insecure-skip-verify",
@@ -437,6 +627,7 @@ mod tests {
                 allow_prerelease: true,
                 force: false,
                 timeout: Duration::from_secs(120),
+                outbound: Some("remote".to_string()),
                 socks5: Some("127.0.0.1:1080".to_string()),
                 insecure_skip_verify: true,
                 github_token: Some("ghp_test_token".to_string()),
@@ -506,6 +697,7 @@ mod tests {
                 allow_prerelease: false,
                 force: true,
                 timeout: Duration::from_secs(30),
+                outbound: None,
                 socks5: None,
                 insecure_skip_verify: false,
                 github_token: None,

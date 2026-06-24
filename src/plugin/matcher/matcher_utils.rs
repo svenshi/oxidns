@@ -5,7 +5,6 @@
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::str::FromStr;
 use std::sync::Arc;
 
 use ahash::AHashSet;
@@ -16,7 +15,6 @@ use crate::infra::error::{DnsError, Result as DnsResult};
 use crate::plugin::PluginInitContext;
 use crate::plugin::dependency::DependencySpec;
 use crate::plugin::provider::Provider;
-use crate::proto::{DNSClass, Rcode, RecordType};
 
 pub(crate) fn parse_rules_from_value(args: Option<Value>) -> DnsResult<Vec<String>> {
     let args = args.ok_or_else(|| DnsError::plugin("matcher requires args"))?;
@@ -77,49 +75,6 @@ fn parse_u16_rule_token(field: &str, raw: &str) -> DnsResult<Option<u16>> {
     }
 
     Ok(None)
-}
-
-pub(crate) fn parse_rr_type(raw: &str) -> Option<u16> {
-    RecordType::from_str(&raw.to_ascii_uppercase())
-        .ok()
-        .map(u16::from)
-}
-
-pub(crate) fn parse_class(raw: &str) -> Option<u16> {
-    DNSClass::from_str(&raw.to_ascii_uppercase())
-        .ok()
-        .map(u16::from)
-}
-
-pub(crate) fn parse_rcode(raw: &str) -> Option<u16> {
-    if let Ok(code) = raw.parse::<u16>() {
-        return Some(u16::from(Rcode::from(code)));
-    }
-
-    let rcode = match raw.to_ascii_uppercase().as_str() {
-        "NOERROR" => Rcode::NoError,
-        "FORMERR" => Rcode::FormErr,
-        "SERVFAIL" => Rcode::ServFail,
-        "NXDOMAIN" => Rcode::NXDomain,
-        "NOTIMP" => Rcode::NotImp,
-        "REFUSED" => Rcode::Refused,
-        "YXDOMAIN" => Rcode::YXDomain,
-        "YXRRSET" => Rcode::YXRRSet,
-        "NXRRSET" => Rcode::NXRRSet,
-        "NOTAUTH" => Rcode::NotAuth,
-        "NOTZONE" => Rcode::NotZone,
-        "BADVERS" => Rcode::BADVERS,
-        "BADSIG" => Rcode::BADSIG,
-        "BADKEY" => Rcode::BADKEY,
-        "BADTIME" => Rcode::BADTIME,
-        "BADMODE" => Rcode::BADMODE,
-        "BADNAME" => Rcode::BADNAME,
-        "BADALG" => Rcode::BADALG,
-        "BADTRUNC" => Rcode::BADTRUNC,
-        "BADCOOKIE" => Rcode::BADCOOKIE,
-        _ => return None,
-    };
-    Some(u16::from(rcode))
 }
 
 pub(crate) fn parse_ip_prefix_matcher(
@@ -445,6 +400,14 @@ fn split_rule_tokens(raw: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    fn parse_test_token(raw: &str) -> Option<u16> {
+        if raw.eq_ignore_ascii_case("a") {
+            Some(1)
+        } else {
+            None
+        }
+    }
+
     #[test]
     fn test_parse_quick_setup_rules_validation() {
         assert!(parse_quick_setup_rules(None).is_err());
@@ -497,30 +460,19 @@ mod tests {
     #[test]
     fn test_parse_u16_rules_rejects_invalid_numeric_strings() {
         let out_of_range = vec!["70000".to_string()];
-        let err = parse_u16_rules("qtype", &out_of_range, parse_rr_type)
+        let err = parse_u16_rules("qtype", &out_of_range, parse_test_token)
             .expect_err("out-of-range string values should be rejected");
         assert!(err.to_string().contains("between 0 and 65535"));
 
         let negative = vec!["-1".to_string()];
-        let err = parse_u16_rules("qtype", &negative, parse_rr_type)
+        let err = parse_u16_rules("qtype", &negative, parse_test_token)
             .expect_err("negative string values should be rejected");
         assert!(err.to_string().contains("between 0 and 65535"));
 
         let float = vec!["1.0".to_string()];
-        let err = parse_u16_rules("qtype", &float, parse_rr_type)
+        let err = parse_u16_rules("qtype", &float, parse_test_token)
             .expect_err("floating-point string values should be rejected");
         assert!(err.to_string().contains("must be an integer"));
-    }
-
-    #[test]
-    fn test_named_enum_parsers_are_case_insensitive() {
-        assert_eq!(parse_rr_type("a"), Some(1));
-        assert_eq!(parse_rr_type("AAAA"), Some(28));
-        assert_eq!(parse_class("in"), Some(1));
-        assert_eq!(parse_class("CH"), Some(3));
-        assert_eq!(parse_rcode("ServFail"), Some(2));
-        assert_eq!(parse_rcode("NXDOMAIN"), Some(3));
-        assert_eq!(parse_rcode("BADSIG"), Some(16));
     }
 
     #[test]

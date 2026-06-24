@@ -31,6 +31,7 @@ mod hub;
 pub mod logs;
 #[cfg(feature = "metrics")]
 mod metrics;
+pub(crate) mod query;
 mod request;
 mod response;
 mod route;

@@ -15,8 +15,10 @@
 //! Result semantics:
 //! - if either branch produces a response, plugin writes it to
 //!   `DnsContext.response` and returns `Next`.
-//! - if both branches fail (or return no response), plugin returns error so the
-//!   server request handler can generate a failure response.
+//! - if both branches return no response, plugin continues the sequence without
+//!   writing a response.
+//! - if both branches fail, plugin returns error so the server request handler
+//!   can generate a failure response.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,6 +28,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
+use tracing::debug;
 
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
@@ -124,6 +127,7 @@ struct Outcome {
     context: Option<DnsContext>,
     source: &'static str,
     error: Option<String>,
+    no_response: bool,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -204,6 +208,7 @@ impl Executor for FallbackExecutor {
                                         context: None,
                                         source: "secondary",
                                         error: None,
+                                        no_response: false,
                                     };
                                 }
                                 PrimaryState::Failed => break,
@@ -275,7 +280,7 @@ impl Executor for FallbackExecutor {
                         _ => {}
                     }
 
-                    if let Some(err) = outcome.error {
+                    if let Some(err) = outcome.error.filter(|_| !outcome.no_response) {
                         if !last_err.is_empty() {
                             last_err.push_str("; ");
                         }
@@ -286,10 +291,11 @@ impl Executor for FallbackExecutor {
         }
 
         if last_err.is_empty() {
-            last_err = format!(
-                "fallback '{}' failed: no response from '{}' and '{}'",
+            debug!(
+                "Fallback '{}' produced no response from '{}' or '{}'; continuing",
                 self.tag, self.primary_tag, self.secondary_tag
             );
+            return Ok(ExecStep::Next);
         }
 
         Err(DnsError::plugin(last_err))
@@ -371,6 +377,7 @@ async fn run_executor(
             Outcome {
                 context: if has_response { Some(context) } else { None },
                 source,
+                no_response: !has_response,
                 error: if has_response {
                     None
                 } else {
@@ -382,6 +389,7 @@ async fn run_executor(
             context: None,
             source,
             error: Some(e.to_string()),
+            no_response: false,
         },
     }
 }
@@ -614,6 +622,41 @@ short_circuit: true
 
         assert!(matches!(step, ExecStep::Next));
         assert!(context.response().is_some());
+        assert_eq!(metrics.primary_total.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.primary_error_total.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.secondary_total.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn test_fallback_continues_when_branches_return_no_response() {
+        let metrics = Arc::new(FallbackMetrics::new("fb".to_string()));
+        let executor = FallbackExecutor {
+            tag: "fb".to_string(),
+            primary_tag: "primary".to_string(),
+            secondary_tag: "secondary".to_string(),
+            primary: Arc::new(StubExecutor {
+                tag: "primary".to_string(),
+                should_fail: false,
+                produce_response: false,
+                refused_with_next: false,
+            }),
+            secondary: Arc::new(StubExecutor {
+                tag: "secondary".to_string(),
+                should_fail: false,
+                produce_response: false,
+                refused_with_next: false,
+            }),
+            threshold: Duration::ZERO,
+            always_standby: false,
+            short_circuit: true,
+            metrics: metrics.clone(),
+        };
+
+        let mut context = test_context();
+        let step = executor.execute(&mut context).await.unwrap();
+
+        assert!(matches!(step, ExecStep::Next));
+        assert!(context.response().is_none());
         assert_eq!(metrics.primary_total.load(Ordering::Relaxed), 1);
         assert_eq!(metrics.primary_error_total.load(Ordering::Relaxed), 1);
         assert_eq!(metrics.secondary_total.load(Ordering::Relaxed), 1);

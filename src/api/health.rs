@@ -19,7 +19,6 @@ use crate::infra::error::Result;
 
 #[derive(Debug)]
 pub struct HealthState {
-    started_at_ms: u64,
     api_listening: AtomicBool,
     plugins_initialized: AtomicBool,
     server_startup_complete: AtomicBool,
@@ -30,7 +29,6 @@ pub struct HealthState {
 impl HealthState {
     pub fn new() -> Self {
         Self {
-            started_at_ms: AppClock::elapsed_millis(),
             api_listening: AtomicBool::new(false),
             plugins_initialized: AtomicBool::new(false),
             server_startup_complete: AtomicBool::new(false),
@@ -63,7 +61,9 @@ impl HealthState {
             },
             version: VERSION,
             build_bundle: PRIMARY_BUNDLE,
-            uptime_ms: AppClock::elapsed_millis().saturating_sub(self.started_at_ms),
+            instance_id: AppClock::instance_id(),
+            started_at_ms: AppClock::started_at_ms(),
+            uptime_ms: AppClock::elapsed_millis(),
             checks: HealthChecks {
                 api: bool_status(api_listening),
                 plugin_init: bool_status(plugins_initialized),
@@ -88,6 +88,8 @@ struct HealthSnapshot {
     status: &'static str,
     version: &'static str,
     build_bundle: &'static str,
+    instance_id: &'static str,
+    started_at_ms: u64,
     uptime_ms: u64,
     checks: HealthChecks,
     plugins: HealthPluginCounts,
@@ -242,6 +244,8 @@ mod tests {
         assert!(body.contains("\"status\":\"ok\""));
         assert!(body.contains(&format!("\"version\":\"{}\"", VERSION)));
         assert!(body.contains(&format!("\"build_bundle\":\"{}\"", PRIMARY_BUNDLE)));
+        assert!(body.contains("\"instance_id\":\""));
+        assert!(body.contains("\"started_at_ms\":"));
         assert!(body.contains("\"api\":\"ok\""));
         assert!(body.contains("\"plugin_init\":\"ok\""));
         assert!(body.contains("\"server_startup\":\"ok\""));

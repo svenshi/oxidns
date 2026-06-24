@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::fmt::Debug;
-use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -16,10 +15,10 @@ use tracing::{debug, error, trace, warn};
 
 use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
-use crate::infra::network::transport::udp_transport::UdpTransport;
+use crate::infra::network::dial::{DialTarget, SocketOptions, UdpDialOptions, connect_udp};
+use crate::infra::network::transport::udp::UdpTransport;
 use crate::infra::network::upstream::ConnectionInfo;
 use crate::infra::network::upstream::conn::request_map::RequestMap;
-use crate::infra::network::upstream::dial::connect_socket;
 use crate::infra::network::upstream::pool::{Connection, ConnectionBuilder, QueryDeadline};
 use crate::proto::Message;
 
@@ -272,24 +271,25 @@ impl UdpConnection {
 /// Builder for creating new `UdpConnection` instances.
 #[derive(Debug)]
 pub struct UdpConnectionBuilder {
-    remote_ip: Option<IpAddr>,
-    port: u16,
-    server_name: String,
+    target: DialTarget,
+    socket_options: SocketOptions,
     request_map_capacity: u16,
-    so_mark: Option<u32>,
-    bind_to_device: Option<String>,
 }
 
 impl UdpConnectionBuilder {
     /// Initialize a new builder using upstream connection info.
     pub fn new(connection_info: &ConnectionInfo, request_map_capacity: u16) -> Self {
         Self {
-            remote_ip: connection_info.remote_ip,
-            port: connection_info.port,
-            server_name: connection_info.server_name.clone(),
+            target: DialTarget::new(
+                connection_info.remote_ip,
+                connection_info.server_name.clone(),
+                connection_info.port,
+            ),
+            socket_options: SocketOptions::new(
+                connection_info.so_mark,
+                connection_info.bind_to_device.clone(),
+            ),
             request_map_capacity,
-            so_mark: connection_info.so_mark,
-            bind_to_device: connection_info.bind_to_device.clone(),
         }
     }
 }
@@ -311,13 +311,10 @@ impl ConnectionBuilder<UdpConnection> for UdpConnectionBuilder {
         conn_id: u16,
         _deadline: QueryDeadline,
     ) -> Result<Arc<UdpConnection>> {
-        let socket = connect_socket(
-            self.remote_ip,
-            self.server_name.clone(),
-            self.port,
-            self.so_mark,
-            self.bind_to_device.clone(),
-        )?;
+        let socket = connect_udp(UdpDialOptions::new(
+            self.target.clone(),
+            self.socket_options.clone(),
+        ))?;
 
         debug!(
             conn_id,
@@ -356,11 +353,11 @@ mod tests {
         let builder = UdpConnectionBuilder::new(&connection_info, DEFAULT_REQUEST_MAP_CAPACITY);
 
         assert_eq!(connection_info.connection_type, ConnectionType::UDP);
-        assert_eq!(builder.remote_ip, connection_info.remote_ip);
-        assert_eq!(builder.port, 5300);
+        assert_eq!(builder.target.remote_ip(), connection_info.remote_ip);
+        assert_eq!(builder.target.port(), 5300);
         assert_eq!(builder.request_map_capacity, DEFAULT_REQUEST_MAP_CAPACITY);
-        assert_eq!(builder.server_name, "1.1.1.1");
-        assert_eq!(builder.so_mark, Some(100));
-        assert_eq!(builder.bind_to_device.as_deref(), Some("en0"));
+        assert_eq!(builder.target.host(), "1.1.1.1");
+        assert_eq!(builder.socket_options.so_mark(), Some(100));
+        assert_eq!(builder.socket_options.bind_to_device(), Some("en0"));
     }
 }

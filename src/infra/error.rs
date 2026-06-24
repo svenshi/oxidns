@@ -55,8 +55,8 @@ pub enum DnsError {
     #[cfg(any(
         feature = "server-doq",
         feature = "server-doh3",
-        feature = "upstream-doq",
-        feature = "upstream-doh3"
+        feature = "_dns-client-doq",
+        feature = "_dns-client-doh3"
     ))]
     #[error("quic connect error: {0}")]
     QuicConnectError(#[from] quinn::ConnectError),
@@ -65,8 +65,8 @@ pub enum DnsError {
     #[cfg(any(
         feature = "server-doq",
         feature = "server-doh3",
-        feature = "upstream-doq",
-        feature = "upstream-doh3"
+        feature = "_dns-client-doq",
+        feature = "_dns-client-doh3"
     ))]
     #[error("No initial cipher error: {0}")]
     NoInitialCipherSuiteError(#[from] quinn::crypto::rustls::NoInitialCipherSuite),
@@ -82,8 +82,8 @@ pub enum DnsError {
     #[cfg(any(
         feature = "server-doq",
         feature = "server-doh3",
-        feature = "upstream-doq",
-        feature = "upstream-doh3"
+        feature = "_dns-client-doq",
+        feature = "_dns-client-doh3"
     ))]
     #[error("integer bounds exceeded error: {0}")]
     VarIntBoundsExceeded(#[from] quinn::VarIntBoundsExceeded),

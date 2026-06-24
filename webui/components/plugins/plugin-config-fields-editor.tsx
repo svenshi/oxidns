@@ -23,6 +23,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useAppStore } from "@/lib/store";
 import type { ConfigField, ConfigFieldChild } from "@/lib/plugin-definitions";
 import type { PluginInstance, PluginType } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -68,6 +69,8 @@ const ARRAY_SYNTAX_KEYS: Record<ArrayItemSyntax, string> = {
   quick: WEBUI.plugins.arraySyntaxQuick,
   domain: WEBUI.plugins.arraySyntaxDomain,
 };
+
+const OPTIONAL_SELECT_VALUE = "__oxidns_unset__";
 
 function InvertCheckbox({
   checked,
@@ -517,6 +520,7 @@ function ConfigFieldControl({
   readOnly: boolean;
 }) {
   const { t } = useI18n();
+  const configModel = useAppStore((s) => s.configModel);
   // Unset fields show their schema default as a placeholder (never pre-filled)
   // so an untouched default is not materialized into the saved config.
   const defaultPlaceholder =
@@ -628,11 +632,21 @@ function ConfigFieldControl({
         />
       );
     case "select":
+      const selectValue =
+        value == null || value === "" ? OPTIONAL_SELECT_VALUE : String(value);
+      const options = withCurrentSelectOption(
+        resolveSelectOptions(field, configModel),
+        selectValue,
+      );
       return (
         <Select
-          value={value == null || value === "" ? "" : String(value)}
+          value={selectValue}
           onValueChange={(next) => {
-            const opt = field.options?.find((o) => String(o.value) === next);
+            if (next === OPTIONAL_SELECT_VALUE) {
+              onChange("");
+              return;
+            }
+            const opt = options.find((o) => String(o.value) === next);
             onChange(opt ? opt.value : next);
           }}
           disabled={readOnly}
@@ -641,7 +655,12 @@ function ConfigFieldControl({
             <SelectValue placeholder={t(WEBUI.plugins.selectPlaceholder)} />
           </SelectTrigger>
           <SelectContent>
-            {field.options?.map((opt) => (
+            {field.dynamicOptions && !field.required && (
+              <SelectItem value={OPTIONAL_SELECT_VALUE}>
+                {t(WEBUI.common.unconfigured)}
+              </SelectItem>
+            )}
+            {options.map((opt) => (
               <SelectItem key={String(opt.value)} value={String(opt.value)}>
                 {opt.label}
               </SelectItem>
@@ -1463,6 +1482,44 @@ function getArrayEntryValue(entry: unknown, field: ConfigField) {
   return entry && typeof entry === "object" && "value" in entry
     ? (entry as SchemaArrayOptionValue).value
     : "";
+}
+
+function resolveSelectOptions(
+  field: ConfigField,
+  configModel: Record<string, unknown>,
+) {
+  if (field.dynamicOptions === "outboundProfiles") {
+    return getOutboundProfileOptions(configModel);
+  }
+  return field.options ?? [];
+}
+
+function withCurrentSelectOption(
+  options: NonNullable<ConfigField["options"]>,
+  currentValue: string,
+) {
+  if (
+    currentValue === OPTIONAL_SELECT_VALUE ||
+    options.some((option) => String(option.value) === currentValue)
+  ) {
+    return options;
+  }
+  return [{ label: currentValue, value: currentValue }, ...options];
+}
+
+function getOutboundProfileOptions(configModel: Record<string, unknown>) {
+  const network = asRecord(configModel.network);
+  const outbound = asRecord(network.outbound);
+  const profiles = asRecord(outbound.profiles);
+  return Object.keys(profiles)
+    .sort((a, b) => a.localeCompare(b))
+    .map((name) => ({ label: name, value: name }));
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function getArrayEntryKey(entry: unknown, index: number) {

@@ -203,6 +203,14 @@ where
         self.map.remove(key).is_some()
     }
 
+    /// Remove one entry only when the current entry matches `predicate`.
+    #[inline]
+    pub fn remove_if(&self, key: &K, predicate: impl FnOnce(&TtlCacheEntry<V>) -> bool) -> bool {
+        self.map
+            .remove_if(key, |_, existing| predicate(existing))
+            .is_some()
+    }
+
     /// Remove all cached entries.
     #[inline]
     pub fn clear(&self) {

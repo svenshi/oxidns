@@ -17,7 +17,7 @@ export const zhCNDocs = {
   },
   http_server: {
     entries:
-      "- 类型：`array`；必填：是；默认值：无\n- 作用：定义 HTTP 路径到执行器的映射关系。\n- 每个元素包含以下字段：\n  - `path`\n    - 类型：`string`\n    - 必填：是\n    - 作用：指定 DoH 请求路径。\n    - 约束：必须以 `/` 开头。\n  - `exec`\n    - 类型：`string`\n    - 必填：是\n    - 作用：指定处理该路径请求的执行器。\n    - 约束：必须引用已定义的执行器插件。\n- 运行影响：\n  - 不同路径可进入不同策略链。",
+      "- 类型：`array`；必填：是；默认值：无\n- 作用：定义 HTTP 路径到执行器的映射关系。\n- 每个元素包含以下字段：\n  - `path`\n    - 类型：`string`\n    - 必填：是\n    - 作用：指定 DoH 请求路径。\n    - 约束：必须以 `/` 开头。\n  - `exec`\n    - 类型：`string`\n    - 必填：是\n    - 作用：指定处理该路径请求的执行器。\n    - 约束：必须引用已定义的执行器插件。\n  - `json_api`\n    - 类型：`boolean`\n    - 必填：否\n    - 默认值：`false`\n    - 作用：控制该路径是否接受 JSON DNS API。\n- 运行影响：\n  - 不同路径可进入不同策略链。",
     listen:
       "- 类型：`string`；必填：是；默认值：无\n- 作用：指定 HTTP/HTTPS 监听地址。",
     src_ip_header:
@@ -44,11 +44,13 @@ export const zhCNDocs = {
     "args[].matches":
       "- 类型：`string` 或 `array`\n- 必填：否\n- 默认值：无\n- 作用：定义当前规则的匹配条件。\n- 支持形式：\n  - 单个 matcher 字符串\n  - 多个 matcher 组成的列表\n- 运行影响：\n  - 多个条件之间为逻辑与关系。\n  - 未配置时表示无前置匹配条件。",
     "args[].exec":
-      "- 类型：`string`；必填：否；默认值：无\n- 作用：定义规则命中后要执行的动作。\n- 支持内容：\n  - 插件引用\n  - 快捷表达式\n  - 内建控制流\n- 运行影响：\n  - 直接决定当前规则的执行行为。",
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：定义规则命中后要执行的动作。\n- 支持内容：\n  - 插件引用\n  - 快捷表达式\n  - 内建控制流，例如 `accept`、`reject SERVFAIL`、`reject NOERROR`、`reject 3`、`jump <tag>`\n- 说明：`reject` 的 RCODE 参数支持大小写不敏感的英文名称和十进制数字。\n- 运行影响：\n  - 直接决定当前规则的执行行为。",
   },
   forward: {
     concurrent:
-      "- 类型：`integer`；必填：否；默认值：`1`\n- 取值范围：实际运行时会限制在 `1..=3`\n- 作用：定义多上游模式下的并发查询扇出数。\n- 运行影响：\n  - 值越大，多上游竞争越积极，但同时会增加上游请求量。",
+      "- 类型：`integer`；必填：否；默认值：`1`\n- 取值范围：实际运行时会限制在 `1..=32`，且不会超过 upstream 数量。\n- 建议范围：`2..=8`；更高值适合高级观测或特殊部署。\n- 作用：定义多上游模式下的并发查询扇出数。\n- 运行影响：\n  - 值越大，多上游竞争越积极，但同时会增加上游请求量。",
+    response_selection:
+      "- 类型：`string`；必填：否；默认值：`balanced`\n- 可选值：`fastest`、`balanced`、`prefer_positive`、`consensus`\n- 作用：定义并发上游返回多个响应时的选择策略。\n- 运行影响：\n  - `fastest`：第一个成功返回的 DNS 响应胜出。\n  - `balanced`：正向响应立即胜出；负向响应会短暂等待可能的正向响应。\n  - `prefer_positive`：正向响应优先；负向响应需要等待本轮并发完成。\n  - `consensus`：正向响应优先；负向响应需要兼容结果确认。",
     upstreams:
       "- 类型：`array`；必填：是；默认值：无\n- 作用：定义一个或多个上游目标。\n- 运行影响：\n  - 数组长度为 `1` 时使用单上游模式。\n  - 数组长度大于 `1` 时使用竞争式查询模式。",
     short_circuit:
@@ -59,6 +61,8 @@ export const zhCNDocs = {
       "- 类型：`string`；必填：否；默认值：无\n- 作用：为单个上游提供日志标识，便于排查多上游竞争结果。",
     "upstreams[].dial_addr":
       "- 类型：`ip`；必填：否；默认值：无\n- 作用：指定实际连接 IP，同时保留 `addr` 中的主机名用于 SNI、Host 和证书校验。\n- 适用场景：固定拨号地址、绕过本机解析或配合自定义路由出口。",
+    "upstreams[].outbound":
+      "- 类型：`string`；必填：否\n- 默认值：`network.outbound.default`；没有 default 时为无\n- 作用：引用 `network.outbound.profiles` 中的出站配置，为该上游注入 resolver 和 proxy。\n- 覆盖规则：本地 `dial_addr` 优先于 resolver；本地 `bootstrap` 优先于 outbound resolver；本地 `socks5` 优先于 profile proxy。\n- 注意：profile proxy 只应用于 TCP、DoT 和 DoH2；UDP、DoQ、DoH3 upstream 会忽略 SOCKS5 proxy。",
     "upstreams[].port":
       "- 类型：`integer`；必填：否；默认值：协议默认端口\n- 作用：覆盖协议默认端口。",
     "upstreams[].bootstrap":
@@ -66,7 +70,7 @@ export const zhCNDocs = {
     "upstreams[].bootstrap_version":
       "- 类型：`integer`；必填：否；默认值：无\n- 作用：指定 bootstrap 优先使用 IPv4 或 IPv6。\n- 取值：`4` 或 `6`。",
     "upstreams[].socks5":
-      "- 类型：`string`；必填：否；默认值：无\n- 作用：为上游连接指定 SOCKS5 代理。\n- 支持格式：\n  - `host:port`\n  - `username:password@host:port`\n  - IPv6 需写成 `[addr]:port`\n  - 带认证的 IPv6 需写成 `username:password@[addr]:port`\n- 规则说明：\n  - 代理主机可以是 IP，也可以是主机名；主机名会使用系统解析。\n  - 认证部分只按第一个 `:` 分割用户名和密码，因此格式必须是 `username:password@...`。\n  - 上游启用 `enable_http3` 时不应再配置 `socks5`，两者不属于同一连接模型。\n- 注意事项：格式错误、端口非法或代理主机解析失败时，该上游不会被正常创建。",
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：为上游连接指定 SOCKS5 代理。\n- 支持格式：\n  - `host:port`\n  - `username:password@host:port`\n  - IPv6 需写成 `[addr]:port`\n  - 带认证的 IPv6 需写成 `username:password@[addr]:port`\n- 规则说明：\n  - 代理主机可以是 IP，也可以是主机名；主机名会使用系统解析。\n  - 认证部分只按第一个 `:` 分割用户名和密码，因此格式必须是 `username:password@...`。\n  - SOCKS5 仅应用于 TCP、DoT 和 DoH2；UDP、DoQ、DoH3 upstream 会忽略该代理。\n- 注意事项：格式错误、端口非法或代理主机解析失败时，该上游不会被正常创建。",
     "upstreams[].idle_timeout":
       "- 类型：`integer`；必填：否；默认值：无\n- 单位：秒\n- 作用：定义连接池空闲连接保留时间。",
     "upstreams[].max_conns":
@@ -104,6 +108,8 @@ export const zhCNDocs = {
       "- 类型：`integer`；必填：否；默认值：`60`\n- 单位：秒\n- 作用：定义无 SOA 负响应的回退 TTL。",
     max_positive_ttl:
       "- 类型：`integer`；必填：否；默认值：无\n- 单位：秒\n- 作用：定义正响应 TTL 上限。",
+    min_positive_ttl:
+      "- 类型：`integer`；必填：否；默认值：无\n- 单位：秒\n- 作用：定义正响应进入缓存所需的最小 TTL。\n- 说明：正响应的有效缓存 TTL 低于该值时不会写入缓存。该判断在 `max_positive_ttl` 裁剪之后执行。",
     ecs_in_key:
       "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：控制 ECS scope 是否参与缓存键计算。",
   },
@@ -165,6 +171,10 @@ export const zhCNDocs = {
       "- 类型：`string`；必填：否；默认值：`first_success`\n- 可选值：\n  - `first_success`：在总等待预算内，第一个成功探测的地址优先\n  - `best_within_budget`：在总等待预算内收集成功探测结果，选择延迟最低的地址\n  - `background`：本次响应保持原始顺序，后台异步预热探测评分缓存\n- 作用：定义已有 A / AAAA 响应中的地址优选策略。\n- 运行影响：\n  - 插件只处理已有 DNS response，不负责上游竞速。\n  - 探测失败、超时或无评分时会保留原始响应作为兜底。\n- 配置要求：只接受 OxiDNS 原生命名，不提供兼容别名。",
     probe_methods:
       '- 类型：`array<string>` 或逗号分隔 `string`；必填：否；默认值：`["tcp:443", "tcp:80"]`\n- 支持值：\n  - `tcp:<port>`：对目标 IP 的指定端口做 TCP connect 探测\n  - `ping`：best-effort ICMP 探测，受平台与权限影响\n  - `none`：不主动探测，只使用已有缓存评分或原始顺序\n- 作用：定义用于给响应 IP 评分的探测方式。\n- 配置要求：\n  - `none` 不能与其它探测方式组合。\n  - `tcp:<port>` 的端口必须大于 0。\n  - 方法顺序会影响错峰启动顺序。',
+    outbound:
+      "- 类型：`string`；必填：否；默认值：`network.outbound.default`\n- 作用：引用 `network.outbound.profiles` 中的出站配置，为 TCP 探测复用 profile proxy。\n- 说明：\n  - 仅 `tcp:<port>` 探测使用 proxy；`ping` 始终走本机命令。\n  - 目标 IP 已经来自 DNS response，不会再使用 profile resolver 解析。",
+    socks5:
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：为 TCP 探测指定局部 SOCKS5 代理。\n- 说明：\n  - 格式与 `upstreams[].socks5` 一致。\n  - 同时配置 `outbound` 和 `socks5` 时，局部 `socks5` 覆盖 profile proxy。\n  - 仅 `tcp:<port>` 探测使用 SOCKS5；`ping` 始终走本机命令。",
     probe_stagger:
       "- 类型：`integer`；必填：否；默认值：`200`\n- 单位：毫秒\n- 作用：定义多种探测方式之间的错峰启动间隔。\n- 运行影响：\n  - 较小值会让多种方法更快并发启动。\n  - 较大值会让靠前方法获得更明显的优先机会，尤其影响 `first_success`。",
     probe_timeout:
@@ -254,6 +264,8 @@ export const zhCNDocs = {
       "- 类型：`integer`；必填：否；默认值：`7`\n- 最小值：`1`\n- 作用：定义日志保留天数；过期数据会被定时实际删除。",
     cleanup_interval_hours:
       "- 类型：`integer`；必填：否；默认值：`1`\n- 最小值：`1`\n- 作用：定义过期清理任务的执行周期。",
+    reader_concurrency:
+      "- 类型：`integer`；必填：否；默认值：`2`\n- 最小值：`1`\n- 作用：限制 query_recorder API/统计读取侧同时运行的 SQLite reader 数量，避免 WebUI 或 API 突发请求占用过多阻塞线程和内存。",
   },
   metrics_collector: {
     name: '- 类型：`string`；必填：否；默认值：`"default"`\n- 作用：定义当前指标收集器的名称标签。',
@@ -286,6 +298,8 @@ export const zhCNDocs = {
     form: "- 类型：`map<string,string>`；必填：否\n- 作用：以 `application/x-www-form-urlencoded` 方式发送表单。\n- 说明：value 支持 `${key}` 占位符插值；会自动设置对应的 `Content-Type`。",
     content_type:
       "- 类型：`string`；必填：否\n- 作用：为原始 `args.body` 指定 `Content-Type`。\n- 说明：只能和 `args.body` 搭配，不能与 `args.json` 或 `args.form` 同时使用。",
+    outbound:
+      "- 类型：`string`；必填：否\n- 作用：引用 `network.outbound.profiles` 中的出站配置，统一控制该 HTTP 请求使用的解析器和代理。\n- 说明：未配置时使用 `network.outbound.default`；若也配置了 `args.socks5`，`socks5` 只覆盖代理设置，resolver 仍来自 outbound profile。",
     socks5:
       "- 类型：`string`；必填：否\n- 作用：指定 SOCKS5 代理。\n- 说明：格式与 `upstream[].socks5` 一致，支持 `host:port`、`username:password@host:port` 和带中括号的 IPv6。",
     insecure_skip_verify:
@@ -398,6 +412,8 @@ export const zhCNDocs = {
       "- 类型：`bool`；必填：否；默认值：`false`\n- 作用：设为 `true` 时，升级成功后不触发自动重启。",
     timeout:
       "- 类型：`duration`；必填：否；默认值：`30s`\n- 作用：限制升级过程的总等待时间。",
+    outbound:
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：引用 `network.outbound.profiles` 中的出站配置，用于升级下载。\n- 说明：旧 `socks5` 字段继续兼容，且会覆盖 profile 里的代理设置。",
     socks5:
       "- 类型：`string`；必填：否；默认值：无\n- 作用：升级下载时使用的 SOCKS5 代理。",
     insecure_skip_verify:
@@ -414,6 +430,8 @@ export const zhCNDocs = {
       "- 类型：`string`；必填：否；默认值：从 URL 路径推导\n- 作用：下载项的目标文件名。",
     timeout:
       "- 类型：`duration`；必填：否；默认值：`30s`\n- 作用：下载超时时间。",
+    outbound:
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：引用 `network.outbound.profiles` 中的出站配置，用于统一控制下载解析器和代理。\n- 说明：同时配置 `outbound` 和 `socks5` 时，`socks5` 会覆盖 profile 代理但保留 profile resolver。",
     socks5:
       '- 类型：`string`；必填：否；默认值：无\n- 作用：所有下载连接都会通过该 SOCKS5 代理发起。\n- 支持格式：`host:port`、`username:password@host:port`，IPv6 需写成 `"[::1]:1080"`。',
     startup_if_missing:

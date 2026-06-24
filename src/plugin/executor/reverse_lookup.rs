@@ -32,6 +32,7 @@ use crate::core::context::DnsContext;
 use crate::infra::cache::ttl::TtlCache;
 use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
+use crate::infra::network::ip::normalize_ipv4_mapped_ip;
 use crate::infra::observability::metrics::{
     MetricLabel, MetricSample, MetricSink, MetricSource, register_metric_source,
     unregister_metric_source,
@@ -237,7 +238,7 @@ impl Executor for ReverseLookup {
                 .cloned()
                 .unwrap_or_else(|| record.name().clone());
             self.cache.insert_or_update(
-                normalize_ip(ip),
+                normalize_ipv4_mapped_ip(ip),
                 Arc::new(CacheEntry { domain }),
                 now,
                 expire_at_ms,
@@ -268,7 +269,7 @@ impl ReverseLookup {
 
         let qname = request.first_question()?.name().clone();
         let ip = parse_ptr_name(&qname)?;
-        let ip = normalize_ip(ip);
+        let ip = normalize_ipv4_mapped_ip(ip);
         let now = AppClock::elapsed_millis();
         let entry = self.cache.get_retained_cloned(&ip, now, 1000)?;
 
@@ -343,7 +344,7 @@ impl ApiHandler for ReverseLookupQueryHandler {
             );
         };
 
-        let ip = normalize_ip(ip);
+        let ip = normalize_ipv4_mapped_ip(ip);
         let now = AppClock::elapsed_millis();
         let Some(entry) = self.cache.get_retained_cloned(&ip, now, 1000) else {
             return simple_response(StatusCode::OK, Bytes::new());
@@ -369,16 +370,6 @@ fn get_single_query_value<'a>(query: Option<&'a str>, key: &str) -> Option<&'a s
 
 fn format_fqdn(name: &Name) -> String {
     name.to_fqdn()
-}
-
-fn normalize_ip(ip: IpAddr) -> IpAddr {
-    match ip {
-        IpAddr::V4(v4) => IpAddr::V4(v4),
-        IpAddr::V6(v6) => v6
-            .to_ipv4_mapped()
-            .map(IpAddr::V4)
-            .unwrap_or(IpAddr::V6(v6)),
-    }
 }
 
 fn parse_ptr_name(name: &Name) -> Option<IpAddr> {
@@ -415,6 +406,7 @@ mod tests {
     }
 
     fn make_context(name: &str, qtype: RecordType) -> DnsContext {
+        AppClock::start();
         let mut request = Message::new();
         request.add_question(Question::new(
             Name::from_ascii(name).unwrap(),
@@ -507,6 +499,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reverse_lookup_query_api_returns_fqdn() {
+        AppClock::start();
         let cache = TtlCache::with_capacity(8);
         let now = AppClock::elapsed_millis();
         cache.insert_or_update(

@@ -180,6 +180,7 @@ export const enUSWebui = {
     stale: "Stale",
     truncated: "Truncated response",
     noTtl: "No TTL",
+    lowPositiveTtl: "Low positive TTL",
     started: "Started",
     success: "Success",
     failed: "Failed",
@@ -671,9 +672,15 @@ export const enUSWebui = {
     hotReloadNotSuccessful: "Apply failed: hot reload did not complete",
     restartFailed: "Restart failed",
     restartNotObserved:
-      "Restart did not take effect: service shutdown was not observed. Check backend logs.",
+      "Restart did not take effect: a new backend instance was not observed. Check backend logs.",
     restartTimeout:
       "Restart timed out. Refresh the page and reconnect manually.",
+    upgradeRestartNotObserved:
+      "Upgrade did not complete: a new backend instance was not observed within the expected time. Check backend logs.",
+    upgradeRestartTimeout:
+      "Upgrade restart timed out. Refresh the page and reconnect manually.",
+    upgradeVerifyTimeout:
+      "The backend came back online, but version {version} was not confirmed.",
     configHasErrorsBeforeDelete:
       "The current config has errors. Fix them in the editor before deleting a plugin.",
     pluginMissing: "Plugin does not exist or has already been deleted",
@@ -696,6 +703,7 @@ export const enUSWebui = {
     invalidJsonResponse: "Response is not valid JSON: {preview}",
     updateCheckFailed: "Failed to check for updates",
     upgradeStartFailed: "Failed to start upgrade",
+    upgradeFailed: "Upgrade failed",
     shortcutNestedReferenceManual:
       "Nested references in quick config must be adjusted or replaced manually",
     entryActionCannotRemove:
@@ -744,7 +752,7 @@ export const enUSWebui = {
       "DNS resolution will be briefly interrupted. The page will recover automatically after restart; do not refresh or close it.",
     saving: "Saving config to disk",
     requesting: "Sending restart request",
-    waitingDown: "Waiting for old process to exit",
+    waitingDown: "Waiting for service handoff",
     waitingUp: "Waiting for new process to become ready",
     reloading: "Reloading config",
   },
@@ -819,6 +827,49 @@ export const enUSWebui = {
     workerThreadsDesc:
       "Number of Tokio multi-thread runtime workers. Leave empty for automatic (system parallelism). Cannot be 0.",
     workerThreadsPlaceholder: "Leave empty for system default",
+    outboundCard: "Outbound Network",
+    outboundCardDesc:
+      "Configure network.outbound profiles shared by HTTP clients, upgrades, downloads, and upstreams.",
+    defaultOutboundProfile: "Default Outbound Profile",
+    defaultOutboundProfileDesc:
+      "HTTP clients and upstreams without an explicit outbound selection use this profile. Leave empty for direct connections with the system resolver.",
+    addOutboundProfile: "Add Outbound Profile",
+    noOutboundProfiles: "No outbound profiles configured yet",
+    outboundProfileTitle: "Profile {index}",
+    outboundProfileItemDesc:
+      "Configure resolver nameservers and SOCKS5 proxy for this profile.",
+    removeOutboundProfile: "Remove outbound profile",
+    outboundProfileName: "Profile Name",
+    outboundProfileSocks5: "Profile SOCKS5 Proxy",
+    resolverMode: "Resolver Mode",
+    resolverModeSystem: "System resolver",
+    resolverModeNameservers: "Custom nameservers",
+    resolverIpVersion: "Resolver IP Version",
+    resolverTimeout: "Resolver Timeout",
+    resolverProxy: "Nameserver Proxy",
+    resolverProxyNone: "Direct",
+    resolverProxyProfile: "Use profile SOCKS5",
+    nameservers: "Nameservers",
+    nameserversDesc:
+      "Supports UDP/TCP/DoT/DoH/DoH3/DoQ. Domain nameservers require dial_addr, and IPv6 URIs must already use valid bracketed syntax.",
+    addNameserver: "Add nameserver",
+    noNameservers: "Add at least one nameserver to write a custom resolver.",
+    dialAddrPlaceholder: "dial_addr, optional",
+    removeNameserver: "Remove nameserver",
+    outboundMetricsTitle: "Runtime Metrics",
+    outboundMetricsDesc:
+      "Grouped by outbound_profile for resolver cache, refresh errors, and upstream pool refreshes.",
+    outboundMetricsEmpty: "No outbound runtime metrics yet.",
+    outboundMetricsConfigured: "Configured",
+    outboundMetricsCacheHit: "Cache Hit",
+    outboundMetricsRefreshAvg: "Resolver Refresh Avg",
+    outboundMetricsErrors: "Resolver Errors",
+    outboundMetricsPoolRefresh: "Pool Refreshes",
+    outboundMetricsPoolAvg: "Pool Refresh Avg",
+    outboundMetricsReasons: "Reasons",
+    outboundMetricsProtocols: "Protocols",
+    outboundMetricsSystemProfile: "System resolver / direct",
+    outboundMetricsLocalProfile: "Local bootstrap",
     mgmtApiCard: "Management API",
     mgmtApiDesc: "HTTP management interface configuration (api.http)",
     listenSection: "Listen Address (listen)",
@@ -879,10 +930,20 @@ export const enUSWebui = {
     releaseNotes: "Release Notes",
     alreadyLatest: "Already up to date: {version}",
     upgradeStartFailed: "Failed to start upgrade: {error}",
+    upgradeFailed: "Upgrade failed or incomplete: {error}",
     checkingUpdates: "Checking…",
     checkUpdates: "Check for Updates",
     upgrading: "Upgrading…",
     upgradeNow: "Upgrade Now",
+    upgradeProgressTitle: "Upgrading OxiDNS",
+    upgradeProgressDesc:
+      "The backend is applying the new release and will reconnect automatically. Do not refresh or close this page.",
+    upgradePhaseRequesting: "Sending upgrade request",
+    upgradePhaseApplying: "Downloading and applying release",
+    upgradePhaseWaitingUp: "Waiting for backend to come back online",
+    upgradePhaseVerifying: "Verifying upgraded backend version",
+    upgradePhaseCompleted: "Upgrade verified; reloading console",
+    upgradeCompletedMsg: "Upgrade completed: now running {version}",
     upgradeConfigSection: "Upgrade Configuration",
     githubRepo: "GitHub Repository",
     githubRepoDesc: "Format: owner/repo. Default: {default}",
@@ -892,6 +953,10 @@ export const enUSWebui = {
     bundleFull: "full — full edition",
     bundleStandard: "standard — standard edition",
     bundleMinimal: "minimal — minimal edition",
+    outboundProfile: "Outbound Profile",
+    outboundProfileDesc:
+      "Reference a profile from network.outbound.profiles. Leave empty to use the default outbound settings.",
+    outboundProfilePlaceholder: "profile-1",
     socks5Proxy: "SOCKS5 Proxy",
     socks5ProxyDesc:
       "SOCKS5 proxy used for downloads. Do not include a protocol prefix; username and password are supported.",

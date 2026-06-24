@@ -55,7 +55,9 @@ use self::probe::{
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
 use crate::infra::clock::AppClock;
-use crate::infra::error::Result;
+use crate::infra::error::{DnsError, Result};
+use crate::infra::network::outbound;
+use crate::infra::network::proxy::{Socks5Opt, parse_socks5_opt};
 use crate::infra::observability::metrics::{register_metric_source, unregister_metric_source};
 use crate::infra::task as task_center;
 use crate::plugin::executor::{ExecStep, Executor, ExecutorNext};
@@ -357,21 +359,40 @@ impl PluginFactory for IpSelectorFactory {
         _init_context: &crate::plugin::PluginInitContext<'_>,
     ) -> Result<UninitializedPlugin> {
         let settings = parse_ip_selector_config(plugin_config.args.clone())?;
+        let runner = build_system_probe_runner(&settings)?;
         Ok(UninitializedPlugin::Executor(Box::new(build_ip_selector(
             plugin_config.tag.clone(),
             settings,
-            Arc::new(SystemProbeRunner),
+            runner,
         ))))
     }
 
     fn quick_setup(&self, tag: &str, param: Option<String>) -> Result<UninitializedPlugin> {
         let settings = parse_ip_selector_quick_setup(param)?;
+        let runner = build_system_probe_runner(&settings)?;
         Ok(UninitializedPlugin::Executor(Box::new(build_ip_selector(
             tag.to_string(),
             settings,
-            Arc::new(SystemProbeRunner),
+            runner,
         ))))
     }
+}
+
+fn build_system_probe_runner(settings: &IpSelectorSettings) -> Result<Arc<SystemProbeRunner>> {
+    Ok(Arc::new(SystemProbeRunner::new(resolve_probe_socks5(
+        settings,
+    )?)))
+}
+
+fn resolve_probe_socks5(settings: &IpSelectorSettings) -> Result<Option<Socks5Opt>> {
+    let local_socks5 = match settings.socks5.as_deref() {
+        Some(raw) => Some(parse_socks5_opt(raw).ok_or_else(|| {
+            DnsError::plugin(format!("ip_selector has invalid socks5 proxy '{}'", raw))
+        })?),
+        None => None,
+    };
+    let policy = outbound::global().resolve_policy(settings.outbound.as_deref(), local_socks5)?;
+    Ok(policy.proxy())
 }
 
 fn build_ip_selector(

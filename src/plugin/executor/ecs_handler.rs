@@ -24,6 +24,7 @@ use serde_yaml_ng::Value;
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
 use crate::infra::error::{DnsError, Result};
+use crate::infra::network::ip::normalize_ipv4_mapped_ip;
 use crate::plugin::executor::{ExecStep, Executor, ExecutorNext};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::proto::{ClientSubnet, DNSClass, Edns, EdnsCode, EdnsOption, Message};
@@ -119,9 +120,9 @@ impl EcsHandler {
             }
         } else {
             let source_ip = if let Some(preset) = self.preset {
-                Some(unmap_ip(preset))
+                Some(normalize_ipv4_mapped_ip(preset))
             } else if self.send {
-                Some(unmap_ip(context.peer_addr().ip()))
+                Some(normalize_ipv4_mapped_ip(context.peer_addr().ip()))
             } else {
                 None
             };
@@ -233,16 +234,6 @@ fn strip_ecs_from_message(message: &mut Message) {
 
 fn ensure_opt_record(message: &mut Message) -> &mut Edns {
     message.ensure_edns_mut()
-}
-
-fn unmap_ip(ip: IpAddr) -> IpAddr {
-    match ip {
-        IpAddr::V4(v4) => IpAddr::V4(v4),
-        IpAddr::V6(v6) => v6
-            .to_ipv4_mapped()
-            .map(IpAddr::V4)
-            .unwrap_or(IpAddr::V6(v6)),
-    }
 }
 
 #[cfg(test)]

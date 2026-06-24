@@ -147,6 +147,14 @@ export const serverPluginDefinitions: PluginKindDefinition[] = [
               referencePrefix: "",
               placeholder: "seq_main",
             },
+            {
+              key: "json_api",
+              description:
+                "开启后，该路径的 GET 请求可使用 JSON DNS API 参数；RFC 8484 GET/POST 始终可用。",
+              label: "JSON DNS API",
+              type: "switch",
+              default: false,
+            },
           ],
         },
       },

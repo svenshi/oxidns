@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -14,15 +13,19 @@ use tracing::{debug, error, trace, warn};
 
 use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
-use crate::infra::network::proxy::Socks5Opt;
 #[cfg(feature = "upstream-dot")]
-use crate::infra::network::transport::tcp_transport::TcpTransport;
-use crate::infra::network::transport::tcp_transport::{TcpTransportReader, TcpTransportWriter};
+use crate::infra::network::dial::TlsDialOptions;
+#[cfg(feature = "upstream-dot")]
+use crate::infra::network::dial::connect_tls;
+use crate::infra::network::dial::{DialTarget, SocketOptions};
+use crate::infra::network::proxy::{Socks5Opt, connect_tcp};
+#[cfg(feature = "upstream-dot")]
+use crate::infra::network::transport::tcp::TcpTransport;
+use crate::infra::network::transport::tcp::{TcpTransportReader, TcpTransportWriter};
 use crate::infra::network::upstream::conn::request_map::RequestMap;
-use crate::infra::network::upstream::dial::connect_stream_with_deadline;
-#[cfg(feature = "upstream-dot")]
-use crate::infra::network::upstream::dial::connect_tls;
-use crate::infra::network::upstream::pool::{Connection, ConnectionBuilder, QueryDeadline};
+use crate::infra::network::upstream::pool::{
+    Connection, ConnectionBuilder, DeadlineOutcome, QueryDeadline,
+};
 use crate::infra::network::upstream::{ConnectionInfo, ConnectionType};
 use crate::proto::Message;
 
@@ -325,16 +328,13 @@ impl TcpConnection {
 /// Builder that establishes new TCP or TLS (DoT) DNS connections.
 #[derive(Debug)]
 pub struct TcpConnectionBuilder {
-    remote_ip: Option<IpAddr>,
-    port: u16,
+    target: DialTarget,
+    socket_options: SocketOptions,
     tls_enabled: bool,
-    server_name: String,
     #[cfg_attr(not(feature = "upstream-dot"), allow(dead_code))]
     insecure_skip_verify: bool,
     connection_type: ConnectionType,
     request_map_capacity: u16,
-    so_mark: Option<u32>,
-    bind_to_device: Option<String>,
     socks5: Option<Socks5Opt>,
 }
 
@@ -345,15 +345,19 @@ impl TcpConnectionBuilder {
         #[cfg(not(feature = "upstream-dot"))]
         let tls_enabled = false;
         Self {
-            remote_ip: connection_info.remote_ip,
-            port: connection_info.port,
+            target: DialTarget::new(
+                connection_info.remote_ip,
+                connection_info.server_name.clone(),
+                connection_info.port,
+            ),
+            socket_options: SocketOptions::new(
+                connection_info.so_mark,
+                connection_info.bind_to_device.clone(),
+            ),
             tls_enabled,
-            server_name: connection_info.server_name.clone(),
             insecure_skip_verify: connection_info.insecure_skip_verify,
             connection_type: connection_info.connection_type,
             request_map_capacity,
-            so_mark: connection_info.so_mark,
-            bind_to_device: connection_info.bind_to_device.clone(),
             socks5: connection_info.socks5.clone(),
         }
     }
@@ -375,16 +379,17 @@ impl ConnectionBuilder<TcpConnection> for TcpConnectionBuilder {
         conn_id: u16,
         deadline: QueryDeadline,
     ) -> Result<Arc<TcpConnection>> {
-        let stream = connect_stream_with_deadline(
-            self.remote_ip,
-            self.server_name.clone(),
-            self.port,
-            self.so_mark,
-            self.bind_to_device.clone(),
-            self.socks5.clone(),
-            deadline,
-        )
-        .await?;
+        let stream = match deadline
+            .run(connect_tcp(
+                self.target.clone(),
+                self.socket_options.clone(),
+                self.socks5.clone(),
+            ))
+            .await
+        {
+            DeadlineOutcome::Completed(result) => result?,
+            DeadlineOutcome::Expired => return Err(deadline.timeout_error()),
+        };
 
         debug!(
             conn_id,
@@ -403,12 +408,14 @@ impl ConnectionBuilder<TcpConnection> for TcpConnectionBuilder {
             {
                 let tls_stream = connect_tls(
                     stream,
-                    self.insecure_skip_verify,
-                    self.server_name.clone(),
-                    deadline
-                        .remaining()
-                        .ok_or_else(|| deadline.timeout_error())?,
-                    vec![b"dot".to_vec()],
+                    TlsDialOptions::new(
+                        self.target.clone(),
+                        self.insecure_skip_verify,
+                        deadline
+                            .remaining()
+                            .ok_or_else(|| deadline.timeout_error())?,
+                        vec![b"dot".to_vec()],
+                    ),
                 )
                 .await?;
 
@@ -466,9 +473,9 @@ mod tests {
 
         assert_eq!(connection_info.connection_type, ConnectionType::DoT);
         assert!(builder.tls_enabled);
-        assert_eq!(builder.port, 853);
+        assert_eq!(builder.target.port(), 853);
         assert_eq!(builder.request_map_capacity, DEFAULT_REQUEST_MAP_CAPACITY);
-        assert_eq!(builder.server_name, "dns.example.com");
+        assert_eq!(builder.target.host(), "dns.example.com");
         assert!(builder.insecure_skip_verify);
     }
 

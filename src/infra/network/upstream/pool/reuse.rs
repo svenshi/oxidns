@@ -13,7 +13,6 @@ use tracing::{debug, info, warn};
 
 use crate::infra::clock::AppClock;
 use crate::infra::error::Result;
-use crate::infra::network::upstream::dial::close_conns;
 use crate::infra::network::upstream::pool::{
     Connection, ConnectionBuilder, ConnectionPool, DeadlineOutcome, ManagedMaintenanceTask,
     QueryDeadline, QueryTimeoutPolicy, start_maintenance,
@@ -22,6 +21,13 @@ use crate::infra::task as task_center;
 use crate::proto::Message;
 
 const POOL_RETRY_BACKOFF: Duration = Duration::from_millis(10);
+
+#[inline]
+fn close_conns<C: Connection>(conns: &[Arc<C>]) {
+    for conn in conns {
+        conn.close();
+    }
+}
 
 /// A reusable connection pool implementation
 /// - Keeps a minimum number of active connections (`min_size`)
@@ -616,6 +622,18 @@ mod tests {
             release_notified: Notify::new(),
             maintenance_task_id: Mutex::new(None),
         }
+    }
+
+    #[test]
+    fn test_close_conns_closes_every_connection_once() {
+        let first = Arc::new(MockConnection::new(true, 0, 0));
+        let second = Arc::new(MockConnection::new(true, 0, 0));
+        let conns = vec![first.clone(), second.clone()];
+
+        close_conns(&conns);
+
+        assert_eq!(first.close_calls(), 1);
+        assert_eq!(second.close_calls(), 1);
     }
 
     #[tokio::test]

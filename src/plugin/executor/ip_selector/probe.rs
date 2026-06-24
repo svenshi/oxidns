@@ -22,7 +22,6 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use tokio::net::TcpStream;
 use tokio::process::Command;
 use tokio::sync::{OnceCell, Semaphore};
 
@@ -31,6 +30,8 @@ use super::metrics::IpSelectorMetrics;
 use super::policy::{IpScore, ScoreSource};
 use crate::infra::cache::ttl::TtlCache;
 use crate::infra::clock::AppClock;
+use crate::infra::network::dial::{DialTarget, SocketOptions};
+use crate::infra::network::proxy::{Socks5Opt, connect_tcp};
 
 pub(super) const LAST_ACCESS_TOUCH_INTERVAL_MS: u64 = 1000;
 pub(super) const CLEANUP_INTERVAL_SECS: u64 = 30;
@@ -158,7 +159,15 @@ pub(super) trait ProbeRunner: std::fmt::Debug + Send + Sync {
 }
 
 #[derive(Debug)]
-pub(super) struct SystemProbeRunner;
+pub(super) struct SystemProbeRunner {
+    socks5: Option<Socks5Opt>,
+}
+
+impl SystemProbeRunner {
+    pub(super) fn new(socks5: Option<Socks5Opt>) -> Self {
+        Self { socks5 }
+    }
+}
 
 #[async_trait]
 impl ProbeRunner for SystemProbeRunner {
@@ -169,7 +178,7 @@ impl ProbeRunner for SystemProbeRunner {
         _metrics: &IpSelectorMetrics,
     ) -> ProbeObservation {
         match key.method {
-            ProbeMethod::Tcp(port) => probe_tcp(key.ip, port, timeout).await,
+            ProbeMethod::Tcp(port) => probe_tcp(key.ip, port, timeout, self.socks5.clone()).await,
             ProbeMethod::Ping => probe_ping(key.ip, timeout).await,
             ProbeMethod::None => ProbeObservation::failure(),
         }
@@ -345,10 +354,24 @@ pub(super) fn evict_probe_cache_if_needed(cache: &ProbeCache, cache_size: usize)
     }
 }
 
-async fn probe_tcp(ip: IpAddr, port: u16, timeout: Duration) -> ProbeObservation {
+async fn probe_tcp(
+    ip: IpAddr,
+    port: u16,
+    timeout: Duration,
+    socks5: Option<Socks5Opt>,
+) -> ProbeObservation {
     let start = Instant::now();
     let addr = SocketAddr::new(ip, port);
-    match tokio::time::timeout(timeout, TcpStream::connect(addr)).await {
+    match tokio::time::timeout(
+        timeout,
+        connect_tcp(
+            DialTarget::from_socket_addr(addr),
+            SocketOptions::default(),
+            socks5,
+        ),
+    )
+    .await
+    {
         Ok(Ok(_stream)) => {
             let latency_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
             ProbeObservation::success(latency_ms)

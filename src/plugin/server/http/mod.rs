@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use http::{HeaderValue, Method};
+use http::HeaderValue;
 use rustls::ServerConfig;
 use serde::Deserialize;
 use tokio::sync::{oneshot, watch};
@@ -27,19 +27,22 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::types::PluginConfig;
 use crate::infra::error::{DnsError, Result};
+use crate::infra::network::listen::parse_listen_addr;
 use crate::infra::network::tls_config::load_tls_config;
 use crate::infra::observability::metrics::{register_metric_source, unregister_metric_source};
 use crate::infra::system::deserialize_duration_option;
 use crate::plugin::dependency::DependencySpec;
-use crate::plugin::server::http::http_dispatcher::{DnsGetHandler, DnsPostHandler, HttpDispatcher};
-use crate::plugin::server::{RequestHandle, Server, ServerMetrics, parse_listen_addr};
+use crate::plugin::server::http::entry::HttpDnsEntry;
+use crate::plugin::server::http::http_dispatcher::HttpDispatcher;
+use crate::plugin::server::{RequestHandle, Server, ServerMetrics};
 use crate::plugin::{Plugin, PluginFactory};
 use crate::plugin_factory;
 
-mod http2_server;
+mod entry;
 #[cfg(feature = "server-doh3")]
 mod http3_server;
 mod http_dispatcher;
+mod http_server;
 
 pub(crate) use super::DEFAULT_SERVER_IDLE_TIMEOUT;
 
@@ -61,8 +64,8 @@ pub struct HttpServerConfig {
     ///
     /// - `:port` binds on `[::]:port`.
     /// - Must be a valid listen address or validation will fail.
-    /// - When TLS is configured, server runs HTTPS (HTTP/2) and optional
-    ///   HTTP/3.
+    /// - When TLS is configured, server runs HTTPS (HTTP/1.1 + HTTP/2) and
+    ///   optional HTTP/3.
     listen: String,
 
     /// HTTP header name to extract real client IP (optional).
@@ -86,8 +89,8 @@ pub struct HttpServerConfig {
     /// HTTP connection idle timeout in seconds.
     ///
     /// - Default: 30 seconds if omitted.
-    /// - Applies to HTTP/2 connections; HTTP/3 uses QUIC transport idle
-    ///   timeout.
+    /// - Applies to HTTP/1.1 + HTTP/2 connections; HTTP/3 uses QUIC transport
+    ///   idle timeout.
     #[serde(default, deserialize_with = "deserialize_duration_option")]
     idle_timeout: Option<Duration>,
 
@@ -112,6 +115,11 @@ pub struct Entry {
     ///
     /// - Must reference an existing executor plugin in `PluginRegistry`.
     pub exec: String,
+    /// Enable JSON DNS API for this route.
+    ///
+    /// - Default: false.
+    /// - RFC 8484 GET/POST behavior remains enabled either way.
+    pub json_api: Option<bool>,
 }
 
 /// HTTP DNS server plugin
@@ -136,9 +144,10 @@ pub struct HttpServer {
     idle_timeout: Duration,
     /// Enable HTTP/3 for DoH connections
     enable_http3: Option<bool>,
-    /// Prebuilt Alt-Svc header for HTTP/2 responses when HTTP/3 is enabled
-    http2_alt_svc: Option<HeaderValue>,
-    /// Shared shutdown signal for HTTP/2 and HTTP/3 tasks
+    /// Prebuilt Alt-Svc header for HTTP/1.1 / HTTP/2 responses when HTTP/3 is
+    /// enabled
+    alt_svc: Option<HeaderValue>,
+    /// Shared shutdown signal for HTTP/1.1 / HTTP/2 and HTTP/3 tasks
     shutdown_tx: watch::Sender<bool>,
     /// Spawned top-level server task handles
     task_handles: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -192,7 +201,7 @@ impl HttpServer {
 
     fn spawn_server_tasks(
         &self,
-        h2_startup_tx: Option<StartupTx>,
+        http_startup_tx: Option<StartupTx>,
         h3_startup_tx: Option<StartupTx>,
     ) -> Result<()> {
         let mut h3_startup_tx = h3_startup_tx;
@@ -202,7 +211,7 @@ impl HttpServer {
             .map_err(|_| DnsError::runtime("HTTP server task lock poisoned"))?;
 
         if !task_handles.is_empty() {
-            if let Some(tx) = h2_startup_tx {
+            if let Some(tx) = http_startup_tx {
                 let _ = tx.send(Ok(()));
             }
             if let Some(tx) = h3_startup_tx {
@@ -222,15 +231,15 @@ impl HttpServer {
             "Spawning HTTP server tasks"
         );
 
-        task_handles.push(tokio::spawn(http2_server::run_server(
+        task_handles.push(tokio::spawn(http_server::run_server(
             listen,
             self.dispatcher.clone(),
             self.server_config.clone(),
-            self.http2_alt_svc.clone(),
+            self.alt_svc.clone(),
             self.idle_timeout,
             self.src_ip_header.clone(),
             self.shutdown_tx.subscribe(),
-            h2_startup_tx,
+            http_startup_tx,
         )));
 
         if self.enable_http3.unwrap_or(false) {
@@ -292,7 +301,7 @@ impl Plugin for HttpServer {
 
     async fn init(&mut self, _context: &crate::plugin::PluginInitContext<'_>) -> Result<()> {
         register_metric_source(self.metrics.clone())?;
-        let (h2_tx, h2_rx) = oneshot::channel();
+        let (http_tx, http_rx) = oneshot::channel();
         let (h3_tx, h3_rx) = if self.enable_http3.unwrap_or(false) {
             let (tx, rx) = oneshot::channel();
             (Some(tx), Some(rx))
@@ -301,14 +310,14 @@ impl Plugin for HttpServer {
         };
 
         let startup_result = async {
-            self.spawn_server_tasks(Some(h2_tx), h3_tx)?;
+            self.spawn_server_tasks(Some(http_tx), h3_tx)?;
 
-            match h2_rx.await {
+            match http_rx.await {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => return Err(DnsError::plugin(e)),
                 Err(_) => {
                     return Err(DnsError::plugin(
-                        "HTTP/2 server startup channel closed unexpectedly",
+                        "HTTP server startup channel closed unexpectedly",
                     ));
                 }
             }
@@ -406,6 +415,7 @@ impl PluginFactory for HttpServerFactory {
         // Register routes for each configured entry
         // Each entry maps a path to an executor that processes DNS queries
         for (idx, entry) in http_config.entries.iter().enumerate() {
+            let json_api = entry.json_api.unwrap_or(false);
             let field = format!("args.entries[{}].exec", idx);
             // Resolve and type-check executor with field context.
             let executor = init_context.executor(&field, &entry.exec)?;
@@ -416,26 +426,14 @@ impl PluginFactory for HttpServerFactory {
                 metrics: Some(metrics.clone()),
             });
 
-            // Register GET route (DoH RFC 8484: DNS query in URL parameter)
+            // Register the HTTP DNS entry for this path.
             info!(
-                "Registering HTTP route: GET {} -> {}",
-                entry.path, entry.exec
+                "Registering HTTP DNS route: {} -> {} (json_api={})",
+                entry.path, entry.exec, json_api
             );
             dispatcher.register_route(
-                Method::GET,
                 Arc::from(entry.path.clone()),
-                Box::new(DnsGetHandler::new(request_handle.clone())),
-            );
-
-            // Register POST route (DoH RFC 8484: DNS query in request body)
-            info!(
-                "Registering HTTP route: POST {} -> {}",
-                entry.path, entry.exec
-            );
-            dispatcher.register_route(
-                Method::POST,
-                Arc::from(entry.path.clone()),
-                Box::new(DnsPostHandler::new(request_handle.clone())),
+                HttpDnsEntry::new(request_handle.clone(), json_api),
             );
         }
 
@@ -457,7 +455,7 @@ impl PluginFactory for HttpServerFactory {
                     .idle_timeout
                     .unwrap_or(DEFAULT_SERVER_IDLE_TIMEOUT),
                 enable_http3: http_config.enable_http3,
-                http2_alt_svc: http2_alt_svc_for_config(http_config.enable_http3, listen)?,
+                alt_svc: alt_svc_for_config(http_config.enable_http3, listen)?,
                 shutdown_tx: watch::channel(false).0,
                 task_handles: Mutex::new(Vec::new()),
                 metrics,
@@ -466,7 +464,7 @@ impl PluginFactory for HttpServerFactory {
     }
 }
 
-fn http2_alt_svc_for_config(
+fn alt_svc_for_config(
     enable_http3: Option<bool>,
     listen: SocketAddr,
 ) -> Result<Option<HeaderValue>> {
@@ -562,7 +560,7 @@ mod tests {
             server_config,
             idle_timeout: DEFAULT_SERVER_IDLE_TIMEOUT,
             enable_http3,
-            http2_alt_svc: http2_alt_svc_for_config(enable_http3, listen)
+            alt_svc: alt_svc_for_config(enable_http3, listen)
                 .expect("Alt-Svc initialization should succeed"),
             shutdown_tx: watch::channel(false).0,
             task_handles: Mutex::new(Vec::new()),
@@ -572,18 +570,18 @@ mod tests {
 
     #[cfg(not(feature = "server-doh3"))]
     #[tokio::test]
-    async fn test_http3_feature_gate_rejects_before_spawning_http2() {
+    async fn test_http3_feature_gate_rejects_before_spawning_http_server() {
         let server = test_http_server(SocketAddr::from(([127, 0, 0, 1], 0)), Some(true), None);
-        let (h2_tx, h2_rx) = oneshot::channel();
+        let (http_tx, http_rx) = oneshot::channel();
         let (h3_tx, h3_rx) = oneshot::channel();
 
         let err = server
-            .spawn_server_tasks(Some(h2_tx), Some(h3_tx))
+            .spawn_server_tasks(Some(http_tx), Some(h3_tx))
             .expect_err("HTTP/3 should be rejected before spawning listeners");
 
         assert!(err.to_string().contains("HTTP/3 not compiled in"));
         assert!(server.task_handles.lock().unwrap().is_empty());
-        assert!(h2_rx.await.is_err());
+        assert!(http_rx.await.is_err());
         assert!(matches!(
             h3_rx.await,
             Ok(Err(message)) if message.contains("HTTP/3 not compiled in")
@@ -592,18 +590,18 @@ mod tests {
 
     #[cfg(feature = "server-doh3")]
     #[tokio::test]
-    async fn test_http3_tls_requirement_rejects_before_spawning_http2() {
+    async fn test_http3_tls_requirement_rejects_before_spawning_http_server() {
         let server = test_http_server(SocketAddr::from(([127, 0, 0, 1], 0)), Some(true), None);
-        let (h2_tx, h2_rx) = oneshot::channel();
+        let (http_tx, http_rx) = oneshot::channel();
         let (h3_tx, h3_rx) = oneshot::channel();
 
         let err = server
-            .spawn_server_tasks(Some(h2_tx), Some(h3_tx))
+            .spawn_server_tasks(Some(http_tx), Some(h3_tx))
             .expect_err("HTTP/3 without TLS should be rejected before spawning listeners");
 
         assert!(err.to_string().contains("HTTP/3 requires TLS"));
         assert!(server.task_handles.lock().unwrap().is_empty());
-        assert!(h2_rx.await.is_err());
+        assert!(http_rx.await.is_err());
         assert!(matches!(
             h3_rx.await,
             Ok(Err(message)) if message.contains("HTTP/3 requires TLS")
@@ -624,7 +622,7 @@ mod tests {
         let err = server
             .init(&init_context)
             .await
-            .expect_err("HTTP/2 bind conflict should fail startup");
+            .expect_err("HTTP bind conflict should fail startup");
 
         assert!(err.to_string().contains("Failed to bind HTTP socket"));
         assert!(server.task_handles.lock().unwrap().is_empty());
@@ -681,8 +679,8 @@ listen: 127.0.0.1:443
     }
 
     #[test]
-    fn test_http2_alt_svc_is_initialized_when_http3_is_enabled() {
-        let value = http2_alt_svc_for_config(Some(true), SocketAddr::from(([127, 0, 0, 1], 9443)))
+    fn test_alt_svc_is_initialized_when_http3_is_enabled() {
+        let value = alt_svc_for_config(Some(true), SocketAddr::from(([127, 0, 0, 1], 9443)))
             .expect("Alt-Svc header should build")
             .expect("HTTP/3 enabled should create Alt-Svc");
 
@@ -690,8 +688,8 @@ listen: 127.0.0.1:443
     }
 
     #[test]
-    fn test_http2_alt_svc_is_absent_when_http3_is_disabled() {
-        let value = http2_alt_svc_for_config(Some(false), SocketAddr::from(([127, 0, 0, 1], 9443)))
+    fn test_alt_svc_is_absent_when_http3_is_disabled() {
+        let value = alt_svc_for_config(Some(false), SocketAddr::from(([127, 0, 0, 1], 9443)))
             .expect("Alt-Svc initialization should succeed");
 
         assert!(value.is_none());

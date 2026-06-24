@@ -4,6 +4,8 @@
 //! Protocol-specific upstream connection implementations.
 
 use std::sync::atomic::{AtomicU16, Ordering};
+#[cfg(any(feature = "upstream-doq", feature = "upstream-doh3"))]
+use std::time::Duration;
 
 #[cfg(any(feature = "upstream-doh", feature = "upstream-doh3"))]
 pub(crate) mod doh;
@@ -38,4 +40,13 @@ impl Drop for UsingCountGuard<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::Relaxed);
     }
+}
+
+#[cfg(any(feature = "upstream-doq", feature = "upstream-doh3"))]
+pub(crate) fn quic_idle_timeout(query_timeout: Duration) -> Duration {
+    // Keep QUIC's transport-level idle detection longer than the per-query
+    // timeout. If the peer stops responding without sending CONNECTION_CLOSE,
+    // the QUIC driver eventually closes and the upstream pool can replace the
+    // dead connection instead of reusing it indefinitely.
+    query_timeout.checked_mul(3).unwrap_or(Duration::MAX)
 }

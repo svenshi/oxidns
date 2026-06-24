@@ -36,6 +36,8 @@ export interface HealthResponse {
   status: string;
   version: string;
   build_bundle?: string;
+  instance_id?: string;
+  started_at_ms?: number;
   uptime_ms: number;
   checks: {
     api: string;
@@ -894,6 +896,7 @@ export async function fetchPrometheusMetrics(): Promise<string> {
 export interface UpgradeCheckOptions {
   repository?: string;
   bundle?: string;
+  outbound?: string;
   socks5?: string;
   allowPrerelease?: boolean;
   target?: string;
@@ -916,12 +919,23 @@ export interface UpgradeApplyResponse {
   message: string;
 }
 
+export interface UpgradeStatusResponse {
+  ok: boolean;
+  state: "idle" | "running" | "restarting" | "completed" | "skipped" | "failed";
+  started_at_ms?: number;
+  completed_at_ms?: number;
+  error?: string;
+  installed_version?: string;
+  restart_required?: boolean;
+}
+
 export async function fetchUpgradeCheck(
   options: UpgradeCheckOptions = {},
 ): Promise<UpgradeCheckResponse> {
   const body: Record<string, unknown> = {};
   if (options.repository) body.repository = options.repository;
   if (options.bundle) body.bundle = options.bundle;
+  if (options.outbound) body.outbound = options.outbound;
   if (options.socks5) body.socks5 = options.socks5;
   if (options.allowPrerelease) body.allow_prerelease = true;
   if (options.target) body.target = options.target;
@@ -940,6 +954,7 @@ export async function triggerUpgradeApply(
   const body: Record<string, unknown> = {};
   if (options.repository) body.repository = options.repository;
   if (options.bundle) body.bundle = options.bundle;
+  if (options.outbound) body.outbound = options.outbound;
   if (options.socks5) body.socks5 = options.socks5;
   if (options.allowPrerelease) body.allow_prerelease = true;
   if (options.target) body.target = options.target;
@@ -950,6 +965,14 @@ export async function triggerUpgradeApply(
     body: JSON.stringify(body),
   });
   return readJsonResponse<UpgradeApplyResponse>(response);
+}
+
+export async function fetchUpgradeStatus(): Promise<UpgradeStatusResponse> {
+  const response = await fetch(apiUrl("/upgrade/status"), {
+    method: "GET",
+    headers: apiHeaders(),
+  });
+  return readJsonResponse<UpgradeStatusResponse>(response);
 }
 
 export function apiUrl(path: string) {

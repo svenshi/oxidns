@@ -1,13 +1,21 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::result::Result as StdResult;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::Bytes;
 use http::header::{ALT_SVC, CONTENT_LENGTH};
+use http::{Request, Response};
+use http_body_util::{BodyExt, Full};
+use hyper::body::Incoming;
+use hyper::service::service_fn;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto::Builder as AutoBuilder;
 use rustls::ServerConfig;
 use tokio::sync::{oneshot, watch};
 use tokio_rustls::TlsAcceptor;
@@ -19,18 +27,18 @@ use crate::plugin::server::http::extract_client_ip;
 use crate::plugin::server::http::http_dispatcher::HttpDispatcher;
 use crate::plugin::server::{ConnectionGuard, tcp};
 
-/// Main HTTP/2 server loop (over TCP)
+/// Main HTTP/1.1 + HTTP/2 server loop (over TCP)
 ///
-/// Creates an HTTP/2 stream, listens for incoming DNS queries, and spawns
-/// handler tasks for each request. Uses a task tracker and cancellation token
-/// to manage active connections without polling completed tasks from the
-/// accept loop.
+/// Listens for incoming DNS queries and lets Hyper drive HTTP/1.1 or HTTP/2
+/// on each accepted connection. Uses a task tracker and cancellation token to
+/// manage active connections without polling completed tasks from the accept
+/// loop.
 ///
 /// # Architecture
 /// - Accepts TCP connections (with optional TLS handshake)
-/// - Performs HTTP/2 handshake
-/// - Spawns a task per connection to handle HTTP/2 multiplexed requests
-/// - Each request is further spawned into its own task for maximum concurrency
+/// - Performs HTTP protocol handling through Hyper's auto protocol detector
+/// - Spawns a task per connection and keeps request handling inside Hyper's
+///   service model
 ///
 /// # Parameters
 /// - `addr`: Listen address
@@ -75,7 +83,7 @@ pub async fn run_server(
         idle_timeout_secs = idle_timeout.as_secs(),
         has_tls = %server_config.is_some(),
         alt_svc = alt_svc.as_ref().and_then(|value| value.to_str().ok()),
-        "HTTP/2 server listening"
+        "HTTP server listening"
     );
 
     // Wrap header name in Arc to avoid cloning Strings per request
@@ -86,7 +94,7 @@ pub async fn run_server(
     let shutdown_token = CancellationToken::new();
     let active_connections = Arc::new(AtomicU64::new(0));
     let tls_acceptor = if let Some(mut server_config) = server_config {
-        server_config.alpn_protocols = vec![b"h2".to_vec()];
+        server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         Some(Arc::new(TlsAcceptor::from(Arc::new(server_config))))
     } else {
         None
@@ -115,7 +123,7 @@ pub async fn run_server(
 
                         tasks.spawn(async move {
                             let _connection_guard =
-                                ConnectionGuard::new(active_connections.clone(), src, "HTTP/2");
+                                ConnectionGuard::new(active_connections.clone(), src, "HTTP");
                             tokio::select! {
                                 _ = task_shutdown.cancelled() => {}
                                 _ = async move {
@@ -164,19 +172,17 @@ pub async fn run_server(
     shutdown_token.cancel();
     tasks.close();
     tasks.wait().await;
-    info!(listen = %addr, "HTTP/2 server stopped");
+    info!(listen = %addr, "HTTP server stopped");
 }
 
-/// Handle HTTP/2 requests over a stream (works for both TLS and plain HTTP)
+/// Handle HTTP requests over a stream (works for both TLS and plain HTTP)
 ///
 /// This function:
-/// 1. Performs HTTP/2 handshake
-/// 2. Accepts HTTP/2 requests in a loop (multiplexed over single connection)
-/// 3. Spawns a task for each request to process it asynchronously
-/// 4. Extracts real client IP from HTTP headers if configured
-/// 5. Reads request body with flow control
-/// 6. Dispatches to appropriate handler
-/// 7. Returns HTTP response
+/// 1. Lets Hyper detect HTTP/1.1 or HTTP/2 for the connection
+/// 2. Extracts real client IP from HTTP headers if configured
+/// 3. Reads request body with a bounded buffer
+/// 4. Dispatches to the configured DoH handler
+/// 5. Returns HTTP response
 ///
 /// # Type Parameters
 /// - `S`: Stream type implementing AsyncRead + AsyncWrite (e.g., TcpStream,
@@ -192,106 +198,28 @@ async fn handle_http_stream<S>(
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Sync + Unpin + 'static,
 {
-    // Start the HTTP/2.0 connection handshake
-    let mut h2 = match h2::server::handshake(stream).await {
-        Ok(h2) => h2,
-        Err(err) => {
-            debug!("HTTP/2 handshake error from {}: {}", src, err);
-            return;
-        }
-    };
-
-    debug!("HTTP/2 connection established with {}", src);
-
-    // Process HTTP/2 requests
-    loop {
-        let (request, mut respond) = match h2.accept().await {
-            Some(Ok(next_request)) => next_request,
-            Some(Err(err)) => {
-                warn!("Error accepting HTTP/2 request from {}: {}", src, err);
-                return;
-            }
-            None => {
-                debug!("HTTP/2 connection closed by {}", src);
-                return;
-            }
-        };
-
+    let service = service_fn(move |request: Request<Incoming>| {
         let dispatcher = dispatcher.clone();
         let src_ip_header = src_ip_header.clone();
-        let server_name = tls_server_name.clone();
+        let tls_server_name = tls_server_name.clone();
         let alt_svc = alt_svc.clone();
-        // Spawn a task to handle this request (non-blocking)
-        // Each request is processed in its own task for maximum concurrency
-        tokio::spawn(async move {
-            // Extract request metadata
-            let method = request.method().clone();
-            let uri = request.uri().clone();
-            let path = Arc::from(uri.path());
-            let query = uri.query().map(Arc::from);
-            let headers = request.headers();
+        async move {
+            handle_hyper_request(
+                request,
+                src,
+                dispatcher,
+                src_ip_header,
+                tls_server_name,
+                alt_svc,
+            )
+            .await
+        }
+    });
 
-            // Try to extract real client IP from HTTP headers (e.g., X-Real-IP,
-            // X-Forwarded-For) This is essential when running behind a reverse
-            // proxy
-            let client_addr = extract_client_ip(headers, &src_ip_header, src);
-
-            debug!(
-                "Received {} {} from {} (real: {})",
-                method, path, src, client_addr
-            );
-
-            let body = match read_h2_body(request.into_body(), src).await {
-                Ok(body) => body,
-                Err(status) => {
-                    let _ = send_h2_error_response(&mut respond, status, src, alt_svc.as_deref());
-                    return;
-                }
-            };
-
-            let response = dispatcher
-                .handle_request(method, path, query, body, client_addr, server_name)
-                .await;
-
-            let (mut parts, response_bytes) = response.into_parts();
-            insert_alt_svc_header(&mut parts.headers, alt_svc.as_deref());
-
-            let h2_response = match http::Response::builder()
-                .status(parts.status)
-                .version(parts.version)
-                .body(())
-            {
-                Ok(mut resp) => {
-                    *resp.headers_mut() = parts.headers;
-                    resp
-                }
-                Err(e) => {
-                    warn!("Failed to build HTTP/2 response: {}", e);
-                    let _ = send_h2_error_response(
-                        &mut respond,
-                        http::StatusCode::INTERNAL_SERVER_ERROR,
-                        src,
-                        alt_svc.as_deref(),
-                    );
-                    return;
-                }
-            };
-
-            let mut send_stream = match respond.send_response(h2_response, false) {
-                Ok(stream) => stream,
-                Err(e) => {
-                    debug!("Failed to send HTTP/2 response headers to {}: {}", src, e);
-                    return;
-                }
-            };
-
-            if let Err(e) = send_stream.send_data(response_bytes, true) {
-                debug!("Failed to send HTTP/2 response body to {}: {}", src, e);
-                return;
-            }
-
-            debug!("Response sent to {}", src);
-        });
+    let io = TokioIo::new(stream);
+    let builder = AutoBuilder::new(TokioExecutor::new());
+    if let Err(err) = builder.serve_connection(io, service).await {
+        debug!("HTTP connection error from {}: {}", src, err);
     }
 }
 
@@ -299,71 +227,95 @@ const MAX_HTTP_BODY: usize = 64 * 1024;
 const INITIAL_HTTP_BODY_CAPACITY: usize = 2048;
 
 #[inline]
-async fn read_h2_body(
-    mut recv_stream: h2::RecvStream,
+async fn handle_hyper_request(
+    request: Request<Incoming>,
     src: SocketAddr,
-) -> Result<Bytes, http::StatusCode> {
-    let mut buf = BytesMut::with_capacity(INITIAL_HTTP_BODY_CAPACITY);
+    dispatcher: Arc<HttpDispatcher>,
+    src_ip_header: Option<Arc<str>>,
+    tls_server_name: Option<Arc<str>>,
+    alt_svc: Option<Arc<http::HeaderValue>>,
+) -> StdResult<Response<Full<Bytes>>, Infallible> {
+    let (parts, body) = request.into_parts();
+    let method = parts.method;
+    let uri = parts.uri;
+    let path = Arc::from(uri.path());
+    let query = uri.query().map(Arc::from);
+    let client_addr = extract_client_ip(&parts.headers, &src_ip_header, src);
 
-    while let Some(chunk_result) = recv_stream.data().await {
-        match chunk_result {
-            Ok(chunk) => {
-                if buf.len() + chunk.len() > MAX_HTTP_BODY {
-                    warn!(
-                        "HTTP/2 request body too large from {}: {}+{} bytes",
-                        src,
-                        buf.len(),
-                        chunk.len()
-                    );
-                    return Err(http::StatusCode::PAYLOAD_TOO_LARGE);
-                }
+    debug!(
+        "Received {} {} from {} (real: {})",
+        method, path, src, client_addr
+    );
 
-                buf.put_slice(&chunk);
+    let body = match read_hyper_body(body, src).await {
+        Ok(body) => body,
+        Err(status) => return Ok(error_response(status, src, alt_svc.as_deref())),
+    };
 
-                if let Err(e) = recv_stream.flow_control().release_capacity(chunk.len()) {
-                    debug!(
-                        "Failed to release HTTP/2 flow control capacity for {}: {}",
-                        src, e
-                    );
-                }
-            }
+    let response = dispatcher
+        .handle_request(method, path, query, body, client_addr, tls_server_name)
+        .await;
+
+    let (mut parts, response_bytes) = response.into_parts();
+    insert_alt_svc_header(&mut parts.headers, alt_svc.as_deref());
+    Ok(Response::from_parts(parts, Full::new(response_bytes)))
+}
+
+#[inline]
+async fn read_hyper_body(
+    mut body: Incoming,
+    src: SocketAddr,
+) -> StdResult<Bytes, http::StatusCode> {
+    let mut collected = Vec::with_capacity(INITIAL_HTTP_BODY_CAPACITY);
+
+    while let Some(frame_result) = body.frame().await {
+        let frame = match frame_result {
+            Ok(frame) => frame,
             Err(e) => {
                 warn!("Failed to read request body chunk from {}: {}", src, e);
                 return Err(http::StatusCode::BAD_REQUEST);
             }
+        };
+
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+
+        if collected.len() + data.len() > MAX_HTTP_BODY {
+            warn!(
+                "HTTP request body too large from {}: {}+{} bytes",
+                src,
+                collected.len(),
+                data.len()
+            );
+            return Err(http::StatusCode::PAYLOAD_TOO_LARGE);
         }
+
+        collected.extend_from_slice(&data);
     }
 
-    Ok(buf.freeze())
+    Ok(Bytes::from(collected))
 }
 
 #[inline]
-fn send_h2_error_response(
-    respond: &mut h2::server::SendResponse<Bytes>,
+fn error_response(
     status: http::StatusCode,
     src: SocketAddr,
     alt_svc: Option<&http::HeaderValue>,
-) -> Result<(), ()> {
-    let response = match http::Response::builder()
+) -> Response<Full<Bytes>> {
+    let mut response = match Response::builder()
         .status(status)
         .header(CONTENT_LENGTH, 0)
-        .body(())
+        .body(Full::new(Bytes::new()))
     {
         Ok(resp) => resp,
         Err(e) => {
-            warn!("Failed to build HTTP/2 error response for {}: {}", src, e);
-            return Err(());
+            warn!("Failed to build HTTP error response for {}: {}", src, e);
+            Response::new(Full::new(Bytes::new()))
         }
     };
-    let mut response = response;
     insert_alt_svc_header(response.headers_mut(), alt_svc);
-
-    if let Err(e) = respond.send_response(response, true) {
-        warn!("Failed to send HTTP/2 error response to {}: {}", src, e);
-        return Err(());
-    }
-
-    Ok(())
+    response
 }
 
 #[inline]
@@ -379,7 +331,9 @@ mod tests {
 
     use async_trait::async_trait;
     use bytes::Bytes;
-    use http::Request;
+    use http::{Request, StatusCode};
+    use http_body_util::{BodyExt, Full};
+    use hyper::client::conn::{http1, http2};
     use tokio::io::duplex;
 
     use super::*;
@@ -388,7 +342,7 @@ mod tests {
     use crate::plugin::Plugin;
     use crate::plugin::executor::{ExecStep, Executor};
     use crate::plugin::server::RequestHandle;
-    use crate::plugin::server::http::http_dispatcher::DnsPostHandler;
+    use crate::plugin::server::http::entry::HttpDnsEntry;
     use crate::proto::{Message, Name, Question, Rcode, RecordType};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -452,17 +406,40 @@ mod tests {
         message
     }
 
-    #[tokio::test]
-    async fn test_handle_http_stream_processes_post_request_and_forwards_meta() {
-        let observed = Arc::new(Mutex::new(None));
-        let request_handle = make_request_handle(observed.clone());
+    fn make_dispatcher(observed: Arc<Mutex<Option<ObservedRequest>>>) -> Arc<HttpDispatcher> {
+        let request_handle = make_request_handle(observed);
         let mut dispatcher = HttpDispatcher::new();
         dispatcher.register_route(
-            http::Method::POST,
             Arc::from("/dns-query"),
-            Box::new(DnsPostHandler::new(request_handle)),
+            HttpDnsEntry::new(request_handle, false),
         );
-        let dispatcher = Arc::new(dispatcher);
+        Arc::new(dispatcher)
+    }
+
+    async fn assert_dns_response(
+        response: Response<Incoming>,
+        expected_id: u16,
+    ) -> http::HeaderMap {
+        let headers = response.headers().clone();
+        let response_bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("response body should be readable")
+            .to_bytes();
+
+        let dns_response = Message::from_bytes(&response_bytes)
+            .expect("response bytes should decode as DNS message");
+
+        assert_eq!(dns_response.id(), expected_id);
+        assert_eq!(dns_response.rcode(), Rcode::NoError);
+        headers
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_stream_processes_http1_post_request_and_forwards_meta() {
+        let observed = Arc::new(Mutex::new(None));
+        let dispatcher = make_dispatcher(observed.clone());
 
         let (client, server) = duplex(16 * 1024);
         let server_task = tokio::spawn(handle_http_stream(
@@ -476,7 +453,7 @@ mod tests {
             ))),
         ));
 
-        let (mut sender, connection) = h2::client::handshake(client)
+        let (mut sender, connection) = http1::handshake(TokioIo::new(client))
             .await
             .expect("client handshake should succeed");
         let client_task = tokio::spawn(async move {
@@ -492,36 +469,16 @@ mod tests {
             .method("POST")
             .uri("/dns-query")
             .header("x-real-ip", "198.51.100.77")
-            .body(())
+            .body(Full::new(Bytes::from(dns_bytes)))
             .expect("http request should build");
 
-        let (response_future, mut send_stream) = sender
-            .send_request(request, false)
-            .expect("send_request should succeed");
-
-        send_stream
-            .send_data(Bytes::from(dns_bytes), true)
-            .expect("request body send should succeed");
-
-        let response = response_future
+        let response = sender
+            .send_request(request)
             .await
             .expect("response future should resolve");
-        assert_eq!(response.headers()["alt-svc"], "h3=\":443\"; ma=86400");
 
-        let mut body = response.into_body();
-        let mut response_bytes = Vec::new();
-
-        while let Some(chunk) = body.data().await {
-            let chunk = chunk.expect("response chunk should be readable");
-            response_bytes.extend_from_slice(&chunk);
-            let _ = body.flow_control().release_capacity(chunk.len());
-        }
-
-        let dns_response = Message::from_bytes(&response_bytes)
-            .expect("response bytes should decode as DNS message");
-
-        assert_eq!(dns_response.id(), 55);
-        assert_eq!(dns_response.rcode(), Rcode::NoError);
+        let headers = assert_dns_response(response, 55).await;
+        assert_eq!(headers["alt-svc"], "h3=\":443\"; ma=86400");
         assert_eq!(
             observed
                 .lock()
@@ -534,7 +491,115 @@ mod tests {
             })
         );
 
-        drop(sender);
+        client_task.abort();
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_stream_processes_http2_post_request_and_forwards_meta() {
+        let observed = Arc::new(Mutex::new(None));
+        let dispatcher = make_dispatcher(observed.clone());
+
+        let (client, server) = duplex(16 * 1024);
+        let server_task = tokio::spawn(handle_http_stream(
+            server,
+            SocketAddr::from(([127, 0, 0, 1], 443)),
+            dispatcher,
+            Some(Arc::from("x-real-ip")),
+            Some(Arc::from("resolver.example")),
+            Some(Arc::new(http::HeaderValue::from_static(
+                "h3=\":443\"; ma=86400",
+            ))),
+        ));
+
+        let (mut sender, connection) = http2::Builder::new(TokioExecutor::new())
+            .handshake(TokioIo::new(client))
+            .await
+            .expect("client handshake should succeed");
+        let client_task = tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        let dns_query = make_dns_query(56);
+        let dns_bytes = dns_query
+            .to_bytes()
+            .expect("dns query should serialize successfully");
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/dns-query")
+            .header("x-real-ip", "198.51.100.78")
+            .body(Full::new(Bytes::from(dns_bytes)))
+            .expect("http request should build");
+
+        let response = sender
+            .send_request(request)
+            .await
+            .expect("response future should resolve");
+
+        let headers = assert_dns_response(response, 56).await;
+        assert_eq!(headers["alt-svc"], "h3=\":443\"; ma=86400");
+        assert_eq!(
+            observed
+                .lock()
+                .expect("capture lock should not be poisoned")
+                .clone(),
+            Some(ObservedRequest {
+                src_addr: SocketAddr::from(([198, 51, 100, 78], 443)),
+                server_name: Some("resolver.example".to_string()),
+                url_path: Some("/dns-query".to_string()),
+            })
+        );
+
+        client_task.abort();
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_stream_rejects_oversized_http_body() {
+        let observed = Arc::new(Mutex::new(None));
+        let dispatcher = make_dispatcher(observed);
+
+        let (client, server) = duplex(128 * 1024);
+        let server_task = tokio::spawn(handle_http_stream(
+            server,
+            SocketAddr::from(([127, 0, 0, 1], 443)),
+            dispatcher,
+            None,
+            None,
+            None,
+        ));
+
+        let (mut sender, connection) = http1::handshake(TokioIo::new(client))
+            .await
+            .expect("client handshake should succeed");
+        let client_task = tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/dns-query")
+            .body(Full::new(Bytes::from(vec![0_u8; MAX_HTTP_BODY + 1])))
+            .expect("http request should build");
+
+        let response = sender
+            .send_request(request)
+            .await
+            .expect("response future should resolve");
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            response
+                .into_body()
+                .collect()
+                .await
+                .expect("response body should be readable")
+                .to_bytes()
+                .len(),
+            0
+        );
+
         client_task.abort();
         server_task.abort();
     }

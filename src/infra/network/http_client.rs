@@ -29,9 +29,10 @@ use tower_service::Service;
 use url::Url;
 
 use crate::infra::error::{DnsError, Result};
-use crate::infra::network::proxy::Socks5Opt;
+use crate::infra::network::dial::{DialTarget, SocketOptions};
+use crate::infra::network::outbound::{self, OutboundPolicy};
+use crate::infra::network::proxy::{Socks5Opt, connect_tcp, parse_optional_socks5};
 use crate::infra::network::tls_config::{insecure_client_config, secure_client_config};
-use crate::infra::network::upstream::connect_tcp_stream;
 
 pub const DEFAULT_MAX_REDIRECTS: usize = 5;
 
@@ -40,7 +41,33 @@ type InnerClient = HyperClient<hyper_rustls::HttpsConnector<HttpConnector>, Full
 #[derive(Clone, Debug, Default)]
 pub struct HttpClientOptions {
     pub insecure_skip_verify: bool,
-    pub socks5: Option<Socks5Opt>,
+    outbound: OutboundPolicy,
+}
+
+impl HttpClientOptions {
+    pub fn new(insecure_skip_verify: bool, socks5: Option<Socks5Opt>) -> Self {
+        Self {
+            insecure_skip_verify,
+            outbound: OutboundPolicy::system(socks5),
+        }
+    }
+
+    pub fn from_outbound<F>(
+        insecure_skip_verify: bool,
+        outbound_ref: Option<&str>,
+        legacy_socks5: Option<&str>,
+        invalid_socks5: F,
+    ) -> Result<Self>
+    where
+        F: FnOnce(&str) -> DnsError,
+    {
+        let legacy_socks5 = parse_optional_socks5(legacy_socks5, invalid_socks5)?;
+        let outbound = outbound::global().resolve_policy(outbound_ref, legacy_socks5)?;
+        Ok(Self {
+            insecure_skip_verify,
+            outbound,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -115,7 +142,7 @@ impl HttpClient {
             .enable_http1()
             .enable_http2()
             .wrap_connector(HttpConnector {
-                socks5: options.socks5,
+                outbound: options.outbound,
             });
 
         Self {
@@ -281,7 +308,7 @@ fn build_hyper_request(
 
 #[derive(Debug, Clone)]
 struct HttpConnector {
-    socks5: Option<Socks5Opt>,
+    outbound: OutboundPolicy,
 }
 
 impl Service<Uri> for HttpConnector {
@@ -294,7 +321,7 @@ impl Service<Uri> for HttpConnector {
     }
 
     fn call(&mut self, dst: Uri) -> Self::Future {
-        let socks5 = self.socks5.clone();
+        let outbound = self.outbound.clone();
         Box::pin(async move {
             let host = dst.host().ok_or_else(|| {
                 DnsError::plugin(format!("http request uri '{}' is missing host", dst))
@@ -312,8 +339,13 @@ impl Service<Uri> for HttpConnector {
                         dst
                     ))
                 })?;
-            let remote_ip = host.parse::<IpAddr>().ok();
-            let stream = connect_tcp_stream(remote_ip, host.to_string(), port, socks5).await?;
+            let mut remote_ip = parse_uri_host_ip_literal(host);
+            let socks5 = outbound.proxy();
+            if remote_ip.is_none() && (outbound.has_custom_resolver() || socks5.is_none()) {
+                remote_ip = Some(outbound.resolve_host(host, port).await?);
+            }
+            let target = DialTarget::new(remote_ip, host.to_string(), port);
+            let stream = connect_tcp(target, SocketOptions::default(), socks5).await?;
             Ok(TokioIo::new(stream))
         })
     }
@@ -454,6 +486,16 @@ fn request_label(method: &Method, url: &str) -> String {
     format!("{method} {url}")
 }
 
+fn parse_uri_host_ip_literal(host: &str) -> Option<IpAddr> {
+    if let Some(inner) = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+    {
+        return inner.parse::<std::net::Ipv6Addr>().ok().map(IpAddr::V6);
+    }
+    host.parse::<std::net::Ipv4Addr>().ok().map(IpAddr::V4)
+}
+
 pub fn resolve_redirect_url(current_url: &str, location: &str) -> Result<String> {
     let base = Url::parse(current_url).map_err(|err| {
         DnsError::plugin(format!(
@@ -519,5 +561,19 @@ mod tests {
         assert_eq!(request.method(), Method::PATCH);
         assert_eq!(request.uri(), "https://example.com/api");
         assert_eq!(request.headers()["x-test"], "1");
+    }
+
+    #[test]
+    fn test_parse_uri_host_ip_literal_requires_bracketed_ipv6() {
+        assert_eq!(
+            parse_uri_host_ip_literal("[::1]"),
+            Some(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST))
+        );
+        assert_eq!(
+            parse_uri_host_ip_literal("127.0.0.1"),
+            Some(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+        );
+        assert_eq!(parse_uri_host_ip_literal("::1"), None);
+        assert_eq!(parse_uri_host_ip_literal("example.com"), None);
     }
 }

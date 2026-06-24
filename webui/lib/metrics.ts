@@ -1,8 +1,9 @@
 // Prometheus text-format parsing and plugin-level metric curation.
 //
-// The backend exposes a single Prometheus endpoint (`/metrics`). Every plugin
-// series carries a `plugin_tag` label, so metrics are grouped by that tag and
-// associated with the matching `PluginInstance` (whose `name` is the tag).
+// The backend exposes a single Prometheus endpoint (`/metrics`). Plugin series
+// carry a `plugin_tag` label and are associated with the matching
+// `PluginInstance` (whose `name` is the tag). Global network series are grouped
+// separately by their `outbound_profile` label.
 //
 // Metric labels, card-priority lists, and derived metric specs are defined
 // alongside each plugin kind in `lib/plugin-definitions/` — this file derives
@@ -44,14 +45,25 @@ export interface MetricGroup {
 
 /** Plugin tag -> flat list of its series. */
 export type PluginMetricsMap = Record<string, MetricSeries[]>;
+export type OutboundMetricsMap = Record<string, MetricSeries[]>;
 
 export interface ParsedMetrics {
   byTag: PluginMetricsMap;
+  outbound: OutboundMetricsMap;
   help: Record<string, string>;
   kind: Record<string, MetricKind>;
 }
 
 const SAMPLE_RE = /^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+(.+?)(?:\s+\d+)?$/;
+const OUTBOUND_NETWORK_METRICS = new Set([
+  "network_resolver_cache_hit_total",
+  "network_resolver_cache_miss_total",
+  "network_resolver_refresh_total",
+  "network_resolver_refresh_latency_ms_total",
+  "network_resolver_error_total",
+  "network_upstream_pool_refresh_total",
+  "network_upstream_pool_refresh_latency_ms_total",
+]);
 
 function unescapeLabelValue(raw: string): string {
   return raw.replace(/\\(["\\n])/g, (_m, ch) => (ch === "n" ? "\n" : ch));
@@ -83,6 +95,7 @@ function parseValue(raw: string): number {
 
 export function parsePrometheusMetrics(text: string): ParsedMetrics {
   const byTag: PluginMetricsMap = {};
+  const outbound: OutboundMetricsMap = {};
   const help: Record<string, string> = {};
   const kind: Record<string, MetricKind> = {};
 
@@ -101,21 +114,28 @@ export function parsePrometheusMetrics(text: string): ParsedMetrics {
     const [, name, labelBlock, valueRaw] = match;
     const labels = parseLabels(labelBlock);
     const tag = labels["plugin_tag"];
-    if (!tag) continue;
+    const outboundProfile = labels["outbound_profile"];
     const rest: Record<string, string> = {};
     for (const [k, v] of Object.entries(labels)) {
-      if (k !== "plugin_tag") rest[k] = v;
+      if (k !== "plugin_tag" && k !== "outbound_profile") rest[k] = v;
     }
-    (byTag[tag] ??= []).push({
+    const series = {
       name,
       kind: kind[name],
       help: help[name],
       labels: rest,
       value: parseValue(valueRaw),
-    });
+    };
+    if (tag) {
+      (byTag[tag] ??= []).push(series);
+      continue;
+    }
+    if (outboundProfile && OUTBOUND_NETWORK_METRICS.has(name)) {
+      (outbound[outboundProfile] ??= []).push(series);
+    }
   }
 
-  return { byTag, help, kind };
+  return { byTag, outbound, help, kind };
 }
 
 function normalizeMetricKind(raw: string): MetricKind {
@@ -430,6 +450,8 @@ function labelValueLabel(key: string, value: string, locale: Locale): string {
   }
   if (key === "reason" && value === "no_ttl")
     return translate(locale, WEBUI.metrics.noTtl);
+  if (key === "reason" && value === "low_positive_ttl")
+    return translate(locale, WEBUI.metrics.lowPositiveTtl);
   if (key === "result" && value === "started") {
     return translate(locale, WEBUI.metrics.started);
   }

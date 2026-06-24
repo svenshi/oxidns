@@ -105,7 +105,30 @@ impl Record {
 
     /// Update the record TTL in seconds.
     pub fn set_ttl(&mut self, ttl: u32) {
+        if self.inner.ttl == ttl {
+            return;
+        }
         Arc::make_mut(&mut self.inner).ttl = ttl;
+    }
+
+    /// Clone this record while replacing the TTL.
+    ///
+    /// When the TTL is unchanged this keeps the existing shared record inner.
+    /// Otherwise it reuses the owner name and RDATA allocation while avoiding a
+    /// clone-then-copy-on-write mutation.
+    pub fn clone_with_ttl(&self, ttl: u32) -> Self {
+        if self.inner.ttl == ttl {
+            return self.clone();
+        }
+
+        Self {
+            inner: Arc::new(RecordInner {
+                name: self.inner.name.clone(),
+                class: self.inner.class,
+                ttl,
+                data: self.inner.data.clone(),
+            }),
+        }
     }
 
     /// Return the record type derived from the payload.
@@ -195,5 +218,37 @@ mod tests {
         assert!(!Arc::ptr_eq(&original.inner.data, &cloned.inner.data));
         assert!(matches!(original.data(), RData::A(..)));
         assert!(matches!(cloned.data(), RData::TXT(..)));
+    }
+
+    #[test]
+    fn clone_with_ttl_preserves_metadata_and_reuses_rdata() {
+        let original = Record::from_rdata_with_class(
+            Name::from_ascii("example.com.").unwrap(),
+            60,
+            DNSClass::CH,
+            RData::A(A(Ipv4Addr::new(1, 1, 1, 1))),
+        );
+
+        let cloned = original.clone_with_ttl(120);
+
+        assert_eq!(cloned.name(), original.name());
+        assert_eq!(cloned.class(), DNSClass::CH);
+        assert_eq!(cloned.rr_type(), original.rr_type());
+        assert_eq!(cloned.ttl(), 120);
+        assert_eq!(original.ttl(), 60);
+        assert!(Arc::ptr_eq(&original.inner.data, &cloned.inner.data));
+    }
+
+    #[test]
+    fn clone_with_ttl_reuses_record_when_ttl_is_unchanged() {
+        let original = Record::from_rdata(
+            Name::from_ascii("example.com.").unwrap(),
+            60,
+            RData::A(A(Ipv4Addr::new(1, 1, 1, 1))),
+        );
+
+        let cloned = original.clone_with_ttl(60);
+
+        assert!(Arc::ptr_eq(&original.inner, &cloned.inner));
     }
 }

@@ -10,7 +10,32 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-06
 
 <div className="release-stack">
-   <ReleaseCard version="v1.3.0" badge="Minor Release" date="2026-06-16" defaultOpen>
+   <ReleaseCard version="v1.4.0" badge="Minor Release" date="2026-06-24" defaultOpen>
+       **Release Scope**
+
+       - Minor Release. The main focus is introducing `network.outbound` as a unified outbound stack, adding configurable multi-upstream response selection, hardening cache hot paths, and extending DoH with HTTP/1.1 plus entry-level JSON DNS API support. New options are optional-first and should be a mostly non-disruptive upgrade from `v1.3.0`.
+
+       **Changes**
+
+       - `feat(network)`: Added `network.outbound` as a unified outbound layer for HTTP clients, upgrade checks, webhooks, and upstream dialing, with nameserver profiles for UDP/TCP/DoT/DoH/DoQ/DoH3 and SOCKS5-aware policy. Upstreams now apply default outbound settings when no local outbound override is set.
+       - `feat(network)`: Added resolver/upstream cold-path metrics (resolver cache hits/misses/refreshes and upstream pool refresh latency) with low-cardinality labels keyed by outbound profile.
+       - `feat(forward)`: Added configurable concurrent upstream response selection modes (`fastest` / `balanced` / `prefer_positive` / `consensus`) and refined concurrent fan-out behavior.
+       - `feat(cache)`: Added `cache.min_positive_ttl` and optimized cache hit/TTL rewrite hot paths, with coverage updates for low-positive-TTL behavior.
+       - `feat(server)`: DoH now supports HTTP/1.1 and HTTP/2 in the same ingress path; added entry-level `json_api` for handling JSON-style query requests alongside RFC 8484.
+       - `feat(proto)`: Extended `Rcode` / `DNSClass` / `RecordType` parsing from user-facing tokens and added TTL rewrite helpers for records/messages to keep EDNS and signature sections unchanged while cloning.
+       - `feat(sequence)`: Added named RCODE support to `reject` and explicit `0` SOA handling path updates.
+       - `feat(webui)`：Exposed outbound profile configuration and runtime outbound metrics in settings, with related localizations and UI updates for new fields.
+
+       **Compatibility and Upgrade Notes**
+
+       - Root crate version bumped to `1.4.0`; `oxidns-proto` bumped to `0.1.3`; `crates/macros`, `crates/ripset`, and `crates/zoneparser` remain unchanged this cycle; use release tag `v1.4.0`.
+       - `v1.3.0` configurations can generally be upgraded directly; new settings are optional.
+       - `forward` users can adopt `response_selection` progressively; default remains `balanced`.
+       - Cache users may optionally set `min_positive_ttl` if low-TTL positive responses cause churn; leaving it unset keeps prior cache admission behavior.
+       - If you use `network.outbound`, verify resolver/upstream profile and SOCKS5 precedence in your environment after the upgrade.
+   </ReleaseCard>
+
+   <ReleaseCard version="v1.3.0" badge="Minor Release" date="2026-06-16">
        **Release Scope**
 
        - Minor Release. The headline change is turning `black_hole` into a full interceptor that covers every qtype, alongside broad hardening for upstream pools, bootstrap resolution, deadline / cancellation safety, and RouterOS integration. The Rust module layout is also reorganized around new `cli` and `infra` layers while `core` is narrowed to DNS execution semantics. Runtime configuration remains mostly compatible, but `black_hole` no-argument defaults and non-A/AAAA handling changed; Rust library embedders must migrate public module paths.

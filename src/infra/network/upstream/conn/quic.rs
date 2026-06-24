@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 use std::fmt::{Debug, Formatter};
-use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 
@@ -10,11 +9,13 @@ use tokio::select;
 use tokio::sync::Notify;
 use tracing::{debug, trace, warn};
 
-use super::UsingCountGuard;
+use super::{UsingCountGuard, quic_idle_timeout};
 use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
-use crate::infra::network::transport::quic_transport::QuicTransport;
-use crate::infra::network::upstream::dial::{connect_quic, connect_socket};
+use crate::infra::network::dial::{
+    DialTarget, QuicDialOptions, SocketOptions, UdpDialOptions, connect_quic, connect_udp,
+};
+use crate::infra::network::transport::quic::QuicTransport;
 use crate::infra::network::upstream::pool::{ConnectionBuilder, QueryDeadline};
 use crate::infra::network::upstream::{Connection, ConnectionInfo};
 use crate::proto::Message;
@@ -159,25 +160,26 @@ impl Connection for QuicConnection {
 /// Builder
 #[derive(Debug)]
 pub struct QuicConnectionBuilder {
-    remote_ip: Option<IpAddr>,
-    port: u16,
-    server_name: String,
+    target: DialTarget,
+    socket_options: SocketOptions,
     insecure_skip_verify: bool,
     timeout: std::time::Duration,
-    so_mark: Option<u32>,
-    bind_to_device: Option<String>,
 }
 
 impl QuicConnectionBuilder {
     pub fn new(connection_info: &ConnectionInfo) -> Self {
         Self {
-            remote_ip: connection_info.remote_ip,
-            port: connection_info.port,
-            server_name: connection_info.server_name.clone(),
+            target: DialTarget::new(
+                connection_info.remote_ip,
+                connection_info.server_name.clone(),
+                connection_info.port,
+            ),
+            socket_options: SocketOptions::new(
+                connection_info.so_mark,
+                connection_info.bind_to_device.clone(),
+            ),
             insecure_skip_verify: connection_info.insecure_skip_verify,
             timeout: connection_info.timeout,
-            so_mark: connection_info.so_mark,
-            bind_to_device: connection_info.bind_to_device.clone(),
         }
     }
 }
@@ -203,30 +205,29 @@ impl ConnectionBuilder<QuicConnection> for QuicConnectionBuilder {
         conn_id: u16,
         deadline: QueryDeadline,
     ) -> Result<Arc<QuicConnection>> {
-        let socket = connect_socket(
-            self.remote_ip,
-            self.server_name.clone(),
-            self.port,
-            self.so_mark,
-            self.bind_to_device.clone(),
-        )?;
+        let socket = connect_udp(UdpDialOptions::new(
+            self.target.clone(),
+            self.socket_options.clone(),
+        ))?;
 
         // Establish QUIC connection (includes TLS 1.3 handshake)
         let quic_conn = connect_quic(
             socket,
-            self.insecure_skip_verify,
-            self.server_name.clone(),
-            deadline
-                .remaining()
-                .ok_or_else(|| deadline.timeout_error())?,
-            self.timeout,
-            vec![b"doq".to_vec()],
+            QuicDialOptions::new(
+                self.target.clone(),
+                self.insecure_skip_verify,
+                deadline
+                    .remaining()
+                    .ok_or_else(|| deadline.timeout_error())?,
+                quic_idle_timeout(self.timeout),
+                vec![b"doq".to_vec()],
+            ),
         )
         .await?;
 
         debug!(
             conn_id,
-            server_name = %self.server_name,
+            server_name = %self.target.host(),
             remote_addr = ?quic_conn.remote_address(),
             "Established QUIC connection for DoQ (DNS over QUIC)"
         );
@@ -286,11 +287,11 @@ mod tests {
         let builder = QuicConnectionBuilder::new(&connection_info);
 
         assert_eq!(connection_info.connection_type, ConnectionType::DoQ);
-        assert_eq!(builder.port, 853);
-        assert_eq!(builder.server_name, "dns.example.com");
+        assert_eq!(builder.target.port(), 853);
+        assert_eq!(builder.target.host(), "dns.example.com");
         assert!(builder.insecure_skip_verify);
         assert_eq!(builder.timeout, std::time::Duration::from_secs(3));
-        assert_eq!(builder.so_mark, Some(9));
-        assert_eq!(builder.bind_to_device.as_deref(), Some("wg0"));
+        assert_eq!(builder.socket_options.so_mark(), Some(9));
+        assert_eq!(builder.socket_options.bind_to_device(), Some("wg0"));
     }
 }

@@ -10,8 +10,8 @@ use serde_yaml_ng::Value;
 use crate::config::types::PluginConfig;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::system::parse_simple_duration;
-use crate::plugin::matcher::matcher_utils::parse_rr_type;
 use crate::plugin::provider::dynamic_domain_set::DynamicDomainRuleKind;
+use crate::proto::RecordType;
 
 pub(super) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -153,12 +153,14 @@ pub(super) fn parse_qtypes(raw: Option<Vec<String>>) -> Result<AHashSet<u16>> {
                 "learn_domain qtypes[{idx}] cannot be empty"
             )));
         }
-        let qtype = parse_rr_type(token).ok_or_else(|| {
-            DnsError::plugin(format!(
-                "learn_domain qtypes[{idx}] has unsupported qtype '{}'",
-                token
-            ))
-        })?;
+        let qtype = RecordType::from_token(token)
+            .map(u16::from)
+            .ok_or_else(|| {
+                DnsError::plugin(format!(
+                    "learn_domain qtypes[{idx}] has unsupported qtype '{}'",
+                    token
+                ))
+            })?;
         out.insert(qtype);
     }
     // Returning a set makes repeated qtype entries harmless and keeps per-query
