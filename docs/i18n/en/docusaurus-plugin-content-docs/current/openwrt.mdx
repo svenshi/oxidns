@@ -1,0 +1,124 @@
+---
+title: OpenWrt LuCI App
+---
+
+import Admonition from '@theme/Admonition';
+
+OxiDNS supports OpenWrt / LuCI deployment through [`luci-app-oxidns`](https://github.com/svenshi/luci-app-oxidns).
+
+After installation, LuCI adds `Services -> OxiDNS` pages for installing the OxiDNS core binary, managing the OpenWrt init service, editing configuration, and viewing logs.
+
+<Admonition type="info" title="App boundary">
+
+`luci-app-oxidns` does not embed the OxiDNS core binary and no longer manages a separate OpenWrt `oxidns` package. LuCI downloads the official OxiDNS GitHub Release archive, verifies the SHA256 digest, and installs the binary as an OpenWrt service. Future OxiDNS core upgrades should use the upgrade feature built into the OxiDNS WebUI / API / CLI.
+
+</Admonition>
+
+## One-Command LuCI App Install
+
+Run as root on OpenWrt:
+
+```sh
+curl -fsSL https://oxidns.org/install.sh | sh
+```
+
+If `curl` is not installed:
+
+```sh
+wget -O- https://oxidns.org/install.sh | sh
+```
+
+When the script detects OpenWrt, it reads the latest package from [`luci-app-oxidns` Releases](https://github.com/svenshi/luci-app-oxidns/releases), selects `.ipk` or `.apk` for the system package manager, installs `luci-app-oxidns` and the optional Simplified Chinese translation package, and restarts `rpcd`.
+
+Supported environment variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `OXIDNS_OPENWRT_VERSION` | Select the LuCI app release tag, defaults to `latest` |
+| `OXIDNS_OPENWRT_REPO` | Select the LuCI app repository, defaults to `svenshi/luci-app-oxidns` |
+| `OXIDNS_OPENWRT_I18N=0` | Skip the Simplified Chinese translation package |
+| `OXIDNS_OPENWRT_INSTALL=0` | Disable the LuCI app branch on OpenWrt and force normal Linux archive installation |
+
+## Manual LuCI App Install
+
+Download the matching package from [`luci-app-oxidns` Releases](https://github.com/svenshi/luci-app-oxidns/releases), then install it:
+
+```sh
+opkg install ./luci-app-oxidns_*.ipk
+# Optional Simplified Chinese translation
+opkg install ./luci-i18n-oxidns-zh-cn_*.ipk
+```
+
+On OpenWrt systems using `apk`:
+
+```sh
+apk add --allow-untrusted --no-network ./luci-app-oxidns_*.apk
+# Optional Simplified Chinese translation
+apk add --allow-untrusted --no-network ./luci-i18n-oxidns-zh-cn_*.apk
+```
+
+If the menu does not appear after installation, restart `rpcd`:
+
+```sh
+/etc/init.d/rpcd restart
+```
+
+Then open LuCI: `Services -> OxiDNS`.
+
+## Install OxiDNS Core
+
+If you are migrating from the old OpenWrt `oxidns` package model, stop the service and remove the old runtime package first so it no longer owns `/usr/bin/oxidns` or `/etc/init.d/oxidns`:
+
+```sh
+/etc/init.d/oxidns stop
+opkg remove oxidns
+```
+
+On systems using `apk`, run:
+
+```sh
+/etc/init.d/oxidns stop
+apk del oxidns
+```
+
+1. Open `Services -> OxiDNS -> Settings` and confirm `Core repository` is `svenshi/oxidns` and `Core bundle` is `full`.
+2. Open `Services -> OxiDNS -> Core` and click `Install Core`. For offline installs, click `Upload Core` to upload an official `.tar.gz` archive or a single `oxidns` binary.
+3. After installation succeeds, use `Overview` to start and enable the service.
+
+LuCI selects the OxiDNS Linux musl release archive for the current CPU architecture, such as `oxidns-x86_64-unknown-linux-musl.tar.gz`, and verifies the GitHub release asset SHA256 digest before installation.
+
+## Default Paths
+
+- Binary: `/usr/bin/oxidns`
+- WebUI: `/usr/share/oxidns/webui`
+- Config: `/etc/oxidns/config.yaml`
+- Working directory: `/var/lib/oxidns`
+- Init script: `/etc/init.d/oxidns`
+
+## Upgrade And Remove
+
+To upgrade the OxiDNS core, use the upgrade feature built into the OxiDNS WebUI / API / CLI. The LuCI `Core` page handles first install, upload install, and repair reinstall only; it is not a version-upgrade entry point.
+
+To upgrade the LuCI app, download and install the newer `luci-app-oxidns` package. The LuCI UI does not provide self-upgrade.
+
+To remove the OxiDNS core, click `Remove Core` on the LuCI `Core` page. This stops and disables the service, removes `/usr/bin/oxidns` and `/usr/share/oxidns/webui`, and preserves `/etc/oxidns/config.yaml` and `/var/lib/oxidns`.
+
+You can also use the uninstall script to remove the LuCI app and installed OxiDNS core files:
+
+```sh
+curl -fsSL https://oxidns.org/uninstall.sh | sh
+```
+
+By default this removes `luci-app-oxidns` / the translation package, deletes `/usr/bin/oxidns` and `/usr/share/oxidns/webui`, and keeps OxiDNS config, the working directory, and LuCI settings.
+
+To purge config and the working directory too:
+
+```sh
+curl -fsSL https://oxidns.org/uninstall.sh | env OXIDNS_PURGE=1 sh
+```
+
+`OXIDNS_PURGE=1` also deletes OxiDNS config, the working directory, and LuCI settings. Back up `/etc/oxidns/config.yaml` first.
+
+## Restricted Networks
+
+The router must be able to reach GitHub Releases and release archives directly. For private repositories or restricted networks, configure a GitHub token or download proxy in `Settings`; you can also use `Upload Core` on the `Core` page to install an archive or binary offline.

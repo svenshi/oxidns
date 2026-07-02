@@ -12,6 +12,7 @@ import Admonition from '@theme/Admonition';
 <Admonition type="tip" title="选哪种安装方式？">
 
 * **Linux 服务器**：优先使用一条命令安装脚本、release 压缩包或 `.deb`
+* **OpenWrt 路由器**：优先使用 [`luci-app-oxidns`](openwrt.mdx) LuCI 插件
 * **容器环境**：优先使用 Docker 镜像
 * **需要自行改代码或调试**：使用 Cargo 从源码构建
 * **macOS / Windows**：优先使用一条命令安装脚本或 release 压缩包
@@ -20,7 +21,7 @@ import Admonition from '@theme/Admonition';
 
 ## 1. 一条命令安装
 
-安装脚本会自动识别当前平台，下载匹配的 GitHub Release archive，解压 `oxidns` / `oxidns.exe`、`config.yaml` 和 `webui/`，并默认安装、启动为系统服务。
+安装脚本会自动识别当前平台。Linux / macOS / Windows 会下载匹配的 OxiDNS GitHub Release archive，解压 `oxidns` / `oxidns.exe`、`config.yaml` 和 `webui/`，并默认安装、启动为系统服务；OpenWrt 会下载并安装 `luci-app-oxidns` LuCI 插件。
 
 <Tabs groupId="os">
   <TabItem value="unix" label="Linux / macOS" default>
@@ -37,6 +38,19 @@ irm https://oxidns.org/install.ps1 | iex
 ```
 
   </TabItem>
+  <TabItem value="openwrt" label="OpenWrt">
+
+```sh
+curl -fsSL https://oxidns.org/install.sh | sh
+```
+
+没有 `curl` 时：
+
+```sh
+wget -O- https://oxidns.org/install.sh | sh
+```
+
+  </TabItem>
 </Tabs>
 
 默认安装位置：
@@ -47,8 +61,11 @@ irm https://oxidns.org/install.ps1 | iex
 | Windows 管理员 PowerShell 服务安装 | `%ProgramFiles%\OxiDNS` | 加入 Machine PATH，并安装、启动系统服务 |
 | Linux / macOS 便携安装 | `~/.oxidns` | 设置 `OXIDNS_INSTALL_SERVICE=0` 后，在 `~/.local/bin/oxidns` 创建链接 |
 | Windows 便携安装 | `%LOCALAPPDATA%\OxiDNS` | 设置 `OXIDNS_INSTALL_SERVICE=0` 后，将安装目录加入用户 PATH |
+| OpenWrt / LuCI 插件安装 | 由 `opkg` / `apk` 管理 | 安装 `luci-app-oxidns` 和可选中文语言包；OxiDNS 内核后续在 LuCI 中安装 |
 
-重复运行安装脚本会更新二进制和 `webui/`。如果安装目录中已经有 `config.yaml`，脚本会保留现有配置，并把 release 内置配置写成 `config.yaml.example`。
+在 Linux / macOS / Windows archive 安装模式下，重复运行安装脚本会更新二进制和 `webui/`。如果安装目录中已经有 `config.yaml`，脚本会保留现有配置，并把 release 内置配置写成 `config.yaml.example`。
+
+在 OpenWrt 上，重复运行安装脚本会重新安装当前选择的 `luci-app-oxidns` release 包；OxiDNS 内核版本升级仍使用 LuCI / WebUI / API / CLI 内置升级流程。
 
 ### 安装指定版本
 
@@ -81,6 +98,10 @@ $env:OXIDNS_VERSION = "v1.0.1"; irm https://oxidns.org/install.ps1 | iex
 | `OXIDNS_NO_PATH=1` | 不创建命令链接或不修改 PATH |
 | `OXIDNS_INSTALL_SERVICE=0` | 不安装系统服务，改为便携安装 |
 | `OXIDNS_START_SERVICE=0` | 安装服务但不立即启动 |
+| `OXIDNS_OPENWRT_INSTALL` | OpenWrt 分支开关，默认 `auto`；设置为 `0` 可强制走普通 Linux archive 安装 |
+| `OXIDNS_OPENWRT_REPO` | LuCI 插件仓库，默认 `svenshi/luci-app-oxidns` |
+| `OXIDNS_OPENWRT_VERSION` | LuCI 插件 release 标签，默认 `latest` |
+| `OXIDNS_OPENWRT_I18N` | 是否安装简体中文语言包，默认 `auto`；可设为 `0` 跳过 |
 
 便携安装：
 
@@ -128,13 +149,26 @@ oxidns.exe start -c "$env:LOCALAPPDATA\OxiDNS\config.yaml" -d "$env:LOCALAPPDATA
 
 ### 卸载
 
-卸载脚本会移除二进制、`webui/` 和 PATH 入口，默认保留 `config.yaml`。
+卸载脚本会移除二进制、`webui/` 和 PATH 入口，默认保留 `config.yaml`。在 OpenWrt 上，它会卸载 `luci-app-oxidns` / 语言包，并清理 LuCI 安装过的 `/usr/bin/oxidns` 和 `/usr/share/oxidns/webui`；默认保留 OxiDNS 配置、工作目录和 LuCI 设置。
 
 <Tabs groupId="os">
   <TabItem value="unix" label="Linux / macOS" default>
 
 ```bash
 curl -fsSL https://oxidns.org/uninstall.sh | sudo sh
+```
+
+  </TabItem>
+  <TabItem value="openwrt" label="OpenWrt">
+
+```sh
+curl -fsSL https://oxidns.org/uninstall.sh | sh
+```
+
+没有 `curl` 时：
+
+```sh
+wget -O- https://oxidns.org/uninstall.sh | sh
 ```
 
   </TabItem>
@@ -147,7 +181,7 @@ irm https://oxidns.org/uninstall.ps1 | iex
   </TabItem>
 </Tabs>
 
-如果安装时使用了 `sudo` 或自定义 `OXIDNS_INSTALL_DIR`，卸载时也请保持相同权限和目录变量。
+如果安装时使用了 `sudo` 或自定义 `OXIDNS_INSTALL_DIR`，卸载时也请保持相同权限和目录变量。OpenWrt 卸载需要 root。
 
 彻底清理安装目录和配置：
 
@@ -156,6 +190,19 @@ irm https://oxidns.org/uninstall.ps1 | iex
 
 ```bash
 curl -fsSL https://oxidns.org/uninstall.sh | sudo env OXIDNS_PURGE=1 sh
+```
+
+  </TabItem>
+  <TabItem value="openwrt" label="OpenWrt">
+
+```sh
+curl -fsSL https://oxidns.org/uninstall.sh | env OXIDNS_PURGE=1 sh
+```
+
+没有 `curl` 时：
+
+```sh
+wget -O- https://oxidns.org/uninstall.sh | env OXIDNS_PURGE=1 sh
 ```
 
   </TabItem>
@@ -170,7 +217,7 @@ $env:OXIDNS_PURGE = "1"; irm https://oxidns.org/uninstall.ps1 | iex
 
 <Admonition type="warning" title="彻底清理">
 
-设置 `OXIDNS_PURGE=1` 会删除整个安装目录，包括配置文件本身。请确认 `config.yaml` 已备份后再执行。
+设置 `OXIDNS_PURGE=1` 会删除配置文件本身。普通 archive 安装会删除整个安装目录；OpenWrt 会删除 OxiDNS 配置、工作目录和 LuCI 设置。请确认 `config.yaml` 已备份后再执行。
 
 </Admonition>
 
@@ -182,7 +229,10 @@ $env:OXIDNS_PURGE = "1"; irm https://oxidns.org/uninstall.ps1 | iex
 | `OXIDNS_BIN_DIR` | Linux / macOS 下覆盖命令链接目录 |
 | `OXIDNS_NO_PATH=1` | 不移除命令链接或用户 PATH |
 | `OXIDNS_UNINSTALL_SERVICE=1` | 强制卸载系统服务；默认在 root / 管理员环境中自动尝试 |
-| `OXIDNS_PURGE=1` | 删除整个安装目录，包括配置 |
+| `OXIDNS_PURGE=1` | 普通 archive 安装删除整个安装目录；OpenWrt 删除 OxiDNS 配置、工作目录和 LuCI 设置 |
+| `OXIDNS_OPENWRT_UNINSTALL` | OpenWrt 卸载分支开关，默认 `auto`；设置为 `0` 可强制走普通 Linux archive 卸载 |
+| `OXIDNS_OPENWRT_CONFIG_PATH` | 覆盖 OpenWrt 配置文件路径；未指定时读取 UCI `config_path`，再回退到 `/etc/oxidns/config.yaml` |
+| `OXIDNS_OPENWRT_WORKING_DIR` | 覆盖 OpenWrt 工作目录；未指定时读取 UCI `working_dir`，再回退到 `/var/lib/oxidns` |
 
 ## 2. 从源码构建
 
@@ -263,6 +313,7 @@ Windows 平台使用 `.zip`：
 | Linux ARM64 | `oxidns-aarch64-unknown-linux-musl.tar.gz` | 默认优先选这个，兼容性更稳 |
 | Debian / Ubuntu x86_64 服务安装 | `*_amd64.deb` | 适合 systemd 服务部署 |
 | Debian / Ubuntu ARM64 服务安装 | `*_arm64.deb` | 适合 systemd 服务部署 |
+| OpenWrt / LuCI | [`luci-app-oxidns`](https://github.com/svenshi/luci-app-oxidns) 的 `.ipk` / `.apk` 包 | 先安装 LuCI 插件，再由 LuCI 下载并安装 OxiDNS Linux musl 内核 |
 | Alpine Linux x86_64 | `oxidns-x86_64-unknown-linux-musl.tar.gz` | Alpine 建议优先选 musl |
 | Alpine Linux ARM64 | `oxidns-aarch64-unknown-linux-musl.tar.gz` | 静态链接更省心 |
 | 明确是 glibc Linux 且需要动态链接版本 | `oxidns-x86_64-unknown-linux-gnu.tar.gz` / `oxidns-aarch64-unknown-linux-gnu.tar.gz` | 仅在明确环境匹配时选择 |
@@ -370,7 +421,45 @@ sudo systemctl status oxidns
 sudo systemctl enable --now oxidns
 ```
 
-## 5. 使用 Docker 镜像
+## 5. OpenWrt / LuCI 插件
+
+OpenWrt 用户建议直接使用 OxiDNS 安装脚本安装 [`luci-app-oxidns`](https://github.com/svenshi/luci-app-oxidns)。它会在 LuCI 中增加 `Services -> OxiDNS` 页面，用于安装 OxiDNS 内核、托管 init 服务、编辑配置和查看日志。
+
+```sh
+curl -fsSL https://oxidns.org/install.sh | sh
+```
+
+没有 `curl` 时：
+
+```sh
+wget -O- https://oxidns.org/install.sh | sh
+```
+
+脚本检测到 OpenWrt 后会读取 `luci-app-oxidns` 最新 release，按系统包管理器选择 `.ipk` 或 `.apk`，安装主包和可选简体中文语言包，并自动重启 `rpcd`。
+
+### 手动安装 LuCI 插件
+
+从 `luci-app-oxidns` Release 下载对应 LuCI 包后安装：
+
+```sh
+opkg install ./luci-app-oxidns_*.ipk
+# 可选：简体中文语言包
+opkg install ./luci-i18n-oxidns-zh-cn_*.ipk
+```
+
+在使用 `apk` 的 OpenWrt 系统上：
+
+```sh
+apk add --allow-untrusted --no-network ./luci-app-oxidns_*.apk
+# 可选：简体中文语言包
+apk add --allow-untrusted --no-network ./luci-i18n-oxidns-zh-cn_*.apk
+```
+
+安装后打开 `Services -> OxiDNS -> Core`，点击 `Install Core`。LuCI 会按当前设备 CPU 架构下载并校验 OxiDNS 官方 Linux musl release archive；离线环境也可以上传官方 `.tar.gz` archive 或单个 `oxidns` 二进制。
+
+完整说明见 [OpenWrt LuCI 插件](openwrt.mdx)。
+
+## 6. 使用 Docker 镜像
 
 仓库提供 Docker 镜像发布流程，镜像仓库地址为：
 
@@ -449,14 +538,15 @@ docker compose up -d
 docker compose logs -f oxidns
 ```
 
-## 6. 选择建议
+## 7. 选择建议
 
 - 想最快验证功能：使用一条命令安装最新 release，或手动下载对应 release 压缩包
 - 想以系统服务长期运行：优先使用 Debian 包
+- 想在 OpenWrt / LuCI 管理：使用 `luci-app-oxidns`
 - 想在容器平台部署：使用 GHCR Docker 或 Docker Hub 镜像
 - 想参与开发或自行裁剪：从源码构建
 
-## 7. 启动后下一步
+## 8. 启动后下一步
 
 启动完成后，建议继续阅读：
 

@@ -82,7 +82,7 @@ OxiDNS 不试图替你隐藏复杂性。
 | 出站网络 | `network.outbound` 统一配置 HTTP 下载、升级检查、webhook 与 upstream 使用的 nameservers 与 SOCKS5 |
 | 系统联动 | `ipset`、`nftset`、`ros_address_list`、`reverse_lookup` |
 | 调试与运维 | 健康检查、配置校验、热重载、查询记录、Prometheus 插件指标、实时日志 |
-| 部署能力 | 多平台构建、Debian 包、独立 WebUI 托管、服务化安装 |
+| 部署能力 | 多平台构建、Debian 包、OpenWrt LuCI 插件、独立 WebUI 托管、服务化安装 |
 
 ---
 
@@ -152,10 +152,26 @@ irm https://oxidns.org/install.ps1 | iex
 
 默认情况下，Linux / macOS 会安装到 `/opt/oxidns`，在 `/usr/local/bin` 创建 `oxidns` 命令，并安装、启动系统服务。Windows 会安装到 `%ProgramFiles%\OxiDNS`，加入 Machine PATH，并安装、启动系统服务。仅需便携安装时，可设置 `OXIDNS_INSTALL_SERVICE=0`，详见快速开始。
 
+OpenWrt 用户可通过同一个安装脚本一键安装 [luci-app-oxidns](https://github.com/svenshi/luci-app-oxidns) LuCI 插件：
+
+```sh
+curl -fsSL https://oxidns.org/install.sh | sh
+# 或：
+wget -O- https://oxidns.org/install.sh | sh
+```
+
+脚本检测到 OpenWrt 后会自动下载并安装 LuCI 插件包；安装后可在 `Services -> OxiDNS` 中安装 OxiDNS 内核、托管 init 服务、编辑配置并查看日志。LuCI 插件不内置 OxiDNS 内核，首次安装内核时会从 OxiDNS 官方 GitHub Releases 下载并校验对应 Linux musl archive。
+
 卸载时默认保留 `config.yaml`：
 
 ```bash
 curl -fsSL https://oxidns.org/uninstall.sh | sudo sh
+```
+
+OpenWrt：
+
+```sh
+curl -fsSL https://oxidns.org/uninstall.sh | sh
 ```
 
 Windows 管理员 PowerShell：
@@ -174,6 +190,7 @@ irm https://oxidns.org/uninstall.ps1 | iex
 | Linux ARM64 | `oxidns-aarch64-unknown-linux-musl.tar.gz` |
 | Debian / Ubuntu x86_64 服务安装 | `*_amd64.deb` |
 | Debian / Ubuntu ARM64 服务安装 | `*_arm64.deb` |
+| OpenWrt / LuCI | OxiDNS 安装脚本，或 [`luci-app-oxidns`](https://github.com/svenshi/luci-app-oxidns) 的 `.ipk` / `.apk` 包 |
 | Alpine Linux x86_64 | `oxidns-x86_64-unknown-linux-musl.tar.gz` |
 | Alpine Linux ARM64 | `oxidns-aarch64-unknown-linux-musl.tar.gz` |
 | 32 位 ARM Linux，如部分树莓派 | `oxidns-arm-unknown-linux-musleabihf.tar.gz` |
@@ -220,6 +237,7 @@ cargo build --release --no-default-features --features standard        # 家用 
 
 - [配置总览](https://oxidns.org/configuration)
 - [快速开始](https://oxidns.org/quickstart)
+- [OpenWrt LuCI 插件](https://oxidns.org/openwrt)
 - [插件总览](https://oxidns.org/plugin-reference/overview)
 - [管理 API](https://oxidns.org/api)
 - [MikroTik 策略路由](https://oxidns.org/mikrotik-policy-routing)
@@ -232,12 +250,12 @@ cargo build --release --no-default-features --features standard        # 家用 
 
 ## 路线图
 
-以下是当前规划中的开发方向，按顺序排列。详细说明请参考[文档路线图](https://oxidns.org/roadmap)。
+以下是当前规划和近期已落地的方向，按顺序排列。详细说明请参考[文档路线图](https://oxidns.org/roadmap)。
 
 1. **编译定制化**：按功能模块拆分编译，用户 fork 后可自由组合插件，构建精简的定制版本，并通过自定义仓库实现自动更新
 2. **IP 优选**：对 DNS 响应中的多个 A/AAAA 地址并行测速，自动选出延迟最低的 IP 返回给客户端
-3. **MikroTik 深度集成**：新增从 RouterOS 拉取地址列表作为数据源，以及将本地 IP 集主动推送到 RouterOS 的能力
-4. **OpenWrt 支持**：通过 opkg 一键安装、服务自动托管，为 OpenWrt 用户提供原生部署体验
+3. **OpenWrt LuCI 插件**：通过 `luci-app-oxidns` 在 LuCI 中安装内核、托管服务、编辑配置并查看日志
+4. **MikroTik 深度集成**：新增从 RouterOS 拉取地址列表作为数据源，以及将本地 IP 集主动推送到 RouterOS 的能力
 5. **WebUI 与指标增强**：为各新增插件补充管理界面，扩展 Prometheus 指标覆盖范围
 
 长期来看，计划探索 WebAssembly 插件和动态链接库插件两种扩展机制，支持第三方开发者独立开发和分发插件。

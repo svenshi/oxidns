@@ -5,7 +5,7 @@ const sidebars = {
       type: 'category',
       label: '入门',
       collapsed: false,
-      items: ['quickstart', 'scenarios', 'migrate-from-mosdns'],
+      items: ['quickstart', 'openwrt', 'scenarios', 'migrate-from-mosdns'],
     },
     {
       type: 'category',

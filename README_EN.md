@@ -82,7 +82,7 @@ It is better suited for users who want explicit control over DNS behavior, rathe
 | Outbound networking | `network.outbound` centralizes nameservers and SOCKS5 settings for HTTP downloads, upgrade checks, webhooks, and upstreams |
 | System integrations | `ipset`, `nftset`, `ros_address_list`, `reverse_lookup` |
 | Debugging and operations | Health checks, config validation, hot reload, query records, Prometheus plugin metrics, real-time logs |
-| Deployment | Multi-platform builds, Debian packages, standalone WebUI hosting, service installation |
+| Deployment | Multi-platform builds, Debian packages, OpenWrt LuCI app, standalone WebUI hosting, service installation |
 
 ---
 
@@ -152,10 +152,26 @@ irm https://oxidns.org/install.ps1 | iex
 
 By default, Linux / macOS installs into `/opt/oxidns`, creates `/usr/local/bin/oxidns`, and installs and starts the system service. Windows installs into `%ProgramFiles%\OxiDNS`, adds it to the Machine PATH, and installs and starts the service. For a portable user install, set `OXIDNS_INSTALL_SERVICE=0`; see Quick Start for details.
 
+OpenWrt users can use the same installer script to install the [luci-app-oxidns](https://github.com/svenshi/luci-app-oxidns) LuCI app:
+
+```sh
+curl -fsSL https://oxidns.org/install.sh | sh
+# or:
+wget -O- https://oxidns.org/install.sh | sh
+```
+
+When the script detects OpenWrt, it downloads and installs the LuCI app package. LuCI then adds `Services -> OxiDNS` pages for installing the OxiDNS core, managing the init service, editing configuration, and viewing logs. The LuCI app does not embed the OxiDNS core; during first core install it downloads and verifies the matching Linux musl archive from the official OxiDNS GitHub Releases.
+
 Uninstall while keeping `config.yaml`:
 
 ```bash
 curl -fsSL https://oxidns.org/uninstall.sh | sudo sh
+```
+
+OpenWrt:
+
+```sh
+curl -fsSL https://oxidns.org/uninstall.sh | sh
 ```
 
 Elevated Windows PowerShell:
@@ -174,6 +190,7 @@ If you want to download a GitHub release directly, use this platform guide:
 | Linux ARM64 | `oxidns-aarch64-unknown-linux-musl.tar.gz` |
 | Debian / Ubuntu x86_64 service install | `*_amd64.deb` |
 | Debian / Ubuntu ARM64 service install | `*_arm64.deb` |
+| OpenWrt / LuCI | OxiDNS installer script, or `.ipk` / `.apk` packages from [`luci-app-oxidns`](https://github.com/svenshi/luci-app-oxidns) |
 | Alpine Linux x86_64 | `oxidns-x86_64-unknown-linux-musl.tar.gz` |
 | Alpine Linux ARM64 | `oxidns-aarch64-unknown-linux-musl.tar.gz` |
 | 32-bit ARM Linux, including some Raspberry Pi installs | `oxidns-arm-unknown-linux-musleabihf.tar.gz` |
@@ -220,6 +237,7 @@ See [Custom Build](https://oxidns.org/en/custom-build) for details.
 
 - [Configuration](https://oxidns.org/en/configuration)
 - [Quick Start](https://oxidns.org/en/quickstart)
+- [OpenWrt LuCI App](https://oxidns.org/en/openwrt)
 - [Plugin Overview](https://oxidns.org/en/plugin-reference/overview)
 - [Management API](https://oxidns.org/en/api)
 - [MikroTik Policy Routing](https://oxidns.org/en/mikrotik-policy-routing)
@@ -232,12 +250,12 @@ See [Custom Build](https://oxidns.org/en/custom-build) for details.
 
 ## Roadmap
 
-The following outlines the planned development directions in delivery order. See the [documentation roadmap](https://oxidns.org/en/roadmap) for full details.
+The following outlines planned directions and recently delivered platform work in delivery order. See the [documentation roadmap](https://oxidns.org/en/roadmap) for full details.
 
 1. **Custom builds**: Split compilation by plugin module so users can fork, select only the plugins they need, and auto-update from a custom repository
 2. **IP optimization**: Probe multiple A/AAAA addresses from a DNS response in parallel and return the lowest-latency IP to the client
-3. **MikroTik deep integration**: Add the ability to pull RouterOS address lists as a data source and to actively push local IP sets to RouterOS
-4. **OpenWrt support**: One-command install via opkg with automatic service management — a native deployment experience for OpenWrt users
+3. **OpenWrt LuCI app**: Use `luci-app-oxidns` to install the core, manage the service, edit config, and view logs from LuCI
+4. **MikroTik deep integration**: Add the ability to pull RouterOS address lists as a data source and to actively push local IP sets to RouterOS
 5. **WebUI and metrics improvements**: Add management interfaces for new plugins and expand Prometheus metric coverage
 
 Looking further ahead, two plugin extension mechanisms are planned: WebAssembly plugins and dynamic library plugins, enabling third-party developers to build and distribute plugins independently.

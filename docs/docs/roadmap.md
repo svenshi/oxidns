@@ -7,31 +7,31 @@ import RoadmapTimeline, { RoadmapItem } from '@site/src/components/RoadmapTimeli
 
 # 路线图
 
-以下是 OxiDNS 自 v0.1.0 发布以来的完整开发路线图。最新计划在最上方，历史版本按时间倒序排列。
+以下是 OxiDNS 自 v0.1.0 发布以来的完整开发路线图。最新计划在最上方，已完成里程碑和历史版本按时间倒序排列。
 
 <RoadmapTimeline>
 
-<RoadmapItem type="future" label="敬请期待" title="简单模式 WebUI" desc="基于模板配置，打造类 AdGuard Home 的开箱即用体验" num={4}>
+<RoadmapItem type="future" label="敬请期待" title="简单模式 WebUI" desc="基于模板配置，打造类 AdGuard Home 的开箱即用体验" num={3}>
 
 面向不想编写 YAML 的普通用户，提供一套预置场景模板（去广告、防污染、家庭过滤、分流加速等），通过表单与开关完成主要配置；保留切回完整模式继续手写规则的入口。目标体验对标 AdGuard Home 的简单管理界面，让 OxiDNS 的安装门槛接近"开箱即用"。
 
 </RoadmapItem>
 
-<RoadmapItem type="future" label="敬请期待" title="插件 API 扩展与 WebUI 接入" desc="为已有插件补齐管理 API，WebUI 接入新增端点与详情面板" num={3}>
+<RoadmapItem type="future" label="敬请期待" title="插件 API 扩展与 WebUI 接入" desc="为已有插件补齐管理 API，WebUI 接入新增端点与详情面板" num={2}>
 
 按"个体枚举 / 状态查询 / 动作触发"归 API、"计数器 / 直方图 / 低基数 gauge"归 metrics 的划分原则，为 `forward`、`cron`、`download`、`script`、`ip_selector`、`cache`、`rate_limiter` 等已有插件补齐运行时管理 API（上游探测、任务暂停 / 立即执行、规则枚举、热点客户端、缓存 top-N 等），并在 WebUI 的插件详情面板里接入对应端点；同时按上述边界补全 Prometheus 指标，提升整体可观测性与运维效率。
-
-</RoadmapItem>
-
-<RoadmapItem type="future" label="敬请期待" title="OpenWrt 支持" desc="通过 opkg 一键安装，服务自动托管，随系统更新" num={2}>
-
-为 OpenWrt 用户提供与 Debian 包同等级别的原生安装体验：通过 opkg 一键安装、服务自动托管、随系统更新，无需手动部署二进制文件。
 
 </RoadmapItem>
 
 <RoadmapItem type="future" label="敬请期待" title="MikroTik 深度集成" desc="与 RouterOS 双向同步 IP 集，DNS 策略联动路由策略" num={1}>
 
 在现有单向推送基础上，新增从 RouterOS 拉取地址列表作为数据源，以及将本地 IP 集主动推送到 RouterOS，实现 DNS 策略与路由策略的双向数据联动。
+
+</RoadmapItem>
+
+<RoadmapItem type="done" label="2026-07-02" title="OpenWrt LuCI 插件" desc="通过 luci-app-oxidns 在 LuCI 中安装内核、托管服务、编辑配置并查看日志">
+
+新增 [`luci-app-oxidns`](https://github.com/svenshi/luci-app-oxidns)：OpenWrt 用户可以在 LuCI 的 `Services -> OxiDNS` 中安装 OxiDNS core、管理 init 服务、编辑配置并查看日志。LuCI 插件不内置 OxiDNS 内核，首次安装时会从官方 GitHub Releases 下载并校验 Linux musl release archive；后续内核升级继续使用 OxiDNS 自带升级能力。
 
 </RoadmapItem>
 

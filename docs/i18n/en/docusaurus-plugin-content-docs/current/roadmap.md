@@ -7,31 +7,31 @@ import RoadmapTimeline, { RoadmapItem } from '@site/src/components/RoadmapTimeli
 
 # Roadmap
 
-OxiDNS's complete development roadmap since v0.1.0. Upcoming work appears at the top; past versions follow in reverse chronological order.
+OxiDNS's complete development roadmap since v0.1.0. Upcoming work appears at the top; completed milestones and past versions follow in reverse chronological order.
 
 <RoadmapTimeline>
 
-<RoadmapItem type="future" label="Soon" title="Simple-mode WebUI" desc="Template-driven config delivering an AdGuard Home-style turnkey experience" num={4}>
+<RoadmapItem type="future" label="Soon" title="Simple-mode WebUI" desc="Template-driven config delivering an AdGuard Home-style turnkey experience" num={3}>
 
 For users who don't want to touch YAML: a set of preset scenario templates (ad blocking, anti-poisoning, family filtering, split-tunnel acceleration) configured entirely through forms and toggles, with an escape hatch back to the full editor for advanced rules. The target experience matches AdGuard Home's simple admin UI, bringing OxiDNS's setup bar close to out-of-the-box.
 
 </RoadmapItem>
 
-<RoadmapItem type="future" label="Soon" title="Plugin API Expansion & WebUI Wiring" desc="Fill in management APIs for existing plugins; wire them into the WebUI" num={3}>
+<RoadmapItem type="future" label="Soon" title="Plugin API Expansion & WebUI Wiring" desc="Fill in management APIs for existing plugins; wire them into the WebUI" num={2}>
 
 Apply the rule "per-entity / status / action → API; counters / histograms / low-cardinality gauges → metrics" and fill in runtime management APIs (upstream probe, job pause / run-now, rule enumeration, hot-client buckets, cache top-N, …) for existing plugins such as `forward`, `cron`, `download`, `script`, `ip_selector`, `cache`, and `rate_limiter`. Wire each endpoint into a corresponding WebUI detail panel and round out Prometheus metrics along the same boundary to improve observability and day-2 operations.
-
-</RoadmapItem>
-
-<RoadmapItem type="future" label="Soon" title="OpenWrt Support" desc="One-command install via opkg, automatic service management, system-integrated updates" num={2}>
-
-Native install experience for OpenWrt users on par with the Debian package: opkg one-command install, automatic service management, system-integrated updates — no manual binary deployment.
 
 </RoadmapItem>
 
 <RoadmapItem type="future" label="Soon" title="MikroTik Deep Integration" desc="Bidirectional IP set sync between OxiDNS and RouterOS" num={1}>
 
 On top of the existing one-way push, add pulling RouterOS address lists as an OxiDNS data source and actively pushing local IP sets to RouterOS — bidirectional DNS-policy and routing-policy integration.
+
+</RoadmapItem>
+
+<RoadmapItem type="done" label="2026-07-02" title="OpenWrt LuCI App" desc="Use luci-app-oxidns to install the core, manage the service, edit config, and view logs from LuCI">
+
+Added [`luci-app-oxidns`](https://github.com/svenshi/luci-app-oxidns): OpenWrt users can install the OxiDNS core, manage the init service, edit configuration, and view logs from LuCI under `Services -> OxiDNS`. The LuCI app does not embed the OxiDNS core; on first install it downloads and verifies the official Linux musl release archive from GitHub Releases. Future core upgrades continue to use OxiDNS's built-in upgrade capability.
 
 </RoadmapItem>
 

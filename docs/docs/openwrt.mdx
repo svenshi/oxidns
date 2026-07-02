@@ -1,0 +1,124 @@
+---
+title: OpenWrt LuCI 插件
+---
+
+import Admonition from '@theme/Admonition';
+
+OxiDNS 支持通过 [`luci-app-oxidns`](https://github.com/svenshi/luci-app-oxidns) 在 OpenWrt / LuCI 中部署和管理。
+
+安装后，LuCI 会出现 `Services -> OxiDNS` 页面，可用于安装 OxiDNS 内核二进制、管理 OpenWrt init 服务、编辑配置和查看日志。
+
+<Admonition type="info" title="插件边界">
+
+`luci-app-oxidns` 不内置 OxiDNS 内核，也不再管理独立的 OpenWrt `oxidns` 包。LuCI 负责从 OxiDNS 官方 GitHub Releases 下载 release archive、校验 SHA256 digest，并把二进制安装为 OpenWrt 服务。后续 OxiDNS 内核升级请使用 OxiDNS 自带的 WebUI / API / CLI 升级能力。
+
+</Admonition>
+
+## 一条命令安装 LuCI 插件
+
+在 OpenWrt 上以 root 用户执行：
+
+```sh
+curl -fsSL https://oxidns.org/install.sh | sh
+```
+
+没有 `curl` 时：
+
+```sh
+wget -O- https://oxidns.org/install.sh | sh
+```
+
+脚本检测到 OpenWrt 后会从 [`luci-app-oxidns` Releases](https://github.com/svenshi/luci-app-oxidns/releases) 读取最新包，按系统包管理器选择 `.ipk` 或 `.apk`，安装 `luci-app-oxidns` 和可选简体中文语言包，并自动重启 `rpcd`。
+
+可用环境变量：
+
+| 变量 | 作用 |
+| --- | --- |
+| `OXIDNS_OPENWRT_VERSION` | 指定 LuCI 插件 release 标签，默认 `latest` |
+| `OXIDNS_OPENWRT_REPO` | 指定 LuCI 插件仓库，默认 `svenshi/luci-app-oxidns` |
+| `OXIDNS_OPENWRT_I18N=0` | 跳过简体中文语言包 |
+| `OXIDNS_OPENWRT_INSTALL=0` | 在 OpenWrt 上禁用 LuCI 插件分支，强制走普通 Linux archive 安装 |
+
+## 手动安装 LuCI 插件
+
+从 [`luci-app-oxidns` Releases](https://github.com/svenshi/luci-app-oxidns/releases) 下载对应包后安装：
+
+```sh
+opkg install ./luci-app-oxidns_*.ipk
+# 可选：简体中文语言包
+opkg install ./luci-i18n-oxidns-zh-cn_*.ipk
+```
+
+在使用 `apk` 的 OpenWrt 系统上：
+
+```sh
+apk add --allow-untrusted --no-network ./luci-app-oxidns_*.apk
+# 可选：简体中文语言包
+apk add --allow-untrusted --no-network ./luci-i18n-oxidns-zh-cn_*.apk
+```
+
+如果安装后菜单没有出现，重启 `rpcd`：
+
+```sh
+/etc/init.d/rpcd restart
+```
+
+然后打开 LuCI：`Services -> OxiDNS`。
+
+## 安装 OxiDNS 内核
+
+如果从旧的 OpenWrt `oxidns` 包模式迁移，先停止服务并移除旧内核包，避免它继续拥有 `/usr/bin/oxidns` 或 `/etc/init.d/oxidns`：
+
+```sh
+/etc/init.d/oxidns stop
+opkg remove oxidns
+```
+
+使用 `apk` 的系统对应执行：
+
+```sh
+/etc/init.d/oxidns stop
+apk del oxidns
+```
+
+1. 打开 `Services -> OxiDNS -> Settings`，确认 `Core repository` 为 `svenshi/oxidns`，`Core bundle` 为 `full`。
+2. 打开 `Services -> OxiDNS -> Core`，点击 `Install Core`。离线环境可点击 `Upload Core` 上传官方 `.tar.gz` archive 或单个 `oxidns` 二进制。
+3. 安装成功后，到 `Overview` 启动并启用服务。
+
+LuCI 会按当前设备 CPU 架构选择 OxiDNS Linux musl release archive，例如 `oxidns-x86_64-unknown-linux-musl.tar.gz`，并在安装时校验 GitHub release asset 的 SHA256 digest。
+
+## 默认路径
+
+- 二进制：`/usr/bin/oxidns`
+- WebUI：`/usr/share/oxidns/webui`
+- 配置：`/etc/oxidns/config.yaml`
+- 工作目录：`/var/lib/oxidns`
+- 服务脚本：`/etc/init.d/oxidns`
+
+## 升级与删除
+
+升级 OxiDNS 内核时，请使用 OxiDNS 自带的 WebUI / API / CLI 升级能力。LuCI 的 `Core` 页面只负责首次安装、上传安装和修复重装，不作为版本升级入口。
+
+升级 LuCI 插件时，下载新版 `luci-app-oxidns` 包并重新安装即可。LuCI 页面内不提供自升级。
+
+删除 OxiDNS 内核可以在 LuCI 的 `Core` 页面点击 `Remove Core`。该操作会停止并禁用服务，删除 `/usr/bin/oxidns` 和 `/usr/share/oxidns/webui`，但保留 `/etc/oxidns/config.yaml` 和 `/var/lib/oxidns`。
+
+也可以使用卸载脚本移除 LuCI 插件和已安装的 OxiDNS core 文件：
+
+```sh
+curl -fsSL https://oxidns.org/uninstall.sh | sh
+```
+
+默认会卸载 `luci-app-oxidns` / 语言包，删除 `/usr/bin/oxidns` 与 `/usr/share/oxidns/webui`，并保留 OxiDNS 配置、工作目录和 LuCI 设置。
+
+彻底清理配置和工作目录：
+
+```sh
+curl -fsSL https://oxidns.org/uninstall.sh | env OXIDNS_PURGE=1 sh
+```
+
+`OXIDNS_PURGE=1` 会同时删除 OxiDNS 配置、工作目录和 LuCI 设置；执行前请备份 `/etc/oxidns/config.yaml`。
+
+## 受限网络
+
+路由器需要能直接访问 GitHub Releases 和 release archive。私有仓库或受限网络环境可以在 `Settings` 中配置 GitHub token 或下载代理；也可以在 `Core` 页面手动上传 release archive 或二进制进行离线安装。

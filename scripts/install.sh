@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install OxiDNS release archives on Linux and macOS.
+# Install OxiDNS release archives on Linux and macOS, or luci-app-oxidns on OpenWrt.
 #
 # Common overrides:
 #   OXIDNS_VERSION=v1.0.1
@@ -9,6 +9,10 @@
 #   OXIDNS_BUNDLE=standard
 #   OXIDNS_INSTALL_SERVICE=0
 #   OXIDNS_START_SERVICE=0
+#   OXIDNS_OPENWRT_INSTALL=auto
+#   OXIDNS_OPENWRT_REPO=svenshi/luci-app-oxidns
+#   OXIDNS_OPENWRT_VERSION=latest
+#   OXIDNS_OPENWRT_I18N=auto
 
 set -eu
 
@@ -21,6 +25,10 @@ BIN_DIR="${OXIDNS_BIN_DIR:-}"
 NO_PATH="${OXIDNS_NO_PATH:-0}"
 INSTALL_SERVICE="${OXIDNS_INSTALL_SERVICE:-1}"
 START_SERVICE="${OXIDNS_START_SERVICE:-1}"
+OPENWRT_INSTALL="${OXIDNS_OPENWRT_INSTALL:-auto}"
+OPENWRT_REPO="${OXIDNS_OPENWRT_REPO:-svenshi/luci-app-oxidns}"
+OPENWRT_VERSION="${OXIDNS_OPENWRT_VERSION:-latest}"
+OPENWRT_I18N="${OXIDNS_OPENWRT_I18N:-auto}"
 
 log() {
     printf '%s\n' "$*"
@@ -42,6 +50,13 @@ need_cmd() {
 is_truthy() {
     case "$1" in
         1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+is_falsey() {
+    case "$1" in
+        0|false|FALSE|no|NO|off|OFF) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -95,6 +110,136 @@ download() {
     fi
 }
 
+is_openwrt() {
+    [ -f /etc/openwrt_release ] && return 0
+    if [ -r /etc/os-release ] && grep -qi 'openwrt' /etc/os-release 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+should_install_openwrt() {
+    case "$OPENWRT_INSTALL" in
+        auto|"")
+            is_openwrt
+            ;;
+        *)
+            is_truthy "$OPENWRT_INSTALL"
+            ;;
+    esac
+}
+
+openwrt_release_api_url() {
+    if [ "$OPENWRT_VERSION" = "latest" ]; then
+        printf 'https://api.github.com/repos/%s/releases/latest' "$OPENWRT_REPO"
+    else
+        printf 'https://api.github.com/repos/%s/releases/tags/%s' "$OPENWRT_REPO" "$OPENWRT_VERSION"
+    fi
+}
+
+openwrt_asset_url() {
+    release_json="$1"
+    package_name="$2"
+    package_ext="$3"
+
+    sed -n 's#.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*/'"$package_name"'_[^"]*_all\.'"$package_ext"'\)".*#\1#p' "$release_json" | head -n 1
+}
+
+openwrt_install_package() {
+    package_manager="$1"
+    package_path="$2"
+
+    case "$package_manager" in
+        opkg)
+            opkg install "$package_path"
+            ;;
+        apk)
+            apk add --allow-untrusted --no-network "$package_path"
+            ;;
+        *)
+            err "unsupported OpenWrt package manager: $package_manager"
+            ;;
+    esac
+}
+
+install_openwrt_luci() {
+    is_root || err "OpenWrt LuCI installation requires root; rerun as root"
+    need_cmd sed
+    need_cmd head
+    need_cmd mktemp
+
+    if command -v opkg >/dev/null 2>&1; then
+        openwrt_package_manager="opkg"
+        openwrt_package_ext="ipk"
+    elif command -v apk >/dev/null 2>&1; then
+        openwrt_package_manager="apk"
+        openwrt_package_ext="apk"
+    else
+        err "OpenWrt package manager not found: expected opkg or apk"
+    fi
+
+    openwrt_tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/oxidns-openwrt-install.XXXXXX")"
+    cleanup_openwrt() {
+        rm -rf "$openwrt_tmp_dir"
+    }
+    trap cleanup_openwrt EXIT HUP INT TERM
+
+    openwrt_release_json="$openwrt_tmp_dir/release.json"
+    openwrt_api_url="$(openwrt_release_api_url)"
+
+    log "Downloading luci-app-oxidns release metadata from $OPENWRT_REPO ($OPENWRT_VERSION)..."
+    download "$openwrt_api_url" "$openwrt_release_json"
+
+    openwrt_app_url="$(openwrt_asset_url "$openwrt_release_json" "luci-app-oxidns" "$openwrt_package_ext")"
+    [ -n "$openwrt_app_url" ] || err "could not find luci-app-oxidns .$openwrt_package_ext asset in $OPENWRT_REPO release $OPENWRT_VERSION"
+
+    openwrt_app_pkg="$openwrt_tmp_dir/${openwrt_app_url##*/}"
+    log "Downloading ${openwrt_app_url##*/}..."
+    download "$openwrt_app_url" "$openwrt_app_pkg"
+
+    log "Installing ${openwrt_app_url##*/} with $openwrt_package_manager..."
+    openwrt_install_package "$openwrt_package_manager" "$openwrt_app_pkg"
+
+    openwrt_i18n_url="$(openwrt_asset_url "$openwrt_release_json" "luci-i18n-oxidns-zh-cn" "$openwrt_package_ext")"
+    openwrt_install_i18n=0
+    case "$OPENWRT_I18N" in
+        auto|"")
+            [ -n "$openwrt_i18n_url" ] && openwrt_install_i18n=1
+            ;;
+        *)
+            if is_truthy "$OPENWRT_I18N"; then
+                [ -n "$openwrt_i18n_url" ] || err "OXIDNS_OPENWRT_I18N=1 but luci-i18n-oxidns-zh-cn .$openwrt_package_ext asset was not found"
+                openwrt_install_i18n=1
+            elif is_falsey "$OPENWRT_I18N"; then
+                openwrt_install_i18n=0
+            else
+                err "unsupported OXIDNS_OPENWRT_I18N=$OPENWRT_I18N; expected auto, 1, or 0"
+            fi
+            ;;
+    esac
+
+    if [ "$openwrt_install_i18n" = "1" ]; then
+        openwrt_i18n_pkg="$openwrt_tmp_dir/${openwrt_i18n_url##*/}"
+        log "Downloading ${openwrt_i18n_url##*/}..."
+        download "$openwrt_i18n_url" "$openwrt_i18n_pkg"
+
+        log "Installing ${openwrt_i18n_url##*/} with $openwrt_package_manager..."
+        openwrt_install_package "$openwrt_package_manager" "$openwrt_i18n_pkg"
+    fi
+
+    if [ -x /etc/init.d/rpcd ]; then
+        if /etc/init.d/rpcd restart >/dev/null 2>&1; then
+            log "Restarted rpcd"
+        else
+            warn "failed to restart rpcd; run /etc/init.d/rpcd restart if the LuCI menu does not appear"
+        fi
+    fi
+
+    log "luci-app-oxidns installed"
+    log "Open LuCI: Services -> OxiDNS"
+    log "Then use Core -> Install Core to download and install the OxiDNS core binary."
+}
+
 contains_path() {
     dir="$1"
     case ":${PATH:-}:" in
@@ -124,6 +269,11 @@ install_link() {
     cp "$INSTALL_DIR/oxidns" "$link_path"
     chmod 755 "$link_path"
 }
+
+if should_install_openwrt; then
+    install_openwrt_luci
+    exit 0
+fi
 
 if [ -z "$TARGET" ]; then
     TARGET="$(detect_target)"

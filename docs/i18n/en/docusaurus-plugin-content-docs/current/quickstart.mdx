@@ -12,6 +12,7 @@ This page describes the OxiDNS installation paths and the shortest path from dow
 <Admonition type="tip" title="Which install path should I choose?">
 
 * **Linux servers**: the one-command installer, release archives, or `.deb` packages
+* **OpenWrt routers**: the [`luci-app-oxidns`](openwrt.mdx) LuCI app
 * **Containerized environments**: the Docker image
 * **Local development or debugging**: build from source with Cargo
 * **macOS / Windows**: the one-command installer or release archives
@@ -20,7 +21,7 @@ This page describes the OxiDNS installation paths and the shortest path from dow
 
 ## 1. One-Command Install
 
-The installer detects the current platform, downloads the matching GitHub Release archive, extracts `oxidns` / `oxidns.exe`, `config.yaml`, and `webui/`, then installs and starts OxiDNS as a system service by default.
+The installer detects the current platform. On Linux / macOS / Windows, it downloads the matching OxiDNS GitHub Release archive, extracts `oxidns` / `oxidns.exe`, `config.yaml`, and `webui/`, then installs and starts OxiDNS as a system service by default. On OpenWrt, it downloads and installs the `luci-app-oxidns` LuCI app.
 
 <Tabs groupId="os">
   <TabItem value="unix" label="Linux / macOS" default>
@@ -37,6 +38,19 @@ irm https://oxidns.org/install.ps1 | iex
 ```
 
   </TabItem>
+  <TabItem value="openwrt" label="OpenWrt">
+
+```sh
+curl -fsSL https://oxidns.org/install.sh | sh
+```
+
+If `curl` is not installed:
+
+```sh
+wget -O- https://oxidns.org/install.sh | sh
+```
+
+  </TabItem>
 </Tabs>
 
 Default install locations:
@@ -47,8 +61,11 @@ Default install locations:
 | Windows service install from elevated PowerShell | `%ProgramFiles%\OxiDNS` | Adds the install directory to the Machine PATH, then installs and starts the service |
 | Linux / macOS portable install | `~/.oxidns` | Set `OXIDNS_INSTALL_SERVICE=0`; creates `~/.local/bin/oxidns` |
 | Windows portable install | `%LOCALAPPDATA%\OxiDNS` | Set `OXIDNS_INSTALL_SERVICE=0`; adds the install directory to the user PATH |
+| OpenWrt / LuCI app install | Managed by `opkg` / `apk` | Installs `luci-app-oxidns` and the optional Chinese translation package; install the OxiDNS core from LuCI afterward |
 
-Running the installer again updates the binary and `webui/`. If `config.yaml` already exists in the install directory, the installer keeps it and writes the release default config as `config.yaml.example`.
+In Linux / macOS / Windows archive install mode, running the installer again updates the binary and `webui/`. If `config.yaml` already exists in the install directory, the installer keeps it and writes the release default config as `config.yaml.example`.
+
+On OpenWrt, running the installer again reinstalls the selected `luci-app-oxidns` release package. OxiDNS core version upgrades still use the built-in LuCI / WebUI / API / CLI upgrade flow.
 
 ### Install A Specific Version
 
@@ -81,6 +98,10 @@ Common environment variables:
 | `OXIDNS_NO_PATH=1` | Do not create a command link or update PATH |
 | `OXIDNS_INSTALL_SERVICE=0` | Skip system service installation and use portable install mode |
 | `OXIDNS_START_SERVICE=0` | Install the service but do not start it immediately |
+| `OXIDNS_OPENWRT_INSTALL` | OpenWrt branch switch, defaults to `auto`; set `0` to force normal Linux archive installation |
+| `OXIDNS_OPENWRT_REPO` | LuCI app repository, defaults to `svenshi/luci-app-oxidns` |
+| `OXIDNS_OPENWRT_VERSION` | LuCI app release tag, defaults to `latest` |
+| `OXIDNS_OPENWRT_I18N` | Whether to install the Simplified Chinese translation package, defaults to `auto`; set `0` to skip it |
 
 Portable install:
 
@@ -128,13 +149,26 @@ The default config includes a `:53` listener. On Linux / macOS, portable install
 
 ### Uninstall
 
-The uninstall script removes the binary, `webui/`, and PATH entry while keeping `config.yaml` by default.
+The uninstall script removes the binary, `webui/`, and PATH entry while keeping `config.yaml` by default. On OpenWrt, it removes `luci-app-oxidns` / the translation package and cleans the LuCI-installed `/usr/bin/oxidns` and `/usr/share/oxidns/webui`; OxiDNS config, the working directory, and LuCI settings are kept by default.
 
 <Tabs groupId="os">
   <TabItem value="unix" label="Linux / macOS" default>
 
 ```bash
 curl -fsSL https://oxidns.org/uninstall.sh | sudo sh
+```
+
+  </TabItem>
+  <TabItem value="openwrt" label="OpenWrt">
+
+```sh
+curl -fsSL https://oxidns.org/uninstall.sh | sh
+```
+
+If `curl` is not installed:
+
+```sh
+wget -O- https://oxidns.org/uninstall.sh | sh
 ```
 
   </TabItem>
@@ -147,7 +181,7 @@ irm https://oxidns.org/uninstall.ps1 | iex
   </TabItem>
 </Tabs>
 
-If you installed with `sudo` or a custom `OXIDNS_INSTALL_DIR`, use the same privilege level and directory variable when uninstalling.
+If you installed with `sudo` or a custom `OXIDNS_INSTALL_DIR`, use the same privilege level and directory variable when uninstalling. OpenWrt uninstall requires root.
 
 Remove the install directory and config too:
 
@@ -156,6 +190,19 @@ Remove the install directory and config too:
 
 ```bash
 curl -fsSL https://oxidns.org/uninstall.sh | sudo env OXIDNS_PURGE=1 sh
+```
+
+  </TabItem>
+  <TabItem value="openwrt" label="OpenWrt">
+
+```sh
+curl -fsSL https://oxidns.org/uninstall.sh | env OXIDNS_PURGE=1 sh
+```
+
+If `curl` is not installed:
+
+```sh
+wget -O- https://oxidns.org/uninstall.sh | env OXIDNS_PURGE=1 sh
 ```
 
   </TabItem>
@@ -170,7 +217,7 @@ $env:OXIDNS_PURGE = "1"; irm https://oxidns.org/uninstall.ps1 | iex
 
 <Admonition type="warning" title="Purge removes configuration">
 
-Setting `OXIDNS_PURGE=1` deletes the entire install directory, including the configuration file. Back up `config.yaml` before running it.
+Setting `OXIDNS_PURGE=1` deletes the configuration file. For archive installs it removes the full install directory; on OpenWrt it removes OxiDNS config, the working directory, and LuCI settings. Back up `config.yaml` before running it.
 
 </Admonition>
 
@@ -182,7 +229,10 @@ Common uninstall variables:
 | `OXIDNS_BIN_DIR` | Override the command-link directory on Linux / macOS |
 | `OXIDNS_NO_PATH=1` | Do not remove the command link or user PATH entry |
 | `OXIDNS_UNINSTALL_SERVICE=1` | Force operating-system service uninstall; by default this is attempted automatically as root / administrator |
-| `OXIDNS_PURGE=1` | Remove the full install directory, including config |
+| `OXIDNS_PURGE=1` | For archive installs, remove the full install directory; on OpenWrt, remove OxiDNS config, the working directory, and LuCI settings |
+| `OXIDNS_OPENWRT_UNINSTALL` | OpenWrt uninstall branch switch, defaults to `auto`; set `0` to force normal Linux archive uninstall |
+| `OXIDNS_OPENWRT_CONFIG_PATH` | Override the OpenWrt config path; when omitted, reads UCI `config_path`, then falls back to `/etc/oxidns/config.yaml` |
+| `OXIDNS_OPENWRT_WORKING_DIR` | Override the OpenWrt working directory; when omitted, reads UCI `working_dir`, then falls back to `/var/lib/oxidns` |
 
 ## 2. Build From Source
 
@@ -263,6 +313,7 @@ When the correct asset is unclear, use this mapping:
 | Linux ARM64 | `oxidns-aarch64-unknown-linux-musl.tar.gz` | Safer default for broad compatibility |
 | Debian / Ubuntu x86_64 service install | `*_amd64.deb` | Best fit for systemd-based deployment |
 | Debian / Ubuntu ARM64 service install | `*_arm64.deb` | Best fit for systemd-based deployment |
+| OpenWrt / LuCI | `.ipk` / `.apk` packages from [`luci-app-oxidns`](https://github.com/svenshi/luci-app-oxidns) | Install the LuCI app first; LuCI then downloads and installs the OxiDNS Linux musl core |
 | Alpine Linux x86_64 | `oxidns-x86_64-unknown-linux-musl.tar.gz` | Prefer musl on Alpine |
 | Alpine Linux ARM64 | `oxidns-aarch64-unknown-linux-musl.tar.gz` | Static-friendly build |
 | Confirmed glibc Linux requiring a dynamic build | `oxidns-x86_64-unknown-linux-gnu.tar.gz` / `oxidns-aarch64-unknown-linux-gnu.tar.gz` | Only choose this when the target environment is clearly compatible |
@@ -370,7 +421,45 @@ If the service is not running yet:
 sudo systemctl enable --now oxidns
 ```
 
-## 5. Run With Docker
+## 5. OpenWrt / LuCI App
+
+OpenWrt users should use the OxiDNS installer script to install [`luci-app-oxidns`](https://github.com/svenshi/luci-app-oxidns). It adds `Services -> OxiDNS` pages to LuCI for installing the OxiDNS core, managing the init service, editing configuration, and viewing logs.
+
+```sh
+curl -fsSL https://oxidns.org/install.sh | sh
+```
+
+If `curl` is not installed:
+
+```sh
+wget -O- https://oxidns.org/install.sh | sh
+```
+
+When the script detects OpenWrt, it reads the latest `luci-app-oxidns` release, selects `.ipk` or `.apk` for the system package manager, installs the main package and optional Simplified Chinese translation package, and restarts `rpcd`.
+
+### Manual LuCI App Install
+
+Download the matching LuCI package from the `luci-app-oxidns` Release, then install it:
+
+```sh
+opkg install ./luci-app-oxidns_*.ipk
+# Optional Simplified Chinese translation
+opkg install ./luci-i18n-oxidns-zh-cn_*.ipk
+```
+
+On OpenWrt systems using `apk`:
+
+```sh
+apk add --allow-untrusted --no-network ./luci-app-oxidns_*.apk
+# Optional Simplified Chinese translation
+apk add --allow-untrusted --no-network ./luci-i18n-oxidns-zh-cn_*.apk
+```
+
+After installation, open `Services -> OxiDNS -> Core` and click `Install Core`. LuCI downloads and verifies the official OxiDNS Linux musl release archive for the current CPU architecture; offline environments can upload an official `.tar.gz` archive or a single `oxidns` binary.
+
+See [OpenWrt LuCI App](openwrt.mdx) for the full flow.
+
+## 6. Run With Docker
 
 The repository publishes a Docker image at:
 
@@ -449,14 +538,15 @@ Follow logs with:
 docker compose logs -f oxidns
 ```
 
-## 6. Selection Guide
+## 7. Selection Guide
 
 - Fastest evaluation path: use the one-command installer for the latest release, or download a release archive manually
 - Long-running Linux service: prefer the Debian package
+- OpenWrt / LuCI management: use `luci-app-oxidns`
 - Container platforms: use the GHCR Docker or Docker Hub image
 - Development or custom builds: compile from source
 
-## 7. Next Reading
+## 8. Next Reading
 
 After the first successful start, continue with:
 

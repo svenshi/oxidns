@@ -49,6 +49,7 @@ const TELEGRAM_QR = '/img/telegram-qr.png';
 const INSTALL_TABS: InstallTab[] = [
   { label: 'Linux / macOS', prompt: '$', code: 'curl -fsSL https://oxidns.org/install.sh | sudo sh' },
   { label: 'Windows', prompt: 'PS>', code: 'irm https://oxidns.org/install.ps1 | iex' },
+  { label: 'OpenWrt', prompt: '#', code: 'curl -fsSL https://oxidns.org/install.sh | sh' },
   { label: 'Docker', prompt: '$', code: 'docker run -d \\\n' +
           '  --name oxidns \\\n' +
           '  --restart unless-stopped \\\n' +
