@@ -236,6 +236,7 @@ Non-Windows targets use `.tar.gz`:
 - `oxidns-aarch64-unknown-linux-musl.tar.gz`
 - `oxidns-i686-unknown-linux-musl.tar.gz`
 - `oxidns-arm-unknown-linux-musleabihf.tar.gz`
+- `oxidns-armv7-unknown-linux-musleabihf.tar.gz`
 - `oxidns-x86_64-apple-darwin.tar.gz`
 - `oxidns-aarch64-apple-darwin.tar.gz`
 - `oxidns-x86_64-unknown-freebsd.tar.gz`
@@ -266,7 +267,8 @@ When the correct asset is unclear, use this mapping:
 | Alpine Linux x86_64 | `oxidns-x86_64-unknown-linux-musl.tar.gz` | Prefer musl on Alpine |
 | Alpine Linux ARM64 | `oxidns-aarch64-unknown-linux-musl.tar.gz` | Static-friendly build |
 | Confirmed glibc Linux requiring a dynamic build | `oxidns-x86_64-unknown-linux-gnu.tar.gz` / `oxidns-aarch64-unknown-linux-gnu.tar.gz` | Only choose this when the target environment is clearly compatible |
-| 32-bit ARM Linux | `oxidns-arm-unknown-linux-musleabihf.tar.gz` | Fits some Raspberry Pi and older ARM boards |
+| Linux ARMv7 / armv7l | `oxidns-armv7-unknown-linux-musleabihf.tar.gz` | Fits ARMv7 devices |
+| Generic 32-bit ARM Linux | `oxidns-arm-unknown-linux-musleabihf.tar.gz` | Fits older ARM boards |
 | macOS Intel | `oxidns-x86_64-apple-darwin.tar.gz` | Intel Macs |
 | macOS Apple Silicon | `oxidns-aarch64-apple-darwin.tar.gz` | M1 / M2 / M3 / M4 Macs |
 | Windows x64 | `oxidns-x86_64-pc-windows-msvc.zip` | Most PCs |
@@ -285,7 +287,7 @@ Common output mapping:
 
 - `Linux` + `x86_64`: default to `x86_64-unknown-linux-musl`; use `x86_64-unknown-linux-gnu` only when a glibc dynamic build is explicitly required
 - `Linux` + `aarch64`: default to `aarch64-unknown-linux-musl`; use `aarch64-unknown-linux-gnu` only when a glibc dynamic build is explicitly required
-- `Linux` + `armv7l`: use `arm-unknown-linux-musleabihf`
+- `Linux` + `armv7l`: use `armv7-unknown-linux-musleabihf`
 - `Darwin` + `x86_64`: use `x86_64-apple-darwin`
 - `Darwin` + `arm64`: use `aarch64-apple-darwin`
 

@@ -176,7 +176,8 @@ If you want to download a GitHub release directly, use this platform guide:
 | Debian / Ubuntu ARM64 service install | `*_arm64.deb` |
 | Alpine Linux x86_64 | `oxidns-x86_64-unknown-linux-musl.tar.gz` |
 | Alpine Linux ARM64 | `oxidns-aarch64-unknown-linux-musl.tar.gz` |
-| 32-bit ARM Linux, including some Raspberry Pi installs | `oxidns-arm-unknown-linux-musleabihf.tar.gz` |
+| Linux ARMv7 / armv7l | `oxidns-armv7-unknown-linux-musleabihf.tar.gz` |
+| Generic 32-bit ARM Linux | `oxidns-arm-unknown-linux-musleabihf.tar.gz` |
 | macOS Intel | `oxidns-x86_64-apple-darwin.tar.gz` |
 | macOS Apple Silicon | `oxidns-aarch64-apple-darwin.tar.gz` |
 | Windows x64 | `oxidns-x86_64-pc-windows-msvc.zip` |

@@ -764,6 +764,10 @@ fn archive_name_for_bundle(bundle: UpgradeBundle, target: &str, ext: &str) -> Re
 }
 
 fn current_release_target() -> Result<String> {
+    if let Some(target) = option_env!("OXIDNS_BUILD_TARGET").filter(|target| !target.is_empty()) {
+        return Ok(target.to_string());
+    }
+
     let arch = match std::env::consts::ARCH {
         "x86_64" => "x86_64",
         "aarch64" => "aarch64",

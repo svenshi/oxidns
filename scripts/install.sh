@@ -65,6 +65,9 @@ detect_target() {
             printf 'i686-unknown-linux-musl'
             ;;
         Linux:armv7l|Linux:armv7)
+            printf 'armv7-unknown-linux-musleabihf'
+            ;;
+        Linux:armv6l|Linux:armv6)
             printf 'arm-unknown-linux-musleabihf'
             ;;
         Darwin:x86_64|Darwin:amd64)

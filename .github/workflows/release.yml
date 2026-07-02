@@ -108,6 +108,14 @@ jobs:
             make_deb: false
             upx_kind: linux
 
+          - os: ubuntu-latest
+            target: armv7-unknown-linux-musleabihf
+            exe: oxidns
+            archive_ext: tar.gz
+            build_tool: cross
+            make_deb: false
+            upx_kind: linux
+
           - os: macos-latest
             target: x86_64-apple-darwin
             exe: oxidns

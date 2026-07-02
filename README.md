@@ -176,7 +176,8 @@ irm https://oxidns.org/uninstall.ps1 | iex
 | Debian / Ubuntu ARM64 服务安装 | `*_arm64.deb` |
 | Alpine Linux x86_64 | `oxidns-x86_64-unknown-linux-musl.tar.gz` |
 | Alpine Linux ARM64 | `oxidns-aarch64-unknown-linux-musl.tar.gz` |
-| 32 位 ARM Linux，如部分树莓派 | `oxidns-arm-unknown-linux-musleabihf.tar.gz` |
+| Linux ARMv7 / armv7l | `oxidns-armv7-unknown-linux-musleabihf.tar.gz` |
+| 通用 32 位 ARM Linux | `oxidns-arm-unknown-linux-musleabihf.tar.gz` |
 | macOS Intel | `oxidns-x86_64-apple-darwin.tar.gz` |
 | macOS Apple Silicon | `oxidns-aarch64-apple-darwin.tar.gz` |
 | Windows x64 | `oxidns-x86_64-pc-windows-msvc.zip` |
