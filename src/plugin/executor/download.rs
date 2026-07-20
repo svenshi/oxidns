@@ -829,6 +829,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_download_executor_returns_next_for_empty_runtime_errors() {
+        AppClock::start();
         let plugin = DownloadExecutor {
             state: Arc::new(DownloadRuntimeState::new(
                 "download".to_string(),

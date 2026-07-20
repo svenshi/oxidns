@@ -603,13 +603,6 @@ export interface ProviderStatusResponse {
   rule_stats?: ProviderRuleStats | null;
 }
 
-export interface ProviderReloadResponse {
-  ok: boolean;
-  action: string;
-  provider: string;
-  status: string;
-}
-
 export async function fetchConfigFile(): Promise<ConfigFileResponse> {
   const response = await fetch(apiUrl("/config"), {
     method: "GET",
@@ -1155,16 +1148,6 @@ export async function fetchProviderStatus(
     { method: "GET", headers: apiHeaders() },
   );
   return readJsonResponse<ProviderStatusResponse>(response);
-}
-
-export async function reloadProvider(
-  tag: string,
-): Promise<ProviderReloadResponse> {
-  const response = await fetch(
-    apiUrl(`/plugins/${encodeURIComponent(tag)}/reload`),
-    { method: "POST", headers: apiHeaders() },
-  );
-  return readJsonResponse<ProviderReloadResponse>(response);
 }
 
 // --- Dynamic Domain Set API ---
