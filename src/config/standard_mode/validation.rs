@@ -7,8 +7,9 @@ use std::str::FromStr;
 
 use super::compiler::StandardCapabilities;
 use super::model::{
-    CURRENT_STANDARD_SCHEMA, StandardDiagnostic, StandardDualStackPolicy, StandardIntent,
-    StandardPolicySwitch, StandardRuleAction, StandardRuleCondition, StandardUpstreamProtocol,
+    CURRENT_STANDARD_SCHEMA, StandardDiagnostic, StandardDualStackPolicy, StandardEcsPolicy,
+    StandardIntent, StandardPolicySwitch, StandardRuleAction, StandardRuleCondition,
+    StandardRuleDataSource, StandardUnknownMode, StandardUpstreamProtocol,
     StandardUpstreamStrategy,
 };
 
@@ -45,7 +46,47 @@ pub fn normalize_standard_intent(mut intent: StandardIntent) -> StandardIntent {
         path.name = path.name.trim().to_string();
         path.description = trimmed_option(path.description.take());
         path.upstream_group_id = normalize_id(&path.upstream_group_id);
+        path.ip_selection.outbound = trimmed_option(path.ip_selection.outbound.take());
+        path.ip_selection.socks5 = trimmed_option(path.ip_selection.socks5.take());
+        normalize_lines(&mut path.ip_selection.probe_methods, false);
+        if let StandardEcsPolicy::Preset { address, .. } = &mut path.ecs {
+            *address = address.trim().to_string();
+        }
     }
+
+    for (_, role) in intent.rule_data.all_roles_mut() {
+        for source in &mut role.sources {
+            *source.id_mut() = normalize_id(source.id());
+            *source.name_mut() = source.name().trim().to_string();
+            match source {
+                StandardRuleDataSource::Manual { rules, .. } => normalize_lines(rules, false),
+                StandardRuleDataSource::LocalFile { path, .. } => {
+                    *path = path.trim().to_string();
+                }
+                StandardRuleDataSource::NativeDat {
+                    path, selectors, ..
+                } => {
+                    *path = path.trim().to_string();
+                    normalize_lines(selectors, false);
+                }
+                StandardRuleDataSource::Subscription { url, .. } => {
+                    *url = url.trim().to_string();
+                }
+            }
+        }
+    }
+    intent.smart_routing.domestic_path_id = intent
+        .smart_routing
+        .domestic_path_id
+        .take()
+        .map(|path| normalize_id(&path))
+        .filter(|path| !path.is_empty());
+    intent.smart_routing.remote_path_id = intent
+        .smart_routing
+        .remote_path_id
+        .take()
+        .map(|path| normalize_id(&path))
+        .filter(|path| !path.is_empty());
 
     normalize_lines(&mut intent.filtering.block_rules, false);
     normalize_lines(&mut intent.filtering.allow_rules, true);
@@ -140,7 +181,9 @@ pub fn validate_standard_intent(
     validate_cache(intent, capabilities, &mut diagnostics);
     validate_filtering(intent, capabilities, &mut diagnostics);
     validate_local(intent, capabilities, &mut diagnostics);
+    validate_rule_data(intent, capabilities, &mut diagnostics);
     validate_paths(intent, capabilities, &mut diagnostics);
+    validate_smart_routing(intent, capabilities, &mut diagnostics);
     validate_rules(intent, capabilities, &mut diagnostics);
     validate_devices(intent, capabilities, &mut diagnostics);
     validate_system(intent, &mut diagnostics);
@@ -323,11 +366,13 @@ fn validate_upstreams(
 
     for (group_index, group) in intent.upstream_groups.iter().enumerate() {
         let group_path = format!("upstreamGroups[{group_index}]");
-        if matches!(group.strategy, StandardUpstreamStrategy::OrderedFallback) {
-            diagnostics.push(StandardDiagnostic::error(
-                "ordered_fallback_not_available",
+        if matches!(group.strategy, StandardUpstreamStrategy::OrderedFallback)
+            && !capabilities.executor("fallback")
+        {
+            diagnostics.push(missing_plugin(
                 format!("{group_path}.strategy"),
-                "ordered fallback requires an explicit fallback model and is not available in Phase 0",
+                "executor",
+                "fallback",
             ));
         }
         let enabled = group.upstreams.iter().filter(|item| item.enabled).count();
@@ -687,6 +732,251 @@ fn validate_local(
     }
 }
 
+fn validate_rule_data(
+    intent: &StandardIntent,
+    capabilities: &StandardCapabilities,
+    diagnostics: &mut Vec<StandardDiagnostic>,
+) {
+    let mut global_ids = BTreeMap::<String, String>::new();
+    for (role_name, role) in intent.rule_data.all_roles() {
+        let is_ip_role = role_name == "domestic_ips";
+        if role.has_enabled_sources()
+            && !if is_ip_role {
+                capabilities.provider("ip_set")
+            } else {
+                capabilities.provider("domain_set")
+            }
+        {
+            diagnostics.push(missing_plugin(
+                format!("ruleData.{role_name}"),
+                "provider",
+                if is_ip_role { "ip_set" } else { "domain_set" },
+            ));
+        }
+        for (index, source) in role.sources.iter().enumerate() {
+            let base = format!("ruleData.{role_name}.sources[{index}]");
+            if source.id().is_empty() {
+                diagnostics.push(StandardDiagnostic::error(
+                    "rule_data_source_id_required",
+                    format!("{base}.id"),
+                    "rule-data source ID is required",
+                ));
+            } else if let Some(first) =
+                global_ids.insert(source.id().to_string(), format!("{base}.id"))
+            {
+                diagnostics.push(StandardDiagnostic::error(
+                    "rule_data_source_id_duplicate",
+                    format!("{base}.id"),
+                    format!("rule-data source ID duplicates {first}"),
+                ));
+            }
+            if source.name().trim().is_empty() {
+                diagnostics.push(StandardDiagnostic::error(
+                    "rule_data_source_name_required",
+                    format!("{base}.name"),
+                    "rule-data source name is required",
+                ));
+            }
+            if !source.enabled() {
+                continue;
+            }
+            match source {
+                StandardRuleDataSource::Manual { rules, .. } => {
+                    if rules.is_empty() {
+                        diagnostics.push(StandardDiagnostic::error(
+                            "rule_data_manual_rules_required",
+                            format!("{base}.rules"),
+                            "enabled manual source requires at least one rule",
+                        ));
+                    }
+                    if is_ip_role {
+                        for (rule_index, rule) in rules.iter().enumerate() {
+                            if !valid_client_address(rule) {
+                                diagnostics.push(StandardDiagnostic::error(
+                                    "rule_data_ip_invalid",
+                                    format!("{base}.rules[{rule_index}]"),
+                                    format!("'{rule}' is not a valid IP address or CIDR"),
+                                ));
+                            }
+                        }
+                    } else {
+                        let mut matcher = crate::core::rule_matcher::DomainRuleMatcher::default();
+                        for (rule_index, rule) in rules.iter().enumerate() {
+                            if let Err(error) = matcher.add_expression(rule, &base) {
+                                diagnostics.push(StandardDiagnostic::error(
+                                    "rule_data_domain_invalid",
+                                    format!("{base}.rules[{rule_index}]"),
+                                    error,
+                                ));
+                            }
+                        }
+                    }
+                }
+                StandardRuleDataSource::LocalFile { path, .. } => {
+                    if path.is_empty() {
+                        diagnostics.push(StandardDiagnostic::error(
+                            "rule_data_file_path_required",
+                            format!("{base}.path"),
+                            "enabled local-file source requires a path",
+                        ));
+                    } else if !std::path::Path::new(path).is_file() {
+                        diagnostics.push(StandardDiagnostic::error(
+                            "rule_data_file_missing",
+                            format!("{base}.path"),
+                            format!(
+                                "local rule-data file '{path}' does not exist or is not a file"
+                            ),
+                        ));
+                    }
+                }
+                StandardRuleDataSource::Subscription {
+                    url,
+                    update_interval_hours,
+                    max_age_hours,
+                    ..
+                } => {
+                    if !valid_http_url(url) {
+                        diagnostics.push(StandardDiagnostic::error(
+                            "rule_data_subscription_url_invalid",
+                            format!("{base}.url"),
+                            "subscription URL must use http or https",
+                        ));
+                    }
+                    if *update_interval_hours == 0 || *max_age_hours == 0 {
+                        diagnostics.push(StandardDiagnostic::error(
+                            "rule_data_subscription_interval_invalid",
+                            base.clone(),
+                            "subscription update and maximum-age hours must be greater than zero",
+                        ));
+                    }
+                    for plugin in ["download", "reload_provider", "cron"] {
+                        if !capabilities.executor(plugin) {
+                            diagnostics.push(missing_plugin(&base, "executor", plugin));
+                        }
+                    }
+                }
+                StandardRuleDataSource::NativeDat {
+                    path, selectors, ..
+                } => {
+                    if path.is_empty() {
+                        diagnostics.push(StandardDiagnostic::error(
+                            "rule_data_native_path_required",
+                            format!("{base}.path"),
+                            "enabled native-data source requires a local dat path",
+                        ));
+                    } else if !std::path::Path::new(path).is_file() {
+                        diagnostics.push(StandardDiagnostic::error(
+                            "rule_data_native_file_missing",
+                            format!("{base}.path"),
+                            format!(
+                                "native rule-data file '{path}' does not exist or is not a file"
+                            ),
+                        ));
+                    }
+                    if selectors.is_empty() {
+                        diagnostics.push(StandardDiagnostic::warning(
+                            "rule_data_native_selectors_empty",
+                            format!("{base}.selectors"),
+                            "empty selectors load the entire native dat file",
+                        ));
+                    }
+                    let provider = if is_ip_role { "geoip" } else { "geosite" };
+                    if !capabilities.provider(provider) {
+                        diagnostics.push(missing_plugin(&base, "provider", provider));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn validate_smart_routing(
+    intent: &StandardIntent,
+    capabilities: &StandardCapabilities,
+    diagnostics: &mut Vec<StandardDiagnostic>,
+) {
+    let smart = &intent.smart_routing;
+    if !smart.enabled {
+        return;
+    }
+    let path_ids: BTreeSet<_> = intent.paths.iter().map(|path| path.id.as_str()).collect();
+    let domestic = smart.domestic_path_id.as_deref();
+    let remote = smart.remote_path_id.as_deref();
+    for (field, value) in [("domesticPathId", domestic), ("remotePathId", remote)] {
+        let Some(value) = value else {
+            diagnostics.push(StandardDiagnostic::error(
+                "smart_routing_path_required",
+                format!("smartRouting.{field}"),
+                "smart routing requires explicit domestic and remote path IDs",
+            ));
+            continue;
+        };
+        if !path_ids.contains(value) {
+            diagnostics.push(StandardDiagnostic::error(
+                "smart_routing_path_missing",
+                format!("smartRouting.{field}"),
+                format!("smart routing references missing path '{value}'"),
+            ));
+        }
+    }
+    if domestic.is_some() && domestic == remote {
+        diagnostics.push(StandardDiagnostic::error(
+            "smart_routing_paths_not_isolated",
+            "smartRouting",
+            "domestic and remote paths must be different to preserve cache and upstream isolation",
+        ));
+    }
+    if smart.fallback_threshold_ms == 0 {
+        diagnostics.push(StandardDiagnostic::error(
+            "smart_routing_threshold_invalid",
+            "smartRouting.fallbackThresholdMs",
+            "fallback threshold must be greater than zero",
+        ));
+    }
+    if !intent.rule_data.domestic_domains.has_enabled_sources() {
+        diagnostics.push(StandardDiagnostic::error(
+            "domestic_domains_required",
+            "ruleData.domesticDomains",
+            "smart routing requires an enabled domestic_domains source",
+        ));
+    }
+    if !intent.rule_data.domestic_ips.has_enabled_sources() {
+        diagnostics.push(StandardDiagnostic::error(
+            "domestic_ips_required",
+            "ruleData.domesticIps",
+            "smart routing requires an enabled domestic_ips source for response validation",
+        ));
+    }
+    if matches!(smart.unknown_mode, StandardUnknownMode::StrictRemote)
+        && smart.privacy_fallback_to_domestic
+    {
+        diagnostics.push(StandardDiagnostic::error(
+            "strict_remote_domestic_fallback_forbidden",
+            "smartRouting.privacyFallbackToDomestic",
+            "strict-remote mode cannot fall back to a domestic path",
+        ));
+    }
+    for (kind, plugin) in [
+        ("matcher", "qname"),
+        ("matcher", "qtype"),
+        ("matcher", "resp_ip"),
+        ("matcher", "rcode"),
+        ("matcher", "has_wanted_ans"),
+        ("matcher", "cname"),
+        ("executor", "drop_resp"),
+        ("executor", "fallback"),
+    ] {
+        let available = if kind == "matcher" {
+            capabilities.matcher(plugin)
+        } else {
+            capabilities.executor(plugin)
+        };
+        if !available {
+            diagnostics.push(missing_plugin("smartRouting", kind, plugin));
+        }
+    }
+}
+
 fn validate_paths(
     intent: &StandardIntent,
     capabilities: &StandardCapabilities,
@@ -717,26 +1007,102 @@ fn validate_paths(
                 ),
             ));
         }
-        if !matches!(path.dual_stack, StandardDualStackPolicy::Inherit) {
-            diagnostics.push(StandardDiagnostic::error(
-                "dual_stack_not_available",
-                format!("{base}.dualStack"),
-                "dual-stack policy is not compiled in Phase 0",
-            ));
+        match path.dual_stack {
+            StandardDualStackPolicy::PreferIpv4 if !capabilities.executor("prefer_ipv4") => {
+                diagnostics.push(missing_plugin(
+                    format!("{base}.dualStack"),
+                    "executor",
+                    "prefer_ipv4",
+                ));
+            }
+            StandardDualStackPolicy::PreferIpv6 if !capabilities.executor("prefer_ipv6") => {
+                diagnostics.push(missing_plugin(
+                    format!("{base}.dualStack"),
+                    "executor",
+                    "prefer_ipv6",
+                ));
+            }
+            StandardDualStackPolicy::Ipv4Only | StandardDualStackPolicy::Ipv6Only => {
+                if !capabilities.matcher("qtype") {
+                    diagnostics.push(missing_plugin(
+                        format!("{base}.dualStack"),
+                        "matcher",
+                        "qtype",
+                    ));
+                }
+                if !capabilities.executor("black_hole") {
+                    diagnostics.push(missing_plugin(
+                        format!("{base}.dualStack"),
+                        "executor",
+                        "black_hole",
+                    ));
+                }
+            }
+            _ => {}
         }
-        if !matches!(path.ip_selection, StandardPolicySwitch::Inherit) {
-            diagnostics.push(StandardDiagnostic::error(
-                "ip_selection_not_available",
-                format!("{base}.ipSelection"),
-                "IP selection is not compiled in Phase 0",
-            ));
+        if path.ip_selection.enabled {
+            if !capabilities.executor("ip_selector") {
+                diagnostics.push(missing_plugin(
+                    format!("{base}.ipSelection"),
+                    "executor",
+                    "ip_selector",
+                ));
+            }
+            let selection = &path.ip_selection;
+            if selection.probe_methods.is_empty()
+                || selection.probe_timeout_ms == 0
+                || selection.max_wait_ms == 0
+                || selection.top_n == 0
+                || selection.max_parallel_probes == 0
+                || (selection.cache_enabled
+                    && (selection.cache_size == 0
+                        || selection.cache_ttl_seconds == 0
+                        || selection.failure_ttl_seconds == 0))
+            {
+                diagnostics.push(StandardDiagnostic::error(
+                    "ip_selection_limits_invalid",
+                    format!("{base}.ipSelection"),
+                    "enabled IP selection requires non-zero methods, budgets, limits, and cache TTLs",
+                ));
+            }
         }
-        if !matches!(path.ecs, StandardPolicySwitch::Inherit) {
-            diagnostics.push(StandardDiagnostic::error(
-                "ecs_not_available",
-                format!("{base}.ecs"),
-                "ECS is not compiled in Phase 0",
-            ));
+        match &path.ecs {
+            StandardEcsPolicy::Inherit => {}
+            StandardEcsPolicy::ClientSubnet { mask4, mask6 }
+            | StandardEcsPolicy::Preset { mask4, mask6, .. } => {
+                if *mask4 > 32 || *mask6 > 128 {
+                    diagnostics.push(StandardDiagnostic::error(
+                        "ecs_prefix_invalid",
+                        format!("{base}.ecs"),
+                        "ECS IPv4/IPv6 prefixes must be within 0..=32 and 0..=128",
+                    ));
+                }
+                if let StandardEcsPolicy::Preset { address, .. } = &path.ecs
+                    && address.parse::<IpAddr>().is_err()
+                {
+                    diagnostics.push(StandardDiagnostic::error(
+                        "ecs_preset_invalid",
+                        format!("{base}.ecs.address"),
+                        "ECS preset address must be an IPv4 or IPv6 address",
+                    ));
+                }
+                if !capabilities.executor("ecs_handler") {
+                    diagnostics.push(missing_plugin(
+                        format!("{base}.ecs"),
+                        "executor",
+                        "ecs_handler",
+                    ));
+                }
+            }
+            StandardEcsPolicy::Remove | StandardEcsPolicy::PreserveClient => {
+                if !capabilities.executor("ecs_handler") {
+                    diagnostics.push(missing_plugin(
+                        format!("{base}.ecs"),
+                        "executor",
+                        "ecs_handler",
+                    ));
+                }
+            }
         }
     }
     if effective_query_log_used(intent) && !capabilities.executor("query_recorder") {

@@ -10,7 +10,9 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 use crate::infra::error::DnsError;
-use crate::plugin::provider::{Provider, ProviderRuntimeStatus};
+use crate::plugin::provider::Provider;
+#[cfg(feature = "api")]
+use crate::plugin::provider::ProviderRuntimeStatus;
 
 #[derive(Debug, Error)]
 pub(crate) enum ProviderReloadError {
@@ -89,6 +91,7 @@ impl ProviderRuntimeControl {
         ))))
     }
 
+    #[cfg(feature = "api")]
     pub(crate) fn status(&self) -> ProviderRuntimeStatus {
         self.provider.runtime_status()
     }

@@ -148,6 +148,9 @@ impl Executor for QueryRecorder {
         let instant = AppClock::now();
         let timestamp = Timestamp::now();
         let result = continue_next!(next, context);
+        if !should_record(&self.config, context) {
+            return result;
+        }
         let pending_record = PendingRecord::new(
             request,
             context.response.clone(),
@@ -161,6 +164,18 @@ impl Executor for QueryRecorder {
         backend.enqueue(pending_record);
         result
     }
+}
+
+fn should_record(config: &ResolvedRecorderConfig, context: &DnsContext) -> bool {
+    (config.include_marks.is_empty()
+        || config
+            .include_marks
+            .iter()
+            .any(|mark| context.marks().contains(mark)))
+        && !config
+            .exclude_marks
+            .iter()
+            .any(|mark| context.marks().contains(mark))
 }
 
 impl QueryRecorder {
@@ -243,6 +258,8 @@ fn resolve_config(args: Option<YamlValue>) -> Result<ResolvedRecorderConfig> {
         retention_days,
         cleanup_interval_hours,
         reader_concurrency,
+        include_marks: parsed.include_marks,
+        exclude_marks: parsed.exclude_marks,
     })
 }
 

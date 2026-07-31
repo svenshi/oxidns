@@ -487,7 +487,10 @@ async fn handle_reload_command(
         }
         Err(reload_err) => {
             error!("Configuration reload failed: {}", reload_err);
+            #[cfg(feature = "api")]
             let mut reload_failure = reload_err.to_string();
+            #[cfg(not(feature = "api"))]
+            let reload_failure = reload_err.to_string();
             #[cfg(feature = "api")]
             if standard_transaction_pending
                 && let Err(rollback_err) = crate::api::standard_mode::rollback_pending_transaction(

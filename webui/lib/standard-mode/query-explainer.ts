@@ -29,10 +29,16 @@ export interface StandardQueryObjectRef {
 }
 
 export interface StandardQueryExplanation {
+  initialPath?: StandardQueryObjectRef;
+  finalPath?: StandardQueryObjectRef;
   path?: StandardQueryObjectRef;
   upstreamGroup?: StandardQueryObjectRef;
   routingRule?: StandardQueryObjectRef;
   exceptionRule?: StandardQueryObjectRef;
+  semanticRole?: StandardQueryObjectRef;
+  validationResult?: string;
+  fallbackReason?: string;
+  fallbackBranch?: "primary" | "secondary";
   outcome: StandardQueryOutcome;
   filtering: "blocked" | "checked" | "skipped" | "unknown";
   cache: "checked" | "unknown";
@@ -47,6 +53,7 @@ interface StandardQueryIndexes {
   upstreamGroupsByTag: Map<string, StandardUpstreamGroup>;
   routingRulesByMatcherTag: Map<string, StandardRoutingRule>;
   exceptionRulesByMatcherTag: Map<string, StandardExceptionRule>;
+  semanticRolesByMatcherTag: Map<string, string>;
   filteringTags: Set<string>;
   cacheTags: Set<string>;
   queryLogTag?: string;
@@ -59,16 +66,36 @@ export function explainStandardQueryRecord(
 ): StandardQueryExplanation {
   const steps = queryRecordSteps(record);
   const indexes = buildStandardQueryIndexes(settings, metadata);
-  const matchedRouting = firstMatchedRule(
+  const matchedRouting = lastMatchedRule(
     steps,
     indexes.routingRulesByMatcherTag,
   );
-  const matchedException = firstMatchedRule(
+  const matchedException = lastMatchedRule(
     steps,
     indexes.exceptionRulesByMatcherTag,
   );
-  const path = firstExecutedObject(steps, indexes.pathsByTag);
-  const upstreamGroup = firstExecutedObject(steps, indexes.upstreamGroupsByTag);
+  const paths = executedObjects(steps, indexes.pathsByTag);
+  const upstreamGroups = executedObjects(steps, indexes.upstreamGroupsByTag);
+  const initialPath = paths[0];
+  const path = paths.at(-1);
+  const upstreamGroup = upstreamGroups.at(-1);
+  const semanticRole = lastMatchedRule(steps, indexes.semanticRolesByMatcherTag);
+  const fallback = [...steps]
+    .reverse()
+    .find((step) => step.kind === "fallback" && step.outcome);
+  const decision = [...steps]
+    .reverse()
+    .find((step) => step.kind === "decision" && step.outcome);
+  const fallbackMatch = fallback?.outcome.match(/^(primary|secondary)_(.+)$/);
+  const validationResult = decision?.outcome ??
+    (steps.some(
+      (step) =>
+        step.kind === "matcher" &&
+        step.tag === "standard_smart_domestic_response_ip" &&
+        step.outcome === "matched",
+    )
+      ? "domestic_ip_valid"
+      : undefined);
   const blocked = hasExecutedTag(steps, "standard_blocked");
   const filteringChecked =
     hasTag(steps, "standard_ad_rules") ||
@@ -82,6 +109,8 @@ export function explainStandardQueryRecord(
     : hasTag(steps, "standard_recorder");
 
   return {
+    initialPath: initialPath ? pathRef(initialPath, metadata) : undefined,
+    finalPath: path ? pathRef(path, metadata) : undefined,
     path: path ? pathRef(path, metadata) : undefined,
     upstreamGroup: upstreamGroup
       ? upstreamGroupRef(upstreamGroup, metadata)
@@ -92,6 +121,13 @@ export function explainStandardQueryRecord(
     exceptionRule: matchedException
       ? ruleRef(matchedException.rule, matchedException.tag)
       : undefined,
+    semanticRole: semanticRole
+      ? { id: semanticRole.rule, name: semanticRole.rule, tag: semanticRole.tag }
+      : undefined,
+    validationResult,
+    fallbackBranch: fallbackMatch?.[1] as "primary" | "secondary" | undefined,
+    fallbackReason:
+      fallbackMatch?.[1] === "secondary" ? fallbackMatch[2] : undefined,
     outcome: deriveOutcome(record, {
       blocked,
       cacheChecked,
@@ -151,6 +187,7 @@ function buildStandardQueryIndexes(
   const upstreamGroupsByTag = new Map<string, StandardUpstreamGroup>();
   const routingRulesByMatcherTag = new Map<string, StandardRoutingRule>();
   const exceptionRulesByMatcherTag = new Map<string, StandardExceptionRule>();
+  const semanticRolesByMatcherTag = new Map<string, string>();
   const tagMap = metadata?.tagMap;
 
   for (const [id, tag] of Object.entries(tagMap?.paths ?? {})) {
@@ -169,12 +206,26 @@ function buildStandardQueryIndexes(
     const rule = exceptionRulesById.get(id);
     if (rule) exceptionRulesByMatcherTag.set(tag, rule);
   }
+  for (const [key, tag] of Object.entries(tagMap?.smartRouting ?? {})) {
+    if (key.startsWith("matcher:")) {
+      semanticRolesByMatcherTag.set(tag, key.slice("matcher:".length));
+      continue;
+    }
+    const pathId = key.includes("remote")
+      ? settings.smartRouting.remotePathId
+      : key.includes("domestic") || key === "smart_ddns"
+        ? settings.smartRouting.domesticPathId
+        : undefined;
+    const path = pathId ? pathsById.get(pathId) : undefined;
+    if (path) pathsByTag.set(tag, path);
+  }
 
   return {
     pathsByTag,
     upstreamGroupsByTag,
     routingRulesByMatcherTag,
     exceptionRulesByMatcherTag,
+    semanticRolesByMatcherTag,
     filteringTags: new Set(tagMap?.filtering ?? []),
     cacheTags: new Set([
       ...Object.values(tagMap?.caches ?? {}),
@@ -184,11 +235,11 @@ function buildStandardQueryIndexes(
   };
 }
 
-function firstMatchedRule<T>(
+function lastMatchedRule<T>(
   steps: QueryRecorderStep[],
   rulesByTag: Map<string, T>,
 ): { rule: T; tag: string } | undefined {
-  for (const step of steps) {
+  for (const step of [...steps].reverse()) {
     if (step.kind !== "matcher" || step.outcome !== "matched" || !step.tag) {
       continue;
     }
@@ -198,18 +249,19 @@ function firstMatchedRule<T>(
   return undefined;
 }
 
-function firstExecutedObject<T>(
+function executedObjects<T>(
   steps: QueryRecorderStep[],
   objectsByTag: Map<string, T>,
-): T | undefined {
+): T[] {
+  const values: T[] = [];
   for (const step of steps) {
     if (step.kind !== "executor" || step.outcome !== "entered" || !step.tag) {
       continue;
     }
     const value = objectsByTag.get(step.tag);
-    if (value) return value;
+    if (value) values.push(value);
   }
-  return undefined;
+  return values;
 }
 
 function hasTag(steps: QueryRecorderStep[], tag: string): boolean {

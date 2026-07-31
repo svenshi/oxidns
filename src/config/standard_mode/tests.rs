@@ -26,6 +26,7 @@ fn default_intent_compiles_deterministically_with_path_scoped_cache() {
     assert!(generated.yaml.contains("negative_ttl_without_soa: 300"));
     assert!(!generated.yaml.contains("min_ttl:"));
     assert!(!generated.yaml.contains("max_ttl:"));
+    #[cfg(feature = "standard")]
     crate::config::validate_text(&generated.yaml)
         .expect("generated default configuration should pass backend analysis");
 }
@@ -144,6 +145,37 @@ fn schema_v3_migrates_with_inactive_phase_one_defaults() {
     let migration = migration.expect("migration metadata");
     assert_eq!(migration.from_schema, 3);
     assert_eq!(migration.to_schema, CURRENT_STANDARD_SCHEMA);
+}
+
+#[test]
+fn schema_v4_migrates_phase_two_placeholders_to_explicit_v5_policies() {
+    use super::model::StandardEcsPolicy;
+
+    let mut value = serde_json::to_value(StandardIntent::default()).expect("serialize default");
+    value["schema"] = json!(4);
+    value["paths"][0]["ecs"] = json!("enabled");
+    value["paths"][0]["ipSelection"] = json!("enabled");
+
+    let (intent, migration) = decode_standard_intent(value).expect("v4 should migrate");
+
+    assert_eq!(intent.schema, 5);
+    assert!(matches!(
+        intent.paths[0].ecs,
+        StandardEcsPolicy::ClientSubnet {
+            mask4: 24,
+            mask6: 48
+        }
+    ));
+    assert!(intent.paths[0].ip_selection.enabled);
+    let codes: std::collections::BTreeSet<_> = migration
+        .expect("migration metadata")
+        .diagnostics
+        .into_iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert!(codes.contains("schema_v4_migrated"));
+    assert!(codes.contains("legacy_ecs_enabled_migrated"));
+    assert!(codes.contains("legacy_ip_selection_enabled_migrated"));
 }
 
 #[test]
@@ -339,24 +371,57 @@ fn path_local_feature_enablement_generates_required_plugins() {
             .iter()
             .any(|tag| tag == "standard_recorder")
     );
+    assert_eq!(
+        generated.yaml.matches("exec: $standard_recorder").count(),
+        1
+    );
+    assert!(generated.yaml.contains(&format!(
+        "mark {}",
+        super::compiler::STANDARD_QUERY_RECORD_MARK
+    )));
 }
 
 #[test]
-fn unsupported_active_phase_two_fields_fail_planning() {
+fn global_query_logging_wraps_the_complete_path_and_honors_path_opt_out() {
     let mut intent = StandardIntent::default();
-    intent.paths[0].ecs = super::model::StandardPolicySwitch::Enabled;
+    intent.paths[0].query_log = super::model::StandardPolicySwitch::Disabled;
+    let mut logged_path = intent.paths[0].clone();
+    logged_path.id = "logged".to_string();
+    logged_path.name = "Logged path".to_string();
+    logged_path.query_log = super::model::StandardPolicySwitch::Inherit;
+    intent.paths.push(logged_path);
+
+    let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
+
+    assert!(plan.can_apply, "diagnostics: {:?}", plan.diagnostics);
+    let generated = plan.generated.expect("generated config");
+    assert_eq!(
+        generated.yaml.matches("exec: $standard_recorder").count(),
+        1
+    );
+    assert!(generated.yaml.contains(&format!(
+        "mark {}",
+        super::compiler::STANDARD_QUERY_SKIP_MARK
+    )));
+}
+
+#[test]
+fn ecs_path_policy_compiles_while_query_sampling_remains_explicitly_blocked() {
+    let mut intent = StandardIntent::default();
+    intent.paths[0].ecs = super::model::StandardEcsPolicy::ClientSubnet {
+        mask4: 24,
+        mask6: 48,
+    };
     intent.query_log.sample_rate = 0.5;
 
     let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
 
     assert!(!plan.can_apply);
-    assert!(plan.generated.is_none());
     let codes: Vec<_> = plan
         .diagnostics
         .iter()
         .map(|diagnostic| diagnostic.code.as_str())
         .collect();
-    assert!(codes.contains(&"ecs_not_available"));
     assert!(codes.contains(&"query_log_sampling_not_available"));
 }
 
@@ -384,18 +449,19 @@ fn every_supported_upstream_strategy_emits_runtime_response_selection() {
 }
 
 #[test]
-fn ordered_fallback_is_explicitly_blocked() {
+fn ordered_fallback_compiles_explicit_member_chain() {
     let mut intent = StandardIntent::default();
     intent.upstream_groups[0].strategy = super::model::StandardUpstreamStrategy::OrderedFallback;
-
+    let mut third = intent.upstream_groups[0].upstreams[0].clone();
+    third.id = "third".to_string();
+    third.name = "Third".to_string();
+    third.address = "9.9.9.9:53".to_string();
+    intent.upstream_groups[0].upstreams.push(third);
     let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
-
-    assert!(!plan.can_apply);
-    assert!(
-        plan.diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "ordered_fallback_not_available")
-    );
+    assert!(plan.can_apply, "diagnostics: {:?}", plan.diagnostics);
+    let yaml = plan.generated.unwrap().yaml;
+    assert!(yaml.contains("standard_forward_default_member_0"));
+    assert!(yaml.contains("type: fallback"));
 }
 
 #[test]
@@ -428,9 +494,9 @@ fn multiple_paths_receive_distinct_cache_plugins() {
 }
 
 #[test]
-fn invalid_ttl_ranges_and_all_inert_phase_two_controls_are_reported() {
+fn invalid_ttl_ranges_and_deferred_scenarios_are_reported_with_active_path_controls() {
     use super::model::{
-        StandardDualStackPolicy, StandardPolicySwitch, StandardScenario, StandardScenarioKind,
+        StandardDualStackPolicy, StandardEcsPolicy, StandardScenario, StandardScenarioKind,
     };
 
     let mut intent = StandardIntent::default();
@@ -439,8 +505,11 @@ fn invalid_ttl_ranges_and_all_inert_phase_two_controls_are_reported() {
     intent.cache.max_negative_ttl = 30;
     intent.cache.negative_ttl_without_soa = 60;
     intent.paths[0].dual_stack = StandardDualStackPolicy::PreferIpv4;
-    intent.paths[0].ip_selection = StandardPolicySwitch::Enabled;
-    intent.paths[0].ecs = StandardPolicySwitch::Enabled;
+    intent.paths[0].ip_selection.enabled = true;
+    intent.paths[0].ecs = StandardEcsPolicy::ClientSubnet {
+        mask4: 24,
+        mask6: 48,
+    };
     intent.query_log.sample_rate = 0.5;
     intent.routing.scenarios.push(StandardScenario {
         id: "privacy".to_string(),
@@ -458,9 +527,6 @@ fn invalid_ttl_ranges_and_all_inert_phase_two_controls_are_reported() {
     for expected in [
         "cache_positive_ttl_range_invalid",
         "cache_negative_ttl_range_invalid",
-        "dual_stack_not_available",
-        "ip_selection_not_available",
-        "ecs_not_available",
         "query_log_sampling_not_available",
         "scenario_not_available",
     ] {
@@ -489,5 +555,319 @@ fn required_capabilities_block_generation_while_metrics_only_warns() {
     assert!(warning.diagnostics.iter().any(|diagnostic| {
         diagnostic.severity == StandardDiagnosticSeverity::Warning
             && diagnostic.code == "optional_metrics_unavailable"
+    }));
+}
+
+fn smart_intent(mode: super::model::StandardUnknownMode) -> StandardIntent {
+    use super::model::{StandardEcsPolicy, StandardRuleDataRole, StandardRuleDataSource};
+
+    let mut intent = StandardIntent::default();
+    intent
+        .upstream_groups
+        .push(super::model::StandardUpstreamGroup {
+            id: "remote".to_string(),
+            name: "Remote".to_string(),
+            description: None,
+            strategy: super::model::StandardUpstreamStrategy::OrderedFallback,
+            upstreams: vec![super::model::StandardUpstream {
+                id: "remote_upstream".to_string(),
+                name: "Remote upstream".to_string(),
+                protocol: super::model::StandardUpstreamProtocol::Udp,
+                address: "9.9.9.9:53".to_string(),
+                enabled: true,
+                bootstrap: None,
+                bootstrap_version: None,
+                dial_address: None,
+                outbound: Some("remote-egress".to_string()),
+                socks5: None,
+                timeout_seconds: Some(2),
+                idle_timeout_seconds: None,
+                max_conns: None,
+                min_conns: None,
+                enable_pipeline: false,
+                tls_verify: true,
+                doh_path: None,
+                enable_http3: false,
+            }],
+            is_default: false,
+        });
+    let mut remote_path = intent.paths[0].clone();
+    remote_path.id = "remote".to_string();
+    remote_path.name = "Remote".to_string();
+    remote_path.upstream_group_id = "remote".to_string();
+    remote_path.ecs = StandardEcsPolicy::Preset {
+        address: "203.0.113.9".to_string(),
+        mask4: 24,
+        mask6: 48,
+    };
+    remote_path.ip_selection.enabled = true;
+    intent.paths.push(remote_path);
+    intent.rule_data.domestic_domains = StandardRuleDataRole {
+        sources: vec![StandardRuleDataSource::Manual {
+            id: "domestic_domains_manual".to_string(),
+            name: "Domestic domains".to_string(),
+            enabled: true,
+            rules: vec!["domain:example.cn".to_string()],
+        }],
+    };
+    intent.rule_data.domestic_ips = StandardRuleDataRole {
+        sources: vec![StandardRuleDataSource::Manual {
+            id: "domestic_ips_manual".to_string(),
+            name: "Domestic IPs".to_string(),
+            enabled: true,
+            rules: vec!["10.0.0.0/8".to_string()],
+        }],
+    };
+    intent.rule_data.remote_domains = StandardRuleDataRole {
+        sources: vec![StandardRuleDataSource::Manual {
+            id: "remote_domains_manual".to_string(),
+            name: "Remote domains".to_string(),
+            enabled: true,
+            rules: vec!["domain:example.com".to_string()],
+        }],
+    };
+    intent.smart_routing.enabled = true;
+    intent.smart_routing.domestic_path_id = Some("default".to_string());
+    intent.smart_routing.remote_path_id = Some("remote".to_string());
+    intent.smart_routing.unknown_mode = mode;
+    intent
+}
+
+#[test]
+fn smart_routing_compiles_native_validation_fallback_and_isolated_ecs_caches() {
+    let intent = smart_intent(super::model::StandardUnknownMode::CompatibilityFirst);
+    let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
+
+    assert!(plan.can_apply, "diagnostics: {:?}", plan.diagnostics);
+    let generated = plan.generated.expect("generated smart config");
+    assert!(
+        generated
+            .yaml
+            .contains("standard_smart_drop_domestic_ip_mismatch")
+    );
+    assert!(generated.yaml.contains("reason: domestic_ip_mismatch"));
+    assert!(
+        generated
+            .yaml
+            .contains("standard_smart_unknown_compatibility")
+    );
+    assert!(generated.yaml.contains("ecs_in_key: true"));
+    assert!(
+        generated
+            .tag_map
+            .caches
+            .contains_key("smart:unknown_compatibility_domestic")
+    );
+    assert!(
+        generated
+            .tag_map
+            .caches
+            .contains_key("smart:unknown_compatibility_remote")
+    );
+    #[cfg(feature = "standard")]
+    crate::config::validate_text(&generated.yaml)
+        .expect("generated smart-routing graph should pass backend analysis");
+}
+
+#[test]
+fn strict_remote_unknown_action_has_no_domestic_fallback_edge() {
+    let intent = smart_intent(super::model::StandardUnknownMode::StrictRemote);
+    let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
+    assert!(plan.can_apply, "diagnostics: {:?}", plan.diagnostics);
+    let generated = plan.generated.unwrap();
+    assert_eq!(
+        generated
+            .tag_map
+            .smart_routing
+            .get("unknownAction")
+            .map(String::as_str),
+        Some("standard_path_unknown_strict_remote")
+    );
+    assert!(
+        !generated
+            .generated_tags
+            .iter()
+            .any(|tag| tag == "standard_smart_unknown_strict_remote")
+    );
+}
+
+#[test]
+fn strict_remote_rejects_domestic_unknown_fallback() {
+    let mut intent = smart_intent(super::model::StandardUnknownMode::StrictRemote);
+    intent.smart_routing.privacy_fallback_to_domestic = true;
+    let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
+    assert!(!plan.can_apply);
+    assert!(
+        plan.diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.code == "strict_remote_domestic_fallback_forbidden" })
+    );
+}
+
+#[test]
+fn smart_timeout_and_transport_policies_compile_into_fallback_control() {
+    let mut intent = smart_intent(super::model::StandardUnknownMode::CompatibilityFirst);
+    intent.smart_routing.response_policy.timeout = false;
+    intent.smart_routing.response_policy.transport_failure = false;
+
+    let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
+    assert!(plan.can_apply, "diagnostics: {:?}", plan.diagnostics);
+    let yaml = plan.generated.expect("generated config").yaml;
+    assert!(yaml.contains("fallback_on_timeout: false"));
+    assert!(yaml.contains("fallback_on_error: false"));
+    assert!(yaml.contains("fallback_on_no_response: true"));
+}
+
+#[test]
+fn semantic_subscription_emits_stable_lifecycle_tags_and_role_provider() {
+    use super::model::{StandardRuleDataRole, StandardRuleDataSource};
+
+    let mut intent = StandardIntent::default();
+    intent.rule_data.remote_domains = StandardRuleDataRole {
+        sources: vec![StandardRuleDataSource::Subscription {
+            id: "remote_feed".to_string(),
+            name: "Remote feed".to_string(),
+            enabled: true,
+            url: "https://example.com/remote.txt".to_string(),
+            update_interval_hours: 12,
+            max_age_hours: 36,
+        }],
+    };
+
+    let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
+    assert!(plan.can_apply, "diagnostics: {:?}", plan.diagnostics);
+    let generated = plan.generated.expect("generated config");
+    assert_eq!(
+        generated
+            .tag_map
+            .rule_data
+            .get("remote_domains")
+            .map(String::as_str),
+        Some("standard_rule_data_remote_domains")
+    );
+    let lifecycle = generated
+        .tag_map
+        .rule_data_sources
+        .get("remote_domains:remote_feed")
+        .expect("subscription lifecycle tags");
+    assert_eq!(
+        lifecycle.download,
+        "standard_rule_data_download_remote_domains_remote_feed"
+    );
+    assert!(generated.yaml.contains("interval: 12h"));
+    assert!(generated.yaml.contains("stop_on_error: true"));
+}
+
+#[test]
+fn missing_local_and_native_rule_data_files_are_apply_blockers() {
+    use super::model::{StandardRuleDataRole, StandardRuleDataSource};
+
+    let mut intent = StandardIntent::default();
+    intent.rule_data.foreign_domains = StandardRuleDataRole {
+        sources: vec![
+            StandardRuleDataSource::LocalFile {
+                id: "missing_text".to_string(),
+                name: "Missing text".to_string(),
+                enabled: true,
+                path: "/definitely/not/present/oxidns-domains.txt".to_string(),
+            },
+            StandardRuleDataSource::NativeDat {
+                id: "missing_dat".to_string(),
+                name: "Missing dat".to_string(),
+                enabled: true,
+                path: "/definitely/not/present/geosite.dat".to_string(),
+                selectors: vec!["geolocation-!cn".to_string()],
+            },
+        ],
+    };
+
+    let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
+    let codes: std::collections::BTreeSet<_> = plan
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    assert!(!plan.can_apply);
+    assert!(codes.contains("rule_data_file_missing"));
+    assert!(codes.contains("rule_data_native_file_missing"));
+}
+
+#[test]
+fn active_path_controls_compile_qtype_ecs_selector_and_dnssec_safe_policy() {
+    use super::model::{StandardDnssecPolicy, StandardDualStackPolicy, StandardEcsPolicy};
+
+    let mut intent = StandardIntent::default();
+    let path = &mut intent.paths[0];
+    path.dual_stack = StandardDualStackPolicy::Ipv4Only;
+    path.ecs = StandardEcsPolicy::PreserveClient;
+    path.ip_selection.enabled = true;
+    path.ip_selection.dnssec_policy = StandardDnssecPolicy::Skip;
+
+    let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
+    assert!(plan.can_apply, "diagnostics: {:?}", plan.diagnostics);
+    let yaml = plan.generated.expect("generated config").yaml;
+    for expected in [
+        "standard_path_qtype_default",
+        "standard_path_qtype_block_default",
+        "type: ecs_handler",
+        "forward: true",
+        "ecs_in_key: true",
+        "type: ip_selector",
+        "dnssec_policy: skip",
+    ] {
+        assert!(yaml.contains(expected), "missing {expected} in {yaml}");
+    }
+}
+
+#[test]
+fn plan_reports_duplicate_and_overridden_rules_with_winners() {
+    use super::model::{StandardExceptionRule, StandardRuleAction, StandardRuleCondition};
+
+    let mut intent = StandardIntent::default();
+    let condition = StandardRuleCondition::Suffix {
+        values: vec!["example.com".to_string()],
+    };
+    intent.exceptions = vec![
+        StandardExceptionRule {
+            id: "allow_first".to_string(),
+            name: "Allow first".to_string(),
+            enabled: true,
+            condition: condition.clone(),
+            action: StandardRuleAction::Allow,
+            note: None,
+        },
+        StandardExceptionRule {
+            id: "allow_duplicate".to_string(),
+            name: "Allow duplicate".to_string(),
+            enabled: true,
+            condition: condition.clone(),
+            action: StandardRuleAction::Allow,
+            note: None,
+        },
+        StandardExceptionRule {
+            id: "route_overridden".to_string(),
+            name: "Route overridden".to_string(),
+            enabled: true,
+            condition,
+            action: StandardRuleAction::UseDefaultPath,
+            note: None,
+        },
+    ];
+
+    let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
+    let codes: Vec<_> = plan
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    assert!(codes.contains(&"rule_duplicate"));
+    assert!(codes.contains(&"rule_conflict_overridden"));
+    let analysis = plan.details["ruleAnalysis"]
+        .as_array()
+        .expect("rule analysis rows");
+    assert!(analysis.iter().any(|row| {
+        row["id"] == "route_overridden"
+            && row["status"] == "overridden"
+            && row["overriddenBy"] == "allow_first"
     }));
 }

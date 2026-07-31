@@ -1,8 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
-import { GitBranch, Loader2, Plus, Route, Save, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Database,
+  GitBranch,
+  Loader2,
+  Plus,
+  RefreshCw,
+  Route,
+  Save,
+  ShieldCheck,
+  Trash2,
+} from "lucide-react";
 import { AppHeader } from "@/components/shell/app-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,6 +31,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
 import {
+  fetchDownloadStatus,
+  fetchProviderStatus,
+  runCronJob,
+  type DownloadStatusResponse,
+  type ProviderStatusResponse,
+} from "@/lib/oxidns-api";
+import {
   selectStandardPathReferences,
   type StandardEntityReference,
   type StandardReferenceKind,
@@ -28,6 +45,8 @@ import {
 import type {
   StandardModeSettings,
   StandardResolutionPath,
+  StandardRuleDataSettings,
+  StandardRuleDataSource,
   StandardRoutingRule,
 } from "@/lib/standard-mode/types";
 import {
@@ -44,6 +63,57 @@ type RoutingConditionType = Extract<
 >;
 
 type PathPolicy = "inherit" | "enabled" | "disabled";
+type RuleDataRoleKey = keyof StandardRuleDataSettings;
+
+type RuleDataRoleRuntimeKey =
+  | "domestic_domains"
+  | "foreign_domains"
+  | "domestic_ips"
+  | "direct_domains"
+  | "remote_domains"
+  | "ddns_domains";
+
+interface RuleDataRuntimeState {
+  providers: Partial<Record<RuleDataRoleRuntimeKey, ProviderStatusResponse | null>>;
+  subscriptions: Record<string, DownloadStatusResponse | null>;
+}
+
+const ruleDataRoles: RuleDataRoleKey[] = [
+  "domesticDomains",
+  "foreignDomains",
+  "domesticIps",
+  "directDomains",
+  "remoteDomains",
+  "ddnsDomains",
+];
+
+const ruleDataRuntimeKeys: Record<RuleDataRoleKey, RuleDataRoleRuntimeKey> = {
+  domesticDomains: "domestic_domains",
+  foreignDomains: "foreign_domains",
+  domesticIps: "domestic_ips",
+  directDomains: "direct_domains",
+  remoteDomains: "remote_domains",
+  ddnsDomains: "ddns_domains",
+};
+
+const ruleDataRoleLabelKeys: Record<RuleDataRoleKey, string> = {
+  domesticDomains: WEBUI.standardRouting.roleDomesticDomains,
+  foreignDomains: WEBUI.standardRouting.roleForeignDomains,
+  domesticIps: WEBUI.standardRouting.roleDomesticIps,
+  directDomains: WEBUI.standardRouting.roleDirectDomains,
+  remoteDomains: WEBUI.standardRouting.roleRemoteDomains,
+  ddnsDomains: WEBUI.standardRouting.roleDdnsDomains,
+};
+
+const ruleDataSourceTypeLabelKeys: Record<
+  StandardRuleDataSource["type"],
+  string
+> = {
+  manual: WEBUI.standardRouting.sourceTypeManual,
+  local_file: WEBUI.standardRouting.sourceTypeLocalFile,
+  subscription: WEBUI.standardRouting.sourceTypeSubscription,
+  native_dat: WEBUI.standardRouting.sourceTypeNativeDat,
+};
 
 const conditionLabelKeys: Record<RoutingConditionType, string> = {
   domain: WEBUI.standardRouting.conditionDomain,
@@ -57,6 +127,19 @@ const policyLabelKeys: Record<PathPolicy, string> = {
   inherit: WEBUI.standardRouting.policyInherit,
   enabled: WEBUI.standardRouting.policyEnabled,
   disabled: WEBUI.standardRouting.policyDisabled,
+};
+
+const smartResponsePolicyLabelKeys: Record<
+  keyof StandardModeSettings["smartRouting"]["responsePolicy"],
+  string
+> = {
+  domesticIpMismatch: WEBUI.standardRouting.responseDomesticIpMismatch,
+  cnameOnly: WEBUI.standardRouting.responseCnameOnly,
+  nodata: WEBUI.standardRouting.responseNodata,
+  nxdomain: WEBUI.standardRouting.responseNxdomain,
+  servfail: WEBUI.standardRouting.responseServfail,
+  timeout: WEBUI.standardRouting.responseTimeout,
+  transportFailure: WEBUI.standardRouting.responseTransportFailure,
 };
 
 const referenceKindLabelKeys: Record<StandardReferenceKind, string> = {
@@ -111,8 +194,22 @@ function createPath(paths: StandardResolutionPath[]): StandardResolutionPath {
     cache: "inherit",
     queryLog: "inherit",
     dualStack: "inherit",
-    ipSelection: "inherit",
-    ecs: "inherit",
+    ipSelection: {
+      enabled: false,
+      selectionMode: "first_success",
+      probeMethods: ["tcp:443", "tcp:80"],
+      probeStaggerMs: 200,
+      probeTimeoutMs: 600,
+      maxWaitMs: 1000,
+      topN: 1,
+      dnssecPolicy: "reorder_only",
+      maxParallelProbes: 256,
+      cacheEnabled: true,
+      cacheSize: 4096,
+      cacheTtlSeconds: 3600,
+      failureTtlSeconds: 60,
+    },
+    ecs: { mode: "inherit" },
   };
 }
 
@@ -134,9 +231,33 @@ function createRule(settings: StandardModeSettings): StandardRoutingRule {
   };
 }
 
+function createRuleDataSource(
+  role: StandardRuleDataSettings[RuleDataRoleKey],
+  type: StandardRuleDataSource["type"],
+): StandardRuleDataSource {
+  const id = nextId(
+    type,
+    role.sources.map((source) => source.id),
+  );
+  const base = { id, name: id, enabled: true };
+  if (type === "manual") return { ...base, type, rules: [] };
+  if (type === "local_file") return { ...base, type, path: "" };
+  if (type === "subscription") {
+    return {
+      ...base,
+      type,
+      url: "",
+      updateIntervalHours: 24,
+      maxAgeHours: 72,
+    };
+  }
+  return { ...base, type: "native_dat", path: "", selectors: [] };
+}
+
 export default function StandardRoutingPage() {
   const storeSettings = useAppStore((s) => s.standardSettings);
   const buildInfo = useAppStore((s) => s.buildInfo);
+  const standardLastGenerated = useAppStore((s) => s.standardLastGenerated);
   const saveStandardSettings = useAppStore((s) => s.saveStandardSettings);
   const isConfigSaving = useAppStore((s) => s.isConfigSaving);
   const isApplying = useAppStore((s) => s.isApplying);
@@ -144,6 +265,14 @@ export default function StandardRoutingPage() {
   const [draftSettings, setDraftSettings] =
     useState<StandardModeSettings | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [runtimeState, setRuntimeState] = useState<RuleDataRuntimeState>({
+    providers: {},
+    subscriptions: {},
+  });
+  const [runtimeLoading, setRuntimeLoading] = useState(false);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [runtimeObservedAtMs, setRuntimeObservedAtMs] = useState(0);
+  const [refreshingSource, setRefreshingSource] = useState<string | null>(null);
   const settings = draftSettings ?? storeSettings;
   const capabilities = useMemo(
     () => standardRoutingCapabilityMap(buildInfo),
@@ -156,6 +285,83 @@ export default function StandardRoutingPage() {
   const isBusy = isConfigSaving || isApplying;
   const canSave = validationIssues.length === 0 && !isBusy;
   const enabledRules = settings.routing.rules.filter((rule) => rule.enabled);
+  const ruleDataRuntimeTags = useMemo(
+    () => standardLastGenerated?.tagMap.ruleData ?? {},
+    [standardLastGenerated],
+  );
+  const ruleDataSourceTags = useMemo(
+    () => standardLastGenerated?.tagMap.ruleDataSources ?? {},
+    [standardLastGenerated],
+  );
+
+  const loadRuleDataRuntime = useCallback(async () => {
+    const providerEntries = Object.entries(ruleDataRuntimeTags);
+    const subscriptionEntries = Object.entries(ruleDataSourceTags);
+    if (providerEntries.length === 0 && subscriptionEntries.length === 0) {
+      setRuntimeState({ providers: {}, subscriptions: {} });
+      setRuntimeError(null);
+      return;
+    }
+    setRuntimeLoading(true);
+    setRuntimeError(null);
+    const failures: Error[] = [];
+    const [providers, subscriptions] = await Promise.all([
+      Promise.all(
+        providerEntries.map(async ([role, tag]) => [
+          role,
+          await fetchProviderStatus(tag).catch((error) => {
+            failures.push(
+              error instanceof Error ? error : new Error(String(error)),
+            );
+            return null;
+          }),
+        ] as const),
+      ),
+      Promise.all(
+        subscriptionEntries.map(async ([sourceKey, tags]) => [
+          sourceKey,
+          await fetchDownloadStatus(tags.download).catch((error) => {
+            failures.push(
+              error instanceof Error ? error : new Error(String(error)),
+            );
+            return null;
+          }),
+        ] as const),
+      ),
+    ]);
+    setRuntimeState({
+      providers: Object.fromEntries(providers),
+      subscriptions: Object.fromEntries(subscriptions),
+    });
+    setRuntimeObservedAtMs(Date.now());
+    setRuntimeError(failures[0]?.message ?? null);
+    setRuntimeLoading(false);
+  }, [ruleDataRuntimeTags, ruleDataSourceTags]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadRuleDataRuntime(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadRuleDataRuntime]);
+
+  const refreshRuleDataSource = async (sourceKey: string) => {
+    const tags = ruleDataSourceTags[sourceKey];
+    if (!tags) return;
+    setRefreshingSource(sourceKey);
+    setRuntimeError(null);
+    try {
+      const result = await runCronJob(tags.cron, tags.job);
+      if (!result.ok) {
+        throw new Error(
+          result.last_error || t(WEBUI.standardRouting.sourceRefreshFailed),
+        );
+      }
+      await loadRuleDataRuntime();
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRefreshingSource(null);
+    }
+  };
 
   const setSettings = (nextSettings: StandardModeSettings) => {
     setSaveError(null);
@@ -290,6 +496,25 @@ export default function StandardRoutingPage() {
             </CardContent>
           </Card>
 
+          <SmartRoutingEditor
+            settings={settings}
+            onChange={(smartRouting) => setPartial({ smartRouting })}
+          />
+
+          <RuleDataEditor
+            ruleData={settings.ruleData}
+            runtimeState={runtimeState}
+            runtimeLoading={runtimeLoading}
+            runtimeError={runtimeError}
+            runtimeObservedAtMs={runtimeObservedAtMs}
+            runtimeTags={ruleDataRuntimeTags}
+            sourceTags={ruleDataSourceTags}
+            refreshingSource={refreshingSource}
+            onRefreshRuntime={() => void loadRuleDataRuntime()}
+            onRefreshSource={(sourceKey) => void refreshRuleDataSource(sourceKey)}
+            onChange={(ruleData) => setPartial({ ruleData })}
+          />
+
           <Card>
             <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
               <div>
@@ -383,6 +608,406 @@ export default function StandardRoutingPage() {
         </div>
       </main>
     </>
+  );
+}
+
+function SmartRoutingEditor({
+  settings,
+  onChange,
+}: {
+  settings: StandardModeSettings;
+  onChange: (value: StandardModeSettings["smartRouting"]) => void;
+}) {
+  const { t } = useI18n();
+  const smart = settings.smartRouting;
+  const patch = (next: Partial<typeof smart>) =>
+    onChange({ ...smart, ...next });
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <ShieldCheck className="size-4" />
+          {t(WEBUI.standardRouting.smartTitle)}
+        </CardTitle>
+        <p className="text-sm text-muted-foreground">
+          {t(WEBUI.standardRouting.smartDescription)}
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <Label className="flex min-h-10 items-center justify-between rounded-lg border px-3 text-sm font-normal">
+          {t(WEBUI.standardRouting.smartEnabled)}
+          <Switch
+            checked={smart.enabled}
+            onCheckedChange={(enabled) => patch({ enabled })}
+          />
+        </Label>
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="space-y-2">
+            <Label>{t(WEBUI.standardRouting.domesticPath)}</Label>
+            <Select
+              value={smart.domesticPathId ?? ""}
+              onValueChange={(domesticPathId) => patch({ domesticPathId })}
+            >
+              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {settings.paths.map((path) => (
+                  <SelectItem key={path.id} value={path.id}>{path.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label>{t(WEBUI.standardRouting.remotePath)}</Label>
+            <Select
+              value={smart.remotePathId ?? ""}
+              onValueChange={(remotePathId) => patch({ remotePathId })}
+            >
+              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {settings.paths.map((path) => (
+                  <SelectItem key={path.id} value={path.id}>{path.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label>{t(WEBUI.standardRouting.unknownMode)}</Label>
+            <Select
+              value={smart.unknownMode}
+              onValueChange={(unknownMode) =>
+                patch({
+                  unknownMode: unknownMode as typeof smart.unknownMode,
+                  ...(unknownMode === "strict_remote"
+                    ? { privacyFallbackToDomestic: false }
+                    : {}),
+                })
+              }
+            >
+              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="compatibility_first">{t(WEBUI.standardRouting.unknownCompatibility)}</SelectItem>
+                <SelectItem value="privacy_first">{t(WEBUI.standardRouting.unknownPrivacy)}</SelectItem>
+                <SelectItem value="strict_remote">{t(WEBUI.standardRouting.unknownStrictRemote)}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label>{t(WEBUI.standardRouting.fallbackThreshold)}</Label>
+            <Input
+              type="number"
+              min={1}
+              value={smart.fallbackThresholdMs}
+              onChange={(event) =>
+                patch({ fallbackThresholdMs: Number(event.target.value) })
+              }
+            />
+          </div>
+        </div>
+        <Label className="flex min-h-10 items-center justify-between rounded-lg border px-3 text-sm font-normal">
+          {t(WEBUI.standardRouting.privacyDomesticFallback)}
+          <Switch
+            checked={smart.privacyFallbackToDomestic}
+            disabled={smart.unknownMode === "strict_remote"}
+            onCheckedChange={(privacyFallbackToDomestic) =>
+              patch({ privacyFallbackToDomestic })
+            }
+          />
+        </Label>
+        <div className="space-y-2">
+          <Label>{t(WEBUI.standardRouting.responsePolicyTitle)}</Label>
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+            {(Object.keys(smartResponsePolicyLabelKeys) as Array<
+              keyof typeof smart.responsePolicy
+            >).map((key) => (
+              <Label
+                key={key}
+                className="flex min-h-10 items-center justify-between rounded-lg border px-3 text-sm font-normal"
+              >
+                {t(smartResponsePolicyLabelKeys[key])}
+                <Switch
+                  checked={smart.responsePolicy[key]}
+                  onCheckedChange={(enabled) =>
+                    patch({
+                      responsePolicy: {
+                        ...smart.responsePolicy,
+                        [key]: enabled,
+                      },
+                    })
+                  }
+                />
+              </Label>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-muted-foreground">
+          {t(WEBUI.standardRouting.leakBoundary)}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function RuleDataEditor({
+  ruleData,
+  runtimeState,
+  runtimeLoading,
+  runtimeError,
+  runtimeObservedAtMs,
+  runtimeTags,
+  sourceTags,
+  refreshingSource,
+  onRefreshRuntime,
+  onRefreshSource,
+  onChange,
+}: {
+  ruleData: StandardRuleDataSettings;
+  runtimeState: RuleDataRuntimeState;
+  runtimeLoading: boolean;
+  runtimeError: string | null;
+  runtimeObservedAtMs: number;
+  runtimeTags: Record<string, string>;
+  sourceTags: Record<string, { download: string; cron: string; job: string }>;
+  refreshingSource: string | null;
+  onRefreshRuntime: () => void;
+  onRefreshSource: (sourceKey: string) => void;
+  onChange: (value: StandardRuleDataSettings) => void;
+}) {
+  const { t, formatNumber } = useI18n();
+  const updateRole = (
+    roleKey: RuleDataRoleKey,
+    sources: StandardRuleDataSource[],
+  ) => onChange({ ...ruleData, [roleKey]: { sources } });
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+        <div>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Database className="size-4" />
+            {t(WEBUI.standardRouting.ruleDataTitle)}
+          </CardTitle>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {t(WEBUI.standardRouting.ruleDataDescription)}
+          </p>
+        </div>
+        <Button type="button" variant="outline" size="sm" onClick={onRefreshRuntime} disabled={runtimeLoading}>
+          <RefreshCw className={`size-4 ${runtimeLoading ? "animate-spin" : ""}`} />
+          {t(WEBUI.common.refresh)}
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {runtimeError ? (
+          <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+            {runtimeError}
+          </div>
+        ) : null}
+        {ruleDataRoles.map((roleKey) => {
+          const role = ruleData[roleKey];
+          const runtimeKey = ruleDataRuntimeKeys[roleKey];
+          const provider = runtimeState.providers[runtimeKey];
+          const providerTag = runtimeTags[runtimeKey];
+          const ruleCount = provider?.rule_stats?.total_rules;
+          return (
+            <div key={roleKey} className="rounded-lg border p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div>
+                    <div className="font-medium">{t(ruleDataRoleLabelKeys[roleKey])}</div>
+                    <div className="font-mono text-xs text-muted-foreground">{runtimeKey}</div>
+                  </div>
+                  {!providerTag ? (
+                    <Badge variant="outline">{t(WEBUI.standardRouting.sourceNotApplied)}</Badge>
+                  ) : provider?.last_error ? (
+                    <Badge variant="destructive">{t(WEBUI.standardRouting.sourceLoadFailed)}</Badge>
+                  ) : provider ? (
+                    <Badge variant="secondary">
+                      {ruleCount == null
+                        ? t(WEBUI.standardRouting.sourceLoaded)
+                        : t(WEBUI.standardRouting.sourceRuleCount, {
+                            count: formatNumber(ruleCount),
+                          })}
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline">{t(WEBUI.standardRouting.sourceStatusUnavailable)}</Badge>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {(["manual", "local_file", "subscription", "native_dat"] as const).map((type) => (
+                    <Button
+                      key={type}
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        updateRole(roleKey, [
+                          ...role.sources,
+                          createRuleDataSource(role, type),
+                        ])
+                      }
+                    >
+                      <Plus className="size-3" /> {t(ruleDataSourceTypeLabelKeys[type])}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+              {role.sources.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  {t(WEBUI.standardRouting.ruleDataEmpty)}
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {role.sources.map((source, index) => (
+                    <RuleDataSourceEditor
+                      key={`${source.id}-${index}`}
+                      source={source}
+                      sourceKey={`${runtimeKey}:${source.id}`}
+                      download={runtimeState.subscriptions[`${runtimeKey}:${source.id}`]}
+                      observedAtMs={runtimeObservedAtMs}
+                      hasRuntimeTags={Boolean(sourceTags[`${runtimeKey}:${source.id}`])}
+                      refreshing={refreshingSource === `${runtimeKey}:${source.id}`}
+                      onRefresh={() => onRefreshSource(`${runtimeKey}:${source.id}`)}
+                      onChange={(next) =>
+                        updateRole(
+                          roleKey,
+                          role.sources.map((item, itemIndex) =>
+                            itemIndex === index ? next : item,
+                          ),
+                        )
+                      }
+                      onRemove={() =>
+                        updateRole(
+                          roleKey,
+                          role.sources.filter((_, itemIndex) => itemIndex !== index),
+                        )
+                      }
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </CardContent>
+    </Card>
+  );
+}
+
+function RuleDataSourceEditor({
+  source,
+  sourceKey,
+  download,
+  observedAtMs,
+  hasRuntimeTags,
+  refreshing,
+  onRefresh,
+  onChange,
+  onRemove,
+}: {
+  source: StandardRuleDataSource;
+  sourceKey: string;
+  download?: DownloadStatusResponse | null;
+  observedAtMs: number;
+  hasRuntimeTags: boolean;
+  refreshing: boolean;
+  onRefresh: () => void;
+  onChange: (value: StandardRuleDataSource) => void;
+  onRemove: () => void;
+}) {
+  const { t } = useI18n();
+  const update = (patch: Partial<StandardRuleDataSource>) =>
+    onChange({ ...source, ...patch } as StandardRuleDataSource);
+  const item = download?.items[0];
+  const stale =
+    source.type === "subscription" &&
+    item?.file.modified_at_ms != null &&
+    observedAtMs - item.file.modified_at_ms >
+      source.maxAgeHours * 60 * 60 * 1000;
+  return (
+    <div className="rounded-md border bg-muted/10 p-3">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="font-mono text-xs text-muted-foreground">{sourceKey}</span>
+        {source.type === "subscription" ? (
+          !hasRuntimeTags ? (
+            <Badge variant="outline">{t(WEBUI.standardRouting.sourceNotApplied)}</Badge>
+          ) : item?.last_error ? (
+            <Badge variant="destructive">{t(WEBUI.standardRouting.sourceDownloadFailed)}</Badge>
+          ) : item && !item.file.exists ? (
+            <Badge variant="destructive">{t(WEBUI.standardRouting.sourceFileMissing)}</Badge>
+          ) : stale ? (
+            <Badge variant="outline">{t(WEBUI.standardRouting.sourceFileStale)}</Badge>
+          ) : item?.file.exists ? (
+            <Badge variant="secondary">{t(WEBUI.standardRouting.sourceReady)}</Badge>
+          ) : (
+            <Badge variant="outline">{t(WEBUI.standardRouting.sourceStatusUnavailable)}</Badge>
+          )
+        ) : null}
+        {source.type === "subscription" && hasRuntimeTags ? (
+          <Button type="button" variant="ghost" size="sm" onClick={onRefresh} disabled={refreshing}>
+            <RefreshCw className={`size-3 ${refreshing ? "animate-spin" : ""}`} />
+            {t(WEBUI.standardRouting.sourceRefresh)}
+          </Button>
+        ) : null}
+        {item?.last_error ? (
+          <span className="text-xs text-destructive">{item.last_error}</span>
+        ) : null}
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <Label className="flex min-h-10 items-center gap-2 text-sm font-normal">
+          <Switch checked={source.enabled} onCheckedChange={(enabled) => update({ enabled })} />
+          {t(ruleDataSourceTypeLabelKeys[source.type])}
+        </Label>
+        <div className="space-y-2">
+          <Label>{t(WEBUI.standardRouting.sourceId)}</Label>
+          <Input value={source.id} onChange={(event) => update({ id: event.target.value })} placeholder="source_id" />
+        </div>
+        <div className="space-y-2">
+          <Label>{t(WEBUI.standardRouting.sourceName)}</Label>
+          <Input value={source.name} onChange={(event) => update({ name: event.target.value })} />
+        </div>
+        <Button type="button" variant="ghost" size="sm" onClick={onRemove}>
+          <Trash2 className="size-4" /> {t(WEBUI.standardRouting.removeRule)}
+        </Button>
+        {source.type === "manual" ? (
+          <Textarea
+            className="min-h-24 font-mono text-sm md:col-span-2 xl:col-span-4"
+            value={source.rules.join("\n")}
+            placeholder={t(WEBUI.standardRouting.sourceRules)}
+            onChange={(event) => update({ rules: lines(event.target.value) })}
+          />
+        ) : null}
+        {source.type === "local_file" || source.type === "native_dat" ? (
+          <Input
+            className="md:col-span-2"
+            value={source.path}
+            placeholder={t(WEBUI.standardRouting.sourcePath)}
+            onChange={(event) => update({ path: event.target.value })}
+          />
+        ) : null}
+        {source.type === "native_dat" ? (
+          <Textarea
+            className="min-h-20 font-mono text-sm md:col-span-2"
+            value={source.selectors.join("\n")}
+            placeholder={t(WEBUI.standardRouting.sourceSelectors)}
+            onChange={(event) => update({ selectors: lines(event.target.value) })}
+          />
+        ) : null}
+        {source.type === "subscription" ? (
+          <>
+            <div className="space-y-2 md:col-span-2">
+              <Label>{t(WEBUI.standardRouting.sourceUrl)}</Label>
+              <Input value={source.url} placeholder="https://…" onChange={(event) => update({ url: event.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label>{t(WEBUI.standardRouting.sourceUpdateInterval)}</Label>
+              <Input type="number" min={1} value={source.updateIntervalHours} onChange={(event) => update({ updateIntervalHours: Number(event.target.value) })} />
+            </div>
+            <div className="space-y-2">
+              <Label>{t(WEBUI.standardRouting.sourceMaxAge)}</Label>
+              <Input type="number" min={1} value={source.maxAgeHours} onChange={(event) => update({ maxAgeHours: Number(event.target.value) })} />
+            </div>
+          </>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -501,6 +1126,87 @@ function PathEditor({
             onChange={(event) => onChange({ description: event.target.value })}
           />
         </div>
+      </div>
+      <div className="mt-4 grid gap-4 rounded-lg border bg-muted/10 p-3 md:grid-cols-2 xl:grid-cols-4">
+        <div className="space-y-2">
+          <Label>{t(WEBUI.standardRouting.pathDualStack)}</Label>
+          <Select
+            value={path.dualStack}
+            onValueChange={(dualStack) =>
+              onChange({ dualStack: dualStack as StandardResolutionPath["dualStack"] })
+            }
+          >
+            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {(["inherit", "disabled", "prefer_ipv4", "prefer_ipv6", "ipv4_only", "ipv6_only"] as const).map((mode) => (
+                <SelectItem key={mode} value={mode}>{mode}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-2">
+          <Label>{t(WEBUI.standardRouting.pathEcs)}</Label>
+          <Select
+            value={path.ecs.mode}
+            onValueChange={(mode) => {
+              if (mode === "client_subnet") onChange({ ecs: { mode, mask4: 24, mask6: 48 } });
+              else if (mode === "preset") onChange({ ecs: { mode, address: "", mask4: 24, mask6: 48 } });
+              else onChange({ ecs: { mode } as StandardResolutionPath["ecs"] });
+            }}
+          >
+            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {(["inherit", "remove", "preserve_client", "client_subnet", "preset"] as const).map((mode) => (
+                <SelectItem key={mode} value={mode}>{mode}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        {path.ecs.mode === "preset" ? (
+          <div className="space-y-2">
+            <Label>{t(WEBUI.standardRouting.ecsPreset)}</Label>
+            <Input value={path.ecs.address} onChange={(event) => onChange({ ecs: { ...path.ecs, address: event.target.value } as StandardResolutionPath["ecs"] })} />
+          </div>
+        ) : null}
+        {path.ecs.mode === "client_subnet" || path.ecs.mode === "preset" ? (
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-2"><Label>IPv4</Label><Input type="number" min={0} max={32} value={path.ecs.mask4} onChange={(event) => onChange({ ecs: { ...path.ecs, mask4: Number(event.target.value) } as StandardResolutionPath["ecs"] })} /></div>
+            <div className="space-y-2"><Label>IPv6</Label><Input type="number" min={0} max={128} value={path.ecs.mask6} onChange={(event) => onChange({ ecs: { ...path.ecs, mask6: Number(event.target.value) } as StandardResolutionPath["ecs"] })} /></div>
+          </div>
+        ) : null}
+        <Label className="flex min-h-10 items-center justify-between rounded-lg border px-3 text-sm font-normal">
+          {t(WEBUI.standardRouting.pathIpSelection)}
+          <Switch
+            checked={path.ipSelection.enabled}
+            onCheckedChange={(enabled) => onChange({ ipSelection: { ...path.ipSelection, enabled } })}
+          />
+        </Label>
+        {path.ipSelection.enabled ? (
+          <>
+            <div className="space-y-2">
+              <Label>{t(WEBUI.standardRouting.ipSelectionMode)}</Label>
+              <Select value={path.ipSelection.selectionMode} onValueChange={(selectionMode) => onChange({ ipSelection: { ...path.ipSelection, selectionMode: selectionMode as typeof path.ipSelection.selectionMode } })}>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="first_success">first_success</SelectItem>
+                  <SelectItem value="best_within_budget">best_within_budget</SelectItem>
+                  <SelectItem value="background">background</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>{t(WEBUI.standardRouting.dnssecPolicy)}</Label>
+              <Select value={path.ipSelection.dnssecPolicy} onValueChange={(dnssecPolicy) => onChange({ ipSelection: { ...path.ipSelection, dnssecPolicy: dnssecPolicy as typeof path.ipSelection.dnssecPolicy } })}>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="reorder_only">reorder_only</SelectItem><SelectItem value="skip">skip</SelectItem></SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>{t(WEBUI.standardRouting.probeMethods)}</Label>
+              <Input value={path.ipSelection.probeMethods.join(",")} onChange={(event) => onChange({ ipSelection: { ...path.ipSelection, probeMethods: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) } })} />
+            </div>
+          </>
+        ) : null}
       </div>
       <div className="mt-4 rounded-lg border bg-muted/20 p-3 text-sm">
         <div className="font-medium">
@@ -754,6 +1460,27 @@ function validationMessage(
   }
   if (issue.code === "path_upstream_group_required") {
     return t(WEBUI.standardRouting.validationPathUpstreamRequired);
+  }
+  if (
+    issue.code === "path_ecs_invalid" ||
+    issue.code === "path_ip_selection_invalid"
+  ) {
+    return t(WEBUI.standardRouting.validationPathTransportInvalid);
+  }
+  if (issue.code === "smart_path_required") {
+    return t(WEBUI.standardRouting.validationSmartPathRequired);
+  }
+  if (issue.code === "smart_paths_not_isolated") {
+    return t(WEBUI.standardRouting.validationSmartIsolationRequired);
+  }
+  if (issue.code === "strict_remote_fallback_forbidden") {
+    return t(WEBUI.standardRouting.validationStrictRemoteFallback);
+  }
+  if (issue.code === "rule_data_required") {
+    return t(WEBUI.standardRouting.validationRuleDataRequired);
+  }
+  if (issue.code === "rule_data_source_invalid") {
+    return t(WEBUI.standardRouting.validationRuleDataSourceInvalid);
   }
   if (issue.code === "path_delete_blocked") {
     return t(WEBUI.standardRouting.validationPathDeleteBlocked);

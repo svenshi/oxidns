@@ -49,9 +49,7 @@ use crate::infra::observability::metrics::{
 use crate::infra::system::deserialize_duration_option;
 use crate::plugin::executor::{ExecStep, Executor};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
-use crate::plugin_factory;
-#[cfg(feature = "api")]
-use crate::register_plugin_api;
+use crate::{plugin_factory, register_plugin_api};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 

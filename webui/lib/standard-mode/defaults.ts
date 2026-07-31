@@ -36,14 +36,28 @@ export function createDefaultResolutionPath(): StandardResolutionPath {
     cache: "inherit",
     queryLog: "inherit",
     dualStack: "inherit",
-    ipSelection: "inherit",
-    ecs: "inherit",
+    ipSelection: {
+      enabled: false,
+      selectionMode: "first_success",
+      probeMethods: ["tcp:443", "tcp:80"],
+      probeStaggerMs: 200,
+      probeTimeoutMs: 600,
+      maxWaitMs: 1000,
+      topN: 1,
+      dnssecPolicy: "reorder_only",
+      maxParallelProbes: 256,
+      cacheEnabled: true,
+      cacheSize: 4096,
+      cacheTtlSeconds: 3600,
+      failureTtlSeconds: 60,
+    },
+    ecs: { mode: "inherit" },
   };
 }
 
 export function createDefaultStandardSettings(): StandardModeSettings {
   return {
-    schema: 4,
+    schema: 5,
     listen: {
       address: "0.0.0.0:5335",
       udp: true,
@@ -66,6 +80,29 @@ export function createDefaultStandardSettings(): StandardModeSettings {
       responseTtl: { enabled: false, min: 30, max: 86400 },
       qtypePolicy: { enabled: false, qtypes: [], response: "nodata" },
       ddns: { enabled: false, domains: [], ttl: 30 },
+    },
+    ruleData: {
+      domesticDomains: { sources: [] },
+      foreignDomains: { sources: [] },
+      domesticIps: { sources: [] },
+      directDomains: { sources: [] },
+      remoteDomains: { sources: [] },
+      ddnsDomains: { sources: [] },
+    },
+    smartRouting: {
+      enabled: false,
+      unknownMode: "compatibility_first",
+      privacyFallbackToDomestic: false,
+      fallbackThresholdMs: 500,
+      responsePolicy: {
+        domesticIpMismatch: true,
+        cnameOnly: true,
+        nodata: true,
+        nxdomain: true,
+        servfail: true,
+        timeout: true,
+        transportFailure: true,
+      },
     },
     cache: {
       enabled: true,

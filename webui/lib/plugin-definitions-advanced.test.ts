@@ -61,6 +61,8 @@ const EXPECTED_ADVANCED_FIELDS: Record<string, string[]> = {
     "memory_tail",
     "cleanup_interval_hours",
     "reader_concurrency",
+    "include_marks",
+    "exclude_marks",
   ],
   "executor/http_request": [
     "async",

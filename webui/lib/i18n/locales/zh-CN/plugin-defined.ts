@@ -1151,6 +1151,21 @@ export const zhCNPluginDefined = {
           description:
             "限制 query_recorder API/统计读取侧同时运行的 SQLite reader 数量，避免 WebUI 或 API 突发请求占用过多阻塞线程和内存。",
         },
+        include_marks: {
+          label: "包含 Mark",
+          description: "非空时，仅记录上下文至少命中一个指定 mark 的查询。",
+        },
+        "include_marks[]": {
+          label: "Mark",
+        },
+        exclude_marks: {
+          label: "排除 Mark",
+          description:
+            "上下文命中任一指定 mark 时跳过记录，且优先级高于包含条件。",
+        },
+        "exclude_marks[]": {
+          label: "Mark",
+        },
       },
     },
     metrics_collector: {

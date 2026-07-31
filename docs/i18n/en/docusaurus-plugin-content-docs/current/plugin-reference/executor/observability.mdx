@@ -183,6 +183,10 @@ Persists the entry request, the post-`next` response, and `sequence` execution-p
     cleanup_interval_hours: 1
     # Maximum concurrent SQLite readers; minimum 1
     reader_concurrency: 2
+    # Optional: record only when the context has any listed mark
+    include_marks: [100]
+    # Optional: skip when the context has any listed mark; exclusion wins
+    exclude_marks: [101]
 ```
 
 ### Configuration Details
@@ -227,11 +231,17 @@ Persists the entry request, the post-`next` response, and `sequence` execution-p
 - Type: `integer`; Required: no; Default: `2`; Minimum: `1`
 - Purpose: Limits concurrent SQLite readers used by WebUI / API history and stats queries, so read bursts on large recorder databases do not occupy too many blocking threads or too much memory.
 
+#### `include_marks` / `exclude_marks`
+
+- Type: `integer[]`; Required: no; Default: `[]`
+- Purpose: A non-empty `include_marks` list records only when the context contains at least one listed mark. Any `exclude_marks` hit always skips the row. Empty lists preserve the original record-all behavior.
+
 ### Behavior
 
 - This is a pure executor observer and does not change server finalization logic.
 - It captures a structured snapshot of the entry request, enables `DnsContext.execution_path`, runs `next`, and commits immediately after `next` returns.
 - Successful runs store the current response. Failed runs store `error` and an empty response shape.
+- Mark filters are evaluated after `next` returns, allowing a downstream path to decide persistence while an entry recorder still captures the complete routing and fallback event chain.
 - Request and response payloads are not stored as wire blobs. Question, RR, and EDNS fields are extracted into JSON text columns.
 - The `client_ip` field comes from the transport source address seen by OxiDNS; if a local forwarding chain such as systemd-resolved, dnsmasq, AdGuardHome, dae, or clash sits in front, rows may show only `127.0.0.1`.
 - Each recorder uses versioned tables under the same prefix:

@@ -9,11 +9,15 @@ import type {
   StandardModeSettings,
   StandardQueryLogSettings,
   StandardResolutionPath,
+  StandardRuleDataRole,
+  StandardRuleDataSettings,
+  StandardRuleDataSource,
   StandardRoutingRule,
   StandardRoutingSettings,
   StandardScenario,
   StandardSubscription,
   StandardSystemSettings,
+  StandardSmartRoutingSettings,
   StandardUpstream,
   StandardUpstreamGroup,
   StandardUpstreamProtocol,
@@ -210,14 +214,101 @@ function normalizePath(
     source.dualStack === "ipv6_only"
       ? source.dualStack
       : "inherit";
-  const ipSelection =
+  const defaultIpSelection = defaults.paths[0].ipSelection;
+  const ipSource = asRecord(source.ipSelection);
+  const legacyIpSelection =
     source.ipSelection === "enabled" || source.ipSelection === "disabled"
       ? source.ipSelection
       : "inherit";
-  const ecs =
-    source.ecs === "enabled" || source.ecs === "disabled"
-      ? source.ecs
-      : "inherit";
+  const selectionMode =
+    ipSource.selectionMode === "best_within_budget" ||
+    ipSource.selectionMode === "background"
+      ? ipSource.selectionMode
+      : "first_success";
+  const dnssecPolicy =
+    ipSource.dnssecPolicy === "skip" ? "skip" : "reorder_only";
+  const ipSelection = {
+    ...defaultIpSelection,
+    enabled:
+      typeof ipSource.enabled === "boolean"
+        ? ipSource.enabled
+        : legacyIpSelection === "enabled",
+    selectionMode,
+    probeMethods:
+      asStringArray(ipSource.probeMethods).length > 0
+        ? asStringArray(ipSource.probeMethods)
+        : defaultIpSelection.probeMethods,
+    probeStaggerMs: Math.max(
+      0,
+      asNumber(ipSource.probeStaggerMs, defaultIpSelection.probeStaggerMs),
+    ),
+    probeTimeoutMs: Math.max(
+      1,
+      asNumber(ipSource.probeTimeoutMs, defaultIpSelection.probeTimeoutMs),
+    ),
+    maxWaitMs: Math.max(
+      1,
+      asNumber(ipSource.maxWaitMs, defaultIpSelection.maxWaitMs),
+    ),
+    topN: Math.max(1, asNumber(ipSource.topN, defaultIpSelection.topN)),
+    ...(asString(ipSource.outbound).trim()
+      ? { outbound: asString(ipSource.outbound).trim() }
+      : {}),
+    ...(asString(ipSource.socks5).trim()
+      ? { socks5: asString(ipSource.socks5).trim() }
+      : {}),
+    dnssecPolicy,
+    maxParallelProbes: Math.max(
+      1,
+      asNumber(
+        ipSource.maxParallelProbes,
+        defaultIpSelection.maxParallelProbes,
+      ),
+    ),
+    cacheEnabled: asBoolean(
+      ipSource.cacheEnabled,
+      defaultIpSelection.cacheEnabled,
+    ),
+    cacheSize: Math.max(
+      1,
+      asNumber(ipSource.cacheSize, defaultIpSelection.cacheSize),
+    ),
+    cacheTtlSeconds: Math.max(
+      1,
+      asNumber(
+        ipSource.cacheTtlSeconds,
+        defaultIpSelection.cacheTtlSeconds,
+      ),
+    ),
+    failureTtlSeconds: Math.max(
+      1,
+      asNumber(
+        ipSource.failureTtlSeconds,
+        defaultIpSelection.failureTtlSeconds,
+      ),
+    ),
+  } satisfies StandardResolutionPath["ipSelection"];
+  const ecsSource = asRecord(source.ecs);
+  const ecsMode = asString(ecsSource.mode);
+  const mask4 = Math.min(32, Math.max(0, asNumber(ecsSource.mask4, 24)));
+  const mask6 = Math.min(128, Math.max(0, asNumber(ecsSource.mask6, 48)));
+  const ecs: StandardResolutionPath["ecs"] =
+    ecsMode === "preset"
+      ? {
+          mode: "preset",
+          address: asString(ecsSource.address).trim(),
+          mask4,
+          mask6,
+        }
+      : ecsMode === "client_subnet"
+        ? { mode: "client_subnet", mask4, mask6 }
+        : ecsMode === "remove" || source.ecs === "disabled"
+          ? { mode: "remove" }
+          : ecsMode === "preserve_client"
+            ? { mode: "preserve_client" }
+            : source.ecs === "enabled"
+              ? { mode: "client_subnet", mask4: 24, mask6: 48 }
+              : { mode: "inherit" };
   return {
     id,
     name: asString(source.name, id === "default" ? defaults.paths[0].name : id),
@@ -374,6 +465,107 @@ function normalizeLocal(value: unknown): StandardLocalSettings {
         ? { pathId: cleanId(ddns.pathId, "") }
         : {}),
       ttl: Math.max(1, Math.floor(asNumber(ddns.ttl, defaults.ddns.ttl))),
+    },
+  };
+}
+
+function normalizeRuleDataSource(
+  value: unknown,
+  index: number,
+): StandardRuleDataSource | null {
+  const source = asRecord(value);
+  const type = asString(source.type);
+  const base = {
+    id: cleanId(source.id, `source_${index + 1}`),
+    name: asString(source.name, `Source ${index + 1}`).trim(),
+    enabled: asBoolean(source.enabled, true),
+  };
+  if (type === "manual") {
+    return { ...base, type, rules: asStringArray(source.rules) };
+  }
+  if (type === "local_file") {
+    return { ...base, type, path: asString(source.path).trim() };
+  }
+  if (type === "subscription") {
+    return {
+      ...base,
+      type,
+      url: asString(source.url).trim(),
+      updateIntervalHours: Math.max(
+        1,
+        asNumber(source.updateIntervalHours, 24),
+      ),
+      maxAgeHours: Math.max(1, asNumber(source.maxAgeHours, 72)),
+    };
+  }
+  if (type === "native_dat") {
+    return {
+      ...base,
+      type,
+      path: asString(source.path).trim(),
+      selectors: asStringArray(source.selectors),
+    };
+  }
+  return null;
+}
+
+function normalizeRuleDataRole(value: unknown): StandardRuleDataRole {
+  const source = asRecord(value);
+  return {
+    sources: Array.isArray(source.sources)
+      ? source.sources
+          .map(normalizeRuleDataSource)
+          .filter((item): item is StandardRuleDataSource => item !== null)
+      : [],
+  };
+}
+
+function normalizeRuleData(value: unknown): StandardRuleDataSettings {
+  const source = asRecord(value);
+  return {
+    domesticDomains: normalizeRuleDataRole(source.domesticDomains),
+    foreignDomains: normalizeRuleDataRole(source.foreignDomains),
+    domesticIps: normalizeRuleDataRole(source.domesticIps),
+    directDomains: normalizeRuleDataRole(source.directDomains),
+    remoteDomains: normalizeRuleDataRole(source.remoteDomains),
+    ddnsDomains: normalizeRuleDataRole(source.ddnsDomains),
+  };
+}
+
+function normalizeSmartRouting(value: unknown): StandardSmartRoutingSettings {
+  const defaults = createDefaultStandardSettings().smartRouting;
+  const source = asRecord(value);
+  const response = asRecord(source.responsePolicy);
+  const unknownMode =
+    source.unknownMode === "privacy_first" ||
+    source.unknownMode === "strict_remote"
+      ? source.unknownMode
+      : "compatibility_first";
+  return {
+    enabled: asBoolean(source.enabled, false),
+    ...(asString(source.domesticPathId).trim()
+      ? { domesticPathId: asString(source.domesticPathId).trim() }
+      : {}),
+    ...(asString(source.remotePathId).trim()
+      ? { remotePathId: asString(source.remotePathId).trim() }
+      : {}),
+    unknownMode,
+    privacyFallbackToDomestic: asBoolean(
+      source.privacyFallbackToDomestic,
+      false,
+    ),
+    fallbackThresholdMs: Math.max(
+      1,
+      asNumber(source.fallbackThresholdMs, defaults.fallbackThresholdMs),
+    ),
+    responsePolicy: {
+      domesticIpMismatch: asBoolean(response.domesticIpMismatch, true),
+      cnameOnly: asBoolean(response.cnameOnly, true),
+      nodata: asBoolean(response.nodata, true),
+      nxdomain: asBoolean(response.nxdomain, true),
+      servfail: asBoolean(response.servfail, true),
+      timeout: asBoolean(response.timeout, true),
+      transportFailure: asBoolean(response.transportFailure, true),
     },
   };
 }
@@ -577,7 +769,12 @@ export function normalizeStandardSettings(
       notice: "legacy_migrated",
     };
   }
-  if (source.schema !== 2 && source.schema !== 3 && source.schema !== 4) {
+  if (
+    source.schema !== 2 &&
+    source.schema !== 3 &&
+    source.schema !== 4 &&
+    source.schema !== 5
+  ) {
     return {
       settings: createDefaultStandardSettings(),
       notice: "invalid_fallback",
@@ -603,6 +800,7 @@ export function normalizeStandardSettings(
 
   const migratedFromV2 = source.schema === 2;
   const migratedFromV3 = source.schema === 3;
+  const migratedFromV4 = source.schema === 4;
   const defaultGroupIndex = migratedFromV2
     ? Math.max(
         0,
@@ -613,7 +811,7 @@ export function normalizeStandardSettings(
     : -1;
   return {
     settings: {
-      schema: 4,
+      schema: 5,
       listen: {
         address: asString(asRecord(source.listen).address, "0.0.0.0:5335"),
         udp: asBoolean(asRecord(source.listen).udp, true),
@@ -629,12 +827,14 @@ export function normalizeStandardSettings(
         ? paths.map((path) => ({
             ...path,
             dualStack: "inherit",
-            ipSelection: "inherit",
-            ecs: "inherit",
+            ipSelection: createDefaultStandardSettings().paths[0].ipSelection,
+            ecs: { mode: "inherit" as const },
           }))
         : paths,
       filtering: normalizeFiltering(source.filtering),
       local: normalizeLocal(source.local),
+      ruleData: normalizeRuleData(source.ruleData),
+      smartRouting: normalizeSmartRouting(source.smartRouting),
       cache: normalizeCache(source.cache),
       queryLog: migratedFromV2
         ? { ...normalizeQueryLog(source.queryLog), sampleRate: 1 }
@@ -654,7 +854,10 @@ export function normalizeStandardSettings(
         : [],
       system: normalizeSystem(source.system),
     },
-    notice: migratedFromV2 || migratedFromV3 ? "legacy_migrated" : null,
+    notice:
+      migratedFromV2 || migratedFromV3 || migratedFromV4
+        ? "legacy_migrated"
+        : null,
   };
 }
 

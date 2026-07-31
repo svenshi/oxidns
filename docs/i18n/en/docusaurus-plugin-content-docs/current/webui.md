@@ -17,8 +17,10 @@ In both modes, the WebUI defaults to the relative backend URL `/api`. When the W
 - Before saving, the Rust backend builds a Plan that exposes diagnostics, configuration ownership, and plugin changes. Unmanaged or modified configurations require explicit takeover confirmation.
 - After confirmation, Standard state, generated metadata, DNS YAML, and runtime reload are applied as one recoverable transaction. Failure restores the previous files and runtime.
 - Standard Mode provides multiple upstream groups, reference-aware resolution paths, independent filter subscriptions, local DNS policies, query-log export, per-path cache operations, and backend configuration history.
+- Schema v5 also provides six semantic data roles, domestic/remote paths, three unknown-domain modes, response-validation fallback, ECS, dual-stack policy, and DNSSEC-safe IP selection. Rule-data UI reports missing, stale, download, and Provider load states.
 - Local DNS Policies only use native OxiDNS plugins. History restores under Operations & Recovery pass through diff review and transactional apply instead of overwriting YAML.
 - Switching the WebUI view alone does not rewrite DNS YAML. See [Standard Mode Plan/Apply](api/standard-mode.mdx) for the API contract.
+- Upstream leak prevention applies only to queries that reach OxiDNS. See [Standard Mode Smart Routing](standard-mode-smart-routing.md) for the complete boundary and configuration semantics.
 
 ## Use The WebUI Included In Release Packages
 

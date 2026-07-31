@@ -63,8 +63,33 @@ export interface StandardResolutionPath {
     | "prefer_ipv6"
     | "ipv4_only"
     | "ipv6_only";
-  ipSelection: "inherit" | "enabled" | "disabled";
-  ecs: "inherit" | "enabled" | "disabled";
+  ipSelection: StandardIpSelectionSettings;
+  ecs: StandardEcsPolicy;
+}
+
+export type StandardEcsPolicy =
+  | { mode: "inherit" }
+  | { mode: "remove" }
+  | { mode: "preserve_client" }
+  | { mode: "client_subnet"; mask4: number; mask6: number }
+  | { mode: "preset"; address: string; mask4: number; mask6: number };
+
+export interface StandardIpSelectionSettings {
+  enabled: boolean;
+  selectionMode: "first_success" | "best_within_budget" | "background";
+  probeMethods: string[];
+  probeStaggerMs: number;
+  probeTimeoutMs: number;
+  maxWaitMs: number;
+  topN: number;
+  outbound?: string;
+  socks5?: string;
+  dnssecPolicy: "reorder_only" | "skip";
+  maxParallelProbes: number;
+  cacheEnabled: boolean;
+  cacheSize: number;
+  cacheTtlSeconds: number;
+  failureTtlSeconds: number;
 }
 
 export interface StandardCacheSettings {
@@ -149,6 +174,58 @@ export interface StandardRoutingSettings {
   scenarios: StandardScenario[];
 }
 
+export interface StandardRuleDataSettings {
+  domesticDomains: StandardRuleDataRole;
+  foreignDomains: StandardRuleDataRole;
+  domesticIps: StandardRuleDataRole;
+  directDomains: StandardRuleDataRole;
+  remoteDomains: StandardRuleDataRole;
+  ddnsDomains: StandardRuleDataRole;
+}
+
+export interface StandardRuleDataRole {
+  sources: StandardRuleDataSource[];
+}
+
+interface StandardRuleDataSourceBase {
+  id: string;
+  name: string;
+  enabled: boolean;
+}
+
+export type StandardRuleDataSource =
+  | (StandardRuleDataSourceBase & { type: "manual"; rules: string[] })
+  | (StandardRuleDataSourceBase & { type: "local_file"; path: string })
+  | (StandardRuleDataSourceBase & {
+      type: "subscription";
+      url: string;
+      updateIntervalHours: number;
+      maxAgeHours: number;
+    })
+  | (StandardRuleDataSourceBase & {
+      type: "native_dat";
+      path: string;
+      selectors: string[];
+    });
+
+export interface StandardSmartRoutingSettings {
+  enabled: boolean;
+  domesticPathId?: string;
+  remotePathId?: string;
+  unknownMode: "compatibility_first" | "privacy_first" | "strict_remote";
+  privacyFallbackToDomestic: boolean;
+  fallbackThresholdMs: number;
+  responsePolicy: {
+    domesticIpMismatch: boolean;
+    cnameOnly: boolean;
+    nodata: boolean;
+    nxdomain: boolean;
+    servfail: boolean;
+    timeout: boolean;
+    transportFailure: boolean;
+  };
+}
+
 export interface StandardRoutingRule {
   id: string;
   name: string;
@@ -209,12 +286,14 @@ export interface StandardSystemSettings {
 }
 
 export interface StandardModeSettings {
-  schema: 4;
+  schema: 5;
   listen: StandardListenSettings;
   upstreamGroups: StandardUpstreamGroup[];
   paths: StandardResolutionPath[];
   filtering: StandardFilteringSettings;
   local: StandardLocalSettings;
+  ruleData: StandardRuleDataSettings;
+  smartRouting: StandardSmartRoutingSettings;
   cache: StandardCacheSettings;
   queryLog: StandardQueryLogSettings;
   routing: StandardRoutingSettings;
@@ -237,6 +316,9 @@ export interface StandardTagMap {
   routingRules: Record<string, string>;
   exceptionRules: Record<string, string>;
   devices?: Record<string, string>;
+  ruleData?: Record<string, string>;
+  ruleDataSources?: Record<string, StandardSubscriptionTagMap>;
+  smartRouting?: Record<string, string>;
 }
 
 export interface StandardSubscriptionTagMap {
@@ -256,6 +338,8 @@ export interface StandardGenerationSummary {
   exceptionRuleCount: number;
   deviceCount: number;
   localPolicyCount: number;
+  ruleDataSourceCount?: number;
+  smartRoutingEnabled?: boolean;
 }
 
 export interface StandardGeneratedMetadata {

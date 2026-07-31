@@ -160,6 +160,10 @@ import Admonition from "@theme/Admonition";
     threshold: 200
     # 让备用路径始终并行待命，换取更低尾延迟
     always_standby: true
+    # 可分别禁止超时、执行错误或无响应触发备用路径
+    fallback_on_timeout: true
+    fallback_on_error: true
+    fallback_on_no_response: true
 ```
 
 ### 配置项
@@ -190,10 +194,17 @@ import Admonition from "@theme/Admonition";
 - 类型：`boolean`；必填：否；默认值：`false`
 - 作用：控制在主/备路径选出最终响应后，是否立即停止后续 executor 链。
 
+#### `fallback_on_timeout` / `fallback_on_error` / `fallback_on_no_response`
+
+- 类型：`boolean`；必填：否；默认值：`true`
+- 作用：分别控制超过 `threshold`、主执行器返回错误、主执行器完成但未产生响应时，是否允许备用路径接管。
+- 禁止 `fallback_on_error` 时，主路径错误直接返回；禁止 `fallback_on_no_response` 时，主路径无响应会继续外层执行链。
+
 ### 行为说明
 
 - 正向启动主路径。
 - 到达阈值或主路径失败后启动/释放备用路径。
+- 三个 `fallback_on_*` 开关关闭的失败类别不会静默执行备用路径。
 - 谁先拿到有效响应，谁赢。
 - 另一分支会被取消。
 - 开启 `short_circuit` 时，胜出分支写回响应后会直接结束后续 executor 链。

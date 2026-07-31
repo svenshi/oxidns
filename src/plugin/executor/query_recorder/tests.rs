@@ -18,7 +18,7 @@ use super::store::{
     load_rcode_distribution, load_timeseries, load_top_clients, load_top_qnames,
     open_reader_database, open_writer_database, query_records, table_names,
 };
-use super::{QueryRecorder, QueryRecorderFactory, resolve_config};
+use super::{QueryRecorder, QueryRecorderFactory, resolve_config, should_record};
 use crate::core::context::{DnsContext, ExecutionPathEvent};
 use crate::infra::clock::AppClock;
 use crate::infra::error::DnsError;
@@ -38,6 +38,8 @@ fn recorder_config(path: &str) -> serde_yaml_ng::Value {
         retention_days: Some(7),
         cleanup_interval_hours: Some(1),
         reader_concurrency: Some(2),
+        include_marks: Vec::new(),
+        exclude_marks: Vec::new(),
     })
     .unwrap()
 }
@@ -52,8 +54,33 @@ fn recorder_space_config(path: &str) -> serde_yaml_ng::Value {
         retention_days: Some(7),
         cleanup_interval_hours: Some(1),
         reader_concurrency: Some(2),
+        include_marks: Vec::new(),
+        exclude_marks: Vec::new(),
     })
     .unwrap()
+}
+
+#[test]
+fn record_mark_filters_are_opt_in_and_exclusion_wins() {
+    let temp = NamedTempFile::new().unwrap();
+    let mut value = recorder_config(&temp.path().display().to_string());
+    let mapping = value.as_mapping_mut().unwrap();
+    mapping.insert(
+        serde_yaml_ng::Value::String("include_marks".to_string()),
+        serde_yaml_ng::to_value([41_u32]).unwrap(),
+    );
+    mapping.insert(
+        serde_yaml_ng::Value::String("exclude_marks".to_string()),
+        serde_yaml_ng::to_value([42_u32]).unwrap(),
+    );
+    let config = resolve_config(Some(value)).unwrap();
+    let mut context = test_context();
+
+    assert!(!should_record(&config, &context));
+    context.marks_mut().insert(41);
+    assert!(should_record(&config, &context));
+    context.marks_mut().insert(42);
+    assert!(!should_record(&config, &context));
 }
 
 fn list_query(filter: QueryRecordFilter) -> ListQuery {
@@ -319,6 +346,8 @@ async fn test_query_recorder_execute_enqueues_record() {
             retention_days: Some(7),
             cleanup_interval_hours: Some(1),
             reader_concurrency: Some(2),
+            include_marks: Vec::new(),
+            exclude_marks: Vec::new(),
         })
         .unwrap(),
     ))
@@ -372,6 +401,8 @@ async fn test_query_recorder_list_cursor_only_when_more_records_exist() {
             retention_days: Some(7),
             cleanup_interval_hours: Some(1),
             reader_concurrency: Some(2),
+            include_marks: Vec::new(),
+            exclude_marks: Vec::new(),
         })
         .unwrap(),
     ))
@@ -785,6 +816,8 @@ async fn test_query_recorder_cleanup_is_not_skipped_when_record_queue_is_full() 
             retention_days: Some(7),
             cleanup_interval_hours: Some(1),
             reader_concurrency: Some(2),
+            include_marks: Vec::new(),
+            exclude_marks: Vec::new(),
         })
         .unwrap(),
     ))
@@ -1359,6 +1392,8 @@ async fn test_load_top_clients_allows_limit_above_200() {
             retention_days: Some(7),
             cleanup_interval_hours: Some(1),
             reader_concurrency: Some(2),
+            include_marks: Vec::new(),
+            exclude_marks: Vec::new(),
         })
         .unwrap(),
     ))
@@ -1603,6 +1638,8 @@ fn test_resolve_config_rejects_zero_limits() {
         retention_days: Some(1),
         cleanup_interval_hours: Some(1),
         reader_concurrency: Some(2),
+        include_marks: Vec::new(),
+        exclude_marks: Vec::new(),
     })
     .unwrap();
     assert!(resolve_config(Some(config)).is_err());

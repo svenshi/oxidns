@@ -50,10 +50,8 @@ use crate::plugin::{
     Plugin, PluginFactory, PluginHolder, PluginInitContext, UninitializedPlugin,
     expand_quick_setup_dependency_specs, registered_plugin_kind,
 };
-use crate::plugin_factory;
 use crate::proto::Message;
-#[cfg(feature = "api")]
-use crate::register_plugin_api;
+use crate::{plugin_factory, register_plugin_api};
 
 const ATTR_PLUGIN_TAG: &str = "cron.plugin_tag";
 const ATTR_JOB_NAME: &str = "cron.job_name";

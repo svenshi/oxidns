@@ -19,6 +19,10 @@ pub(super) struct QueryRecorderConfig {
     pub(super) retention_days: Option<u64>,
     pub(super) cleanup_interval_hours: Option<u64>,
     pub(super) reader_concurrency: Option<usize>,
+    #[serde(default)]
+    pub(super) include_marks: Vec<u32>,
+    #[serde(default)]
+    pub(super) exclude_marks: Vec<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +35,8 @@ pub(super) struct ResolvedRecorderConfig {
     pub(super) retention_days: u64,
     pub(super) cleanup_interval_hours: u64,
     pub(super) reader_concurrency: usize,
+    pub(super) include_marks: Vec<u32>,
+    pub(super) exclude_marks: Vec<u32>,
 }
 
 #[derive(Debug, Clone)]

@@ -1272,6 +1272,22 @@ export const enUSPluginDefined = {
           description:
             "Limits how many SQLite readers may run concurrently for query_recorder API/statistics reads, preventing WebUI or API bursts from occupying too many blocking threads and too much memory.",
         },
+        include_marks: {
+          label: "Include marks",
+          description:
+            "When non-empty, records only queries whose context contains at least one specified mark.",
+        },
+        "include_marks[]": {
+          label: "Mark",
+        },
+        exclude_marks: {
+          label: "Exclude marks",
+          description:
+            "Skips recording when the context contains any specified mark; exclusions take precedence over inclusions.",
+        },
+        "exclude_marks[]": {
+          label: "Mark",
+        },
       },
     },
     metrics_collector: {

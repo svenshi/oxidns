@@ -1068,6 +1068,33 @@ function ExplanationSummary({
           value={t(outcomeLabelKey(explanation.outcome))}
         />
       </div>
+      {explanation.initialPath ||
+      explanation.finalPath ||
+      explanation.validationResult ||
+      explanation.fallbackReason ? (
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <StatusTile
+            label={t(WEBUI.standardQueries.initialPath)}
+            value={explanation.initialPath?.name ?? t(WEBUI.standardQueries.unknown)}
+          />
+          <StatusTile
+            label={t(WEBUI.standardQueries.finalPath)}
+            value={explanation.finalPath?.name ?? t(WEBUI.standardQueries.unknown)}
+          />
+          <StatusTile
+            label={t(WEBUI.standardQueries.responseValidation)}
+            value={explanation.validationResult ?? t(WEBUI.standardQueries.unknown)}
+          />
+          <StatusTile
+            label={t(WEBUI.standardQueries.fallbackDecision)}
+            value={
+              explanation.fallbackReason
+                ? `${explanation.fallbackBranch}: ${explanation.fallbackReason}`
+                : (explanation.fallbackBranch ?? t(WEBUI.standardQueries.unknown))
+            }
+          />
+        </div>
+      ) : null}
       {explanation.rawEvents.length > 0 ? (
         <div className="max-h-40 overflow-auto rounded-md border bg-muted/20 p-2 font-mono text-xs">
           {explanation.rawEvents.map((event, index) => (
@@ -1194,6 +1221,11 @@ function ruleLabel(
   if (explanation?.routingRule) {
     return t(WEBUI.standardQueries.routingRuleLabel, {
       name: explanation.routingRule.name,
+    });
+  }
+  if (explanation?.semanticRole) {
+    return t(WEBUI.standardQueries.semanticRoleLabel, {
+      name: explanation.semanticRole.name,
     });
   }
   return t(WEBUI.standardQueries.unknown);

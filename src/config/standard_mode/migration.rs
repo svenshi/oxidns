@@ -44,19 +44,29 @@ pub fn decode_standard_intent(
 
     let (value, migration) = match schema {
         CURRENT_STANDARD_SCHEMA => (value, None),
-        3 => migrate_v3(value),
+        4 => migrate_v4(value),
+        3 => {
+            let (value, v3_migration) = migrate_v3(value);
+            let (value, v4_migration) = migrate_v4(value);
+            (value, combine_migrations(3, [v3_migration, v4_migration]))
+        }
         2 => {
             let (value, v2_migration) = migrate_v2(value);
             let (value, v3_migration) = migrate_v3(value);
-            (value, combine_migrations(2, [v2_migration, v3_migration]))
+            let (value, v4_migration) = migrate_v4(value);
+            (
+                value,
+                combine_migrations(2, [v2_migration, v3_migration, v4_migration]),
+            )
         }
         1 => {
             let (value, v1_migration) = migrate_v1(value);
             let (value, v2_migration) = migrate_v2(value);
             let (value, v3_migration) = migrate_v3(value);
+            let (value, v4_migration) = migrate_v4(value);
             (
                 value,
-                combine_migrations(1, [v1_migration, v2_migration, v3_migration]),
+                combine_migrations(1, [v1_migration, v2_migration, v3_migration, v4_migration]),
             )
         }
         other => return Err(StandardIntentDecodeError::UnsupportedSchema(other)),
@@ -65,6 +75,72 @@ pub fn decode_standard_intent(
     serde_json::from_value(value)
         .map(|intent| (intent, migration))
         .map_err(|err| StandardIntentDecodeError::InvalidIntent(err.to_string()))
+}
+
+fn migrate_v4(mut value: Value) -> (Value, Option<StandardMigration>) {
+    let root = value
+        .as_object_mut()
+        .expect("v4 migration input was checked as an object");
+    root.insert("schema".to_string(), Value::from(CURRENT_STANDARD_SCHEMA));
+    root.entry("ruleData".to_string())
+        .or_insert_with(|| json!({}));
+    root.entry("smartRouting".to_string())
+        .or_insert_with(|| json!({}));
+
+    let mut diagnostics = vec![StandardDiagnostic::warning(
+        "schema_v4_migrated",
+        "schema",
+        "Standard Mode schema 4 was migrated with inactive Phase 2 defaults",
+    )];
+    if let Some(paths) = root.get_mut("paths").and_then(Value::as_array_mut) {
+        for (index, path) in paths.iter_mut().enumerate() {
+            let Some(path) = path.as_object_mut() else {
+                continue;
+            };
+            let legacy_ecs = path
+                .remove("ecs")
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "inherit".to_string());
+            let ecs = match legacy_ecs.as_str() {
+                "disabled" => json!({ "mode": "remove" }),
+                "enabled" => {
+                    diagnostics.push(StandardDiagnostic::warning(
+                        "legacy_ecs_enabled_migrated",
+                        format!("paths[{index}].ecs"),
+                        "inactive legacy ECS enabled placeholder was migrated to client_subnet; review before Apply",
+                    ));
+                    json!({ "mode": "client_subnet", "mask4": 24, "mask6": 48 })
+                }
+                _ => json!({ "mode": "inherit" }),
+            };
+            path.insert("ecs".to_string(), ecs);
+
+            let legacy_ip_selection = path
+                .remove("ipSelection")
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "inherit".to_string());
+            if legacy_ip_selection == "enabled" {
+                diagnostics.push(StandardDiagnostic::warning(
+                    "legacy_ip_selection_enabled_migrated",
+                    format!("paths[{index}].ipSelection"),
+                    "inactive legacy IP selection placeholder was migrated to an enabled safe native policy; review before Apply",
+                ));
+            }
+            path.insert(
+                "ipSelection".to_string(),
+                json!({ "enabled": legacy_ip_selection == "enabled" }),
+            );
+        }
+    }
+
+    (
+        value,
+        Some(StandardMigration {
+            from_schema: 4,
+            to_schema: CURRENT_STANDARD_SCHEMA,
+            diagnostics,
+        }),
+    )
 }
 
 fn combine_migrations<const N: usize>(
@@ -87,7 +163,7 @@ fn migrate_v3(mut value: Value) -> (Value, Option<StandardMigration>) {
     let root = value
         .as_object_mut()
         .expect("v3 migration input was checked as an object");
-    root.insert("schema".to_string(), Value::from(CURRENT_STANDARD_SCHEMA));
+    root.insert("schema".to_string(), Value::from(4));
     root.entry("local".to_string()).or_insert_with(|| json!({}));
     if let Some(filtering) = root.get_mut("filtering").and_then(Value::as_object_mut) {
         filtering
@@ -98,7 +174,7 @@ fn migrate_v3(mut value: Value) -> (Value, Option<StandardMigration>) {
         value,
         Some(StandardMigration {
             from_schema: 3,
-            to_schema: CURRENT_STANDARD_SCHEMA,
+            to_schema: 4,
             diagnostics: vec![StandardDiagnostic::warning(
                 "schema_v3_migrated",
                 "schema",

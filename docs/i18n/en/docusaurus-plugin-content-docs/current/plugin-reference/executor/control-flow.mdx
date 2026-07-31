@@ -152,6 +152,10 @@ Runs a primary executor first and falls back to a secondary executor when the pr
     threshold: 200
     # Keep the backup running in parallel for lower tail latency
     always_standby: true
+    # Independently allow timeout, executor-error, and no-response fallback
+    fallback_on_timeout: true
+    fallback_on_error: true
+    fallback_on_no_response: true
 ```
 
 ### Configuration Details
@@ -182,9 +186,16 @@ Runs a primary executor first and falls back to a secondary executor when the pr
 - Type: `boolean`; Required: no; Default: `false`
 - Purpose: Stop the executor chain after fallback selects the winning response.
 
+#### `fallback_on_timeout` / `fallback_on_error` / `fallback_on_no_response`
+
+- Type: `boolean`; Required: no; Default: `true`
+- Purpose: Independently allow secondary takeover after the `threshold`, a primary executor error, or primary completion without a response.
+- With error fallback disabled, the primary error is returned. With no-response fallback disabled, execution continues in the outer chain without a response.
+
 ### Behavior
 
 - Provides controlled degradation instead of unconditional double-querying.
+- A disabled `fallback_on_*` category never silently executes the secondary branch.
 - Useful when one path is usually faster but another path is more complete or stable.
 - With `short_circuit` enabled, the winning branch writes its response and then immediately stops the remaining executor chain.
 

@@ -95,6 +95,8 @@ plugins:
 
 完整的内置组件和配置字段见[插件参考](https://oxidns.org/plugin-reference/overview)。
 
+内置标准模式可把上游组、独立解析路径、语义规则数据、国内/远程/未知域名分流、响应校验回退、ECS、双栈和 IP 优选编译为纯 OxiDNS 原生插件图；它不控制 OpenWrt、系统 DNS、防火墙或第三方代理。详见[标准模式智能分流](https://oxidns.org/standard-mode-smart-routing)。
+
 ---
 
 ## 快速开始

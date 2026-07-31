@@ -189,6 +189,10 @@ import Admonition from "@theme/Admonition";
     cleanup_interval_hours: 1
     # SQLite 读取侧最大并发数；最小 1
     reader_concurrency: 2
+    # 可选：仅在上下文含任一 mark 时记录
+    include_marks: [100]
+    # 可选：上下文含任一 mark 时跳过；优先级高于 include_marks
+    exclude_marks: [101]
 ```
 
 ### 配置项
@@ -236,11 +240,17 @@ import Admonition from "@theme/Admonition";
 - 最小值：`1`
 - 作用：限制 WebUI / API 统计与历史查询同时运行的 SQLite reader 数量，避免突发读取在大库上占用过多阻塞线程和内存。
 
+#### `include_marks` / `exclude_marks`
+
+- 类型：`integer[]`；必填：否；默认值：`[]`
+- 作用：`include_marks` 非空时，只有上下文至少含一个指定 mark 才写入；命中任一 `exclude_marks` 时始终跳过。两者都为空时保持原有的全量记录行为。
+
 ### 行为说明
 
 - 这是纯 executor 观察器，不会修改 `server` 收口逻辑。
 - 进入时抓取入口 request 的结构化快照，并启用 `DnsContext.execution_path`。
 - `next` 返回后立即提交记录；成功时记录当前 response，失败时记录 `error` 和空 response。
+- mark 过滤在 `next` 返回后判断，因此可以让后续路径决定本次查询是否落库，同时仍由入口 recorder 捕获完整的分流与回退事件。
 - request / response 不保存 wire 数据，而是把问题区、RR、EDNS 等字段拆成 JSON 文本列。
 - `client_ip` 字段来自 OxiDNS 看到的传输层来源地址；如果前面有 systemd-resolved、dnsmasq、AdGuardHome、dae、clash 等本机转发链路，记录中可能只看到 `127.0.0.1`。
 - 每个 recorder 使用同一前缀下的版本化表：

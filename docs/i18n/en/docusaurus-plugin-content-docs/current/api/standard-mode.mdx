@@ -12,7 +12,7 @@ This read-only endpoint performs schema migration, normalization, semantic and c
 
 ```json
 {
-  "intent": { "schema": 4, "listen": {}, "upstreamGroups": [] },
+  "intent": { "schema": 5, "listen": {}, "upstreamGroups": [] },
   "base_config_version": "sha256-hex",
   "base_standard_version": "sha256-hex",
   "takeover": false
@@ -28,12 +28,12 @@ Important response fields:
 | `ownership` | `managed`, `modified`, or `unmanaged` |
 | `semantic_diff` | Preserved top-level fields and generated, replaced, or removed plugin tags |
 | `blockers` | Control-plane blockers such as version conflicts or required takeover |
-| `plan.normalizedIntent` | Backend-migrated and normalized schema v4 intent |
+| `plan.normalizedIntent` | Backend-migrated and normalized schema v5 intent |
 | `plan.diagnostics` | Semantic diagnostics with stable `severity`, `code`, and `path` |
 | `plan.generated` | Candidate YAML, version, tag map, and summary; absent on errors |
 | `can_apply` | `true` only when both the plan and control-plane checks pass |
 
-Missing required plugins, invalid references, duplicate IDs/tags, invalid TTL ranges, and active ECS, dual-stack selection, IP selection, log sampling, or scenario values that are not available in this phase block apply. Missing optional metrics support only produces a warning.
+Missing required plugins, invalid references, duplicate IDs/tags, invalid TTL ranges, missing local semantic data files, invalid ECS/IP-selection parameters, and unsupported log sampling or scenario values block apply. Duplicate, overridden, and unreachable rules are also included in `plan.details.ruleAnalysis`. Missing optional metrics support only produces a warning.
 
 ## `POST /api/standard/apply`
 
@@ -41,7 +41,7 @@ Apply reruns the complete plan, verifies both base versions and the reviewed can
 
 ```json
 {
-  "intent": { "schema": 4, "listen": {}, "upstreamGroups": [] },
+  "intent": { "schema": 5, "listen": {}, "upstreamGroups": [] },
   "base_config_version": "plan-response-config-version",
   "base_standard_version": "plan-response-standard-version",
   "planned_config_version": "plan-generated-config-version",
@@ -106,9 +106,11 @@ Returns history metadata in reverse chronological order, including snapshot ID, 
 
 Returns the stored Standard Mode intent only after an operator explicitly selects an entry. The WebUI does not overwrite the current configuration with historical YAML. It submits the intent through Plan, diff review, capability validation, and transactional Apply again. Restore therefore remains protected by current build capabilities, configuration ownership, and optimistic concurrency versions.
 
-## Schema v4 Runtime Semantics
+## Schema v5 Runtime Semantics
 
 - Every filter subscription generates independent `download`, `cron`, and job tags. A download failure stops that subscription's provider reload, leaving the last valid rule file active.
 - Every resolution path owns an independent cache instance. Cache list, delete, flush, dump, and load operations resolve instances through `tagMap.caches` in generated metadata.
 - Hosts, redirects, static records, response TTL, fixed QTYPE responses, and DDNS compile to native OxiDNS plugins. DDNS domains bypass cache and use a short fixed TTL.
 - Standard Mode only references local rule file paths. It does not create, delete, or rewrite platform files, and does not operate OpenWrt/UCI, firewalls, or third-party systems.
+- Six semantic data roles combine manual, local-file, online-subscription, and native geosite/geoip sources. Lifecycle tags are exposed through `tagMap.ruleDataSources`; aggregate Providers are exposed through `tagMap.ruleData`.
+- Domestic/remote paths, three unknown-domain modes, response-validation fallback, ECS, dual-stack policy, and IP selection compile to native OxiDNS plugins. See [Standard Mode Smart Routing](../standard-mode-smart-routing.md) for the complete semantics.

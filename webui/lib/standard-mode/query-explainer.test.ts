@@ -148,4 +148,81 @@ describe("Standard query explanation", () => {
     expect(explanation.outcome).toBe("blocked");
     expect(explanation.filtering).toBe("blocked");
   });
+
+  it("explains initial validation, fallback reason, semantic role, and final path", () => {
+    const settings = createDefaultStandardSettings();
+    settings.paths[0].name = "Domestic";
+    settings.paths.push({
+      ...settings.paths[0],
+      id: "remote",
+      name: "Remote",
+      upstreamGroupId: "private",
+    });
+    settings.smartRouting = {
+      ...settings.smartRouting,
+      enabled: true,
+      domesticPathId: "default",
+      remotePathId: "remote",
+    };
+    const generated = metadata();
+    generated.tagMap.paths.default = "standard_path_default";
+    generated.tagMap.paths.remote = "standard_path_remote";
+    generated.tagMap.smartRouting = {
+      "matcher:domestic_domains": "standard_smart_match_domestic_domains",
+      smart_domestic_primary: "standard_path_smart_domestic_primary",
+      smart_domestic_remote_fallback:
+        "standard_path_smart_domestic_remote_fallback",
+    };
+
+    const explanation = explainStandardQueryRecord(
+      record([
+        {
+          event_index: 1,
+          sequence_tag: "standard_main_sequence",
+          kind: "matcher",
+          tag: "standard_smart_match_domestic_domains",
+          outcome: "matched",
+        },
+        {
+          event_index: 2,
+          sequence_tag: "standard_main_sequence",
+          kind: "executor",
+          tag: "standard_path_smart_domestic_primary",
+          outcome: "entered",
+        },
+        {
+          event_index: 3,
+          sequence_tag: "standard_smart_drop_domestic_ip_mismatch",
+          kind: "decision",
+          tag: "standard_smart_drop_domestic_ip_mismatch",
+          outcome: "domestic_ip_mismatch",
+        },
+        {
+          event_index: 4,
+          sequence_tag: "standard_main_sequence",
+          kind: "executor",
+          tag: "standard_path_smart_domestic_remote_fallback",
+          outcome: "entered",
+        },
+        {
+          event_index: 5,
+          sequence_tag: "standard_smart_domestic_fallback",
+          kind: "fallback",
+          tag: "standard_smart_domestic_fallback",
+          outcome: "secondary_domestic_ip_mismatch",
+        },
+      ]),
+      settings,
+      generated,
+    );
+
+    expect(explanation).toMatchObject({
+      initialPath: { id: "default", name: "Domestic" },
+      finalPath: { id: "remote", name: "Remote" },
+      semanticRole: { id: "domestic_domains" },
+      validationResult: "domestic_ip_mismatch",
+      fallbackBranch: "secondary",
+      fallbackReason: "domestic_ip_mismatch",
+    });
+  });
 });

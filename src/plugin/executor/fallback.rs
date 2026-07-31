@@ -31,7 +31,7 @@ use tokio::task::JoinSet;
 use tracing::debug;
 
 use crate::config::types::PluginConfig;
-use crate::core::context::DnsContext;
+use crate::core::context::{DnsContext, ExecutionPath, ExecutionPathEvent};
 use crate::infra::error::{DnsError, Result};
 use crate::infra::observability::metrics::{
     MetricLabel, MetricSample, MetricSink, MetricSource, register_metric_source,
@@ -57,6 +57,20 @@ struct FallbackConfig {
     /// Whether to stop the executor chain after fallback picks a response.
     #[serde(default)]
     short_circuit: bool,
+    /// Whether a slow primary may start and select the secondary branch.
+    #[serde(default = "default_true")]
+    fallback_on_timeout: bool,
+    /// Whether an executor or transport error may select the secondary branch.
+    #[serde(default = "default_true")]
+    fallback_on_error: bool,
+    /// Whether a completed primary without a response may select the secondary
+    /// branch.
+    #[serde(default = "default_true")]
+    fallback_on_no_response: bool,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug)]
@@ -69,6 +83,9 @@ struct FallbackExecutor {
     threshold: Duration,
     always_standby: bool,
     short_circuit: bool,
+    fallback_on_timeout: bool,
+    fallback_on_error: bool,
+    fallback_on_no_response: bool,
     metrics: Arc<FallbackMetrics>,
 }
 
@@ -125,16 +142,19 @@ impl MetricSource for FallbackMetrics {
 
 struct Outcome {
     context: Option<DnsContext>,
+    execution_path: ExecutionPath,
     source: &'static str,
     error: Option<String>,
     no_response: bool,
+    failure_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum PrimaryState {
     Running,
     Success,
-    Failed,
+    FailedAllowed,
+    FailedBlocked,
 }
 
 #[async_trait]
@@ -159,21 +179,31 @@ impl Executor for FallbackExecutor {
     async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
         let mut join_set = JoinSet::new();
         let (primary_state_tx, primary_state_rx) = watch::channel(PrimaryState::Running);
+        let branch_event_start = context.execution_path_len();
 
         let primary = self.primary.clone();
         let primary_ctx = context.copy_for_subquery();
         let primary_metrics = self.metrics.clone();
+        let fallback_on_error = self.fallback_on_error;
+        let fallback_on_no_response = self.fallback_on_no_response;
         join_set.spawn(async move {
             primary_metrics
                 .primary_total
                 .fetch_add(1, Ordering::Relaxed);
-            let outcome = run_executor(primary, primary_ctx, "primary").await;
+            let outcome = run_executor(primary, primary_ctx, "primary", branch_event_start).await;
             let state = if outcome.context.is_some() {
                 PrimaryState::Success
+            } else if (outcome.no_response && fallback_on_no_response)
+                || (!outcome.no_response && fallback_on_error)
+            {
+                PrimaryState::FailedAllowed
             } else {
-                PrimaryState::Failed
+                PrimaryState::FailedBlocked
             };
-            if state == PrimaryState::Failed {
+            if matches!(
+                state,
+                PrimaryState::FailedAllowed | PrimaryState::FailedBlocked
+            ) {
                 primary_metrics
                     .primary_error_total
                     .fetch_add(1, Ordering::Relaxed);
@@ -186,6 +216,7 @@ impl Executor for FallbackExecutor {
         let secondary_ctx = context.copy_for_subquery();
         let delay = self.threshold;
         let always_standby = self.always_standby;
+        let fallback_on_timeout = self.fallback_on_timeout;
         let mut primary_state_rx = primary_state_rx.clone();
         let secondary_metrics = self.metrics.clone();
         join_set.spawn(async move {
@@ -193,26 +224,32 @@ impl Executor for FallbackExecutor {
                 let sleeper = tokio::time::sleep(delay);
                 tokio::pin!(sleeper);
                 loop {
-                    tokio::select! {
-                        _ = &mut sleeper => break,
-                        changed = primary_state_rx.changed() => {
-                            if changed.is_err() {
-                                break;
-                            }
-                            match *primary_state_rx.borrow() {
-                                PrimaryState::Running => {}
-                                PrimaryState::Success => {
-                                    // Primary already won before threshold; skip secondary execution
-                                    // and return an empty outcome just to unblock join loop.
-                                    return Outcome {
-                                        context: None,
-                                        source: "secondary",
-                                        error: None,
-                                        no_response: false,
-                                    };
+                    if fallback_on_timeout {
+                        tokio::select! {
+                            _ = &mut sleeper => break,
+                            changed = primary_state_rx.changed() => {
+                                if changed.is_err() {
+                                    break;
                                 }
-                                PrimaryState::Failed => break,
+                                match *primary_state_rx.borrow() {
+                                    PrimaryState::Running => {}
+                                    PrimaryState::Success | PrimaryState::FailedBlocked => {
+                                        return empty_secondary_outcome();
+                                    }
+                                    PrimaryState::FailedAllowed => break,
+                                }
                             }
+                        }
+                    } else {
+                        if primary_state_rx.changed().await.is_err() {
+                            return empty_secondary_outcome();
+                        }
+                        match *primary_state_rx.borrow() {
+                            PrimaryState::Running => {}
+                            PrimaryState::Success | PrimaryState::FailedBlocked => {
+                                return empty_secondary_outcome();
+                            }
+                            PrimaryState::FailedAllowed => break,
                         }
                     }
                 }
@@ -220,22 +257,36 @@ impl Executor for FallbackExecutor {
             secondary_metrics
                 .secondary_total
                 .fetch_add(1, Ordering::Relaxed);
-            run_executor(secondary, secondary_ctx, "secondary").await
+            run_executor(secondary, secondary_ctx, "secondary", branch_event_start).await
         });
 
         let mut last_err = String::new();
         let mut buffered_secondary: Option<DnsContext> = None;
-        let mut threshold_reached = !self.always_standby;
+        let mut failed_primary_path: Option<ExecutionPath> = None;
+        let mut primary_failure_reason: Option<String> = None;
+        let mut primary_completed = false;
+        let mut threshold_reached = !self.always_standby || !self.fallback_on_timeout;
         let standby_timer = tokio::time::sleep(self.threshold);
         tokio::pin!(standby_timer);
         loop {
             tokio::select! {
-                _ = &mut standby_timer, if self.always_standby && !threshold_reached => {
+                _ = &mut standby_timer, if self.always_standby && self.fallback_on_timeout && !threshold_reached => {
                     threshold_reached = true;
                     // In standby mode, secondary can finish early but should not win until
                     // the threshold elapses. Flush buffered response once timer fires.
                     if let Some(secondary_ctx) = buffered_secondary.take() {
-                        context.apply_subquery_result(secondary_ctx);
+                        self.apply_selected(
+                            context,
+                            secondary_ctx,
+                            failed_primary_path.as_ref(),
+                            branch_event_start,
+                            "secondary",
+                            if primary_completed {
+                                primary_failure_reason.as_deref().unwrap_or("no_response")
+                            } else {
+                                "timeout"
+                            },
+                        );
                         join_set.abort_all();
                         return Ok(self.completion_step());
                     }
@@ -254,21 +305,78 @@ impl Executor for FallbackExecutor {
 
                     match outcome.source {
                         "primary" => {
+                            primary_completed = true;
                             if let Some(primary_ctx) = outcome.context {
-                                context.apply_subquery_result(primary_ctx);
+                                self.apply_selected(
+                                    context,
+                                    primary_ctx,
+                                    None,
+                                    branch_event_start,
+                                    "primary",
+                                    "success",
+                                );
                                 join_set.abort_all();
                                 return Ok(self.completion_step());
                             }
+                            failed_primary_path = Some(outcome.execution_path);
+                            primary_failure_reason = outcome.failure_reason.clone();
+                            let fallback_allowed = if outcome.no_response {
+                                self.fallback_on_no_response
+                            } else {
+                                self.fallback_on_error
+                            };
+                            if !fallback_allowed {
+                                if context.execution_path_enabled()
+                                    && let Some(primary_path) = failed_primary_path.as_ref()
+                                {
+                                    context
+                                        .execution_path
+                                        .append_from(primary_path, branch_event_start);
+                                }
+                                join_set.abort_all();
+                                if outcome.no_response {
+                                    return Ok(ExecStep::Next);
+                                }
+                                return Err(DnsError::plugin(
+                                    outcome.error.unwrap_or_else(|| {
+                                        "fallback primary failed and error fallback is disabled"
+                                            .to_string()
+                                    }),
+                                ));
+                            }
                             if let Some(secondary_ctx) = buffered_secondary.take() {
-                                context.apply_subquery_result(secondary_ctx);
+                                self.apply_selected(
+                                    context,
+                                    secondary_ctx,
+                                    failed_primary_path.as_ref(),
+                                    branch_event_start,
+                                    "secondary",
+                                    primary_failure_reason.as_deref().unwrap_or("no_response"),
+                                );
                                 join_set.abort_all();
                                 return Ok(self.completion_step());
                             }
                         }
                         "secondary" => {
                             if let Some(secondary_ctx) = outcome.context {
-                                if !self.always_standby || threshold_reached {
-                                    context.apply_subquery_result(secondary_ctx);
+                                if !self.always_standby
+                                    || (self.fallback_on_timeout && threshold_reached)
+                                    || primary_completed
+                                {
+                                    self.apply_selected(
+                                        context,
+                                        secondary_ctx,
+                                        failed_primary_path.as_ref(),
+                                        branch_event_start,
+                                        "secondary",
+                                        if primary_completed {
+                                            primary_failure_reason
+                                                .as_deref()
+                                                .unwrap_or("no_response")
+                                        } else {
+                                            "timeout"
+                                        },
+                                    );
                                     join_set.abort_all();
                                     return Ok(self.completion_step());
                                 }
@@ -309,6 +417,36 @@ impl FallbackExecutor {
             ExecStep::Stop
         } else {
             ExecStep::Next
+        }
+    }
+
+    fn apply_selected(
+        &self,
+        context: &mut DnsContext,
+        mut selected: DnsContext,
+        failed_primary_path: Option<&ExecutionPath>,
+        branch_event_start: usize,
+        source: &str,
+        reason: &str,
+    ) {
+        if source == "secondary"
+            && context.execution_path_enabled()
+            && let Some(primary_path) = failed_primary_path
+        {
+            let mut merged = context.execution_path.clone();
+            merged.append_from(primary_path, branch_event_start);
+            merged.append_from(&selected.execution_path, branch_event_start);
+            selected.execution_path = merged;
+        }
+        context.apply_subquery_result(selected);
+        if context.execution_path_enabled() {
+            context.push_execution_path_event(ExecutionPathEvent::new(
+                self.tag.as_str(),
+                None,
+                "fallback",
+                Some(self.tag.as_str()),
+                format!("{source}_{reason}"),
+            ));
         }
     }
 }
@@ -361,8 +499,22 @@ impl PluginFactory for FallbackFactory {
             }),
             always_standby: cfg.always_standby,
             short_circuit: cfg.short_circuit,
+            fallback_on_timeout: cfg.fallback_on_timeout,
+            fallback_on_error: cfg.fallback_on_error,
+            fallback_on_no_response: cfg.fallback_on_no_response,
             metrics: Arc::new(FallbackMetrics::new(plugin_config.tag.clone())),
         })))
+    }
+}
+
+fn empty_secondary_outcome() -> Outcome {
+    Outcome {
+        context: None,
+        execution_path: ExecutionPath::default(),
+        source: "secondary",
+        error: None,
+        no_response: false,
+        failure_reason: None,
     }
 }
 
@@ -370,14 +522,38 @@ async fn run_executor(
     executor: Arc<dyn Executor>,
     mut context: DnsContext,
     source: &'static str,
+    branch_event_start: usize,
 ) -> Outcome {
+    if context.execution_path_enabled() {
+        context.push_execution_path_event(ExecutionPathEvent::new(
+            executor.tag(),
+            None,
+            "executor",
+            Some(executor.tag()),
+            "entered",
+        ));
+    }
     match executor.execute_with_next(&mut context, None).await {
         Ok(step) => {
             let has_response = context.response().is_some();
+            let execution_path = context.execution_path.clone();
+            let failure_reason = if has_response {
+                None
+            } else {
+                execution_path
+                    .events_from(branch_event_start)
+                    .iter()
+                    .rev()
+                    .find(|event| event.kind == "decision")
+                    .map(|event| event.outcome.clone())
+                    .or_else(|| Some("no_response".to_string()))
+            };
             Outcome {
                 context: if has_response { Some(context) } else { None },
+                execution_path,
                 source,
                 no_response: !has_response,
+                failure_reason,
                 error: if has_response {
                     None
                 } else {
@@ -385,12 +561,17 @@ async fn run_executor(
                 },
             }
         }
-        Err(e) => Outcome {
-            context: None,
-            source,
-            error: Some(e.to_string()),
-            no_response: false,
-        },
+        Err(e) => {
+            let execution_path = context.execution_path.clone();
+            Outcome {
+                context: None,
+                execution_path,
+                source,
+                error: Some(e.to_string()),
+                no_response: false,
+                failure_reason: Some("transport_failure".to_string()),
+            }
+        }
     }
 }
 
@@ -472,6 +653,7 @@ mod tests {
             }),
             test_context(),
             "primary",
+            0,
         )
         .await;
         assert!(success.context.is_some());
@@ -486,6 +668,7 @@ mod tests {
             }),
             test_context(),
             "secondary",
+            0,
         )
         .await;
         assert!(no_response.context.is_none());
@@ -505,6 +688,7 @@ mod tests {
             }),
             test_context(),
             "primary",
+            0,
         )
         .await;
         assert!(failed.context.is_none());
@@ -527,6 +711,7 @@ mod tests {
             }),
             test_context(),
             "primary",
+            0,
         )
         .await;
 
@@ -555,6 +740,9 @@ short_circuit: true
         .expect("fallback config should parse");
 
         assert!(cfg.short_circuit);
+        assert!(cfg.fallback_on_timeout);
+        assert!(cfg.fallback_on_error);
+        assert!(cfg.fallback_on_no_response);
     }
 
     #[tokio::test]
@@ -579,6 +767,9 @@ short_circuit: true
             threshold: Duration::from_secs(60),
             always_standby: false,
             short_circuit: true,
+            fallback_on_timeout: true,
+            fallback_on_error: true,
+            fallback_on_no_response: true,
             metrics: metrics.clone(),
         };
 
@@ -614,6 +805,9 @@ short_circuit: true
             threshold: Duration::ZERO,
             always_standby: false,
             short_circuit: false,
+            fallback_on_timeout: true,
+            fallback_on_error: true,
+            fallback_on_no_response: true,
             metrics: metrics.clone(),
         };
 
@@ -649,6 +843,9 @@ short_circuit: true
             threshold: Duration::ZERO,
             always_standby: false,
             short_circuit: true,
+            fallback_on_timeout: true,
+            fallback_on_error: true,
+            fallback_on_no_response: true,
             metrics: metrics.clone(),
         };
 
@@ -660,5 +857,316 @@ short_circuit: true
         assert_eq!(metrics.primary_total.load(Ordering::Relaxed), 1);
         assert_eq!(metrics.primary_error_total.load(Ordering::Relaxed), 1);
         assert_eq!(metrics.secondary_total.load(Ordering::Relaxed), 1);
+    }
+
+    #[derive(Debug)]
+    struct TraceExecutor {
+        tag: &'static str,
+        response: bool,
+        decision: Option<&'static str>,
+        delay: Duration,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl Plugin for TraceExecutor {
+        fn tag(&self) -> &str {
+            self.tag
+        }
+
+        async fn init(&mut self, _context: &crate::plugin::PluginInitContext<'_>) -> Result<()> {
+            Ok(())
+        }
+
+        async fn destroy(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Executor for TraceExecutor {
+        async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
+            if !self.delay.is_zero() {
+                tokio::time::sleep(self.delay).await;
+            }
+            if self.fail {
+                return Err(DnsError::plugin("trace transport failure"));
+            }
+            if let Some(decision) = self.decision {
+                context.push_execution_path_event(ExecutionPathEvent::new(
+                    self.tag,
+                    None,
+                    "decision",
+                    Some(self.tag),
+                    decision,
+                ));
+            }
+            if self.response {
+                context.set_response(context.request().response(crate::proto::Rcode::NoError));
+            }
+            Ok(ExecStep::Next)
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_preserves_failed_primary_decision_and_records_selected_reason() {
+        let executor = FallbackExecutor {
+            tag: "smart_fallback".to_string(),
+            primary_tag: "domestic".to_string(),
+            secondary_tag: "remote".to_string(),
+            primary: Arc::new(TraceExecutor {
+                tag: "domestic",
+                response: false,
+                decision: Some("nodata"),
+                delay: Duration::ZERO,
+                fail: false,
+            }),
+            secondary: Arc::new(TraceExecutor {
+                tag: "remote",
+                response: true,
+                decision: None,
+                delay: Duration::ZERO,
+                fail: false,
+            }),
+            threshold: Duration::from_secs(60),
+            always_standby: false,
+            short_circuit: true,
+            fallback_on_timeout: true,
+            fallback_on_error: true,
+            fallback_on_no_response: true,
+            metrics: Arc::new(FallbackMetrics::new("smart_fallback".to_string())),
+        };
+        let mut context = test_context();
+        context.enable_execution_path();
+
+        let step = executor.execute(&mut context).await.unwrap();
+
+        assert_eq!(step, ExecStep::Stop);
+        let outcomes: Vec<_> = context
+            .execution_path_events()
+            .iter()
+            .map(|event| event.outcome.as_str())
+            .collect();
+        assert!(outcomes.contains(&"nodata"));
+        assert!(outcomes.contains(&"secondary_nodata"));
+    }
+
+    #[tokio::test]
+    async fn fallback_records_threshold_timeout_when_secondary_wins() {
+        let executor = FallbackExecutor {
+            tag: "smart_fallback".to_string(),
+            primary_tag: "domestic".to_string(),
+            secondary_tag: "remote".to_string(),
+            primary: Arc::new(TraceExecutor {
+                tag: "domestic",
+                response: true,
+                decision: None,
+                delay: Duration::from_millis(100),
+                fail: false,
+            }),
+            secondary: Arc::new(TraceExecutor {
+                tag: "remote",
+                response: true,
+                decision: None,
+                delay: Duration::ZERO,
+                fail: false,
+            }),
+            threshold: Duration::from_millis(5),
+            always_standby: false,
+            short_circuit: true,
+            fallback_on_timeout: true,
+            fallback_on_error: true,
+            fallback_on_no_response: true,
+            metrics: Arc::new(FallbackMetrics::new("smart_fallback".to_string())),
+        };
+        let mut context = test_context();
+        context.enable_execution_path();
+
+        assert_eq!(
+            executor.execute(&mut context).await.unwrap(),
+            ExecStep::Stop
+        );
+        assert!(
+            context
+                .execution_path_events()
+                .iter()
+                .any(|event| event.outcome == "secondary_timeout")
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_records_transport_failure_before_secondary_selection() {
+        let executor = FallbackExecutor {
+            tag: "smart_fallback".to_string(),
+            primary_tag: "domestic".to_string(),
+            secondary_tag: "remote".to_string(),
+            primary: Arc::new(TraceExecutor {
+                tag: "domestic",
+                response: false,
+                decision: None,
+                delay: Duration::ZERO,
+                fail: true,
+            }),
+            secondary: Arc::new(TraceExecutor {
+                tag: "remote",
+                response: true,
+                decision: None,
+                delay: Duration::ZERO,
+                fail: false,
+            }),
+            threshold: Duration::from_secs(60),
+            always_standby: false,
+            short_circuit: true,
+            fallback_on_timeout: true,
+            fallback_on_error: true,
+            fallback_on_no_response: true,
+            metrics: Arc::new(FallbackMetrics::new("smart_fallback".to_string())),
+        };
+        let mut context = test_context();
+        context.enable_execution_path();
+
+        assert_eq!(
+            executor.execute(&mut context).await.unwrap(),
+            ExecStep::Stop
+        );
+        assert!(
+            context
+                .execution_path_events()
+                .iter()
+                .any(|event| event.outcome == "secondary_transport_failure")
+        );
+    }
+
+    #[tokio::test]
+    async fn standby_response_cannot_win_before_threshold() {
+        let executor = FallbackExecutor {
+            tag: "standby".to_string(),
+            primary_tag: "primary".to_string(),
+            secondary_tag: "secondary".to_string(),
+            primary: Arc::new(TraceExecutor {
+                tag: "primary",
+                response: true,
+                decision: None,
+                delay: Duration::from_millis(10),
+                fail: false,
+            }),
+            secondary: Arc::new(TraceExecutor {
+                tag: "secondary",
+                response: true,
+                decision: None,
+                delay: Duration::ZERO,
+                fail: false,
+            }),
+            threshold: Duration::from_millis(100),
+            always_standby: true,
+            short_circuit: false,
+            fallback_on_timeout: true,
+            fallback_on_error: true,
+            fallback_on_no_response: true,
+            metrics: Arc::new(FallbackMetrics::new("standby".to_string())),
+        };
+        let mut context = test_context();
+        context.enable_execution_path();
+
+        assert_eq!(
+            executor.execute(&mut context).await.unwrap(),
+            ExecStep::Next
+        );
+        assert!(
+            context
+                .execution_path_events()
+                .iter()
+                .any(|event| event.outcome == "primary_success")
+        );
+        assert!(
+            !context
+                .execution_path_events()
+                .iter()
+                .any(|event| event.outcome.starts_with("secondary_"))
+        );
+    }
+
+    #[tokio::test]
+    async fn disabled_timeout_fallback_waits_for_primary_success() {
+        let metrics = Arc::new(FallbackMetrics::new("no_timeout".to_string()));
+        let executor = FallbackExecutor {
+            tag: "no_timeout".to_string(),
+            primary_tag: "primary".to_string(),
+            secondary_tag: "secondary".to_string(),
+            primary: Arc::new(TraceExecutor {
+                tag: "primary",
+                response: true,
+                decision: None,
+                delay: Duration::from_millis(10),
+                fail: false,
+            }),
+            secondary: Arc::new(TraceExecutor {
+                tag: "secondary",
+                response: true,
+                decision: None,
+                delay: Duration::ZERO,
+                fail: false,
+            }),
+            threshold: Duration::from_millis(1),
+            always_standby: false,
+            short_circuit: false,
+            fallback_on_timeout: false,
+            fallback_on_error: true,
+            fallback_on_no_response: true,
+            metrics: metrics.clone(),
+        };
+        let mut context = test_context();
+        context.enable_execution_path();
+
+        assert_eq!(
+            executor.execute(&mut context).await.unwrap(),
+            ExecStep::Next
+        );
+        assert!(
+            context
+                .execution_path_events()
+                .iter()
+                .any(|event| event.outcome == "primary_success")
+        );
+        assert_eq!(metrics.secondary_total.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn disabled_error_fallback_returns_primary_error_without_secondary() {
+        let metrics = Arc::new(FallbackMetrics::new("no_error".to_string()));
+        let executor = FallbackExecutor {
+            tag: "no_error".to_string(),
+            primary_tag: "primary".to_string(),
+            secondary_tag: "secondary".to_string(),
+            primary: Arc::new(TraceExecutor {
+                tag: "primary",
+                response: false,
+                decision: None,
+                delay: Duration::ZERO,
+                fail: true,
+            }),
+            secondary: Arc::new(TraceExecutor {
+                tag: "secondary",
+                response: true,
+                decision: None,
+                delay: Duration::ZERO,
+                fail: false,
+            }),
+            threshold: Duration::ZERO,
+            always_standby: false,
+            short_circuit: false,
+            fallback_on_timeout: true,
+            fallback_on_error: false,
+            fallback_on_no_response: true,
+            metrics: metrics.clone(),
+        };
+        let mut context = test_context();
+
+        let error = executor
+            .execute(&mut context)
+            .await
+            .expect_err("primary error should be returned");
+        assert!(error.to_string().contains("trace transport failure"));
+        assert_eq!(metrics.secondary_total.load(Ordering::Relaxed), 0);
     }
 }

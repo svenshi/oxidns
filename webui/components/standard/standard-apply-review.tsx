@@ -25,6 +25,7 @@ export function StandardApplyReview() {
   const takeover = plan?.ownership !== "managed";
   const diff = plan?.semantic_diff;
   const diagnostics = plan?.plan.diagnostics ?? [];
+  const ruleAnalysis = standardRuleAnalysis(plan?.plan.details.ruleAnalysis);
   const ownershipKey =
     plan?.ownership === "managed"
       ? WEBUI.standardApplyReview.ownershipManaged
@@ -129,6 +130,31 @@ export function StandardApplyReview() {
                 </ul>
               </div>
             ) : null}
+
+            {ruleAnalysis.length > 0 ? (
+              <div className="space-y-2">
+                <p className="font-medium">
+                  {t(WEBUI.standardApplyReview.ruleAnalysis)}
+                </p>
+                <ul className="space-y-2">
+                  {ruleAnalysis.map((rule) => (
+                    <li key={`${rule.category}:${rule.id}`} className="flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2">
+                      <Badge variant={rule.status === "effective" ? "secondary" : "outline"}>
+                        {rule.status}
+                      </Badge>
+                      <code className="text-xs">{rule.category}:{rule.id}</code>
+                      {rule.overriddenBy ? (
+                        <span className="text-xs text-muted-foreground">
+                          {t(WEBUI.standardApplyReview.overriddenBy, {
+                            id: rule.overriddenBy,
+                          })}
+                        </span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -150,6 +176,35 @@ export function StandardApplyReview() {
       </AlertDialogContent>
     </AlertDialog>
   );
+}
+
+interface StandardRuleAnalysisRow {
+  id: string;
+  category: string;
+  status: string;
+  overriddenBy?: string;
+}
+
+function standardRuleAnalysis(value: unknown): StandardRuleAnalysisRow[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const row = item as Record<string, unknown>;
+    if (
+      typeof row.id !== "string" ||
+      typeof row.category !== "string" ||
+      typeof row.status !== "string"
+    ) {
+      return [];
+    }
+    return [{
+      id: row.id,
+      category: row.category,
+      status: row.status,
+      overriddenBy:
+        typeof row.overriddenBy === "string" ? row.overriddenBy : undefined,
+    }];
+  });
 }
 
 function PlanCount({

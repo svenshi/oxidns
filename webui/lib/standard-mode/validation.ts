@@ -62,6 +62,18 @@ export interface StandardRoutingCapabilityMap {
   qname: boolean;
   clientIp: boolean;
   qtype: boolean;
+  ecsHandler: boolean;
+  preferIpv4: boolean;
+  preferIpv6: boolean;
+  ipSelector: boolean;
+  domainSet: boolean;
+  ipSet: boolean;
+  respIp: boolean;
+  rcode: boolean;
+  hasWantedAns: boolean;
+  cname: boolean;
+  fallback: boolean;
+  dropResp: boolean;
 }
 
 export interface StandardRoutingValidationIssue {
@@ -71,7 +83,14 @@ export interface StandardRoutingValidationIssue {
     | "path_required"
     | "path_name_required"
     | "path_upstream_group_required"
+    | "path_ecs_invalid"
+    | "path_ip_selection_invalid"
     | "path_delete_blocked"
+    | "smart_path_required"
+    | "smart_paths_not_isolated"
+    | "strict_remote_fallback_forbidden"
+    | "rule_data_required"
+    | "rule_data_source_invalid"
     | "rule_name_required"
     | "rule_condition_required"
     | "rule_action_required"
@@ -842,6 +861,22 @@ export function standardRoutingCapabilityMap(
     qname: isPluginKindSupported(buildInfo, "matcher", "qname"),
     clientIp: isPluginKindSupported(buildInfo, "matcher", "client_ip"),
     qtype: isPluginKindSupported(buildInfo, "matcher", "qtype"),
+    ecsHandler: isPluginKindSupported(buildInfo, "executor", "ecs_handler"),
+    preferIpv4: isPluginKindSupported(buildInfo, "executor", "prefer_ipv4"),
+    preferIpv6: isPluginKindSupported(buildInfo, "executor", "prefer_ipv6"),
+    ipSelector: isPluginKindSupported(buildInfo, "executor", "ip_selector"),
+    domainSet: isPluginKindSupported(buildInfo, "provider", "domain_set"),
+    ipSet: isPluginKindSupported(buildInfo, "provider", "ip_set"),
+    respIp: isPluginKindSupported(buildInfo, "matcher", "resp_ip"),
+    rcode: isPluginKindSupported(buildInfo, "matcher", "rcode"),
+    hasWantedAns: isPluginKindSupported(
+      buildInfo,
+      "matcher",
+      "has_wanted_ans",
+    ),
+    cname: isPluginKindSupported(buildInfo, "matcher", "cname"),
+    fallback: isPluginKindSupported(buildInfo, "executor", "fallback"),
+    dropResp: isPluginKindSupported(buildInfo, "executor", "drop_resp"),
   };
 }
 
@@ -867,8 +902,22 @@ export function normalizeStandardRoutingSettings(
     cache: "inherit",
     queryLog: "inherit",
     dualStack: "inherit",
-    ipSelection: "inherit",
-    ecs: "inherit",
+    ipSelection: {
+      enabled: false,
+      selectionMode: "first_success",
+      probeMethods: ["tcp:443", "tcp:80"],
+      probeStaggerMs: 200,
+      probeTimeoutMs: 600,
+      maxWaitMs: 1000,
+      topN: 1,
+      dnssecPolicy: "reorder_only",
+      maxParallelProbes: 256,
+      cacheEnabled: true,
+      cacheSize: 4096,
+      cacheTtlSeconds: 3600,
+      failureTtlSeconds: 60,
+    },
+    ecs: { mode: "inherit" },
   };
   const paths =
     settings.paths.length > 0
@@ -927,6 +976,83 @@ export function validateStandardRoutingSettings(
         code: "path_upstream_group_required",
         pathId: path.id,
       });
+    }
+    if (
+      path.ecs.mode === "preset" &&
+      !path.ecs.address.trim()
+    ) {
+      issues.push({
+        field: `path.${path.id}.ecs`,
+        code: "path_ecs_invalid",
+        pathId: path.id,
+      });
+    }
+    if (
+      path.ipSelection.enabled &&
+      (path.ipSelection.probeMethods.length === 0 ||
+        path.ipSelection.probeTimeoutMs <= 0 ||
+        path.ipSelection.maxWaitMs <= 0 ||
+        path.ipSelection.topN <= 0)
+    ) {
+      issues.push({
+        field: `path.${path.id}.ipSelection`,
+        code: "path_ip_selection_invalid",
+        pathId: path.id,
+      });
+    }
+  }
+
+  if (normalized.smartRouting.enabled) {
+    const smart = normalized.smartRouting;
+    if (
+      !smart.domesticPathId ||
+      !smart.remotePathId ||
+      !pathIds.has(smart.domesticPathId) ||
+      !pathIds.has(smart.remotePathId)
+    ) {
+      issues.push({ field: "smartRouting", code: "smart_path_required" });
+    } else if (smart.domesticPathId === smart.remotePathId) {
+      issues.push({
+        field: "smartRouting",
+        code: "smart_paths_not_isolated",
+      });
+    }
+    if (
+      smart.unknownMode === "strict_remote" &&
+      smart.privacyFallbackToDomestic
+    ) {
+      issues.push({
+        field: "smartRouting.privacyFallbackToDomestic",
+        code: "strict_remote_fallback_forbidden",
+      });
+    }
+    if (
+      settings.ruleData.domesticDomains.sources.filter((source) => source.enabled)
+        .length === 0 ||
+      settings.ruleData.domesticIps.sources.filter((source) => source.enabled)
+        .length === 0
+    ) {
+      issues.push({ field: "ruleData", code: "rule_data_required" });
+    }
+  }
+  for (const role of Object.values(settings.ruleData) as Array<
+    StandardModeSettings["ruleData"][keyof StandardModeSettings["ruleData"]]
+  >) {
+    for (const source of role.sources.filter((item) => item.enabled)) {
+      const invalid =
+        !source.id.trim() ||
+        !source.name.trim() ||
+        (source.type === "manual" && source.rules.length === 0) ||
+        ((source.type === "local_file" || source.type === "native_dat") &&
+          !source.path.trim()) ||
+        (source.type === "subscription" &&
+          (!isHttpUrl(source.url) || source.updateIntervalHours <= 0));
+      if (invalid) {
+        issues.push({
+          field: `ruleData.${source.id}`,
+          code: "rule_data_source_invalid",
+        });
+      }
     }
   }
 

@@ -1318,6 +1318,22 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         default: 2,
         advanced: true,
       },
+      {
+        key: "include_marks",
+        description: "非空时，仅记录上下文至少命中一个指定 mark 的查询。",
+        label: "包含 Mark",
+        type: "array",
+        advanced: true,
+        item: { type: "number", label: "Mark" },
+      },
+      {
+        key: "exclude_marks",
+        description: "上下文命中任一指定 mark 时跳过记录，且优先级高于包含条件。",
+        label: "排除 Mark",
+        type: "array",
+        advanced: true,
+        item: { type: "number", label: "Mark" },
+      },
     ],
   },
   {

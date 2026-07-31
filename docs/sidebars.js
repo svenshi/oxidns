@@ -7,6 +7,7 @@ const sidebars = {
       collapsed: false,
       items: [
         'quickstart',
+        'standard-mode-smart-routing',
         {
           type: 'category',
           label: '安装与部署',

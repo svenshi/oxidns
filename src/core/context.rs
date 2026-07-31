@@ -207,6 +207,17 @@ impl ExecutionPath {
     pub fn events_from(&self, start: usize) -> &[Arc<ExecutionPathEvent>] {
         self.events.get(start..).unwrap_or(&[])
     }
+
+    /// Append recorded events from another request-local execution path.
+    ///
+    /// Subquery executors use this to retain the observable decisions made by a
+    /// failed primary branch before a successful fallback branch is applied.
+    #[inline]
+    pub fn append_from(&mut self, other: &Self, start: usize) {
+        if self.enabled {
+            self.events.extend_from_slice(other.events_from(start));
+        }
+    }
 }
 
 /// Context object for a DNS request/response lifecycle.

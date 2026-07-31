@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-pub const CURRENT_STANDARD_SCHEMA: u32 = 4;
+pub const CURRENT_STANDARD_SCHEMA: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,6 +22,10 @@ pub struct StandardIntent {
     pub filtering: StandardFilteringSettings,
     #[serde(default)]
     pub local: StandardLocalSettings,
+    #[serde(default)]
+    pub rule_data: StandardRuleDataSettings,
+    #[serde(default)]
+    pub smart_routing: StandardSmartRoutingSettings,
     #[serde(default)]
     pub cache: StandardCacheSettings,
     #[serde(default)]
@@ -45,6 +49,8 @@ impl Default for StandardIntent {
             paths: vec![StandardResolutionPath::default()],
             filtering: StandardFilteringSettings::default(),
             local: StandardLocalSettings::default(),
+            rule_data: StandardRuleDataSettings::default(),
+            smart_routing: StandardSmartRoutingSettings::default(),
             cache: StandardCacheSettings::default(),
             query_log: StandardQueryLogSettings::default(),
             routing: StandardRoutingSettings::default(),
@@ -211,9 +217,9 @@ pub struct StandardResolutionPath {
     #[serde(default)]
     pub dual_stack: StandardDualStackPolicy,
     #[serde(default)]
-    pub ip_selection: StandardPolicySwitch,
+    pub ip_selection: StandardIpSelectionSettings,
     #[serde(default)]
-    pub ecs: StandardPolicySwitch,
+    pub ecs: StandardEcsPolicy,
 }
 
 impl Default for StandardResolutionPath {
@@ -227,8 +233,8 @@ impl Default for StandardResolutionPath {
             cache: StandardPolicySwitch::Inherit,
             query_log: StandardPolicySwitch::Inherit,
             dual_stack: StandardDualStackPolicy::Inherit,
-            ip_selection: StandardPolicySwitch::Inherit,
-            ecs: StandardPolicySwitch::Inherit,
+            ip_selection: StandardIpSelectionSettings::default(),
+            ecs: StandardEcsPolicy::Inherit,
         }
     }
 }
@@ -252,6 +258,134 @@ pub enum StandardDualStackPolicy {
     PreferIpv6,
     Ipv4Only,
     Ipv6Only,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "mode",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum StandardEcsPolicy {
+    #[default]
+    Inherit,
+    Remove,
+    PreserveClient,
+    ClientSubnet {
+        #[serde(default = "default_ecs_mask4")]
+        mask4: u8,
+        #[serde(default = "default_ecs_mask6")]
+        mask6: u8,
+    },
+    Preset {
+        address: String,
+        #[serde(default = "default_ecs_mask4")]
+        mask4: u8,
+        #[serde(default = "default_ecs_mask6")]
+        mask6: u8,
+    },
+}
+
+impl StandardEcsPolicy {
+    pub(super) const fn affects_cache_key(&self) -> bool {
+        matches!(
+            self,
+            Self::PreserveClient | Self::ClientSubnet { .. } | Self::Preset { .. }
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardIpSelectionSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub selection_mode: StandardIpSelectionMode,
+    #[serde(default = "default_probe_methods")]
+    pub probe_methods: Vec<String>,
+    #[serde(default = "default_probe_stagger_ms")]
+    pub probe_stagger_ms: u64,
+    #[serde(default = "default_probe_timeout_ms")]
+    pub probe_timeout_ms: u64,
+    #[serde(default = "default_probe_max_wait_ms")]
+    pub max_wait_ms: u64,
+    #[serde(default = "default_ip_selection_top_n")]
+    pub top_n: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbound: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socks5: Option<String>,
+    #[serde(default)]
+    pub dnssec_policy: StandardDnssecPolicy,
+    #[serde(default = "default_ip_selection_parallel")]
+    pub max_parallel_probes: usize,
+    #[serde(default = "default_true")]
+    pub cache_enabled: bool,
+    #[serde(default = "default_ip_selection_cache_size")]
+    pub cache_size: usize,
+    #[serde(default = "default_ip_selection_cache_ttl")]
+    pub cache_ttl_seconds: u64,
+    #[serde(default = "default_ip_selection_failure_ttl")]
+    pub failure_ttl_seconds: u64,
+}
+
+impl Default for StandardIpSelectionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            selection_mode: StandardIpSelectionMode::FirstSuccess,
+            probe_methods: default_probe_methods(),
+            probe_stagger_ms: default_probe_stagger_ms(),
+            probe_timeout_ms: default_probe_timeout_ms(),
+            max_wait_ms: default_probe_max_wait_ms(),
+            top_n: default_ip_selection_top_n(),
+            outbound: None,
+            socks5: None,
+            dnssec_policy: StandardDnssecPolicy::ReorderOnly,
+            max_parallel_probes: default_ip_selection_parallel(),
+            cache_enabled: true,
+            cache_size: default_ip_selection_cache_size(),
+            cache_ttl_seconds: default_ip_selection_cache_ttl(),
+            failure_ttl_seconds: default_ip_selection_failure_ttl(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StandardIpSelectionMode {
+    #[default]
+    FirstSuccess,
+    BestWithinBudget,
+    Background,
+}
+
+impl StandardIpSelectionMode {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::FirstSuccess => "first_success",
+            Self::BestWithinBudget => "best_within_budget",
+            Self::Background => "background",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StandardDnssecPolicy {
+    #[default]
+    ReorderOnly,
+    Skip,
+}
+
+impl StandardDnssecPolicy {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReorderOnly => "reorder_only",
+            Self::Skip => "skip",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -473,6 +607,226 @@ impl Default for StandardDdnsPolicy {
             domains: Vec::new(),
             path_id: None,
             ttl: default_ddns_ttl(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardRuleDataSettings {
+    #[serde(default)]
+    pub domestic_domains: StandardRuleDataRole,
+    #[serde(default)]
+    pub foreign_domains: StandardRuleDataRole,
+    #[serde(default)]
+    pub domestic_ips: StandardRuleDataRole,
+    #[serde(default)]
+    pub direct_domains: StandardRuleDataRole,
+    #[serde(default)]
+    pub remote_domains: StandardRuleDataRole,
+    #[serde(default)]
+    pub ddns_domains: StandardRuleDataRole,
+}
+
+impl StandardRuleDataSettings {
+    pub(super) fn all_roles(&self) -> [(&'static str, &StandardRuleDataRole); 6] {
+        [
+            ("domestic_domains", &self.domestic_domains),
+            ("foreign_domains", &self.foreign_domains),
+            ("domestic_ips", &self.domestic_ips),
+            ("direct_domains", &self.direct_domains),
+            ("remote_domains", &self.remote_domains),
+            ("ddns_domains", &self.ddns_domains),
+        ]
+    }
+
+    pub(super) fn all_roles_mut(&mut self) -> [(&'static str, &mut StandardRuleDataRole); 6] {
+        [
+            ("domestic_domains", &mut self.domestic_domains),
+            ("foreign_domains", &mut self.foreign_domains),
+            ("domestic_ips", &mut self.domestic_ips),
+            ("direct_domains", &mut self.direct_domains),
+            ("remote_domains", &mut self.remote_domains),
+            ("ddns_domains", &mut self.ddns_domains),
+        ]
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardRuleDataRole {
+    #[serde(default)]
+    pub sources: Vec<StandardRuleDataSource>,
+}
+
+impl StandardRuleDataRole {
+    pub(super) fn has_enabled_sources(&self) -> bool {
+        self.sources.iter().any(StandardRuleDataSource::enabled)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum StandardRuleDataSource {
+    Manual {
+        id: String,
+        name: String,
+        #[serde(default = "default_true")]
+        enabled: bool,
+        #[serde(default)]
+        rules: Vec<String>,
+    },
+    LocalFile {
+        id: String,
+        name: String,
+        #[serde(default = "default_true")]
+        enabled: bool,
+        path: String,
+    },
+    Subscription {
+        id: String,
+        name: String,
+        #[serde(default = "default_true")]
+        enabled: bool,
+        url: String,
+        #[serde(default = "default_update_interval_hours")]
+        update_interval_hours: u32,
+        #[serde(default = "default_rule_data_max_age_hours")]
+        max_age_hours: u32,
+    },
+    NativeDat {
+        id: String,
+        name: String,
+        #[serde(default = "default_true")]
+        enabled: bool,
+        path: String,
+        #[serde(default)]
+        selectors: Vec<String>,
+    },
+}
+
+impl StandardRuleDataSource {
+    pub(super) fn id(&self) -> &str {
+        match self {
+            Self::Manual { id, .. }
+            | Self::LocalFile { id, .. }
+            | Self::Subscription { id, .. }
+            | Self::NativeDat { id, .. } => id,
+        }
+    }
+
+    pub(super) fn id_mut(&mut self) -> &mut String {
+        match self {
+            Self::Manual { id, .. }
+            | Self::LocalFile { id, .. }
+            | Self::Subscription { id, .. }
+            | Self::NativeDat { id, .. } => id,
+        }
+    }
+
+    pub(super) fn name(&self) -> &str {
+        match self {
+            Self::Manual { name, .. }
+            | Self::LocalFile { name, .. }
+            | Self::Subscription { name, .. }
+            | Self::NativeDat { name, .. } => name,
+        }
+    }
+
+    pub(super) fn name_mut(&mut self) -> &mut String {
+        match self {
+            Self::Manual { name, .. }
+            | Self::LocalFile { name, .. }
+            | Self::Subscription { name, .. }
+            | Self::NativeDat { name, .. } => name,
+        }
+    }
+
+    pub(super) const fn enabled(&self) -> bool {
+        match self {
+            Self::Manual { enabled, .. }
+            | Self::LocalFile { enabled, .. }
+            | Self::Subscription { enabled, .. }
+            | Self::NativeDat { enabled, .. } => *enabled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardSmartRoutingSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domestic_path_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_path_id: Option<String>,
+    #[serde(default)]
+    pub unknown_mode: StandardUnknownMode,
+    #[serde(default)]
+    pub privacy_fallback_to_domestic: bool,
+    #[serde(default = "default_smart_fallback_threshold_ms")]
+    pub fallback_threshold_ms: u64,
+    #[serde(default)]
+    pub response_policy: StandardSmartResponsePolicy,
+}
+
+impl Default for StandardSmartRoutingSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            domestic_path_id: None,
+            remote_path_id: None,
+            unknown_mode: StandardUnknownMode::CompatibilityFirst,
+            privacy_fallback_to_domestic: false,
+            fallback_threshold_ms: default_smart_fallback_threshold_ms(),
+            response_policy: StandardSmartResponsePolicy::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StandardUnknownMode {
+    #[default]
+    CompatibilityFirst,
+    PrivacyFirst,
+    StrictRemote,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardSmartResponsePolicy {
+    #[serde(default = "default_true")]
+    pub domestic_ip_mismatch: bool,
+    #[serde(default = "default_true")]
+    pub cname_only: bool,
+    #[serde(default = "default_true")]
+    pub nodata: bool,
+    #[serde(default = "default_true")]
+    pub nxdomain: bool,
+    #[serde(default = "default_true")]
+    pub servfail: bool,
+    #[serde(default = "default_true")]
+    pub timeout: bool,
+    #[serde(default = "default_true")]
+    pub transport_failure: bool,
+}
+
+impl Default for StandardSmartResponsePolicy {
+    fn default() -> Self {
+        Self {
+            domestic_ip_mismatch: true,
+            cname_only: true,
+            nodata: true,
+            nxdomain: true,
+            servfail: true,
+            timeout: true,
+            transport_failure: true,
         }
     }
 }
@@ -709,6 +1063,9 @@ pub struct StandardTagMap {
     pub routing_rules: BTreeMap<String, String>,
     pub exception_rules: BTreeMap<String, String>,
     pub devices: BTreeMap<String, String>,
+    pub rule_data: BTreeMap<String, String>,
+    pub rule_data_sources: BTreeMap<String, StandardSubscriptionTagMap>,
+    pub smart_routing: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -732,6 +1089,8 @@ pub struct StandardGenerationSummary {
     pub exception_rule_count: usize,
     pub device_count: usize,
     pub local_policy_count: usize,
+    pub rule_data_source_count: usize,
+    pub smart_routing_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -801,4 +1160,56 @@ const fn default_sample_rate() -> f64 {
 
 const fn default_update_interval_hours() -> u32 {
     24
+}
+
+const fn default_rule_data_max_age_hours() -> u32 {
+    72
+}
+
+const fn default_ecs_mask4() -> u8 {
+    24
+}
+
+const fn default_ecs_mask6() -> u8 {
+    48
+}
+
+fn default_probe_methods() -> Vec<String> {
+    vec!["tcp:443".to_string(), "tcp:80".to_string()]
+}
+
+const fn default_probe_stagger_ms() -> u64 {
+    200
+}
+
+const fn default_probe_timeout_ms() -> u64 {
+    600
+}
+
+const fn default_probe_max_wait_ms() -> u64 {
+    1000
+}
+
+const fn default_ip_selection_top_n() -> usize {
+    1
+}
+
+const fn default_ip_selection_parallel() -> usize {
+    256
+}
+
+const fn default_ip_selection_cache_size() -> usize {
+    4096
+}
+
+const fn default_ip_selection_cache_ttl() -> u64 {
+    3600
+}
+
+const fn default_ip_selection_failure_ttl() -> u64 {
+    60
+}
+
+const fn default_smart_fallback_threshold_ms() -> u64 {
+    500
 }
