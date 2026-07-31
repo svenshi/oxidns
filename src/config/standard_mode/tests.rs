@@ -32,6 +32,116 @@ fn default_intent_compiles_deterministically_with_path_scoped_cache() {
 }
 
 #[test]
+fn dedicated_group_compiles_complete_native_bundle_and_deletes_without_residue() {
+    use super::model::{
+        StandardDedicatedGroup, StandardDedicatedListener, StandardDedicatedPathPolicy,
+        StandardUpstreamStrategy,
+    };
+
+    let mut intent = StandardIntent::default();
+    intent.dedicated_groups.push(StandardDedicatedGroup {
+        id: "media".to_string(),
+        name: "Media".to_string(),
+        description: Some("Dedicated media DNS".to_string()),
+        enabled: true,
+        priority: 10,
+        rules: vec!["domain:media.example".to_string()],
+        strategy: StandardUpstreamStrategy::Consensus,
+        upstreams: intent.upstream_groups[0].upstreams.clone(),
+        path: StandardDedicatedPathPolicy::default(),
+        listener: StandardDedicatedListener {
+            enabled: true,
+            address: "127.0.0.1:5539".to_string(),
+            udp: true,
+            tcp: true,
+        },
+    });
+
+    let plan = compile_standard_intent(
+        intent.clone(),
+        &StandardCapabilities::for_tests(),
+        None,
+        None,
+    );
+    assert!(plan.can_apply, "diagnostics: {:?}", plan.diagnostics);
+    let generated = plan.generated.expect("dedicated group should compile");
+    let tags = generated
+        .tag_map
+        .dedicated_groups
+        .get("media")
+        .expect("dedicated tag map");
+    assert_eq!(tags.provider, "standard_dedicated_provider_media");
+    assert_eq!(tags.matcher, "standard_dedicated_match_media");
+    assert_eq!(tags.upstream_group, "standard_dedicated_forward_media");
+    assert_eq!(tags.path, "standard_dedicated_path_media");
+    assert_eq!(
+        tags.cache.as_deref(),
+        Some("standard_dedicated_cache_media")
+    );
+    assert_eq!(
+        tags.udp_listener.as_deref(),
+        Some("standard_dedicated_udp_media")
+    );
+    assert_eq!(
+        tags.tcp_listener.as_deref(),
+        Some("standard_dedicated_tcp_media")
+    );
+    assert!(generated.yaml.contains("standard_dedicated_provider_media"));
+    assert!(generated.yaml.contains("response_selection: consensus"));
+    assert!(generated.yaml.contains("listen: 127.0.0.1:5539"));
+
+    intent.dedicated_groups.clear();
+    let deleted = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
+    assert!(deleted.can_apply, "diagnostics: {:?}", deleted.diagnostics);
+    let deleted = deleted.generated.expect("deleted intent should compile");
+    assert!(deleted.tag_map.dedicated_groups.is_empty());
+    assert!(!deleted.tag_map.caches.contains_key("dedicated:media"));
+    assert!(!deleted.yaml.contains("standard_dedicated_"));
+}
+
+#[test]
+fn dedicated_listener_collision_and_incomplete_group_are_apply_blockers() {
+    use super::model::{
+        StandardDedicatedGroup, StandardDedicatedListener, StandardDedicatedPathPolicy,
+        StandardUpstreamStrategy,
+    };
+
+    let mut intent = StandardIntent::default();
+    intent.dedicated_groups.push(StandardDedicatedGroup {
+        id: "broken".to_string(),
+        name: "Broken".to_string(),
+        description: None,
+        enabled: true,
+        priority: 0,
+        rules: Vec::new(),
+        strategy: StandardUpstreamStrategy::Consensus,
+        upstreams: vec![intent.upstream_groups[0].upstreams[0].clone()],
+        path: StandardDedicatedPathPolicy::default(),
+        listener: StandardDedicatedListener {
+            enabled: true,
+            address: intent.listen.address.clone(),
+            udp: true,
+            tcp: false,
+        },
+    });
+
+    let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
+    let codes: std::collections::BTreeSet<_> = plan
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    for expected in [
+        "dedicated_rules_required",
+        "consensus_upstreams_insufficient",
+        "dedicated_listener_collision",
+    ] {
+        assert!(codes.contains(expected), "missing diagnostic {expected}");
+    }
+    assert!(!plan.can_apply);
+}
+
+#[test]
 fn schema_v2_migrates_cache_and_upstream_strategy() {
     let value = json!({
         "schema": 2,
@@ -148,7 +258,7 @@ fn schema_v3_migrates_with_inactive_phase_one_defaults() {
 }
 
 #[test]
-fn schema_v4_migrates_phase_two_placeholders_to_explicit_v5_policies() {
+fn schema_v4_migrates_phase_two_placeholders_to_explicit_current_policies() {
     use super::model::StandardEcsPolicy;
 
     let mut value = serde_json::to_value(StandardIntent::default()).expect("serialize default");
@@ -158,7 +268,7 @@ fn schema_v4_migrates_phase_two_placeholders_to_explicit_v5_policies() {
 
     let (intent, migration) = decode_standard_intent(value).expect("v4 should migrate");
 
-    assert_eq!(intent.schema, 5);
+    assert_eq!(intent.schema, CURRENT_STANDARD_SCHEMA);
     assert!(matches!(
         intent.paths[0].ecs,
         StandardEcsPolicy::ClientSubnet {
@@ -176,6 +286,62 @@ fn schema_v4_migrates_phase_two_placeholders_to_explicit_v5_policies() {
     assert!(codes.contains("schema_v4_migrated"));
     assert!(codes.contains("legacy_ecs_enabled_migrated"));
     assert!(codes.contains("legacy_ip_selection_enabled_migrated"));
+}
+
+#[test]
+fn schema_v5_migrates_with_inactive_phase_three_defaults_and_removes_placeholders() {
+    let mut value = serde_json::to_value(StandardIntent::default()).expect("serialize default");
+    value["schema"] = json!(5);
+    value
+        .as_object_mut()
+        .expect("intent object")
+        .remove("dedicatedGroups");
+    value
+        .as_object_mut()
+        .expect("intent object")
+        .remove("dynamicLearning");
+    value
+        .as_object_mut()
+        .expect("intent object")
+        .remove("advancedRules");
+    value["routing"]["scenarios"] = json!([]);
+
+    let (intent, migration) = decode_standard_intent(value).expect("v5 should migrate");
+
+    assert_eq!(intent.schema, CURRENT_STANDARD_SCHEMA);
+    assert!(intent.dedicated_groups.is_empty());
+    assert!(intent.dynamic_learning.profiles.is_empty());
+    assert!(intent.advanced_rules.is_empty());
+    let migration = migration.expect("migration metadata");
+    assert_eq!(migration.from_schema, 5);
+    assert_eq!(migration.to_schema, CURRENT_STANDARD_SCHEMA);
+    assert!(
+        migration
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "schema_v5_migrated")
+    );
+}
+
+#[test]
+fn schema_v5_enabled_placeholder_requires_explicit_template_rebuild() {
+    let mut value = serde_json::to_value(StandardIntent::default()).expect("serialize default");
+    value["schema"] = json!(5);
+    value["routing"]["scenarios"] = json!([{
+        "id": "privacy",
+        "name": "Privacy",
+        "enabled": true,
+        "kind": "privacy"
+    }]);
+
+    let (_, migration) = decode_standard_intent(value).expect("v5 should decode");
+    assert!(
+        migration
+            .expect("migration metadata")
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "legacy_scenario_requires_rebuild")
+    );
 }
 
 #[test]
@@ -494,10 +660,8 @@ fn multiple_paths_receive_distinct_cache_plugins() {
 }
 
 #[test]
-fn invalid_ttl_ranges_and_deferred_scenarios_are_reported_with_active_path_controls() {
-    use super::model::{
-        StandardDualStackPolicy, StandardEcsPolicy, StandardScenario, StandardScenarioKind,
-    };
+fn invalid_ttl_ranges_are_reported_with_active_path_controls() {
+    use super::model::{StandardDualStackPolicy, StandardEcsPolicy};
 
     let mut intent = StandardIntent::default();
     intent.cache.min_positive_ttl = 600;
@@ -511,12 +675,6 @@ fn invalid_ttl_ranges_and_deferred_scenarios_are_reported_with_active_path_contr
         mask6: 48,
     };
     intent.query_log.sample_rate = 0.5;
-    intent.routing.scenarios.push(StandardScenario {
-        id: "privacy".to_string(),
-        name: "Privacy".to_string(),
-        enabled: true,
-        kind: StandardScenarioKind::Privacy,
-    });
 
     let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
     let codes: std::collections::BTreeSet<_> = plan
@@ -528,7 +686,6 @@ fn invalid_ttl_ranges_and_deferred_scenarios_are_reported_with_active_path_contr
         "cache_positive_ttl_range_invalid",
         "cache_negative_ttl_range_invalid",
         "query_log_sampling_not_available",
-        "scenario_not_available",
     ] {
         assert!(codes.contains(expected), "missing diagnostic {expected}");
     }
@@ -870,4 +1027,425 @@ fn plan_reports_duplicate_and_overridden_rules_with_winners() {
             && row["status"] == "overridden"
             && row["overriddenBy"] == "allow_first"
     }));
+}
+
+#[test]
+fn dynamic_learning_compiles_bounded_lifecycle_response_classification_and_route() {
+    use super::model::{
+        StandardDynamicLearningProfile, StandardLearningFailurePolicy, StandardLearningRuleKind,
+    };
+
+    let mut intent = StandardIntent::default();
+    intent
+        .dynamic_learning
+        .profiles
+        .push(StandardDynamicLearningProfile {
+            id: "video".to_string(),
+            name: "Video learning".to_string(),
+            enabled: true,
+            paused: false,
+            target_path_id: "default".to_string(),
+            priority: 20,
+            qtypes: vec!["A".to_string(), "AAAA".to_string()],
+            rcodes: vec!["NOERROR".to_string()],
+            answer_required: true,
+            response_ip_role: None,
+            rule_kind: StandardLearningRuleKind::Domain,
+            max_entries: 4096,
+            entry_ttl_seconds: 86_400,
+            cleanup_interval_seconds: 300,
+            queue_size: 256,
+            batch_size: 32,
+            flush_interval_ms: 100,
+            failure_policy: StandardLearningFailurePolicy::Continue,
+        });
+
+    let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
+    assert!(plan.can_apply, "diagnostics: {:?}", plan.diagnostics);
+    let generated = plan.generated.expect("dynamic learning config");
+    assert_eq!(
+        generated.managed_files,
+        vec![
+            "./data/standard-dynamic-learning/video.meta.json",
+            "./data/standard-dynamic-learning/video.txt",
+        ]
+    );
+    let tags = generated
+        .tag_map
+        .dynamic_learning
+        .get("video")
+        .expect("learning tag map");
+    assert_eq!(tags.provider, "standard_learn_provider_video");
+    assert_eq!(tags.action, "standard_learn_action_video");
+    for expected in [
+        "type: dynamic_domain_set",
+        "max_entries: 4096",
+        "entry_ttl_seconds: 86400",
+        "type: learn_domain",
+        "phase: before",
+        "async: true",
+        "standard_learn_rcode_video",
+        "standard_learn_answer_video",
+    ] {
+        assert!(generated.yaml.contains(expected), "missing {expected}");
+    }
+    #[cfg(feature = "standard")]
+    crate::config::validate_text(&generated.yaml)
+        .expect("generated learning graph should pass backend analysis");
+}
+
+#[test]
+fn learned_routes_follow_manual_forced_routing_in_the_main_sequence() {
+    use super::model::{
+        StandardDynamicLearningProfile, StandardLearningFailurePolicy, StandardLearningRuleKind,
+        StandardRoutingRule, StandardRuleAction, StandardRuleCondition, StandardRuleSource,
+    };
+
+    let mut intent = StandardIntent::default();
+    intent.routing.enabled = true;
+    intent.routing.rules.push(StandardRoutingRule {
+        id: "forced".to_string(),
+        name: "Forced route".to_string(),
+        enabled: true,
+        condition: StandardRuleCondition::Domain {
+            values: vec!["forced.example".to_string()],
+        },
+        action: StandardRuleAction::UseDefaultPath,
+        source: StandardRuleSource::Manual,
+        note: None,
+    });
+    intent
+        .dynamic_learning
+        .profiles
+        .push(StandardDynamicLearningProfile {
+            id: "learned".to_string(),
+            name: "Learned route".to_string(),
+            enabled: true,
+            paused: false,
+            target_path_id: "default".to_string(),
+            priority: 0,
+            qtypes: vec!["A".to_string()],
+            rcodes: vec!["NOERROR".to_string()],
+            answer_required: true,
+            response_ip_role: None,
+            rule_kind: StandardLearningRuleKind::Full,
+            max_entries: 100,
+            entry_ttl_seconds: 3600,
+            cleanup_interval_seconds: 60,
+            queue_size: 32,
+            batch_size: 8,
+            flush_interval_ms: 50,
+            failure_policy: StandardLearningFailurePolicy::Continue,
+        });
+
+    let generated = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None)
+        .generated
+        .expect("priority graph");
+    let document: YamlValue = serde_yaml_ng::from_str(&generated.yaml).expect("generated YAML");
+    let main = document["plugins"]
+        .as_sequence()
+        .expect("plugins")
+        .iter()
+        .find(|plugin| plugin["tag"].as_str() == Some("standard_main_sequence"))
+        .expect("main sequence");
+    let steps = main["args"].as_sequence().expect("main steps");
+    let forced = steps
+        .iter()
+        .position(|step| step["matches"].as_str() == Some("$standard_route_match_forced"))
+        .expect("forced route step");
+    let learned = steps
+        .iter()
+        .position(|step| step["matches"].as_str() == Some("$standard_learn_match_learned"))
+        .expect("learned route step");
+    assert!(
+        forced < learned,
+        "manual forced routing must win before learning"
+    );
+}
+
+#[test]
+fn advanced_rules_compile_request_and_finite_response_reroute() {
+    use super::model::{
+        StandardAdvancedAction, StandardAdvancedCondition, StandardAdvancedFailurePolicy,
+        StandardAdvancedFailureResponse, StandardAdvancedRule, StandardAdvancedRulePhase,
+    };
+
+    let mut intent = StandardIntent::default();
+    let mut remote_group = intent.upstream_groups[0].clone();
+    remote_group.id = "remote".to_string();
+    remote_group.name = "Remote".to_string();
+    remote_group.is_default = false;
+    intent.upstream_groups.push(remote_group);
+    let mut remote_path = intent.paths[0].clone();
+    remote_path.id = "remote".to_string();
+    remote_path.name = "Remote".to_string();
+    remote_path.upstream_group_id = "remote".to_string();
+    intent.paths.push(remote_path);
+    intent.advanced_rules = vec![
+        StandardAdvancedRule {
+            id: "office_hours".to_string(),
+            name: "Office hours".to_string(),
+            enabled: true,
+            priority: 10,
+            phase: StandardAdvancedRulePhase::Request,
+            conditions: vec![StandardAdvancedCondition::Qtype {
+                values: vec!["AAAA".to_string()],
+            }],
+            action: StandardAdvancedAction::UsePath {
+                path_id: "remote".to_string(),
+            },
+            failure_policy: StandardAdvancedFailurePolicy::FailOpen,
+            failure_response: StandardAdvancedFailureResponse::Servfail,
+            template_origin: None,
+        },
+        StandardAdvancedRule {
+            id: "retry_remote".to_string(),
+            name: "Retry remote".to_string(),
+            enabled: true,
+            priority: 20,
+            phase: StandardAdvancedRulePhase::Response,
+            conditions: vec![
+                StandardAdvancedCondition::SourcePath {
+                    path_id: "default".to_string(),
+                },
+                StandardAdvancedCondition::Rcode {
+                    values: vec!["SERVFAIL".to_string()],
+                },
+            ],
+            action: StandardAdvancedAction::UsePath {
+                path_id: "remote".to_string(),
+            },
+            failure_policy: StandardAdvancedFailurePolicy::FailClosed,
+            failure_response: StandardAdvancedFailureResponse::Refused,
+            template_origin: None,
+        },
+    ];
+
+    let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
+    assert!(plan.can_apply, "diagnostics: {:?}", plan.diagnostics);
+    let generated = plan.generated.expect("advanced rules config");
+    for expected in [
+        "standard_advanced_action_office_hours",
+        "standard_advanced_match_office_hours_0",
+        "standard_path_advanced_target_retry_remote",
+        "standard_advanced_drop_retry_remote",
+        "fallback_on_timeout: false",
+        "mode: refused",
+    ] {
+        assert!(generated.yaml.contains(expected), "missing {expected}");
+    }
+    #[cfg(feature = "standard")]
+    crate::config::validate_text(&generated.yaml)
+        .expect("generated advanced graph should pass backend analysis");
+}
+
+#[test]
+fn advanced_rules_compile_every_declared_native_condition_family() {
+    use super::model::{
+        StandardAdvancedAction, StandardAdvancedCondition, StandardAdvancedFailurePolicy,
+        StandardAdvancedFailureResponse, StandardAdvancedRule, StandardAdvancedRulePhase,
+        StandardRuleDataSource, StandardTimePeriod,
+    };
+
+    let mut intent = StandardIntent::default();
+    let mut remote_group = intent.upstream_groups[0].clone();
+    remote_group.id = "remote".to_string();
+    remote_group.name = "Remote".to_string();
+    remote_group.is_default = false;
+    intent.upstream_groups.push(remote_group);
+    let mut remote_path = intent.paths[0].clone();
+    remote_path.id = "remote".to_string();
+    remote_path.name = "Remote".to_string();
+    remote_path.upstream_group_id = "remote".to_string();
+    intent.paths.push(remote_path);
+    intent
+        .rule_data
+        .domestic_ips
+        .sources
+        .push(StandardRuleDataSource::Manual {
+            id: "manual_ips".to_string(),
+            name: "Manual IPs".to_string(),
+            enabled: true,
+            rules: vec!["192.0.2.0/24".to_string()],
+        });
+    intent.advanced_rules = vec![
+        StandardAdvancedRule {
+            id: "request_all".to_string(),
+            name: "Request AND".to_string(),
+            enabled: true,
+            priority: 1,
+            phase: StandardAdvancedRulePhase::Request,
+            conditions: vec![
+                StandardAdvancedCondition::Domain {
+                    values: vec!["full:exact.example".to_string()],
+                },
+                StandardAdvancedCondition::Suffix {
+                    values: vec!["example".to_string()],
+                },
+                StandardAdvancedCondition::Keyword {
+                    values: vec!["exact".to_string()],
+                },
+                StandardAdvancedCondition::ClientCidr {
+                    values: vec!["127.0.0.0/8".to_string()],
+                },
+                StandardAdvancedCondition::Qtype {
+                    values: vec!["A".to_string()],
+                },
+                StandardAdvancedCondition::Time {
+                    timezone: "UTC".to_string(),
+                    periods: vec![StandardTimePeriod {
+                        start: Some("00:00".to_string()),
+                        end: Some("23:59".to_string()),
+                        weekdays: vec![1, 2, 3, 4, 5],
+                        monthdays: vec![],
+                    }],
+                },
+                StandardAdvancedCondition::RateLimitExceeded {
+                    qps: 100,
+                    burst: 200,
+                    mask4: 32,
+                    mask6: 64,
+                },
+            ],
+            action: StandardAdvancedAction::UsePath {
+                path_id: "remote".to_string(),
+            },
+            failure_policy: StandardAdvancedFailurePolicy::FailOpen,
+            failure_response: StandardAdvancedFailureResponse::Servfail,
+            template_origin: None,
+        },
+        StandardAdvancedRule {
+            id: "response_all".to_string(),
+            name: "Response AND".to_string(),
+            enabled: true,
+            priority: 2,
+            phase: StandardAdvancedRulePhase::Response,
+            conditions: vec![
+                StandardAdvancedCondition::SourcePath {
+                    path_id: "default".to_string(),
+                },
+                StandardAdvancedCondition::Cname {
+                    values: vec!["domain:alias.example".to_string()],
+                },
+                StandardAdvancedCondition::Rcode {
+                    values: vec!["NOERROR".to_string()],
+                },
+                StandardAdvancedCondition::HasWantedAnswer,
+                StandardAdvancedCondition::ResponseIpRole {
+                    role: "domestic_ips".to_string(),
+                    invert: true,
+                },
+            ],
+            action: StandardAdvancedAction::UsePath {
+                path_id: "remote".to_string(),
+            },
+            failure_policy: StandardAdvancedFailurePolicy::FailOpen,
+            failure_response: StandardAdvancedFailureResponse::Servfail,
+            template_origin: None,
+        },
+    ];
+
+    let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
+    assert!(plan.can_apply, "diagnostics: {:?}", plan.diagnostics);
+    let yaml = plan.generated.expect("advanced graph").yaml;
+    for expected in [
+        "type: qname",
+        "type: client_ip",
+        "type: qtype",
+        "type: time",
+        "type: rate_limiter",
+        "type: cname",
+        "type: rcode",
+        "type: has_wanted_ans",
+        "type: resp_ip",
+        "!$standard_advanced_match_request_all_6",
+        "!$standard_advanced_match_response_all_4",
+    ] {
+        assert!(yaml.contains(expected), "missing {expected}");
+    }
+    #[cfg(feature = "standard")]
+    crate::config::validate_text(&yaml).expect("all advanced matchers should initialize");
+}
+
+#[test]
+fn all_phase_three_templates_expand_to_complete_reviewable_plans() {
+    use super::{StandardTemplateKind, StandardTemplateParameters, expand_standard_template};
+
+    for (index, kind) in [
+        StandardTemplateKind::LowLatency,
+        StandardTemplateKind::PrivacyDns,
+        StandardTemplateKind::InternalDomains,
+        StandardTemplateKind::RegionalUpstream,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let base = StandardIntent::default();
+        let mut upstreams = base.upstream_groups[0].upstreams.clone();
+        if matches!(kind, StandardTemplateKind::PrivacyDns) {
+            for (upstream_index, upstream) in upstreams.iter_mut().enumerate() {
+                upstream.protocol = super::model::StandardUpstreamProtocol::Doh;
+                upstream.address = format!("https://dns{upstream_index}.example/dns-query");
+                upstream.doh_path = Some("/dns-query".to_string());
+            }
+        }
+        let namespace = format!("template_{index}");
+        let expansion = expand_standard_template(
+            base,
+            kind,
+            StandardTemplateParameters {
+                namespace: namespace.clone(),
+                name: format!("Template {index}"),
+                description: None,
+                domains: vec!["domain:example.com".to_string()],
+                upstreams,
+                listener_address: matches!(kind, StandardTemplateKind::InternalDomains)
+                    .then(|| format!("127.0.0.1:{}", 5600 + index)),
+            },
+        )
+        .expect("template expansion");
+        assert_eq!(
+            expansion.objects_added,
+            vec![format!("dedicatedGroups.{namespace}")]
+        );
+        let plan = compile_standard_intent(
+            expansion.proposed_intent,
+            &StandardCapabilities::for_tests(),
+            None,
+            None,
+        );
+        assert!(
+            plan.can_apply,
+            "template diagnostics: {:?}",
+            plan.diagnostics
+        );
+        assert!(
+            plan.generated
+                .expect("generated template")
+                .tag_map
+                .dedicated_groups
+                .contains_key(&namespace)
+        );
+    }
+}
+
+#[test]
+fn phase_three_template_namespace_never_overwrites_existing_objects() {
+    use super::{StandardTemplateKind, StandardTemplateParameters, expand_standard_template};
+
+    let intent = StandardIntent::default();
+    let error = expand_standard_template(
+        intent.clone(),
+        StandardTemplateKind::LowLatency,
+        StandardTemplateParameters {
+            namespace: intent.paths[0].id.clone(),
+            name: "Collision".to_string(),
+            description: None,
+            domains: vec!["domain:example.com".to_string()],
+            upstreams: intent.upstream_groups[0].upstreams.clone(),
+            listener_address: None,
+        },
+    )
+    .expect_err("cross-category namespace collision must be rejected");
+    assert!(error.contains("collides"));
 }

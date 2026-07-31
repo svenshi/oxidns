@@ -39,6 +39,7 @@ import Admonition from "@theme/Admonition";
     async: true
     error_mode: continue
     timeout: 1s
+    paused: false
 ```
 
 ### 配置项
@@ -99,6 +100,13 @@ import Admonition from "@theme/Admonition";
 
 - 类型：`duration`；必填：否；默认值：`1s`
 - 作用：仅 `async: false` 时用于限制等待 provider 写入的时间。
+
+#### `paused`
+
+- 类型：`bool`；必填：否；默认值：`false`
+- 作用：启动时暂停新增学习；已有动态规则仍然参与匹配。
+
+运行时接口为 `GET /api/plugins/<tag>/status`、`POST /pause` 和 `POST /resume`。暂停只切断学习副作用，不会停止后续 DNS 执行链。
 
 ### 行为说明
 

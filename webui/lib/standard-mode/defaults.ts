@@ -57,7 +57,7 @@ export function createDefaultResolutionPath(): StandardResolutionPath {
 
 export function createDefaultStandardSettings(): StandardModeSettings {
   return {
-    schema: 5,
+    schema: 6,
     listen: {
       address: "0.0.0.0:5335",
       udp: true,
@@ -104,6 +104,9 @@ export function createDefaultStandardSettings(): StandardModeSettings {
         transportFailure: true,
       },
     },
+    dedicatedGroups: [],
+    dynamicLearning: { profiles: [] },
+    advancedRules: [],
     cache: {
       enabled: true,
       size: 8192,
@@ -120,7 +123,6 @@ export function createDefaultStandardSettings(): StandardModeSettings {
     routing: {
       enabled: false,
       rules: [],
-      scenarios: [],
     },
     exceptions: [],
     devices: [],

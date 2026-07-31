@@ -1110,6 +1110,10 @@ export const zhCNPluginDefined = {
           label: "同步超时",
           description: "async 关闭时等待 provider 写入完成的最长时间。",
         },
+        paused: {
+          label: "暂停学习",
+          description: "暂停新增学习，不影响已有动态规则匹配或后续 DNS 链。",
+        },
       },
     },
     query_recorder: {
@@ -2527,6 +2531,22 @@ export const zhCNPluginDefined = {
         flush_interval_ms: {
           label: "Flush 间隔(ms)",
           description: "定义后台 append 的定时 flush 间隔。",
+        },
+        max_entries: {
+          label: "最大条目数",
+          description: "可选硬上限；达到容量时整批拒绝新规则。",
+        },
+        entry_ttl_seconds: {
+          label: "学习条目 TTL(秒)",
+          description: "只淘汰自动学习条目，保留手工修正。",
+        },
+        cleanup_interval_seconds: {
+          label: "清理周期(秒)",
+          description: "控制有界后台过期扫描周期。",
+        },
+        metadata_path: {
+          label: "元数据文件",
+          description: "保存规则来源和学习时间戳的 JSON 侧车文件。",
         },
       },
     },

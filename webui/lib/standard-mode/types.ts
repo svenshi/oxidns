@@ -171,7 +171,6 @@ export interface StandardLocalSettings {
 export interface StandardRoutingSettings {
   enabled: boolean;
   rules: StandardRoutingRule[];
-  scenarios: StandardScenario[];
 }
 
 export interface StandardRuleDataSettings {
@@ -236,12 +235,103 @@ export interface StandardRoutingRule {
   note?: string;
 }
 
-export interface StandardScenario {
+export interface StandardDedicatedGroup {
+  id: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  priority: number;
+  rules: string[];
+  strategy: StandardUpstreamGroup["strategy"];
+  upstreams: StandardUpstream[];
+  path: StandardDedicatedPathPolicy;
+  listener: StandardDedicatedListener;
+}
+
+export interface StandardDedicatedPathPolicy {
+  filtering: StandardResolutionPath["filtering"];
+  cache: StandardResolutionPath["cache"];
+  queryLog: StandardResolutionPath["queryLog"];
+  dualStack: StandardResolutionPath["dualStack"];
+  ipSelection: StandardIpSelectionSettings;
+  ecs: StandardEcsPolicy;
+}
+
+export interface StandardDedicatedListener {
+  enabled: boolean;
+  address: string;
+  udp: boolean;
+  tcp: boolean;
+}
+
+export interface StandardDynamicLearningSettings {
+  profiles: StandardDynamicLearningProfile[];
+}
+
+export interface StandardDynamicLearningProfile {
   id: string;
   name: string;
   enabled: boolean;
-  kind: "privacy" | "gaming" | "child_protection" | "domestic_optimization";
+  paused: boolean;
+  targetPathId: string;
+  priority: number;
+  qtypes: string[];
+  rcodes: string[];
+  answerRequired: boolean;
+  responseIpRole?: string;
+  ruleKind: "full" | "domain";
+  maxEntries: number;
+  entryTtlSeconds: number;
+  cleanupIntervalSeconds: number;
+  queueSize: number;
+  batchSize: number;
+  flushIntervalMs: number;
+  failurePolicy: "continue" | "fail_closed";
 }
+
+export interface StandardAdvancedRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  priority: number;
+  phase: "request" | "response";
+  conditions: StandardAdvancedCondition[];
+  action: StandardAdvancedAction;
+  failurePolicy: "fail_open" | "fail_closed";
+  failureResponse: "servfail" | "refused";
+  templateOrigin?: string;
+}
+
+export type StandardAdvancedCondition =
+  | { type: "domain"; values: string[] }
+  | { type: "suffix"; values: string[] }
+  | { type: "keyword"; values: string[] }
+  | { type: "client_cidr"; values: string[] }
+  | { type: "qtype"; values: string[] }
+  | { type: "time"; timezone: string; periods: StandardTimePeriod[] }
+  | {
+      type: "rate_limit_exceeded";
+      qps: number;
+      burst: number;
+      mask4: number;
+      mask6: number;
+    }
+  | { type: "source_path"; pathId: string }
+  | { type: "cname"; values: string[] }
+  | { type: "rcode"; values: string[] }
+  | { type: "has_wanted_answer" }
+  | { type: "response_ip_role"; role: string; invert: boolean };
+
+export interface StandardTimePeriod {
+  start?: string;
+  end?: string;
+  weekdays: number[];
+  monthdays: number[];
+}
+
+export type StandardAdvancedAction =
+  | { type: "use_path"; pathId: string }
+  | { type: "block"; response: StandardBlockResponse };
 
 export type StandardRuleCondition =
   | { type: "domain"; values: string[] }
@@ -286,7 +376,7 @@ export interface StandardSystemSettings {
 }
 
 export interface StandardModeSettings {
-  schema: 5;
+  schema: 6;
   listen: StandardListenSettings;
   upstreamGroups: StandardUpstreamGroup[];
   paths: StandardResolutionPath[];
@@ -294,6 +384,9 @@ export interface StandardModeSettings {
   local: StandardLocalSettings;
   ruleData: StandardRuleDataSettings;
   smartRouting: StandardSmartRoutingSettings;
+  dedicatedGroups: StandardDedicatedGroup[];
+  dynamicLearning: StandardDynamicLearningSettings;
+  advancedRules: StandardAdvancedRule[];
   cache: StandardCacheSettings;
   queryLog: StandardQueryLogSettings;
   routing: StandardRoutingSettings;
@@ -319,6 +412,29 @@ export interface StandardTagMap {
   ruleData?: Record<string, string>;
   ruleDataSources?: Record<string, StandardSubscriptionTagMap>;
   smartRouting?: Record<string, string>;
+  dedicatedGroups?: Record<string, StandardDedicatedTagMap>;
+  dynamicLearning?: Record<string, StandardDynamicLearningTagMap>;
+  advancedRules?: Record<string, string>;
+}
+
+export interface StandardDedicatedTagMap {
+  provider: string;
+  matcher: string;
+  upstreamGroup: string;
+  path: string;
+  entry: string;
+  cache?: string;
+  udpListener?: string;
+  tcpListener?: string;
+}
+
+export interface StandardDynamicLearningTagMap {
+  provider: string;
+  learner: string;
+  matcher: string;
+  action: string;
+  rulesPath: string;
+  metadataPath: string;
 }
 
 export interface StandardSubscriptionTagMap {
@@ -340,6 +456,9 @@ export interface StandardGenerationSummary {
   localPolicyCount: number;
   ruleDataSourceCount?: number;
   smartRoutingEnabled?: boolean;
+  dedicatedGroupCount?: number;
+  dynamicLearningProfileCount?: number;
+  advancedRuleCount?: number;
 }
 
 export interface StandardGeneratedMetadata {
@@ -348,6 +467,7 @@ export interface StandardGeneratedMetadata {
   generatedTags: string[];
   tagMap: StandardTagMap;
   summary: StandardGenerationSummary;
+  managedFiles?: string[];
   generatedAtMs: number;
   transactionId?: string;
 }
@@ -383,6 +503,7 @@ export interface StandardGeneratedPlan {
   generatedTags: string[];
   tagMap: StandardTagMap;
   summary: StandardGenerationSummary;
+  managedFiles?: string[];
 }
 
 export interface StandardPolicyPlan {
@@ -407,6 +528,32 @@ export interface StandardPlanResponse {
   blockers: StandardApplyBlocker[];
   can_apply: boolean;
   plan: StandardPolicyPlan;
+}
+
+export type StandardTemplateKind =
+  | "low_latency"
+  | "privacy_dns"
+  | "internal_domains"
+  | "regional_upstream";
+
+export interface StandardTemplateParameters {
+  namespace: string;
+  name: string;
+  description?: string;
+  domains: string[];
+  upstreams: StandardUpstream[];
+  listenerAddress?: string;
+}
+
+export interface StandardTemplatePreviewResponse {
+  ok: boolean;
+  expansion: {
+    proposedIntent: StandardModeSettings;
+    objectsAdded: string[];
+    objectsModified: string[];
+    explanationTags: string[];
+  };
+  plan: StandardPlanResponse;
 }
 
 export type StandardTransactionStatus =

@@ -1245,6 +1245,14 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         default: "1s",
         advanced: true,
       },
+      {
+        key: "paused",
+        description: "暂停新增学习，但不影响已有动态规则匹配和后续 DNS 链。",
+        label: "暂停学习",
+        type: "switch",
+        default: false,
+        advanced: true,
+      },
     ],
   },
   {

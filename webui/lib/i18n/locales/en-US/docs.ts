@@ -276,6 +276,7 @@ export const enUSDocs = {
       "- Type: `string`; Required: No; Default: `continue`\n- Optional values:\n  - `continue`: Only log the failure and continue the subsequent links.\n  - `stop`: Return to `Stop` after failure and truncate the current sequence branch.\n  - `fail`: Return executor error directly after failure.",
     timeout:
       "- Type: `duration`; required: no; default value: `1s`\n- Function: Limit the maximum time to wait for provider writing to complete when `async: false` is used.\n- Supported units: `ms`, `s`, `m`, `h`, `d`.",
+    paused: "- Type: `boolean`; required: no; default: `false`\n- Function: Pause new learning while existing rules continue matching and the DNS chain continues.",
   },
   query_recorder: {
     path: "- Type: `string`; Required: Yes\n- Function: Specify the SQLite file path of the current recorder.",
@@ -641,6 +642,10 @@ export const enUSDocs = {
       "- Type: `integer`; required: no; default value: `256`\n- Configuration requirement: must be greater than 0.\n- Function: Define the batch flush threshold for background appends.\n- Operational impact: Larger values write more rules per flush and concentrate CPU/disk work into fewer flushes.",
     flush_interval_ms:
       "- Type: `integer`; required: no; default value: `200`\n- Unit: milliseconds\n- Configuration requirement: must be greater than 0.\n- Function: Define the scheduled flush interval for background appends.\n- Operational impact: Together with `batch_size`, this controls write cadence. Smaller values make new rules visible sooner but flush to disk more often.",
+    max_entries: "- Type: `integer`; required: no\n- Function: Hard total-entry limit; rejects a new batch atomically at capacity.",
+    entry_ttl_seconds: "- Type: `integer`; required: no\n- Function: Expires learned entries while retaining manual corrections.",
+    cleanup_interval_seconds: "- Type: `integer`; required: no; default: `600`\n- Function: Background expiration scan interval.",
+    metadata_path: "- Type: `string`; required when TTL is enabled\n- Function: JSON sidecar for origin and timestamps.",
   },
   geosite: {
     file: "- Type: `string`; Required: Yes\n- Function: Specify the `geosite.dat` file path.",

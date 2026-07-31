@@ -1,7 +1,12 @@
 import { createDefaultStandardSettings } from "./defaults";
 import type {
   StandardCacheSettings,
+  StandardAdvancedAction,
+  StandardAdvancedCondition,
+  StandardAdvancedRule,
+  StandardDedicatedGroup,
   StandardDeviceProfile,
+  StandardDynamicLearningProfile,
   StandardExceptionRule,
   StandardFilterFile,
   StandardFilteringSettings,
@@ -14,7 +19,6 @@ import type {
   StandardRuleDataSource,
   StandardRoutingRule,
   StandardRoutingSettings,
-  StandardScenario,
   StandardSubscription,
   StandardSystemSettings,
   StandardSmartRoutingSettings,
@@ -593,11 +597,6 @@ function normalizeRouting(value: unknown): StandardRoutingSettings {
           .map(normalizeRoutingRule)
           .filter((item): item is StandardRoutingRule => item !== null)
       : [],
-    scenarios: Array.isArray(source.scenarios)
-      ? source.scenarios
-          .map(normalizeScenario)
-          .filter((item): item is StandardScenario => item !== null)
-      : [],
   };
 }
 
@@ -668,24 +667,218 @@ function normalizeRuleAction(
   return null;
 }
 
-function normalizeScenario(
+function normalizeDedicatedGroup(
   value: unknown,
   index: number,
-): StandardScenario | null {
+): StandardDedicatedGroup | null {
+  const source = asRecord(value);
+  const id = cleanId(source.id, `dedicated_${index + 1}`);
+  const upstreams = Array.isArray(source.upstreams)
+    ? source.upstreams.map((item, upstreamIndex) =>
+        normalizeUpstream(item, upstreamIndex),
+      )
+    : [];
+  const normalizedPath = normalizePath(
+    {
+      ...asRecord(source.path),
+      id,
+      name: id,
+      upstreamGroupId: id,
+    },
+    index + 1,
+  );
+  if (!normalizedPath) return null;
+  const listener = asRecord(source.listener);
+  return {
+    id,
+    name: asString(source.name, id),
+    ...(asString(source.description).trim()
+      ? { description: asString(source.description).trim() }
+      : {}),
+    enabled: asBoolean(source.enabled, true),
+    priority: Math.max(0, asNumber(source.priority, 0)),
+    rules: asStringArray(source.rules),
+    strategy:
+      source.strategy === "fastest" ||
+      source.strategy === "prefer_positive" ||
+      source.strategy === "consensus" ||
+      source.strategy === "ordered_fallback"
+        ? source.strategy
+        : "balanced",
+    upstreams,
+    path: {
+      filtering: normalizedPath.filtering,
+      cache: normalizedPath.cache,
+      queryLog: normalizedPath.queryLog,
+      dualStack: normalizedPath.dualStack,
+      ipSelection: normalizedPath.ipSelection,
+      ecs: normalizedPath.ecs,
+    },
+    listener: {
+      enabled: asBoolean(listener.enabled, false),
+      address: asString(listener.address).trim(),
+      udp: asBoolean(listener.udp, true),
+      tcp: asBoolean(listener.tcp, true),
+    },
+  };
+}
+
+function normalizeDynamicLearningProfile(
+  value: unknown,
+  index: number,
+): StandardDynamicLearningProfile | null {
+  const source = asRecord(value);
+  const id = cleanId(source.id, `learned_${index + 1}`);
+  const targetPathId = cleanId(source.targetPathId, "");
+  if (!targetPathId) return null;
+  return {
+    id,
+    name: asString(source.name, id),
+    enabled: asBoolean(source.enabled, true),
+    paused: asBoolean(source.paused, false),
+    targetPathId,
+    priority: Math.max(0, asNumber(source.priority, 0)),
+    qtypes:
+      asStringArray(source.qtypes).length > 0
+        ? asStringArray(source.qtypes).map((item) => item.toUpperCase())
+        : ["A", "AAAA"],
+    rcodes:
+      asStringArray(source.rcodes).length > 0
+        ? asStringArray(source.rcodes).map((item) => item.toUpperCase())
+        : ["NOERROR"],
+    answerRequired: asBoolean(source.answerRequired, true),
+    ...(asString(source.responseIpRole).trim()
+      ? { responseIpRole: cleanId(source.responseIpRole, "") }
+      : {}),
+    ruleKind: source.ruleKind === "domain" ? "domain" : "full",
+    maxEntries: Math.max(1, asNumber(source.maxEntries, 10_000)),
+    entryTtlSeconds: Math.max(
+      60,
+      asNumber(source.entryTtlSeconds, 7 * 24 * 60 * 60),
+    ),
+    cleanupIntervalSeconds: Math.max(
+      1,
+      asNumber(source.cleanupIntervalSeconds, 600),
+    ),
+    queueSize: Math.max(1, asNumber(source.queueSize, 1024)),
+    batchSize: Math.max(1, asNumber(source.batchSize, 256)),
+    flushIntervalMs: Math.max(1, asNumber(source.flushIntervalMs, 200)),
+    failurePolicy:
+      source.failurePolicy === "fail_closed" ? "fail_closed" : "continue",
+  };
+}
+
+function normalizeAdvancedCondition(
+  value: unknown,
+): StandardAdvancedCondition | null {
   const source = asRecord(value);
   if (
-    source.kind !== "privacy" &&
-    source.kind !== "gaming" &&
-    source.kind !== "child_protection" &&
-    source.kind !== "domestic_optimization"
+    source.type === "domain" ||
+    source.type === "suffix" ||
+    source.type === "keyword" ||
+    source.type === "client_cidr" ||
+    source.type === "qtype" ||
+    source.type === "cname" ||
+    source.type === "rcode"
   ) {
-    return null;
+    const values = asStringArray(source.values);
+    return values.length > 0 ? { type: source.type, values } : null;
   }
+  if (source.type === "time") {
+    const periods = Array.isArray(source.periods)
+      ? source.periods.map((item) => {
+          const period = asRecord(item);
+          return {
+            ...(asString(period.start).trim()
+              ? { start: asString(period.start).trim() }
+              : {}),
+            ...(asString(period.end).trim()
+              ? { end: asString(period.end).trim() }
+              : {}),
+            weekdays: Array.isArray(period.weekdays)
+              ? period.weekdays.map((day) => asNumber(day, 0))
+              : [],
+            monthdays: Array.isArray(period.monthdays)
+              ? period.monthdays.map((day) => asNumber(day, 0))
+              : [],
+          };
+        })
+      : [];
+    return {
+      type: "time",
+      timezone: asString(source.timezone, "UTC").trim() || "UTC",
+      periods,
+    };
+  }
+  if (source.type === "rate_limit_exceeded") {
+    return {
+      type: "rate_limit_exceeded",
+      qps: Math.max(1, asNumber(source.qps, 20)),
+      burst: Math.max(1, asNumber(source.burst, 40)),
+      mask4: Math.max(0, Math.min(32, asNumber(source.mask4, 32))),
+      mask6: Math.max(0, Math.min(128, asNumber(source.mask6, 48))),
+    };
+  }
+  if (source.type === "source_path") {
+    const pathId = cleanId(source.pathId, "");
+    return pathId ? { type: "source_path", pathId } : null;
+  }
+  if (source.type === "has_wanted_answer") {
+    return { type: "has_wanted_answer" };
+  }
+  if (source.type === "response_ip_role") {
+    const role = cleanId(source.role, "");
+    return role
+      ? { type: "response_ip_role", role, invert: asBoolean(source.invert, false) }
+      : null;
+  }
+  return null;
+}
+
+function normalizeAdvancedAction(value: unknown): StandardAdvancedAction | null {
+  const source = asRecord(value);
+  if (source.type === "use_path") {
+    const pathId = cleanId(source.pathId, "");
+    return pathId ? { type: "use_path", pathId } : null;
+  }
+  if (source.type === "block") {
+    const response =
+      source.response === "nxdomain" ||
+      source.response === "nodata" ||
+      source.response === "refused"
+        ? source.response
+        : "null_ip";
+    return { type: "block", response };
+  }
+  return null;
+}
+
+function normalizeAdvancedRule(
+  value: unknown,
+  index: number,
+): StandardAdvancedRule | null {
+  const source = asRecord(value);
+  const action = normalizeAdvancedAction(source.action);
+  if (!action) return null;
   return {
-    id: cleanId(source.id, `scenario_${index + 1}`),
-    name: asString(source.name, `Scenario ${index + 1}`),
+    id: cleanId(source.id, `advanced_${index + 1}`),
+    name: asString(source.name, `Advanced rule ${index + 1}`),
     enabled: asBoolean(source.enabled, true),
-    kind: source.kind,
+    priority: Math.max(0, asNumber(source.priority, 0)),
+    phase: source.phase === "response" ? "response" : "request",
+    conditions: Array.isArray(source.conditions)
+      ? source.conditions
+          .map(normalizeAdvancedCondition)
+          .filter((item): item is StandardAdvancedCondition => item !== null)
+      : [],
+    action,
+    failurePolicy:
+      source.failurePolicy === "fail_closed" ? "fail_closed" : "fail_open",
+    failureResponse:
+      source.failureResponse === "refused" ? "refused" : "servfail",
+    ...(asString(source.templateOrigin).trim()
+      ? { templateOrigin: cleanId(source.templateOrigin, "") }
+      : {}),
   };
 }
 
@@ -773,7 +966,8 @@ export function normalizeStandardSettings(
     source.schema !== 2 &&
     source.schema !== 3 &&
     source.schema !== 4 &&
-    source.schema !== 5
+    source.schema !== 5 &&
+    source.schema !== 6
   ) {
     return {
       settings: createDefaultStandardSettings(),
@@ -801,6 +995,7 @@ export function normalizeStandardSettings(
   const migratedFromV2 = source.schema === 2;
   const migratedFromV3 = source.schema === 3;
   const migratedFromV4 = source.schema === 4;
+  const migratedFromV5 = source.schema === 5;
   const defaultGroupIndex = migratedFromV2
     ? Math.max(
         0,
@@ -811,7 +1006,7 @@ export function normalizeStandardSettings(
     : -1;
   return {
     settings: {
-      schema: 5,
+      schema: 6,
       listen: {
         address: asString(asRecord(source.listen).address, "0.0.0.0:5335"),
         udp: asBoolean(asRecord(source.listen).udp, true),
@@ -835,13 +1030,30 @@ export function normalizeStandardSettings(
       local: normalizeLocal(source.local),
       ruleData: normalizeRuleData(source.ruleData),
       smartRouting: normalizeSmartRouting(source.smartRouting),
+      dedicatedGroups: Array.isArray(source.dedicatedGroups)
+        ? source.dedicatedGroups
+            .map(normalizeDedicatedGroup)
+            .filter((item): item is StandardDedicatedGroup => item !== null)
+        : [],
+      dynamicLearning: {
+        profiles: Array.isArray(asRecord(source.dynamicLearning).profiles)
+          ? (asRecord(source.dynamicLearning).profiles as unknown[])
+              .map(normalizeDynamicLearningProfile)
+              .filter(
+                (item): item is StandardDynamicLearningProfile => item !== null,
+              )
+          : [],
+      },
+      advancedRules: Array.isArray(source.advancedRules)
+        ? source.advancedRules
+            .map(normalizeAdvancedRule)
+            .filter((item): item is StandardAdvancedRule => item !== null)
+        : [],
       cache: normalizeCache(source.cache),
       queryLog: migratedFromV2
         ? { ...normalizeQueryLog(source.queryLog), sampleRate: 1 }
         : normalizeQueryLog(source.queryLog),
-      routing: migratedFromV2
-        ? { ...normalizeRouting(source.routing), scenarios: [] }
-        : normalizeRouting(source.routing),
+      routing: normalizeRouting(source.routing),
       exceptions: Array.isArray(source.exceptions)
         ? source.exceptions
             .map(normalizeException)
@@ -855,7 +1067,7 @@ export function normalizeStandardSettings(
       system: normalizeSystem(source.system),
     },
     notice:
-      migratedFromV2 || migratedFromV3 || migratedFromV4
+      migratedFromV2 || migratedFromV3 || migratedFromV4 || migratedFromV5
         ? "legacy_migrated"
         : null,
   };

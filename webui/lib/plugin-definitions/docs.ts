@@ -256,6 +256,8 @@ export const pluginFieldDocs = {
       "- 类型：`string`；必填：否；默认值：`continue`\n- 可选值：\n  - `continue`：失败仅记录日志，继续后续链路。\n  - `stop`：失败后返回 `Stop`，截断当前 sequence 分支。\n  - `fail`：失败后直接返回 executor 错误。",
     timeout:
       "- 类型：`duration`；必填：否；默认值：`1s`\n- 作用：限制 `async: false` 时等待 provider 写入完成的最长时间。\n- 支持单位：`ms`、`s`、`m`、`h`、`d`。",
+    paused:
+      "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：暂停新增学习，但已有规则继续匹配，后续 DNS 链继续执行。",
   },
   query_recorder: {
     path: "- 类型：`string`；必填：是\n- 作用：指定当前 recorder 的 SQLite 文件路径。",
@@ -618,6 +620,10 @@ export const pluginFieldDocs = {
       "- 类型：`integer`；必填：否；默认值：`256`\n- 配置要求：必须大于 0。\n- 作用：定义后台 append 的批量 flush 阈值。\n- 运行影响：值越大，单次 flush 落盘的规则越多，CPU 与磁盘开销越集中。",
     flush_interval_ms:
       "- 类型：`integer`；必填：否；默认值：`200`\n- 单位：毫秒\n- 配置要求：必须大于 0。\n- 作用：定义后台 append 的定时 flush 间隔。\n- 运行影响：与 `batch_size` 共同决定写盘节奏，较小值能让新规则更快可见，但落盘更频繁。",
+    max_entries: "- 类型：`integer`；必填：否\n- 作用：总条目硬上限；达到容量后整批拒绝新规则。",
+    entry_ttl_seconds: "- 类型：`integer`；必填：否\n- 作用：只淘汰 learned 来源，保留 manual 修正。",
+    cleanup_interval_seconds: "- 类型：`integer`；必填：否；默认值：`600`\n- 作用：后台过期扫描周期。",
+    metadata_path: "- 类型：`string`；必填：启用 TTL 时是\n- 作用：保存来源与时间戳的 JSON 侧车文件。",
   },
   geosite: {
     file: "- 类型：`string`；必填：是\n- 作用：指定 `geosite.dat` 文件路径。",

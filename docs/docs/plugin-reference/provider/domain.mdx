@@ -134,6 +134,10 @@ import Admonition from "@theme/Admonition";
     queue_size: 1024
     batch_size: 256
     flush_interval_ms: 200
+    max_entries: 10000
+    entry_ttl_seconds: 86400
+    cleanup_interval_seconds: 600
+    metadata_path: "/etc/oxidns/learned-allow.meta.json"
 ```
 
 ### 配置项
@@ -167,6 +171,13 @@ import Admonition from "@theme/Admonition";
 - 类型：`integer`；必填：否；默认值：`200`
 - 作用：定义后台 append 的定时 flush 间隔。
 
+#### 生命周期限制
+
+- `max_entries`：可选的总条目硬上限；达到上限时整批拒绝新条目，不做部分写入。
+- `entry_ttl_seconds`：可选的自动学习条目有效期；只淘汰 `learned` 来源，API 手工修正规则不会过期。
+- `cleanup_interval_seconds`：过期扫描周期，默认 `600` 秒，不在查询热路径执行。
+- `metadata_path`：来源与学习时间的原子 JSON 侧车文件；启用 TTL 时必填。
+
 ### 文件格式
 
 - 一行一条规则。
@@ -185,6 +196,7 @@ import Admonition from "@theme/Admonition";
 | `DELETE` | `/rules` | 删除规则，body 示例：`{ "rules": ["full:example.com"] }`。 |
 | `POST` | `/rules/clear` | 清空该动态规则文件并替换为空快照。 |
 | `POST` | `/reload` | 通过 provider 通用 reload 重新读取文件。 |
+| `GET` | `/status` | 返回 learned/manual 数量、容量、过期/拒绝计数、最后成功时间和错误。 |
 
 ### 行为说明
 

@@ -36,6 +36,9 @@ export interface StandardQueryExplanation {
   routingRule?: StandardQueryObjectRef;
   exceptionRule?: StandardQueryObjectRef;
   semanticRole?: StandardQueryObjectRef;
+  dedicatedGroup?: StandardQueryObjectRef;
+  learningProfile?: StandardQueryObjectRef;
+  advancedRule?: StandardQueryObjectRef & { phase: "request" | "response"; templateOrigin?: string };
   validationResult?: string;
   fallbackReason?: string;
   fallbackBranch?: "primary" | "secondary";
@@ -54,6 +57,9 @@ interface StandardQueryIndexes {
   routingRulesByMatcherTag: Map<string, StandardRoutingRule>;
   exceptionRulesByMatcherTag: Map<string, StandardExceptionRule>;
   semanticRolesByMatcherTag: Map<string, string>;
+  dedicatedGroupsByTag: Map<string, StandardQueryObjectRef>;
+  learningProfilesByTag: Map<string, StandardQueryObjectRef>;
+  advancedRulesByTag: Map<string, StandardQueryObjectRef & { phase: "request" | "response"; templateOrigin?: string }>;
   filteringTags: Set<string>;
   cacheTags: Set<string>;
   queryLogTag?: string;
@@ -80,6 +86,9 @@ export function explainStandardQueryRecord(
   const path = paths.at(-1);
   const upstreamGroup = upstreamGroups.at(-1);
   const semanticRole = lastMatchedRule(steps, indexes.semanticRolesByMatcherTag);
+  const dedicatedGroup = lastObservedObject(steps, indexes.dedicatedGroupsByTag);
+  const learningProfile = lastObservedObject(steps, indexes.learningProfilesByTag);
+  const advancedRule = lastObservedObject(steps, indexes.advancedRulesByTag);
   const fallback = [...steps]
     .reverse()
     .find((step) => step.kind === "fallback" && step.outcome);
@@ -124,6 +133,9 @@ export function explainStandardQueryRecord(
     semanticRole: semanticRole
       ? { id: semanticRole.rule, name: semanticRole.rule, tag: semanticRole.tag }
       : undefined,
+    dedicatedGroup,
+    learningProfile,
+    advancedRule,
     validationResult,
     fallbackBranch: fallbackMatch?.[1] as "primary" | "secondary" | undefined,
     fallbackReason:
@@ -188,6 +200,9 @@ function buildStandardQueryIndexes(
   const routingRulesByMatcherTag = new Map<string, StandardRoutingRule>();
   const exceptionRulesByMatcherTag = new Map<string, StandardExceptionRule>();
   const semanticRolesByMatcherTag = new Map<string, string>();
+  const dedicatedGroupsByTag = new Map<string, StandardQueryObjectRef>();
+  const learningProfilesByTag = new Map<string, StandardQueryObjectRef>();
+  const advancedRulesByTag = new Map<string, StandardQueryObjectRef & { phase: "request" | "response"; templateOrigin?: string }>();
   const tagMap = metadata?.tagMap;
 
   for (const [id, tag] of Object.entries(tagMap?.paths ?? {})) {
@@ -219,6 +234,29 @@ function buildStandardQueryIndexes(
     const path = pathId ? pathsById.get(pathId) : undefined;
     if (path) pathsByTag.set(tag, path);
   }
+  for (const group of settings.dedicatedGroups) {
+    const tags = tagMap?.dedicatedGroups?.[group.id];
+    if (!tags) continue;
+    const value = { id: group.id, name: group.name, tag: tags.path };
+    for (const tag of [tags.matcher, tags.path, tags.entry]) dedicatedGroupsByTag.set(tag, value);
+  }
+  for (const profile of settings.dynamicLearning.profiles) {
+    const tags = tagMap?.dynamicLearning?.[profile.id];
+    if (!tags) continue;
+    const value = { id: profile.id, name: profile.name, tag: tags.action };
+    for (const tag of [tags.matcher, tags.learner, tags.action]) learningProfilesByTag.set(tag, value);
+  }
+  for (const rule of settings.advancedRules) {
+    const tag = tagMap?.advancedRules?.[rule.id];
+    if (!tag) continue;
+    advancedRulesByTag.set(tag, {
+      id: rule.id,
+      name: rule.name,
+      tag,
+      phase: rule.phase,
+      ...(rule.templateOrigin ? { templateOrigin: rule.templateOrigin } : {}),
+    });
+  }
 
   return {
     pathsByTag,
@@ -226,6 +264,9 @@ function buildStandardQueryIndexes(
     routingRulesByMatcherTag,
     exceptionRulesByMatcherTag,
     semanticRolesByMatcherTag,
+    dedicatedGroupsByTag,
+    learningProfilesByTag,
+    advancedRulesByTag,
     filteringTags: new Set(tagMap?.filtering ?? []),
     cacheTags: new Set([
       ...Object.values(tagMap?.caches ?? {}),
@@ -233,6 +274,15 @@ function buildStandardQueryIndexes(
     ]),
     queryLogTag: tagMap?.queryLog,
   };
+}
+
+function lastObservedObject<T>(steps: QueryRecorderStep[], objects: Map<string, T>): T | undefined {
+  for (const step of [...steps].reverse()) {
+    if (!step.tag) continue;
+    const value = objects.get(step.tag);
+    if (value && (step.outcome === "matched" || step.outcome === "entered")) return value;
+  }
+  return undefined;
 }
 
 function lastMatchedRule<T>(

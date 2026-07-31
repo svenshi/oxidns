@@ -10,7 +10,7 @@ use http::{Request, StatusCode};
 use serde::{Deserialize, Serialize};
 
 use super::backend::DynamicDomainSetBackend;
-use super::rules::{DynamicDomainMutation, DynamicDomainRuleKind};
+use super::rules::{DynamicDomainMutation, DynamicDomainRuleKind, DynamicDomainRuleOrigin};
 use crate::api::query::{parse_usize_param, visit_query_params};
 use crate::api::{ApiHandler, json_error, json_ok};
 use crate::infra::error::Result as DnsResult;
@@ -85,6 +85,11 @@ pub(super) struct RulesClearHandler {
     pub(super) backend: Arc<DynamicDomainSetBackend>,
 }
 
+#[derive(Debug)]
+pub(super) struct StatusHandler {
+    pub(super) backend: Arc<DynamicDomainSetBackend>,
+}
+
 #[async_trait]
 impl ApiHandler for RulesListHandler {
     async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
@@ -117,6 +122,7 @@ impl ApiHandler for RulesAddHandler {
             .append_rules_sync(
                 body.rules,
                 body.rule_kind.unwrap_or_default(),
+                DynamicDomainRuleOrigin::Manual,
                 Duration::from_secs(5),
             )
             .await
@@ -169,9 +175,26 @@ impl ApiHandler for RulesClearHandler {
     }
 }
 
+#[async_trait]
+impl ApiHandler for StatusHandler {
+    async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
+        match self.backend.status() {
+            Ok(status) => json_ok(StatusCode::OK, &status),
+            Err(err) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "dynamic_domain_set_status_failed",
+                err.to_string(),
+            ),
+        }
+    }
+}
+
 pub(super) fn register_api(backend: &Arc<DynamicDomainSetBackend>) -> DnsResult<()> {
     register_plugin_api!(
         backend.tag(),
+        GET "/status" => StatusHandler {
+            backend: backend.clone(),
+        },
         GET "/rules" => RulesListHandler {
             backend: backend.clone(),
         },

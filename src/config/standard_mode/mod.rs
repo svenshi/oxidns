@@ -9,6 +9,7 @@
 mod compiler;
 mod migration;
 mod model;
+mod template;
 mod validation;
 
 pub use compiler::{StandardCapabilities, compile_standard_intent};
@@ -17,6 +18,10 @@ pub use model::{
     CURRENT_STANDARD_SCHEMA, StandardDiagnostic, StandardDiagnosticSeverity,
     StandardGeneratedConfig, StandardGenerationSummary, StandardIntent, StandardMigration,
     StandardPlan, StandardTagMap,
+};
+pub use template::{
+    StandardTemplateExpansion, StandardTemplateKind, StandardTemplateParameters,
+    expand_standard_template,
 };
 pub use validation::{normalize_standard_intent, validate_standard_intent};
 

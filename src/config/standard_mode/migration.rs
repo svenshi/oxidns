@@ -44,19 +44,29 @@ pub fn decode_standard_intent(
 
     let (value, migration) = match schema {
         CURRENT_STANDARD_SCHEMA => (value, None),
-        4 => migrate_v4(value),
+        5 => migrate_v5(value),
+        4 => {
+            let (value, v4_migration) = migrate_v4(value);
+            let (value, v5_migration) = migrate_v5(value);
+            (value, combine_migrations(4, [v4_migration, v5_migration]))
+        }
         3 => {
             let (value, v3_migration) = migrate_v3(value);
             let (value, v4_migration) = migrate_v4(value);
-            (value, combine_migrations(3, [v3_migration, v4_migration]))
+            let (value, v5_migration) = migrate_v5(value);
+            (
+                value,
+                combine_migrations(3, [v3_migration, v4_migration, v5_migration]),
+            )
         }
         2 => {
             let (value, v2_migration) = migrate_v2(value);
             let (value, v3_migration) = migrate_v3(value);
             let (value, v4_migration) = migrate_v4(value);
+            let (value, v5_migration) = migrate_v5(value);
             (
                 value,
-                combine_migrations(2, [v2_migration, v3_migration, v4_migration]),
+                combine_migrations(2, [v2_migration, v3_migration, v4_migration, v5_migration]),
             )
         }
         1 => {
@@ -64,9 +74,19 @@ pub fn decode_standard_intent(
             let (value, v2_migration) = migrate_v2(value);
             let (value, v3_migration) = migrate_v3(value);
             let (value, v4_migration) = migrate_v4(value);
+            let (value, v5_migration) = migrate_v5(value);
             (
                 value,
-                combine_migrations(1, [v1_migration, v2_migration, v3_migration, v4_migration]),
+                combine_migrations(
+                    1,
+                    [
+                        v1_migration,
+                        v2_migration,
+                        v3_migration,
+                        v4_migration,
+                        v5_migration,
+                    ],
+                ),
             )
         }
         other => return Err(StandardIntentDecodeError::UnsupportedSchema(other)),
@@ -77,11 +97,59 @@ pub fn decode_standard_intent(
         .map_err(|err| StandardIntentDecodeError::InvalidIntent(err.to_string()))
 }
 
+fn migrate_v5(mut value: Value) -> (Value, Option<StandardMigration>) {
+    let root = value
+        .as_object_mut()
+        .expect("v5 migration input was checked as an object");
+    root.insert("schema".to_string(), Value::from(CURRENT_STANDARD_SCHEMA));
+    root.entry("dedicatedGroups".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    root.entry("dynamicLearning".to_string())
+        .or_insert_with(|| json!({ "profiles": [] }));
+    root.entry("advancedRules".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+
+    let mut diagnostics = vec![StandardDiagnostic::warning(
+        "schema_v5_migrated",
+        "schema",
+        "Standard Mode schema 5 was migrated with inactive Phase 3 defaults",
+    )];
+    if let Some(routing) = root.get_mut("routing").and_then(Value::as_object_mut)
+        && let Some(scenarios) = routing.remove("scenarios")
+        && scenarios
+            .as_array()
+            .is_some_and(|items| items.iter().any(legacy_scenario_enabled))
+    {
+        diagnostics.push(StandardDiagnostic::error(
+            "legacy_scenario_requires_rebuild",
+            "routing.scenarios",
+            "an enabled legacy scenario placeholder cannot be guessed; rebuild it with a Phase 3 template",
+        ));
+    }
+
+    (
+        value,
+        Some(StandardMigration {
+            from_schema: 5,
+            to_schema: CURRENT_STANDARD_SCHEMA,
+            diagnostics,
+        }),
+    )
+}
+
+fn legacy_scenario_enabled(value: &Value) -> bool {
+    value
+        .as_object()
+        .and_then(|scenario| scenario.get("enabled"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
 fn migrate_v4(mut value: Value) -> (Value, Option<StandardMigration>) {
     let root = value
         .as_object_mut()
         .expect("v4 migration input was checked as an object");
-    root.insert("schema".to_string(), Value::from(CURRENT_STANDARD_SCHEMA));
+    root.insert("schema".to_string(), Value::from(5));
     root.entry("ruleData".to_string())
         .or_insert_with(|| json!({}));
     root.entry("smartRouting".to_string())
@@ -137,7 +205,7 @@ fn migrate_v4(mut value: Value) -> (Value, Option<StandardMigration>) {
         value,
         Some(StandardMigration {
             from_schema: 4,
-            to_schema: CURRENT_STANDARD_SCHEMA,
+            to_schema: 5,
             diagnostics,
         }),
     )

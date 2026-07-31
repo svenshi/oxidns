@@ -17,7 +17,9 @@ use tracing::info;
 
 use self::backend::DynamicDomainSetBackend;
 use self::config::DynamicDomainSetConfig;
-pub(crate) use self::rules::{DynamicDomainRuleKind, learned_rule_for_domain};
+pub(crate) use self::rules::{
+    DynamicDomainRuleKind, DynamicDomainRuleOrigin, learned_rule_for_domain,
+};
 use crate::config::types::PluginConfig;
 use crate::infra::error::Result as DnsResult;
 use crate::plugin::provider::Provider;
@@ -51,7 +53,8 @@ impl DynamicDomainSet {
         rules: Vec<String>,
         default_kind: DynamicDomainRuleKind,
     ) -> DnsResult<rules::DynamicDomainMutation> {
-        self.backend.append_rules_async(rules, default_kind)
+        self.backend
+            .append_rules_async(rules, default_kind, DynamicDomainRuleOrigin::Learned)
     }
 
     pub(crate) async fn append_rules_sync(
@@ -61,7 +64,12 @@ impl DynamicDomainSet {
         timeout: Duration,
     ) -> DnsResult<rules::DynamicDomainMutation> {
         self.backend
-            .append_rules_sync(rules, default_kind, timeout)
+            .append_rules_sync(
+                rules,
+                default_kind,
+                DynamicDomainRuleOrigin::Learned,
+                timeout,
+            )
             .await
     }
 }

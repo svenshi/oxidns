@@ -53,7 +53,7 @@ const EXPECTED_ADVANCED_FIELDS: Record<string, string[]> = {
   "executor/prefer_ipv4": ["cache_ttl"],
   "executor/prefer_ipv6": ["cache_ttl"],
   "executor/reverse_lookup": ["size", "ttl"],
-  "executor/learn_domain": ["async", "timeout"],
+  "executor/learn_domain": ["async", "timeout", "paused"],
   "executor/query_recorder": [
     "queue_size",
     "batch_size",
@@ -134,6 +134,10 @@ const EXPECTED_ADVANCED_FIELDS: Record<string, string[]> = {
     "queue_size",
     "batch_size",
     "flush_interval_ms",
+    "max_entries",
+    "entry_ttl_seconds",
+    "cleanup_interval_seconds",
+    "metadata_path",
   ],
 };
 

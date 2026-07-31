@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
 
-use super::rules::{DynamicDomainRuleKind, canonicalize_rule};
+use super::rules::{DynamicDomainRuleKind, DynamicDomainRuleMetadata, canonicalize_rule};
 use crate::infra::error::{DnsError, Result as DnsResult};
 use crate::infra::io::{LineClassifier, TextSource};
 
@@ -91,6 +91,43 @@ pub(super) fn rewrite_rule_file<T: AsRef<str>>(path: &Path, rules: &[T]) -> DnsR
         }
         // Rename keeps readers from observing a partially rewritten file on
         // platforms where same-directory rename is atomic.
+        fs::rename(&tmp_path, path)?;
+        Ok(())
+    })
+}
+
+pub(super) fn read_metadata_file(
+    path: &Path,
+) -> DnsResult<BTreeMap<String, DynamicDomainRuleMetadata>> {
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let bytes = fs::read(path)?;
+    serde_json::from_slice(&bytes).map_err(|err| {
+        DnsError::plugin(format!(
+            "failed to parse dynamic_domain_set metadata '{}': {err}",
+            path.display()
+        ))
+    })
+}
+
+pub(super) fn rewrite_metadata_file(
+    path: &Path,
+    metadata: &BTreeMap<String, DynamicDomainRuleMetadata>,
+) -> DnsResult<()> {
+    let bytes = serde_json::to_vec_pretty(metadata).map_err(|err| {
+        DnsError::plugin(format!(
+            "failed to serialize dynamic_domain_set metadata: {err}"
+        ))
+    })?;
+    with_rule_file_lock(path, || {
+        let tmp_path = temp_path_for(path);
+        {
+            let mut file = File::create(&tmp_path)?;
+            file.write_all(&bytes)?;
+            file.write_all(b"\n")?;
+            file.sync_all()?;
+        }
         fs::rename(&tmp_path, path)?;
         Ok(())
     })

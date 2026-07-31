@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::config::{
     DEFAULT_TIMEOUT, LearnDomainConfig, LearnErrorMode, LearnPhase, QuestionMode, parse_qtypes,
@@ -49,8 +51,10 @@ fn test_executor() -> LearnDomainExecutor {
             async_mode: true,
             error_mode: LearnErrorMode::Continue,
             timeout: DEFAULT_TIMEOUT,
+            paused: false,
         },
         provider: None,
+        paused: Arc::new(AtomicBool::new(false)),
     }
 }
 
@@ -92,6 +96,20 @@ async fn learn_domain_without_provider_continues_on_default_error_mode() {
         .execute_with_next(&mut ctx, None)
         .await
         .expect("default error mode should continue");
+    assert!(matches!(step, ExecStep::Next));
+}
+
+#[tokio::test]
+async fn paused_learning_skips_side_effect_and_preserves_dns_flow() {
+    let mut executor = test_executor();
+    executor.config.phase = LearnPhase::Before;
+    executor.config.error_mode = LearnErrorMode::Fail;
+    executor.paused.store(true, Ordering::Relaxed);
+    let mut ctx = make_context("paused.example.", RecordType::A, true);
+    let step = executor
+        .execute_with_next(&mut ctx, None)
+        .await
+        .expect("paused learning must not touch the missing provider");
     assert!(matches!(step, ExecStep::Next));
 }
 

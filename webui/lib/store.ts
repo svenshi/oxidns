@@ -1793,6 +1793,9 @@ function standardLastGeneratedFromWebUiConfig(
     generatedTags: value.generatedTags.map(String),
     tagMap: value.tagMap as unknown as StandardGeneratedMetadata["tagMap"],
     summary: value.summary as unknown as StandardGeneratedMetadata["summary"],
+    ...(Array.isArray(value.managedFiles)
+      ? { managedFiles: value.managedFiles.map(String) }
+      : {}),
     generatedAtMs: value.generatedAtMs,
     ...(typeof value.transactionId === "string"
       ? { transactionId: value.transactionId }

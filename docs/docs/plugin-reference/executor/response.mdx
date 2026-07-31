@@ -340,6 +340,7 @@ import Admonition from "@theme/Admonition";
   - `null`：`A` 返回 `0.0.0.0`，`AAAA` 返回 `::`，其它 qtype 返回 NODATA。
   - `custom`：`A` / `AAAA` 返回 `ips` 中对应地址族；缺失地址族或其它 qtype 返回 NODATA。
   - `refused`：返回 `REFUSED` 空应答。
+  - `servfail`：返回 `SERVFAIL` 空应答，供显式 fail-closed 策略使用。
 - 兼容性：旧的 `ips` + `short_circuit` 配置不需要写 `mode`，会自动按 `custom` 处理。
 
 #### `ips`
@@ -362,6 +363,7 @@ import Admonition from "@theme/Admonition";
 - exec: "black_hole"
 - exec: "black_hole nxdomain short_circuit=true"
 - exec: "black_hole nodata"
+- exec: "black_hole servfail"
 - exec: "black_hole null"
 - exec: "black_hole custom 0.0.0.0 :: short_circuit=true"
 # legacy 写法，等价于 custom
@@ -371,7 +373,7 @@ import Admonition from "@theme/Admonition";
 ### 行为说明
 
 - 默认无参 `black_hole` 返回 `NXDOMAIN`。
-- `nxdomain`、`nodata`、`refused` 覆盖所有 qtype。
+- `nxdomain`、`nodata`、`refused`、`servfail` 覆盖所有 qtype。
 - `null` 和 `custom` 对 A/AAAA 返回地址，对其它 qtype 返回 NODATA。
 - 请求没有 question 时透传。
 - 命中后默认继续后续执行；开启 `short_circuit` 时会立即停止。

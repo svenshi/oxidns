@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-pub const CURRENT_STANDARD_SCHEMA: u32 = 5;
+pub const CURRENT_STANDARD_SCHEMA: u32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +26,12 @@ pub struct StandardIntent {
     pub rule_data: StandardRuleDataSettings,
     #[serde(default)]
     pub smart_routing: StandardSmartRoutingSettings,
+    #[serde(default)]
+    pub dedicated_groups: Vec<StandardDedicatedGroup>,
+    #[serde(default)]
+    pub dynamic_learning: StandardDynamicLearningSettings,
+    #[serde(default)]
+    pub advanced_rules: Vec<StandardAdvancedRule>,
     #[serde(default)]
     pub cache: StandardCacheSettings,
     #[serde(default)]
@@ -51,6 +57,9 @@ impl Default for StandardIntent {
             local: StandardLocalSettings::default(),
             rule_data: StandardRuleDataSettings::default(),
             smart_routing: StandardSmartRoutingSettings::default(),
+            dedicated_groups: Vec::new(),
+            dynamic_learning: StandardDynamicLearningSettings::default(),
+            advanced_rules: Vec::new(),
             cache: StandardCacheSettings::default(),
             query_log: StandardQueryLogSettings::default(),
             routing: StandardRoutingSettings::default(),
@@ -838,8 +847,6 @@ pub struct StandardRoutingSettings {
     pub enabled: bool,
     #[serde(default)]
     pub rules: Vec<StandardRoutingRule>,
-    #[serde(default)]
-    pub scenarios: Vec<StandardScenario>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -924,21 +931,248 @@ pub enum StandardRuleSource {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StandardScenario {
+pub struct StandardDedicatedGroup {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub priority: u32,
+    #[serde(default)]
+    pub rules: Vec<String>,
+    #[serde(default)]
+    pub strategy: StandardUpstreamStrategy,
+    #[serde(default)]
+    pub upstreams: Vec<StandardUpstream>,
+    #[serde(default)]
+    pub path: StandardDedicatedPathPolicy,
+    #[serde(default)]
+    pub listener: StandardDedicatedListener,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardDedicatedPathPolicy {
+    #[serde(default)]
+    pub filtering: StandardPolicySwitch,
+    #[serde(default)]
+    pub cache: StandardPolicySwitch,
+    #[serde(default)]
+    pub query_log: StandardPolicySwitch,
+    #[serde(default)]
+    pub dual_stack: StandardDualStackPolicy,
+    #[serde(default)]
+    pub ip_selection: StandardIpSelectionSettings,
+    #[serde(default)]
+    pub ecs: StandardEcsPolicy,
+}
+
+impl Default for StandardDedicatedPathPolicy {
+    fn default() -> Self {
+        Self {
+            filtering: StandardPolicySwitch::Inherit,
+            cache: StandardPolicySwitch::Enabled,
+            query_log: StandardPolicySwitch::Inherit,
+            dual_stack: StandardDualStackPolicy::Inherit,
+            ip_selection: StandardIpSelectionSettings::default(),
+            ecs: StandardEcsPolicy::Inherit,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardDedicatedListener {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub address: String,
+    #[serde(default = "default_true")]
+    pub udp: bool,
+    #[serde(default = "default_true")]
+    pub tcp: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardDynamicLearningSettings {
+    #[serde(default)]
+    pub profiles: Vec<StandardDynamicLearningProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardDynamicLearningProfile {
     pub id: String,
     pub name: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    pub kind: StandardScenarioKind,
+    #[serde(default)]
+    pub paused: bool,
+    pub target_path_id: String,
+    #[serde(default)]
+    pub priority: u32,
+    #[serde(default = "default_learning_qtypes")]
+    pub qtypes: Vec<String>,
+    #[serde(default = "default_learning_rcodes")]
+    pub rcodes: Vec<String>,
+    #[serde(default = "default_true")]
+    pub answer_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_ip_role: Option<String>,
+    #[serde(default)]
+    pub rule_kind: StandardLearningRuleKind,
+    #[serde(default = "default_learning_max_entries")]
+    pub max_entries: usize,
+    #[serde(default = "default_learning_entry_ttl_seconds")]
+    pub entry_ttl_seconds: u64,
+    #[serde(default = "default_learning_cleanup_interval_seconds")]
+    pub cleanup_interval_seconds: u64,
+    #[serde(default = "default_learning_queue_size")]
+    pub queue_size: usize,
+    #[serde(default = "default_learning_batch_size")]
+    pub batch_size: usize,
+    #[serde(default = "default_learning_flush_interval_ms")]
+    pub flush_interval_ms: u64,
+    #[serde(default)]
+    pub failure_policy: StandardLearningFailurePolicy,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum StandardScenarioKind {
-    Privacy,
-    Gaming,
-    ChildProtection,
-    DomesticOptimization,
+pub enum StandardLearningRuleKind {
+    #[default]
+    Full,
+    Domain,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StandardLearningFailurePolicy {
+    #[default]
+    Continue,
+    FailClosed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardAdvancedRule {
+    pub id: String,
+    pub name: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub priority: u32,
+    #[serde(default)]
+    pub phase: StandardAdvancedRulePhase,
+    #[serde(default)]
+    pub conditions: Vec<StandardAdvancedCondition>,
+    pub action: StandardAdvancedAction,
+    #[serde(default)]
+    pub failure_policy: StandardAdvancedFailurePolicy,
+    #[serde(default)]
+    pub failure_response: StandardAdvancedFailureResponse,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_origin: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StandardAdvancedRulePhase {
+    #[default]
+    Request,
+    Response,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum StandardAdvancedCondition {
+    Domain {
+        values: Vec<String>,
+    },
+    Suffix {
+        values: Vec<String>,
+    },
+    Keyword {
+        values: Vec<String>,
+    },
+    ClientCidr {
+        values: Vec<String>,
+    },
+    Qtype {
+        values: Vec<String>,
+    },
+    Time {
+        timezone: String,
+        periods: Vec<StandardTimePeriod>,
+    },
+    RateLimitExceeded {
+        qps: u32,
+        burst: u32,
+        mask4: u8,
+        mask6: u8,
+    },
+    SourcePath {
+        path_id: String,
+    },
+    Cname {
+        values: Vec<String>,
+    },
+    Rcode {
+        values: Vec<String>,
+    },
+    HasWantedAnswer,
+    ResponseIpRole {
+        role: String,
+        invert: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardTimePeriod {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<String>,
+    #[serde(default)]
+    pub weekdays: Vec<u8>,
+    #[serde(default)]
+    pub monthdays: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum StandardAdvancedAction {
+    UsePath {
+        #[serde(rename = "pathId")]
+        path_id: String,
+    },
+    Block {
+        response: StandardBlockResponse,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StandardAdvancedFailurePolicy {
+    #[default]
+    FailOpen,
+    FailClosed,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StandardAdvancedFailureResponse {
+    #[default]
+    Servfail,
+    Refused,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1066,6 +1300,36 @@ pub struct StandardTagMap {
     pub rule_data: BTreeMap<String, String>,
     pub rule_data_sources: BTreeMap<String, StandardSubscriptionTagMap>,
     pub smart_routing: BTreeMap<String, String>,
+    pub dedicated_groups: BTreeMap<String, StandardDedicatedTagMap>,
+    pub dynamic_learning: BTreeMap<String, StandardDynamicLearningTagMap>,
+    pub advanced_rules: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardDedicatedTagMap {
+    pub provider: String,
+    pub matcher: String,
+    pub upstream_group: String,
+    pub path: String,
+    pub entry: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub udp_listener: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tcp_listener: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardDynamicLearningTagMap {
+    pub provider: String,
+    pub learner: String,
+    pub matcher: String,
+    pub action: String,
+    pub rules_path: String,
+    pub metadata_path: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1091,6 +1355,9 @@ pub struct StandardGenerationSummary {
     pub local_policy_count: usize,
     pub rule_data_source_count: usize,
     pub smart_routing_enabled: bool,
+    pub dedicated_group_count: usize,
+    pub dynamic_learning_profile_count: usize,
+    pub advanced_rule_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1102,6 +1369,8 @@ pub struct StandardGeneratedConfig {
     pub generated_tags: Vec<String>,
     pub tag_map: StandardTagMap,
     pub summary: StandardGenerationSummary,
+    #[serde(default)]
+    pub managed_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1212,4 +1481,36 @@ const fn default_ip_selection_failure_ttl() -> u64 {
 
 const fn default_smart_fallback_threshold_ms() -> u64 {
     500
+}
+
+fn default_learning_qtypes() -> Vec<String> {
+    vec!["A".to_string(), "AAAA".to_string()]
+}
+
+fn default_learning_rcodes() -> Vec<String> {
+    vec!["NOERROR".to_string()]
+}
+
+const fn default_learning_max_entries() -> usize {
+    10_000
+}
+
+const fn default_learning_entry_ttl_seconds() -> u64 {
+    7 * 24 * 60 * 60
+}
+
+const fn default_learning_cleanup_interval_seconds() -> u64 {
+    10 * 60
+}
+
+const fn default_learning_queue_size() -> usize {
+    1024
+}
+
+const fn default_learning_batch_size() -> usize {
+    256
+}
+
+const fn default_learning_flush_interval_ms() -> u64 {
+    200
 }

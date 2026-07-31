@@ -25,6 +25,20 @@ pub(crate) enum DynamicDomainRuleKind {
     Domain,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DynamicDomainRuleOrigin {
+    Learned,
+    #[default]
+    Manual,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub(super) struct DynamicDomainRuleMetadata {
+    pub(super) origin: DynamicDomainRuleOrigin,
+    pub(super) created_at_ms: u64,
+}
+
 impl DynamicDomainRuleKind {
     fn prefix(self) -> &'static str {
         match self {

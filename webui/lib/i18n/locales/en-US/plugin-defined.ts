@@ -1225,6 +1225,10 @@ export const enUSPluginDefined = {
           description:
             "The maximum amount of time to wait for provider writes to complete when async is closed.",
         },
+        paused: {
+          label: "Pause learning",
+          description: "Pauses new learning without disabling existing dynamic matches or the downstream DNS chain.",
+        },
       },
     },
     query_recorder: {
@@ -2749,6 +2753,22 @@ export const enUSPluginDefined = {
           label: "Flush interval (ms)",
           description:
             "Defines the scheduled flush interval for background appends.",
+        },
+        max_entries: {
+          label: "Maximum entries",
+          description: "Optional hard limit that atomically rejects new batches at capacity.",
+        },
+        entry_ttl_seconds: {
+          label: "Learned entry TTL (seconds)",
+          description: "Expires automatically learned entries while preserving manual corrections.",
+        },
+        cleanup_interval_seconds: {
+          label: "Cleanup interval (seconds)",
+          description: "Controls the bounded background expiration scan interval.",
+        },
+        metadata_path: {
+          label: "Metadata file",
+          description: "JSON sidecar containing rule origin and learned timestamps.",
         },
       },
     },

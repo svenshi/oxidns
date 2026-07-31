@@ -15,7 +15,7 @@ use super::DynamicDomainSet;
 use super::api::{RulesAddHandler, RulesClearHandler, RulesRemoveHandler};
 use super::backend::{DynamicDomainSetBackend, DynamicDomainSetSnapshot};
 use super::config::DynamicDomainSetConfig;
-use super::rules::{DynamicDomainRuleKind, canonicalize_rule};
+use super::rules::{DynamicDomainRuleKind, DynamicDomainRuleOrigin, canonicalize_rule};
 use super::storage::read_rule_file;
 use crate::api::ApiHandler;
 use crate::core::rule_matcher::DomainRuleMatcher;
@@ -38,6 +38,10 @@ fn test_config(path: PathBuf) -> DynamicDomainSetConfig {
         queue_size: 8,
         batch_size: 1,
         flush_interval_ms: 10,
+        max_entries: None,
+        entry_ttl_seconds: None,
+        cleanup_interval_seconds: 60,
+        metadata_path: None,
     }
 }
 
@@ -52,6 +56,10 @@ fn test_config_with_flush(
         queue_size: 8,
         batch_size,
         flush_interval_ms,
+        max_entries: None,
+        entry_ttl_seconds: None,
+        cleanup_interval_seconds: 60,
+        metadata_path: None,
     }
 }
 
@@ -99,6 +107,7 @@ async fn dynamic_domain_set_appends_and_matches() {
         .append_rules_sync(
             vec!["Example.COM.".to_string()],
             DynamicDomainRuleKind::Full,
+            DynamicDomainRuleOrigin::Manual,
             Duration::from_secs(2),
         )
         .await
@@ -111,6 +120,131 @@ async fn dynamic_domain_set_appends_and_matches() {
     );
 
     backend.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn dynamic_domain_set_enforces_capacity_without_partial_append() {
+    AppClock::start();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("learned.txt");
+    let mut config = test_config(path.clone());
+    config.max_entries = Some(1);
+    let backend = Arc::new(DynamicDomainSetBackend::new("bounded".to_string(), config));
+    backend.start().await.expect("backend should start");
+    backend
+        .append_rules_sync(
+            vec!["one.example".to_string()],
+            DynamicDomainRuleKind::Full,
+            DynamicDomainRuleOrigin::Learned,
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("first append");
+    let error = backend
+        .append_rules_sync(
+            vec!["two.example".to_string(), "three.example".to_string()],
+            DynamicDomainRuleKind::Full,
+            DynamicDomainRuleOrigin::Learned,
+            Duration::from_secs(1),
+        )
+        .await
+        .expect_err("capacity should reject the complete append");
+    assert!(error.to_string().contains("capacity 1"));
+    assert!(backend.contains_name(&test_name("one.example.")));
+    assert!(!backend.contains_name(&test_name("two.example.")));
+    let status = serde_json::to_value(backend.status().expect("status")).expect("serialize");
+    assert_eq!(status["total"], 1);
+    assert_eq!(status["capacityRejectedTotal"], 2);
+    backend.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn dynamic_domain_set_expires_learned_entries_but_keeps_manual_corrections() {
+    AppClock::start();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("learned.txt");
+    let metadata_path = dir.path().join("learned.meta.json");
+    fs::write(&path, "full:expired.example\nfull:manual.example\n").expect("rules");
+    fs::write(
+        &metadata_path,
+        r#"{
+  "full:expired.example": {"origin":"learned","created_at_ms":0},
+  "full:manual.example": {"origin":"manual","created_at_ms":0}
+}
+"#,
+    )
+    .expect("metadata");
+    let mut config = test_config(path.clone());
+    config.entry_ttl_seconds = Some(1);
+    config.cleanup_interval_seconds = 1;
+    config.metadata_path = Some(metadata_path.clone());
+    let backend = Arc::new(DynamicDomainSetBackend::new("aging".to_string(), config));
+    backend.start().await.expect("backend should start");
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while backend.contains_name(&test_name("expired.example.")) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("cleanup should run");
+    assert!(backend.contains_name(&test_name("manual.example.")));
+    assert_eq!(
+        fs::read_to_string(&path).expect("rules"),
+        "full:manual.example\n"
+    );
+    let metadata = fs::read_to_string(metadata_path).expect("metadata");
+    assert!(!metadata.contains("expired.example"));
+    assert!(metadata.contains("manual.example"));
+    let status = serde_json::to_value(backend.status().expect("status")).expect("serialize");
+    assert_eq!(status["expiredTotal"], 1);
+    assert_eq!(status["manual"], 1);
+    backend.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn dynamic_domain_set_restores_learned_and_manual_provenance_after_restart() {
+    AppClock::start();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("learned.txt");
+    let metadata_path = dir.path().join("learned.meta.json");
+    let mut config = test_config(path);
+    config.metadata_path = Some(metadata_path);
+    config.entry_ttl_seconds = Some(86_400);
+
+    let first = Arc::new(DynamicDomainSetBackend::new(
+        "restart".to_string(),
+        config.clone(),
+    ));
+    first.start().await.expect("first start");
+    first
+        .append_rules_sync(
+            vec!["learned.example".to_string()],
+            DynamicDomainRuleKind::Full,
+            DynamicDomainRuleOrigin::Learned,
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("learned append");
+    first
+        .append_rules_sync(
+            vec!["manual.example".to_string()],
+            DynamicDomainRuleKind::Full,
+            DynamicDomainRuleOrigin::Manual,
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("manual append");
+    first.shutdown().await.expect("first shutdown");
+
+    let second = Arc::new(DynamicDomainSetBackend::new("restart".to_string(), config));
+    second.start().await.expect("restart");
+    assert!(second.contains_name(&test_name("learned.example.")));
+    assert!(second.contains_name(&test_name("manual.example.")));
+    let status = serde_json::to_value(second.status().expect("status")).expect("serialize");
+    assert_eq!(status["learned"], 1);
+    assert_eq!(status["manual"], 1);
+    second.shutdown().await.expect("second shutdown");
 }
 
 #[tokio::test]
@@ -129,6 +263,7 @@ async fn dynamic_domain_set_append_preserves_unterminated_tail_rule() {
         .append_rules_sync(
             vec!["Two.Example.".to_string()],
             DynamicDomainRuleKind::Full,
+            DynamicDomainRuleOrigin::Manual,
             Duration::from_secs(1),
         )
         .await
@@ -172,6 +307,7 @@ async fn dynamic_domain_set_invalid_regexp_append_does_not_poison_file() {
         .append_rules_sync(
             vec!["regexp:[bad".to_string()],
             DynamicDomainRuleKind::Full,
+            DynamicDomainRuleOrigin::Manual,
             Duration::from_secs(1),
         )
         .await
@@ -205,6 +341,7 @@ async fn dynamic_domain_set_async_append_is_ordered_before_clear() {
         .append_rules_async(
             vec!["Queued.Example.".to_string()],
             DynamicDomainRuleKind::Full,
+            DynamicDomainRuleOrigin::Learned,
         )
         .expect("async append should enqueue");
     backend.clear_sync().await.expect("clear");
@@ -237,6 +374,7 @@ async fn dynamic_domain_set_sync_append_flushes_without_batch_or_tick() {
         .append_rules_sync(
             vec!["Sync.Example.".to_string()],
             DynamicDomainRuleKind::Full,
+            DynamicDomainRuleOrigin::Manual,
             Duration::from_millis(250),
         )
         .await
@@ -397,6 +535,7 @@ async fn dynamic_domain_set_rule_api_adds_removes_and_clears() {
         .append_rules_sync(
             vec!["clear.example".to_string()],
             DynamicDomainRuleKind::Full,
+            DynamicDomainRuleOrigin::Manual,
             Duration::from_secs(2),
         )
         .await

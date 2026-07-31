@@ -1223,11 +1223,6 @@ function normalizeRouting(
     rules: routing.rules.map((rule) =>
       normalizeRoutingRule(rule, pathIds, defaultPathId),
     ),
-    scenarios: routing.scenarios.map((scenario) => ({
-      ...scenario,
-      id: cleanId(scenario.id, "scenario"),
-      name: scenario.name.trim() || scenario.id,
-    })),
   };
 }
 

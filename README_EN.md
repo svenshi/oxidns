@@ -95,7 +95,7 @@ See [Configuration](https://oxidns.org/en/configuration) and [Common Scenarios](
 
 See the [Plugin Reference](https://oxidns.org/en/plugin-reference/overview) for the complete list of built-in components and configuration fields.
 
-Built-in Standard Mode compiles upstream groups, isolated resolution paths, semantic rule data, domestic/remote/unknown routing, response-validation fallback, ECS, dual-stack policy, and IP selection into native OxiDNS plugins. It does not control OpenWrt, OS DNS, firewalls, or third-party proxies. See [Standard Mode Smart Routing](https://oxidns.org/en/standard-mode-smart-routing).
+Built-in Standard Mode compiles upstream groups, isolated paths, smart routing, dedicated groups, bounded dynamic learning, advanced request/response rules, and scenario templates into native OxiDNS plugins. It does not control OpenWrt, OS DNS, DHCP, firewalls, or third-party proxies. See [Standard Mode Advanced Policies](https://oxidns.org/en/standard-mode-advanced).
 
 ---
 

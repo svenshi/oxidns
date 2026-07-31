@@ -134,6 +134,10 @@ Provides a writable local domain rule set. It persists rules to a text file and 
     queue_size: 1024
     batch_size: 256
     flush_interval_ms: 200
+    max_entries: 10000
+    entry_ttl_seconds: 86400
+    cleanup_interval_seconds: 600
+    metadata_path: "/etc/oxidns/learned-allow.meta.json"
 ```
 
 ### Configuration Details
@@ -167,6 +171,13 @@ Provides a writable local domain rule set. It persists rules to a text file and 
 - Type: `integer`; Required: no; Default: `200`
 - Purpose: Timed flush interval for background appends.
 
+#### Lifecycle limits
+
+- `max_entries`: optional hard total-entry limit; a new batch is rejected atomically at capacity.
+- `entry_ttl_seconds`: optional age limit for learned entries; manual API corrections do not expire.
+- `cleanup_interval_seconds`: bounded expiration scan interval, default `600` seconds, outside the query hot path.
+- `metadata_path`: atomically replaced JSON sidecar for origin and learned timestamps; required when TTL is enabled.
+
 ### File Format
 
 - One rule per line.
@@ -185,6 +196,7 @@ These plugin endpoints are exposed under the default management prefix as `/api/
 | `DELETE` | `/rules` | Removes rules. Body example: `{ "rules": ["full:example.com"] }`. |
 | `POST` | `/rules/clear` | Clears the dynamic file and swaps in an empty snapshot. |
 | `POST` | `/reload` | Uses the generic provider reload endpoint to re-read the file. |
+| `GET` | `/status` | Returns learned/manual counts, limits, expiration/rejection counters, and last success/error. |
 
 ### Behavior
 

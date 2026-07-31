@@ -2,15 +2,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ahash::AHashSet;
 use async_trait::async_trait;
+#[cfg(feature = "api")]
+use bytes::Bytes;
+#[cfg(feature = "api")]
+use http::{Request, StatusCode};
+#[cfg(feature = "api")]
+use serde_json::json;
 use tracing::warn;
 
 use super::config::{
     LearnDomainConfig, LearnErrorMode, LearnPhase, QuestionMode, build_config,
     parse_provider_from_value,
 };
+#[cfg(feature = "api")]
+use crate::api::{ApiHandler, json_ok};
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
 use crate::infra::error::{DnsError, Result};
@@ -20,6 +29,8 @@ use crate::plugin::provider::Provider;
 use crate::plugin::provider::dynamic_domain_set::{DynamicDomainSet, learned_rule_for_domain};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::proto::Rcode;
+#[cfg(feature = "api")]
+use crate::register_plugin_api;
 use crate::{continue_next, plugin_factory};
 
 #[derive(Debug)]
@@ -30,6 +41,7 @@ pub(super) struct LearnDomainExecutor {
     /// registry. Each write downcasts to the concrete provider type after init
     /// has validated the dependency kind and plugin type.
     pub(super) provider: Option<Arc<dyn Provider>>,
+    pub(super) paused: Arc<AtomicBool>,
 }
 
 #[async_trait]
@@ -58,6 +70,8 @@ impl Plugin for LearnDomainExecutor {
             )));
         }
         self.provider = Some(provider);
+        #[cfg(feature = "api")]
+        register_learn_domain_api(&self.tag, self.paused.clone())?;
         Ok(())
     }
 
@@ -83,6 +97,9 @@ impl Executor for LearnDomainExecutor {
         context: &mut DnsContext,
         next: Option<ExecutorNext>,
     ) -> Result<ExecStep> {
+        if self.paused.load(Ordering::Relaxed) {
+            return continue_next!(next, context);
+        }
         match self.config.phase {
             LearnPhase::Before => {
                 // Before-phase learning sees only the request. This is useful
@@ -267,9 +284,61 @@ impl PluginFactory for LearnDomainFactory {
         Ok(UninitializedPlugin::Executor(Box::new(
             LearnDomainExecutor {
                 tag: plugin_config.tag.clone(),
+                paused: Arc::new(AtomicBool::new(config.paused)),
                 config,
                 provider: None,
             },
         )))
     }
+}
+
+#[cfg(feature = "api")]
+#[derive(Debug)]
+struct LearnDomainStatusHandler {
+    paused: Arc<AtomicBool>,
+}
+
+#[cfg(feature = "api")]
+#[async_trait]
+impl ApiHandler for LearnDomainStatusHandler {
+    async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
+        json_ok(
+            StatusCode::OK,
+            &json!({ "ok": true, "paused": self.paused.load(Ordering::Relaxed) }),
+        )
+    }
+}
+
+#[cfg(feature = "api")]
+#[derive(Debug)]
+struct LearnDomainPauseHandler {
+    paused: Arc<AtomicBool>,
+    value: bool,
+}
+
+#[cfg(feature = "api")]
+#[async_trait]
+impl ApiHandler for LearnDomainPauseHandler {
+    async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
+        self.paused.store(self.value, Ordering::Relaxed);
+        json_ok(StatusCode::OK, &json!({ "ok": true, "paused": self.value }))
+    }
+}
+
+#[cfg(feature = "api")]
+fn register_learn_domain_api(tag: &str, paused: Arc<AtomicBool>) -> Result<()> {
+    register_plugin_api!(
+        tag,
+        GET "/status" => LearnDomainStatusHandler {
+            paused: paused.clone(),
+        },
+        POST "/pause" => LearnDomainPauseHandler {
+            paused: paused.clone(),
+            value: true,
+        },
+        POST "/resume" => LearnDomainPauseHandler {
+            paused,
+            value: false,
+        },
+    )
 }

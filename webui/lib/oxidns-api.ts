@@ -7,6 +7,9 @@ import type {
   StandardApplyResponse,
   StandardModeSettings,
   StandardPlanResponse,
+  StandardTemplateKind,
+  StandardTemplateParameters,
+  StandardTemplatePreviewResponse,
   StandardTransactionStatusResponse,
 } from "./standard-mode/types";
 
@@ -97,6 +100,15 @@ export interface StandardApplyOptions {
   baseConfigVersion: string;
   baseStandardVersion: string;
   plannedConfigVersion: string;
+  takeover?: boolean;
+}
+
+export interface StandardTemplatePreviewOptions {
+  baseIntent: StandardModeSettings;
+  kind: StandardTemplateKind;
+  parameters: StandardTemplateParameters;
+  baseConfigVersion?: string | null;
+  baseStandardVersion?: string | null;
   takeover?: boolean;
 }
 
@@ -792,6 +804,29 @@ export async function applyStandardMode({
   return readJsonResponse<StandardApplyResponse>(response);
 }
 
+export async function previewStandardTemplate({
+  baseIntent,
+  kind,
+  parameters,
+  baseConfigVersion,
+  baseStandardVersion,
+  takeover = false,
+}: StandardTemplatePreviewOptions): Promise<StandardTemplatePreviewResponse> {
+  const response = await fetch(apiUrl("/standard/templates/preview"), {
+    method: "POST",
+    headers: { ...apiHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({
+      base_intent: baseIntent,
+      kind,
+      parameters,
+      base_config_version: baseConfigVersion ?? undefined,
+      base_standard_version: baseStandardVersion ?? undefined,
+      takeover,
+    }),
+  });
+  return readJsonResponse<StandardTemplatePreviewResponse>(response);
+}
+
 export async function fetchStandardTransactionStatus(): Promise<StandardTransactionStatusResponse> {
   const response = await fetch(apiUrl("/standard/apply/status"), {
     method: "GET",
@@ -1308,6 +1343,41 @@ export interface DynamicDomainMutationResponse {
   added: number;
   removed: number;
   total: number;
+}
+
+export interface DynamicDomainStatusResponse {
+  ok: boolean;
+  total: number;
+  learned: number;
+  manual: number;
+  maxEntries?: number;
+  entryTtlSeconds?: number;
+  expiredTotal: number;
+  capacityRejectedTotal: number;
+  queueRejectedTotal: number;
+  lastSuccessAtMs?: number;
+  lastError?: string;
+}
+
+export async function fetchDynamicDomainStatus(
+  tag: string,
+): Promise<DynamicDomainStatusResponse> {
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/status`),
+    { method: "GET", headers: apiHeaders() },
+  );
+  return readJsonResponse<DynamicDomainStatusResponse>(response);
+}
+
+export async function setLearnDomainPaused(
+  tag: string,
+  paused: boolean,
+): Promise<{ ok: boolean; paused: boolean }> {
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/${paused ? "pause" : "resume"}`),
+    { method: "POST", headers: apiHeaders() },
+  );
+  return readJsonResponse<{ ok: boolean; paused: boolean }>(response);
 }
 
 export async function listDynamicDomainRules(

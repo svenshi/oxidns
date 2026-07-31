@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createDefaultStandardSettings } from "./defaults";
 import { normalizeStandardSettings } from "./schema";
 
-describe("Standard Mode schema v5", () => {
+describe("Standard Mode schema v6", () => {
   it("migrates v2 cache fields and removes inert Phase 2 values", () => {
     const legacy = createDefaultStandardSettings() as unknown as Record<
       string,
@@ -60,7 +60,7 @@ describe("Standard Mode schema v5", () => {
 
     expect(result.notice).toBe("legacy_migrated");
     expect(result.settings).toMatchObject({
-      schema: 5,
+      schema: 6,
       cache: {
         minPositiveTtl: 12,
         maxPositiveTtl: 1200,
@@ -77,7 +77,10 @@ describe("Standard Mode schema v5", () => {
           ecs: { mode: "inherit" },
         },
       ],
-      routing: { scenarios: [] },
+      routing: { rules: [] },
+      dedicatedGroups: [],
+      dynamicLearning: { profiles: [] },
+      advancedRules: [],
     });
   });
 
@@ -94,7 +97,7 @@ describe("Standard Mode schema v5", () => {
     const result = normalizeStandardSettings(previous);
 
     expect(result.notice).toBe("legacy_migrated");
-    expect(result.settings.schema).toBe(5);
+    expect(result.settings.schema).toBe(6);
     expect(result.settings.filtering.localFiles).toEqual([]);
     expect(result.settings.local).toEqual(
       createDefaultStandardSettings().local,

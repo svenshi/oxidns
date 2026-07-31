@@ -5,12 +5,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::str::FromStr;
 
+use jiff::tz::TimeZone;
+
 use super::compiler::StandardCapabilities;
 use super::model::{
-    CURRENT_STANDARD_SCHEMA, StandardDiagnostic, StandardDualStackPolicy, StandardEcsPolicy,
-    StandardIntent, StandardPolicySwitch, StandardRuleAction, StandardRuleCondition,
-    StandardRuleDataSource, StandardUnknownMode, StandardUpstreamProtocol,
-    StandardUpstreamStrategy,
+    CURRENT_STANDARD_SCHEMA, StandardAdvancedAction, StandardAdvancedCondition, StandardDiagnostic,
+    StandardDualStackPolicy, StandardEcsPolicy, StandardIntent, StandardPolicySwitch,
+    StandardRuleAction, StandardRuleCondition, StandardRuleDataSource, StandardUnknownMode,
+    StandardUpstreamProtocol, StandardUpstreamStrategy,
 };
 
 pub fn normalize_standard_intent(mut intent: StandardIntent) -> StandardIntent {
@@ -88,6 +90,70 @@ pub fn normalize_standard_intent(mut intent: StandardIntent) -> StandardIntent {
         .map(|path| normalize_id(&path))
         .filter(|path| !path.is_empty());
 
+    for group in &mut intent.dedicated_groups {
+        group.id = normalize_id(&group.id);
+        group.name = group.name.trim().to_string();
+        group.description = trimmed_option(group.description.take());
+        normalize_lines(&mut group.rules, false);
+        for upstream in &mut group.upstreams {
+            upstream.id = normalize_id(&upstream.id);
+            upstream.name = upstream.name.trim().to_string();
+            upstream.address = upstream.address.trim().to_string();
+            upstream.bootstrap = trimmed_option(upstream.bootstrap.take());
+            upstream.dial_address = trimmed_option(upstream.dial_address.take());
+            upstream.outbound = trimmed_option(upstream.outbound.take());
+            upstream.socks5 = trimmed_option(upstream.socks5.take());
+            upstream.doh_path = trimmed_option(upstream.doh_path.take());
+            if matches!(
+                upstream.protocol,
+                StandardUpstreamProtocol::Doh | StandardUpstreamProtocol::Doh3
+            ) && upstream.doh_path.is_none()
+            {
+                upstream.doh_path = Some("/dns-query".to_string());
+            }
+            upstream.enable_http3 = matches!(upstream.protocol, StandardUpstreamProtocol::Doh3);
+        }
+        group.path.ip_selection.outbound = trimmed_option(group.path.ip_selection.outbound.take());
+        group.path.ip_selection.socks5 = trimmed_option(group.path.ip_selection.socks5.take());
+        normalize_lines(&mut group.path.ip_selection.probe_methods, false);
+        if let StandardEcsPolicy::Preset { address, .. } = &mut group.path.ecs {
+            *address = address.trim().to_string();
+        }
+        group.listener.address = group.listener.address.trim().to_string();
+    }
+
+    for profile in &mut intent.dynamic_learning.profiles {
+        profile.id = normalize_id(&profile.id);
+        profile.name = profile.name.trim().to_string();
+        profile.target_path_id = normalize_id(&profile.target_path_id);
+        normalize_lines(&mut profile.qtypes, false);
+        for qtype in &mut profile.qtypes {
+            qtype.make_ascii_uppercase();
+        }
+        normalize_lines(&mut profile.rcodes, false);
+        for rcode in &mut profile.rcodes {
+            rcode.make_ascii_uppercase();
+        }
+        profile.response_ip_role = profile
+            .response_ip_role
+            .take()
+            .map(|role| normalize_id(&role))
+            .filter(|role| !role.is_empty());
+    }
+
+    for rule in &mut intent.advanced_rules {
+        rule.id = normalize_id(&rule.id);
+        rule.name = rule.name.trim().to_string();
+        rule.template_origin =
+            trimmed_option(rule.template_origin.take()).map(|origin| normalize_id(&origin));
+        for condition in &mut rule.conditions {
+            normalize_advanced_condition(condition);
+        }
+        if let StandardAdvancedAction::UsePath { path_id } = &mut rule.action {
+            *path_id = normalize_id(path_id);
+        }
+    }
+
     normalize_lines(&mut intent.filtering.block_rules, false);
     normalize_lines(&mut intent.filtering.allow_rules, true);
     for subscription in &mut intent.filtering.subscriptions {
@@ -133,10 +199,6 @@ pub fn normalize_standard_intent(mut intent: StandardIntent) -> StandardIntent {
         rule.note = trimmed_option(rule.note.take());
         normalize_condition(&mut rule.condition);
         normalize_action(&mut rule.action);
-    }
-    for scenario in &mut intent.routing.scenarios {
-        scenario.id = normalize_id(&scenario.id);
-        scenario.name = scenario.name.trim().to_string();
     }
     for rule in &mut intent.exceptions {
         rule.id = normalize_id(&rule.id);
@@ -184,6 +246,9 @@ pub fn validate_standard_intent(
     validate_rule_data(intent, capabilities, &mut diagnostics);
     validate_paths(intent, capabilities, &mut diagnostics);
     validate_smart_routing(intent, capabilities, &mut diagnostics);
+    validate_dedicated_groups(intent, capabilities, &mut diagnostics);
+    validate_dynamic_learning(intent, capabilities, &mut diagnostics);
+    validate_advanced_rules(intent, capabilities, &mut diagnostics);
     validate_rules(intent, capabilities, &mut diagnostics);
     validate_devices(intent, capabilities, &mut diagnostics);
     validate_system(intent, &mut diagnostics);
@@ -312,6 +377,34 @@ fn validate_identifiers(intent: &StandardIntent, diagnostics: &mut Vec<StandardD
         "devices",
         diagnostics,
     );
+    validate_unique_objects(
+        intent
+            .dedicated_groups
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (index, item.id.as_str(), item.name.as_str())),
+        "dedicatedGroups",
+        diagnostics,
+    );
+    validate_unique_objects(
+        intent
+            .dynamic_learning
+            .profiles
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (index, item.id.as_str(), item.name.as_str())),
+        "dynamicLearning.profiles",
+        diagnostics,
+    );
+    validate_unique_objects(
+        intent
+            .advanced_rules
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (index, item.id.as_str(), item.name.as_str())),
+        "advancedRules",
+        diagnostics,
+    );
 
     let mut tags = BTreeMap::<String, String>::new();
     for (path, tag) in generated_user_tags(intent) {
@@ -376,6 +469,13 @@ fn validate_upstreams(
             ));
         }
         let enabled = group.upstreams.iter().filter(|item| item.enabled).count();
+        if matches!(group.strategy, StandardUpstreamStrategy::Consensus) && enabled < 2 {
+            diagnostics.push(StandardDiagnostic::error(
+                "consensus_upstreams_insufficient",
+                format!("{group_path}.strategy"),
+                "consensus requires at least two enabled upstreams",
+            ));
+        }
         if enabled == 0 {
             diagnostics.push(StandardDiagnostic::error(
                 "enabled_upstream_required",
@@ -1117,6 +1217,559 @@ fn validate_paths(
     }
 }
 
+fn validate_dedicated_groups(
+    intent: &StandardIntent,
+    capabilities: &StandardCapabilities,
+    diagnostics: &mut Vec<StandardDiagnostic>,
+) {
+    let main_address = intent.listen.address.parse::<std::net::SocketAddr>().ok();
+    let mut listeners = Vec::<(usize, std::net::SocketAddr, bool, bool)>::new();
+    for (index, group) in intent
+        .dedicated_groups
+        .iter()
+        .enumerate()
+        .filter(|(_, group)| group.enabled)
+    {
+        let base = format!("dedicatedGroups[{index}]");
+        if group.rules.is_empty() {
+            diagnostics.push(StandardDiagnostic::error(
+                "dedicated_rules_required",
+                format!("{base}.rules"),
+                "an enabled dedicated group requires at least one domain rule",
+            ));
+        }
+        let mut matcher = crate::core::rule_matcher::DomainRuleMatcher::default();
+        for (rule_index, rule) in group.rules.iter().enumerate() {
+            if let Err(error) = matcher.add_expression(rule, &base) {
+                diagnostics.push(StandardDiagnostic::error(
+                    "dedicated_rule_invalid",
+                    format!("{base}.rules[{rule_index}]"),
+                    error,
+                ));
+            }
+        }
+        if !capabilities.provider("domain_set") {
+            diagnostics.push(missing_plugin(&base, "provider", "domain_set"));
+        }
+        if !capabilities.matcher("qname") {
+            diagnostics.push(missing_plugin(&base, "matcher", "qname"));
+        }
+
+        let enabled = group
+            .upstreams
+            .iter()
+            .filter(|upstream| upstream.enabled)
+            .count();
+        if enabled == 0 {
+            diagnostics.push(StandardDiagnostic::error(
+                "dedicated_upstream_required",
+                format!("{base}.upstreams"),
+                "an enabled dedicated group requires at least one enabled upstream",
+            ));
+        }
+        if matches!(group.strategy, StandardUpstreamStrategy::Consensus) && enabled < 2 {
+            diagnostics.push(StandardDiagnostic::error(
+                "consensus_upstreams_insufficient",
+                format!("{base}.strategy"),
+                "consensus requires at least two enabled upstreams",
+            ));
+        }
+        if matches!(group.strategy, StandardUpstreamStrategy::OrderedFallback)
+            && !capabilities.executor("fallback")
+        {
+            diagnostics.push(missing_plugin(
+                format!("{base}.strategy"),
+                "executor",
+                "fallback",
+            ));
+        }
+        let mut upstream_ids = BTreeSet::new();
+        for (upstream_index, upstream) in group.upstreams.iter().enumerate() {
+            let upstream_base = format!("{base}.upstreams[{upstream_index}]");
+            if upstream.id.is_empty() || !upstream_ids.insert(upstream.id.clone()) {
+                diagnostics.push(StandardDiagnostic::error(
+                    "dedicated_upstream_id_invalid",
+                    format!("{upstream_base}.id"),
+                    "dedicated upstream IDs must be non-empty and unique",
+                ));
+            }
+            if upstream.name.is_empty() {
+                diagnostics.push(StandardDiagnostic::error(
+                    "name_required",
+                    format!("{upstream_base}.name"),
+                    "upstream name is required",
+                ));
+            }
+            if upstream.enabled && upstream.address.is_empty() {
+                diagnostics.push(StandardDiagnostic::error(
+                    "upstream_address_required",
+                    format!("{upstream_base}.address"),
+                    "enabled upstream address is required",
+                ));
+            }
+            for feature in protocol_features(upstream.protocol) {
+                if !capabilities.feature(feature) {
+                    diagnostics.push(StandardDiagnostic::error(
+                        "upstream_protocol_unavailable",
+                        format!("{upstream_base}.protocol"),
+                        format!("upstream protocol requires build feature '{feature}'"),
+                    ));
+                }
+            }
+        }
+
+        validate_path_controls(
+            group.path.dual_stack,
+            &group.path.ip_selection,
+            &group.path.ecs,
+            &format!("{base}.path"),
+            capabilities,
+            diagnostics,
+        );
+
+        if group.listener.enabled {
+            if !group.listener.udp && !group.listener.tcp {
+                diagnostics.push(StandardDiagnostic::error(
+                    "dedicated_listener_transport_required",
+                    format!("{base}.listener"),
+                    "an enabled dedicated listener requires UDP or TCP",
+                ));
+            }
+            let address = group.listener.address.parse::<std::net::SocketAddr>();
+            let Ok(address) = address else {
+                diagnostics.push(StandardDiagnostic::error(
+                    "dedicated_listener_address_invalid",
+                    format!("{base}.listener.address"),
+                    "dedicated listener address must be an IP socket address",
+                ));
+                continue;
+            };
+            if let Some(main) = main_address
+                && listeners_overlap(main, address)
+                && ((group.listener.udp && intent.listen.udp)
+                    || (group.listener.tcp && intent.listen.tcp))
+            {
+                diagnostics.push(StandardDiagnostic::error(
+                    "dedicated_listener_collision",
+                    format!("{base}.listener.address"),
+                    "dedicated listener collides with the main Standard listener",
+                ));
+            }
+            for (first_index, first, first_udp, first_tcp) in &listeners {
+                if listeners_overlap(*first, address)
+                    && ((group.listener.udp && *first_udp) || (group.listener.tcp && *first_tcp))
+                {
+                    diagnostics.push(StandardDiagnostic::error(
+                        "dedicated_listener_collision",
+                        format!("{base}.listener.address"),
+                        format!("dedicated listener collides with dedicatedGroups[{first_index}]"),
+                    ));
+                }
+            }
+            if group.listener.udp && !capabilities.server("udp_server") {
+                diagnostics.push(missing_plugin(
+                    format!("{base}.listener.udp"),
+                    "server",
+                    "udp_server",
+                ));
+            }
+            if group.listener.tcp && !capabilities.server("tcp_server") {
+                diagnostics.push(missing_plugin(
+                    format!("{base}.listener.tcp"),
+                    "server",
+                    "tcp_server",
+                ));
+            }
+            listeners.push((index, address, group.listener.udp, group.listener.tcp));
+        }
+    }
+}
+
+fn listeners_overlap(left: std::net::SocketAddr, right: std::net::SocketAddr) -> bool {
+    left.port() == right.port()
+        && (left.ip() == right.ip() || left.ip().is_unspecified() || right.ip().is_unspecified())
+}
+
+fn validate_path_controls(
+    dual_stack: StandardDualStackPolicy,
+    selection: &super::model::StandardIpSelectionSettings,
+    ecs: &StandardEcsPolicy,
+    base: &str,
+    capabilities: &StandardCapabilities,
+    diagnostics: &mut Vec<StandardDiagnostic>,
+) {
+    match dual_stack {
+        StandardDualStackPolicy::PreferIpv4 if !capabilities.executor("prefer_ipv4") => {
+            diagnostics.push(missing_plugin(
+                format!("{base}.dualStack"),
+                "executor",
+                "prefer_ipv4",
+            ));
+        }
+        StandardDualStackPolicy::PreferIpv6 if !capabilities.executor("prefer_ipv6") => {
+            diagnostics.push(missing_plugin(
+                format!("{base}.dualStack"),
+                "executor",
+                "prefer_ipv6",
+            ));
+        }
+        StandardDualStackPolicy::Ipv4Only | StandardDualStackPolicy::Ipv6Only => {
+            if !capabilities.matcher("qtype") {
+                diagnostics.push(missing_plugin(
+                    format!("{base}.dualStack"),
+                    "matcher",
+                    "qtype",
+                ));
+            }
+            if !capabilities.executor("black_hole") {
+                diagnostics.push(missing_plugin(
+                    format!("{base}.dualStack"),
+                    "executor",
+                    "black_hole",
+                ));
+            }
+        }
+        _ => {}
+    }
+    if selection.enabled {
+        if !capabilities.executor("ip_selector") {
+            diagnostics.push(missing_plugin(
+                format!("{base}.ipSelection"),
+                "executor",
+                "ip_selector",
+            ));
+        }
+        if selection.probe_methods.is_empty()
+            || selection.probe_timeout_ms == 0
+            || selection.max_wait_ms == 0
+            || selection.top_n == 0
+            || selection.max_parallel_probes == 0
+        {
+            diagnostics.push(StandardDiagnostic::error(
+                "ip_selection_limits_invalid",
+                format!("{base}.ipSelection"),
+                "enabled IP selection requires non-zero methods, budgets, and limits",
+            ));
+        }
+    }
+    match ecs {
+        StandardEcsPolicy::ClientSubnet { mask4, mask6 }
+        | StandardEcsPolicy::Preset { mask4, mask6, .. } => {
+            if *mask4 > 32 || *mask6 > 128 {
+                diagnostics.push(StandardDiagnostic::error(
+                    "ecs_prefix_invalid",
+                    format!("{base}.ecs"),
+                    "ECS IPv4/IPv6 prefixes must be within valid ranges",
+                ));
+            }
+            if let StandardEcsPolicy::Preset { address, .. } = ecs
+                && address.parse::<IpAddr>().is_err()
+            {
+                diagnostics.push(StandardDiagnostic::error(
+                    "ecs_preset_invalid",
+                    format!("{base}.ecs.address"),
+                    "ECS preset address must be an IPv4 or IPv6 address",
+                ));
+            }
+            if !capabilities.executor("ecs_handler") {
+                diagnostics.push(missing_plugin(
+                    format!("{base}.ecs"),
+                    "executor",
+                    "ecs_handler",
+                ));
+            }
+        }
+        StandardEcsPolicy::Remove | StandardEcsPolicy::PreserveClient => {
+            if !capabilities.executor("ecs_handler") {
+                diagnostics.push(missing_plugin(
+                    format!("{base}.ecs"),
+                    "executor",
+                    "ecs_handler",
+                ));
+            }
+        }
+        StandardEcsPolicy::Inherit => {}
+    }
+}
+
+fn validate_dynamic_learning(
+    intent: &StandardIntent,
+    capabilities: &StandardCapabilities,
+    diagnostics: &mut Vec<StandardDiagnostic>,
+) {
+    let path_ids: BTreeSet<_> = intent.paths.iter().map(|path| path.id.as_str()).collect();
+    for (index, profile) in intent
+        .dynamic_learning
+        .profiles
+        .iter()
+        .enumerate()
+        .filter(|(_, profile)| profile.enabled)
+    {
+        let base = format!("dynamicLearning.profiles[{index}]");
+        if !path_ids.contains(profile.target_path_id.as_str()) {
+            diagnostics.push(StandardDiagnostic::error(
+                "dynamic_learning_path_missing",
+                format!("{base}.targetPathId"),
+                format!(
+                    "learning profile references missing path '{}'",
+                    profile.target_path_id
+                ),
+            ));
+        }
+        if profile.qtypes.is_empty() || profile.rcodes.is_empty() {
+            diagnostics.push(StandardDiagnostic::error(
+                "dynamic_learning_classification_empty",
+                base.clone(),
+                "learning profile requires at least one QTYPE and RCODE",
+            ));
+        }
+        if profile.max_entries == 0
+            || profile.entry_ttl_seconds == 0
+            || profile.cleanup_interval_seconds == 0
+            || profile.queue_size == 0
+            || profile.batch_size == 0
+            || profile.flush_interval_ms == 0
+            || profile.batch_size > profile.queue_size
+        {
+            diagnostics.push(StandardDiagnostic::error(
+                "dynamic_learning_limits_invalid",
+                base.clone(),
+                "learning limits must be non-zero and batchSize must not exceed queueSize",
+            ));
+        }
+        if let Some(role) = &profile.response_ip_role {
+            let enabled = intent
+                .rule_data
+                .all_roles()
+                .into_iter()
+                .find(|(name, _)| name == role)
+                .is_some_and(|(_, value)| value.has_enabled_sources());
+            if !enabled {
+                diagnostics.push(StandardDiagnostic::error(
+                    "dynamic_learning_response_ip_role_missing",
+                    format!("{base}.responseIpRole"),
+                    format!("response IP role '{role}' is not configured"),
+                ));
+            }
+        }
+        for (kind, plugin) in [
+            ("provider", "dynamic_domain_set"),
+            ("executor", "learn_domain"),
+            ("matcher", "qname"),
+            ("matcher", "qtype"),
+            ("matcher", "rcode"),
+        ] {
+            let available = match kind {
+                "provider" => capabilities.provider(plugin),
+                "executor" => capabilities.executor(plugin),
+                _ => capabilities.matcher(plugin),
+            };
+            if !available {
+                diagnostics.push(missing_plugin(base.clone(), kind, plugin));
+            }
+        }
+        if profile.answer_required && !capabilities.matcher("has_wanted_ans") {
+            diagnostics.push(missing_plugin(base.clone(), "matcher", "has_wanted_ans"));
+        }
+        if profile.response_ip_role.is_some() && !capabilities.matcher("resp_ip") {
+            diagnostics.push(missing_plugin(base, "matcher", "resp_ip"));
+        }
+    }
+}
+
+fn validate_advanced_rules(
+    intent: &StandardIntent,
+    capabilities: &StandardCapabilities,
+    diagnostics: &mut Vec<StandardDiagnostic>,
+) {
+    use super::model::StandardAdvancedRulePhase::{Request, Response};
+
+    let path_ids: BTreeSet<_> = intent.paths.iter().map(|path| path.id.as_str()).collect();
+    for (index, rule) in intent
+        .advanced_rules
+        .iter()
+        .enumerate()
+        .filter(|(_, rule)| rule.enabled)
+    {
+        let base = format!("advancedRules[{index}]");
+        if rule.conditions.is_empty() {
+            diagnostics.push(StandardDiagnostic::error(
+                "advanced_conditions_required",
+                format!("{base}.conditions"),
+                "advanced rule requires at least one condition",
+            ));
+        }
+        if let StandardAdvancedAction::UsePath { path_id } = &rule.action
+            && !path_ids.contains(path_id.as_str())
+        {
+            diagnostics.push(StandardDiagnostic::error(
+                "advanced_path_missing",
+                format!("{base}.action.pathId"),
+                format!("advanced rule references missing path '{path_id}'"),
+            ));
+        }
+        if matches!(rule.phase, Response)
+            && matches!(rule.action, StandardAdvancedAction::Block { .. })
+        {
+            diagnostics.push(StandardDiagnostic::error(
+                "advanced_response_action_unsupported",
+                format!("{base}.action"),
+                "response-phase rules must reroute to a path",
+            ));
+        }
+        if matches!(rule.phase, Response)
+            && rule
+                .conditions
+                .iter()
+                .filter(|condition| {
+                    matches!(condition, StandardAdvancedCondition::SourcePath { .. })
+                })
+                .count()
+                != 1
+        {
+            diagnostics.push(StandardDiagnostic::error(
+                "advanced_response_source_path_required",
+                format!("{base}.conditions"),
+                "response-phase rule requires exactly one sourcePath condition",
+            ));
+        }
+        for (condition_index, condition) in rule.conditions.iter().enumerate() {
+            let path = format!("{base}.conditions[{condition_index}]");
+            let request_only = matches!(
+                condition,
+                StandardAdvancedCondition::Domain { .. }
+                    | StandardAdvancedCondition::Suffix { .. }
+                    | StandardAdvancedCondition::Keyword { .. }
+                    | StandardAdvancedCondition::ClientCidr { .. }
+                    | StandardAdvancedCondition::Time { .. }
+                    | StandardAdvancedCondition::RateLimitExceeded { .. }
+            );
+            let response_only = matches!(
+                condition,
+                StandardAdvancedCondition::SourcePath { .. }
+                    | StandardAdvancedCondition::Cname { .. }
+                    | StandardAdvancedCondition::Rcode { .. }
+                    | StandardAdvancedCondition::HasWantedAnswer
+                    | StandardAdvancedCondition::ResponseIpRole { .. }
+            );
+            if (matches!(rule.phase, Request) && response_only)
+                || (matches!(rule.phase, Response) && request_only)
+            {
+                diagnostics.push(StandardDiagnostic::error(
+                    "advanced_condition_phase_invalid",
+                    path.clone(),
+                    "condition is not available in this evaluation phase",
+                ));
+            }
+            match condition {
+                StandardAdvancedCondition::Domain { values }
+                | StandardAdvancedCondition::Suffix { values }
+                | StandardAdvancedCondition::Keyword { values }
+                | StandardAdvancedCondition::ClientCidr { values }
+                | StandardAdvancedCondition::Qtype { values }
+                | StandardAdvancedCondition::Cname { values }
+                | StandardAdvancedCondition::Rcode { values } => {
+                    if values.is_empty() {
+                        diagnostics.push(StandardDiagnostic::error(
+                            "advanced_condition_values_required",
+                            path.clone(),
+                            "condition requires at least one value",
+                        ));
+                    }
+                }
+                StandardAdvancedCondition::Time { timezone, periods } => {
+                    if timezone.is_empty() || TimeZone::get(timezone).is_err() || periods.is_empty()
+                    {
+                        diagnostics.push(StandardDiagnostic::error(
+                            "advanced_time_invalid",
+                            path.clone(),
+                            "time condition requires a valid IANA timezone and at least one period",
+                        ));
+                    }
+                    for period in periods {
+                        if period.weekdays.iter().any(|day| !(1..=7).contains(day))
+                            || period.monthdays.iter().any(|day| !(1..=31).contains(day))
+                        {
+                            diagnostics.push(StandardDiagnostic::error(
+                                "advanced_time_calendar_invalid",
+                                path.clone(),
+                                "weekdays must be 1..=7 and month days 1..=31",
+                            ));
+                        }
+                    }
+                }
+                StandardAdvancedCondition::RateLimitExceeded {
+                    qps,
+                    burst,
+                    mask4,
+                    mask6,
+                } => {
+                    if *qps == 0 || *burst == 0 || *mask4 > 32 || *mask6 > 128 {
+                        diagnostics.push(StandardDiagnostic::error(
+                            "advanced_rate_limit_invalid",
+                            path.clone(),
+                            "rate limit requires non-zero qps/burst and valid IP masks",
+                        ));
+                    }
+                }
+                StandardAdvancedCondition::SourcePath { path_id } => {
+                    if !path_ids.contains(path_id.as_str()) {
+                        diagnostics.push(StandardDiagnostic::error(
+                            "advanced_source_path_missing",
+                            path.clone(),
+                            format!("response rule references missing source path '{path_id}'"),
+                        ));
+                    }
+                }
+                StandardAdvancedCondition::ResponseIpRole { role, .. } => {
+                    let enabled = intent
+                        .rule_data
+                        .all_roles()
+                        .into_iter()
+                        .find(|(name, _)| name == role)
+                        .is_some_and(|(_, value)| value.has_enabled_sources());
+                    if !enabled {
+                        diagnostics.push(StandardDiagnostic::error(
+                            "advanced_response_ip_role_missing",
+                            path.clone(),
+                            format!("response IP role '{role}' is not configured"),
+                        ));
+                    }
+                }
+                StandardAdvancedCondition::HasWantedAnswer => {}
+            }
+            let matcher = match condition {
+                StandardAdvancedCondition::Domain { .. }
+                | StandardAdvancedCondition::Suffix { .. }
+                | StandardAdvancedCondition::Keyword { .. } => Some("qname"),
+                StandardAdvancedCondition::ClientCidr { .. } => Some("client_ip"),
+                StandardAdvancedCondition::Qtype { .. } => Some("qtype"),
+                StandardAdvancedCondition::Time { .. } => Some("time"),
+                StandardAdvancedCondition::RateLimitExceeded { .. } => Some("rate_limiter"),
+                StandardAdvancedCondition::Cname { .. } => Some("cname"),
+                StandardAdvancedCondition::Rcode { .. } => Some("rcode"),
+                StandardAdvancedCondition::HasWantedAnswer => Some("has_wanted_ans"),
+                StandardAdvancedCondition::ResponseIpRole { .. } => Some("resp_ip"),
+                StandardAdvancedCondition::SourcePath { .. } => None,
+            };
+            if let Some(matcher) = matcher
+                && !capabilities.matcher(matcher)
+            {
+                diagnostics.push(missing_plugin(path, "matcher", matcher));
+            }
+        }
+        if matches!(rule.action, StandardAdvancedAction::Block { .. })
+            && !capabilities.executor("black_hole")
+        {
+            diagnostics.push(missing_plugin(
+                format!("{base}.action"),
+                "executor",
+                "black_hole",
+            ));
+        }
+    }
+}
+
 fn validate_rules(
     intent: &StandardIntent,
     capabilities: &StandardCapabilities,
@@ -1127,18 +1780,6 @@ fn validate_rules(
         .iter()
         .map(|path| normalize_id(&path.id))
         .collect();
-    if intent
-        .routing
-        .scenarios
-        .iter()
-        .any(|scenario| scenario.enabled)
-    {
-        diagnostics.push(StandardDiagnostic::error(
-            "scenario_not_available",
-            "routing.scenarios",
-            "scenario templates are not compiled in Phase 0",
-        ));
-    }
     if intent.routing.enabled {
         for (index, rule) in intent
             .routing
@@ -1409,6 +2050,56 @@ fn generated_user_tags(intent: &StandardIntent) -> Vec<(String, String)> {
             standard_tag("device_action", &device.id),
         ));
     }
+    for (index, group) in intent.dedicated_groups.iter().enumerate() {
+        for prefix in [
+            "dedicated_provider",
+            "dedicated_match",
+            "dedicated_forward",
+            "dedicated_path",
+            "dedicated_cache",
+            "dedicated_udp",
+            "dedicated_tcp",
+        ] {
+            tags.push((
+                format!("dedicatedGroups[{index}].id"),
+                standard_tag(prefix, &group.id),
+            ));
+        }
+    }
+    for (index, profile) in intent.dynamic_learning.profiles.iter().enumerate() {
+        for prefix in [
+            "learn_provider",
+            "learn_exec",
+            "learn_match",
+            "learn_action",
+            "learn_qtype",
+            "learn_rcode",
+            "learn_answer",
+            "learn_resp_ip",
+        ] {
+            tags.push((
+                format!("dynamicLearning.profiles[{index}].id"),
+                standard_tag(prefix, &profile.id),
+            ));
+        }
+    }
+    for (index, rule) in intent.advanced_rules.iter().enumerate() {
+        for prefix in ["advanced_action", "advanced_drop", "advanced_secondary"] {
+            tags.push((
+                format!("advancedRules[{index}].id"),
+                standard_tag(prefix, &rule.id),
+            ));
+        }
+        for condition_index in 0..rule.conditions.len() {
+            tags.push((
+                format!("advancedRules[{index}].conditions[{condition_index}]"),
+                standard_tag(
+                    "advanced_match",
+                    &format!("{}_{}", rule.id, condition_index),
+                ),
+            ));
+        }
+    }
     tags
 }
 
@@ -1497,6 +2188,39 @@ fn normalize_action(action: &mut StandardRuleAction) {
     }
 }
 
+fn normalize_advanced_condition(condition: &mut StandardAdvancedCondition) {
+    match condition {
+        StandardAdvancedCondition::Domain { values }
+        | StandardAdvancedCondition::Keyword { values }
+        | StandardAdvancedCondition::ClientCidr { values }
+        | StandardAdvancedCondition::Cname { values } => normalize_lines(values, false),
+        StandardAdvancedCondition::Suffix { values } => {
+            normalize_lines(values, false);
+            for value in values {
+                *value = value.trim_start_matches('.').to_string();
+            }
+        }
+        StandardAdvancedCondition::Qtype { values }
+        | StandardAdvancedCondition::Rcode { values } => {
+            normalize_lines(values, false);
+            for value in values {
+                value.make_ascii_uppercase();
+            }
+        }
+        StandardAdvancedCondition::Time { timezone, .. } => {
+            *timezone = timezone.trim().to_string();
+        }
+        StandardAdvancedCondition::SourcePath { path_id } => {
+            *path_id = normalize_id(path_id);
+        }
+        StandardAdvancedCondition::ResponseIpRole { role, .. } => {
+            *role = normalize_id(role);
+        }
+        StandardAdvancedCondition::RateLimitExceeded { .. }
+        | StandardAdvancedCondition::HasWantedAnswer => {}
+    }
+}
+
 fn protocol_features(protocol: StandardUpstreamProtocol) -> &'static [&'static str] {
     match protocol {
         StandardUpstreamProtocol::Auto
@@ -1510,14 +2234,25 @@ fn protocol_features(protocol: StandardUpstreamProtocol) -> &'static [&'static s
 }
 
 fn effective_cache_paths(intent: &StandardIntent) -> usize {
-    intent
+    let regular = intent
         .paths
         .iter()
         .filter(|path| {
             matches!(path.cache, StandardPolicySwitch::Enabled)
                 || (matches!(path.cache, StandardPolicySwitch::Inherit) && intent.cache.enabled)
         })
-        .count()
+        .count();
+    regular
+        + intent
+            .dedicated_groups
+            .iter()
+            .filter(|group| {
+                group.enabled
+                    && (matches!(group.path.cache, StandardPolicySwitch::Enabled)
+                        || (matches!(group.path.cache, StandardPolicySwitch::Inherit)
+                            && intent.cache.enabled))
+            })
+            .count()
 }
 
 pub(super) fn effective_filtering_used(intent: &StandardIntent) -> bool {
@@ -1528,6 +2263,12 @@ pub(super) fn effective_filtering_used(intent: &StandardIntent) -> bool {
         .devices
         .iter()
         .any(|device| matches!(device.filtering, Some(StandardPolicySwitch::Enabled)))
+        || intent.dedicated_groups.iter().any(|group| {
+            group.enabled
+                && (matches!(group.path.filtering, StandardPolicySwitch::Enabled)
+                    || (matches!(group.path.filtering, StandardPolicySwitch::Inherit)
+                        && intent.filtering.enabled))
+        })
 }
 
 pub(super) fn effective_query_log_used(intent: &StandardIntent) -> bool {
@@ -1538,6 +2279,12 @@ pub(super) fn effective_query_log_used(intent: &StandardIntent) -> bool {
         .devices
         .iter()
         .any(|device| matches!(device.query_log, Some(StandardPolicySwitch::Enabled)))
+        || intent.dedicated_groups.iter().any(|group| {
+            group.enabled
+                && (matches!(group.path.query_log, StandardPolicySwitch::Enabled)
+                    || (matches!(group.path.query_log, StandardPolicySwitch::Inherit)
+                        && intent.query_log.enabled))
+        })
 }
 
 pub(super) fn device_has_policy(device: &super::model::StandardDeviceProfile) -> bool {

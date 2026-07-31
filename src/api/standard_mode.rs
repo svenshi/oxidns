@@ -26,7 +26,8 @@ use crate::api::webui_config::{
 use crate::api::{ApiHandler, ApiRegister, json_error, json_ok, json_response};
 use crate::config::standard_mode::{
     StandardCapabilities, StandardDiagnostic, StandardDiagnosticSeverity, StandardPlan,
-    compile_standard_intent, decode_standard_intent,
+    StandardTemplateExpansion, StandardTemplateKind, StandardTemplateParameters,
+    compile_standard_intent, decode_standard_intent, expand_standard_template,
 };
 use crate::infra::control::{AppController, ControlRequestError, config_version};
 use crate::infra::error::{DnsError, Result};
@@ -54,6 +55,24 @@ struct StandardApplyRequest {
     planned_config_version: String,
     #[serde(default)]
     takeover: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct StandardTemplatePreviewRequest {
+    base_intent: Value,
+    kind: StandardTemplateKind,
+    parameters: StandardTemplateParameters,
+    base_config_version: Option<String>,
+    base_standard_version: Option<String>,
+    #[serde(default)]
+    takeover: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct StandardTemplatePreviewResponse {
+    ok: bool,
+    expansion: StandardTemplateExpansion,
+    plan: StandardPlanResponse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -200,6 +219,11 @@ struct StandardApplyHandler {
 }
 
 #[derive(Debug)]
+struct StandardTemplatePreviewHandler {
+    controller: Arc<AppController>,
+}
+
+#[derive(Debug)]
 struct StandardTransactionStatusHandler {
     controller: Arc<AppController>,
 }
@@ -286,6 +310,72 @@ impl ApiHandler for StandardApplyHandler {
             Err(StandardApplyError::Reload(message)) => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "standard_reload_request_failed",
+                message,
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl ApiHandler for StandardTemplatePreviewHandler {
+    async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
+        let request = match serde_json::from_slice::<StandardTemplatePreviewRequest>(request.body())
+        {
+            Ok(request) => request,
+            Err(err) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_standard_template_request",
+                    format!("request body must be JSON: {err}"),
+                );
+            }
+        };
+        let (intent, _) = match decode_standard_intent(request.base_intent) {
+            Ok(value) => value,
+            Err(err) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_standard_intent",
+                    err.to_string(),
+                );
+            }
+        };
+        let expansion = match expand_standard_template(intent, request.kind, request.parameters) {
+            Ok(expansion) => expansion,
+            Err(message) => {
+                return json_error(StatusCode::CONFLICT, "standard_template_collision", message);
+            }
+        };
+        let intent = serde_json::to_value(&expansion.proposed_intent)
+            .expect("Standard template intent should serialize");
+        match build_plan_response(
+            self.controller.config_path(),
+            StandardPlanRequest {
+                intent,
+                base_config_version: request.base_config_version,
+                base_standard_version: request.base_standard_version,
+                takeover: request.takeover,
+            },
+        ) {
+            Ok(plan) => json_ok(
+                StatusCode::OK,
+                &StandardTemplatePreviewResponse {
+                    ok: true,
+                    expansion,
+                    plan,
+                },
+            ),
+            Err(StandardPlanError::InvalidIntent(message)) => {
+                json_error(StatusCode::BAD_REQUEST, "invalid_standard_intent", message)
+            }
+            Err(StandardPlanError::BuildInfo(message)) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "standard_capabilities_unavailable",
+                message,
+            ),
+            Err(StandardPlanError::Io(message)) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "standard_template_preview_failed",
                 message,
             ),
         }
@@ -380,6 +470,13 @@ pub fn register_builtin_routes(
             controller: controller.clone(),
         }),
     )?;
+    register.register_route(
+        Method::POST,
+        "/standard/templates/preview",
+        Arc::new(StandardTemplatePreviewHandler {
+            controller: controller.clone(),
+        }),
+    )?;
     register.register_get(
         "/standard/apply/status",
         Arc::new(StandardTransactionStatusHandler {
@@ -433,6 +530,18 @@ fn build_plan_response(
         });
         plan.can_apply = false;
     }
+    let previous_files = managed_files_from_state(&standard.config);
+    let candidate_files: BTreeSet<_> = plan
+        .generated
+        .as_ref()
+        .into_iter()
+        .flat_map(|generated| generated.managed_files.iter().cloned())
+        .collect();
+    plan.details["managedFiles"] = json!({
+        "created": candidate_files.difference(&previous_files).collect::<Vec<_>>(),
+        "retained": candidate_files.intersection(&previous_files).collect::<Vec<_>>(),
+        "orphaned": previous_files.difference(&candidate_files).collect::<Vec<_>>(),
+    });
     let semantic_diff = semantic_diff(&current_config, &plan);
     let mut blockers = Vec::new();
     if request
@@ -751,6 +860,7 @@ fn candidate_standard_state(
             "generatedTags": generated.generated_tags,
             "tagMap": generated.tag_map,
             "summary": generated.summary,
+            "managedFiles": generated.managed_files,
             "generatedAtMs": unix_time_ms(),
             "transactionId": transaction_id,
         }),
@@ -787,8 +897,73 @@ pub(crate) fn finalize_pending_transaction(config_path: &Path) -> Result<bool> {
     )
     .map_err(DnsError::runtime)?;
     append_history_entry(config_path, &journal).map_err(DnsError::runtime)?;
+    if let Err(message) =
+        cleanup_orphaned_managed_files(&journal.previous_standard, &journal.candidate_standard)
+    {
+        tracing::warn!(error = %message, "Standard Mode managed-file cleanup needs retry");
+    }
     remove_pending_journal(config_path).map_err(DnsError::runtime)?;
     Ok(true)
+}
+
+fn managed_files_from_state(state: &Value) -> BTreeSet<String> {
+    state
+        .get("standard")
+        .and_then(|standard| standard.get("meta"))
+        .and_then(|meta| meta.get("lastGenerated"))
+        .and_then(|generated| generated.get("managedFiles"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
+}
+
+fn validate_managed_file(path: &str) -> std::result::Result<PathBuf, String> {
+    const PREFIX: &str = "./data/standard-dynamic-learning/";
+    let Some(filename) = path.strip_prefix(PREFIX) else {
+        return Err(format!("refusing unowned managed path '{path}'"));
+    };
+    if filename.is_empty()
+        || filename.contains('/')
+        || filename.contains('\\')
+        || filename == "."
+        || filename == ".."
+        || !(filename.ends_with(".txt") || filename.ends_with(".meta.json"))
+    {
+        return Err(format!("refusing unsafe managed filename '{path}'"));
+    }
+    Ok(PathBuf::from(path))
+}
+
+fn cleanup_orphaned_managed_files(
+    previous_state: &Value,
+    candidate_state: &Value,
+) -> std::result::Result<Vec<String>, String> {
+    let previous = managed_files_from_state(previous_state);
+    let candidate = managed_files_from_state(candidate_state);
+    let mut removed = Vec::new();
+    let mut errors = Vec::new();
+    for path in previous.difference(&candidate) {
+        let path = match validate_managed_file(path) {
+            Ok(path) => path,
+            Err(message) => {
+                errors.push(message);
+                continue;
+            }
+        };
+        match fs::remove_file(&path) {
+            Ok(()) => removed.push(path.display().to_string()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => errors.push(format!("failed to remove {}: {err}", path.display())),
+        }
+    }
+    if errors.is_empty() {
+        Ok(removed)
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 /// Restore both persisted files after a candidate reload failure.
@@ -1771,6 +1946,27 @@ mod tests {
             .expect("read history")
             .expect("history entry");
         assert_eq!(restored.settings["schema"], 4);
+    }
+
+    #[test]
+    fn managed_file_cleanup_accepts_only_exact_standard_dynamic_paths() {
+        let candidate =
+            json!({ "standard": { "meta": { "lastGenerated": { "managedFiles": [] } } } });
+        assert!(validate_managed_file("./data/standard-dynamic-learning/profile.txt").is_ok());
+        assert!(
+            validate_managed_file("./data/standard-dynamic-learning/profile.meta.json").is_ok()
+        );
+
+        for unsafe_path in [
+            "./data/standard-dynamic-learning/../config.yaml",
+            "./data/other/file.txt",
+            "/tmp/file.txt",
+        ] {
+            let previous = json!({
+                "standard": { "meta": { "lastGenerated": { "managedFiles": [unsafe_path] } } }
+            });
+            assert!(cleanup_orphaned_managed_files(&previous, &candidate).is_err());
+        }
     }
 
     fn accepted_target_version(standard: &LoadedWebUiConfig) -> String {

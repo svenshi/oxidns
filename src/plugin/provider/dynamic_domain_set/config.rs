@@ -26,6 +26,14 @@ struct DynamicDomainSetArgs {
     batch_size: Option<usize>,
     /// Maximum time append rules may remain in memory before being flushed.
     flush_interval_ms: Option<u64>,
+    /// Optional hard bound for the number of rules owned by this provider.
+    max_entries: Option<usize>,
+    /// Optional age limit for automatically learned entries.
+    entry_ttl_seconds: Option<u64>,
+    /// Bounded interval for removing expired learned entries.
+    cleanup_interval_seconds: Option<u64>,
+    /// Sidecar JSON storing learned/manual provenance and timestamps.
+    metadata_path: Option<String>,
 }
 
 /// Validated runtime configuration.
@@ -40,6 +48,10 @@ pub(super) struct DynamicDomainSetConfig {
     pub(super) queue_size: usize,
     pub(super) batch_size: usize,
     pub(super) flush_interval_ms: u64,
+    pub(super) max_entries: Option<usize>,
+    pub(super) entry_ttl_seconds: Option<u64>,
+    pub(super) cleanup_interval_seconds: u64,
+    pub(super) metadata_path: Option<PathBuf>,
 }
 
 impl DynamicDomainSetConfig {
@@ -80,6 +92,32 @@ impl DynamicDomainSetConfig {
                 "dynamic_domain_set flush_interval_ms must be greater than 0",
             ));
         }
+        if matches!(raw.max_entries, Some(0)) {
+            return Err(DnsError::plugin(
+                "dynamic_domain_set max_entries must be greater than 0",
+            ));
+        }
+        if matches!(raw.entry_ttl_seconds, Some(0)) {
+            return Err(DnsError::plugin(
+                "dynamic_domain_set entry_ttl_seconds must be greater than 0",
+            ));
+        }
+        let cleanup_interval_seconds = raw.cleanup_interval_seconds.unwrap_or(600);
+        if cleanup_interval_seconds == 0 {
+            return Err(DnsError::plugin(
+                "dynamic_domain_set cleanup_interval_seconds must be greater than 0",
+            ));
+        }
+        let metadata_path = raw
+            .metadata_path
+            .map(|path| path.trim().to_string())
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from);
+        if raw.entry_ttl_seconds.is_some() && metadata_path.is_none() {
+            return Err(DnsError::plugin(
+                "dynamic_domain_set entry_ttl_seconds requires metadata_path",
+            ));
+        }
 
         Ok(Self {
             path: PathBuf::from(path),
@@ -87,6 +125,10 @@ impl DynamicDomainSetConfig {
             queue_size,
             batch_size,
             flush_interval_ms,
+            max_entries: raw.max_entries,
+            entry_ttl_seconds: raw.entry_ttl_seconds,
+            cleanup_interval_seconds,
+            metadata_path,
         })
     }
 }

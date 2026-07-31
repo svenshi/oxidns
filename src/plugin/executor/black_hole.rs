@@ -67,6 +67,7 @@ enum BlackHoleMode {
     Null,
     Custom,
     Refused,
+    ServFail,
 }
 
 #[derive(Debug)]
@@ -159,6 +160,7 @@ impl BlackHole {
                 request, question,
             )),
             BlackHoleMode::Refused => Ok(request.response(Rcode::Refused)),
+            BlackHoleMode::ServFail => Ok(request.response(Rcode::ServFail)),
             BlackHoleMode::Null | BlackHoleMode::Custom => {
                 self.build_address_or_nodata_response(request, question)
             }
@@ -324,6 +326,7 @@ fn parse_black_hole_mode_token(raw: &str) -> Result<Option<BlackHoleMode>> {
         "null" => Ok(Some(BlackHoleMode::Null)),
         "custom" => Ok(Some(BlackHoleMode::Custom)),
         "refused" => Ok(Some(BlackHoleMode::Refused)),
+        "servfail" => Ok(Some(BlackHoleMode::ServFail)),
         "" => Ok(None),
         _ => Ok(None),
     }
@@ -337,6 +340,7 @@ impl BlackHoleMode {
             BlackHoleMode::Null => "null",
             BlackHoleMode::Custom => "custom",
             BlackHoleMode::Refused => "refused",
+            BlackHoleMode::ServFail => "servfail",
         }
     }
 }
@@ -780,6 +784,21 @@ mode: custom
         let resp = ctx.response().expect("response should exist");
         assert_eq!(resp.rcode(), Rcode::Refused);
         assert!(resp.answers().is_empty());
+        assert!(resp.authorities().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_black_hole_servfail_mode_returns_servfail_without_soa() {
+        let plugin = make_plugin(BlackHoleMode::ServFail, vec![], false, test_metrics());
+        let mut ctx = make_context(RecordType::TXT);
+
+        plugin
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
+
+        let resp = ctx.response().expect("response should exist");
+        assert_eq!(resp.rcode(), Rcode::ServFail);
         assert!(resp.authorities().is_empty());
     }
 

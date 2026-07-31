@@ -8,12 +8,12 @@ use serde_json::{Value as JsonValue, json};
 use serde_yaml_ng::{Mapping, Value as YamlValue};
 
 use super::model::{
-    StandardBlockResponse, StandardDiagnostic, StandardDiagnosticSeverity, StandardDualStackPolicy,
-    StandardEcsPolicy, StandardGeneratedConfig, StandardGenerationSummary, StandardIntent,
-    StandardMigration, StandardPlan, StandardPolicySwitch, StandardResolutionPath,
-    StandardRuleAction, StandardRuleCondition, StandardRuleDataSource, StandardSubscriptionTagMap,
-    StandardTagMap, StandardUnknownMode, StandardUpstream, StandardUpstreamProtocol,
-    StandardUpstreamStrategy,
+    StandardBlockResponse, StandardDedicatedTagMap, StandardDiagnostic, StandardDiagnosticSeverity,
+    StandardDualStackPolicy, StandardDynamicLearningTagMap, StandardEcsPolicy,
+    StandardGeneratedConfig, StandardGenerationSummary, StandardIntent, StandardMigration,
+    StandardPlan, StandardPolicySwitch, StandardResolutionPath, StandardRuleAction,
+    StandardRuleCondition, StandardRuleDataSource, StandardSubscriptionTagMap, StandardTagMap,
+    StandardUnknownMode, StandardUpstream, StandardUpstreamProtocol, StandardUpstreamStrategy,
 };
 use super::validation::{
     device_has_policy, effective_filtering_used, effective_query_log_used,
@@ -24,6 +24,7 @@ use crate::infra::control::config_version;
 
 const FILTER_SUBSCRIPTION_DIR: &str = "./data/standard-filter-subscriptions";
 const RULE_DATA_SUBSCRIPTION_DIR: &str = "./data/standard-rule-data";
+const DYNAMIC_LEARNING_DIR: &str = "./data/standard-dynamic-learning";
 pub(super) const STANDARD_QUERY_RECORD_MARK: u32 = u32::MAX - 1;
 pub(super) const STANDARD_QUERY_SKIP_MARK: u32 = u32::MAX;
 
@@ -85,6 +86,7 @@ impl StandardCapabilities {
                 "ip_selector",
                 "drop_resp",
                 "fallback",
+                "learn_domain",
             ]
             .into_iter()
             .map(str::to_string)
@@ -97,14 +99,23 @@ impl StandardCapabilities {
                 "rcode",
                 "has_wanted_ans",
                 "cname",
+                "time",
+                "rate_limiter",
             ]
             .into_iter()
             .map(str::to_string)
             .collect(),
-            providers: ["adguard_rule", "domain_set", "ip_set", "geosite", "geoip"]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
+            providers: [
+                "adguard_rule",
+                "domain_set",
+                "dynamic_domain_set",
+                "ip_set",
+                "geosite",
+                "geoip",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
         }
     }
 
@@ -256,6 +267,51 @@ fn analyze_rule_conflicts(intent: &StandardIntent) -> (Vec<StandardDiagnostic>, 
         }
     }
 
+    let mut advanced: Vec<_> = intent
+        .advanced_rules
+        .iter()
+        .enumerate()
+        .filter(|(_, rule)| rule.enabled)
+        .collect();
+    advanced.sort_by_key(|(index, rule)| (rule.priority, *index));
+    for (_, rule) in advanced {
+        analysis.push(json!({
+            "id": rule.id,
+            "category": "advanced",
+            "phase": rule.phase,
+            "status": "effective",
+            "conditions": rule.conditions,
+            "action": rule.action,
+            "failurePolicy": rule.failure_policy,
+            "templateOrigin": rule.template_origin,
+        }));
+    }
+    for group in intent.dedicated_groups.iter().filter(|group| group.enabled) {
+        analysis.push(json!({
+            "id": group.id,
+            "category": "dedicated",
+            "status": "effective",
+            "priority": group.priority,
+            "ownedResources": ["provider", "matcher", "upstream", "path", "cache", "listener"],
+        }));
+    }
+    for profile in intent
+        .dynamic_learning
+        .profiles
+        .iter()
+        .filter(|profile| profile.enabled)
+    {
+        analysis.push(json!({
+            "id": profile.id,
+            "category": "dynamic_learning",
+            "status": if profile.paused { "paused" } else { "effective" },
+            "priority": profile.priority,
+            "targetPathId": profile.target_path_id,
+            "failurePolicy": profile.failure_policy,
+            "ownedResources": ["provider", "metadata", "learner", "matcher", "route"],
+        }));
+    }
+
     (diagnostics, JsonValue::Array(analysis))
 }
 
@@ -306,6 +362,7 @@ fn compile_config(
     let filtering = compile_filtering(intent, &mut plugins, &mut tag_map);
     compile_local_plugins(intent, &mut plugins, &mut tag_map);
     compile_rule_data(intent, &mut plugins, &mut tag_map);
+    let learning = compile_dynamic_learning_primitives(intent, &mut plugins, &mut tag_map);
 
     let needs_prefer_ipv4 = intent
         .exceptions
@@ -392,6 +449,8 @@ fn compile_config(
         tag_map.upstream_groups.insert(group.id.clone(), tag);
     }
 
+    let advanced = compile_advanced_rules(intent, &learning.tail, &mut plugins, &mut tag_map);
+
     for path in &intent.paths {
         let forward_tag = tag_map
             .upstream_groups
@@ -405,7 +464,22 @@ fn compile_config(
             &path.id,
             &mut plugins,
             &tag_map,
-            PathOverrides::default(),
+            PathOverrides {
+                tail: learning
+                    .tail
+                    .iter()
+                    .cloned()
+                    .chain(
+                        advanced
+                            .response_tails
+                            .get(&path.id)
+                            .into_iter()
+                            .flatten()
+                            .cloned(),
+                    )
+                    .collect(),
+                ..PathOverrides::default()
+            },
         );
         if path_cache_enabled(path, intent) {
             tag_map
@@ -414,6 +488,9 @@ fn compile_config(
         }
         tag_map.paths.insert(path.id.clone(), tag);
     }
+
+    let dedicated_routes =
+        compile_dedicated_groups(intent, &mut plugins, &mut tag_map, &learning.tail);
 
     let default_path = intent.paths.first().expect("validated path should exist");
     let default_path_tag = tag_map
@@ -539,6 +616,7 @@ fn compile_config(
             tag_map.routing_rules.insert(rule.id.clone(), tag);
         }
     }
+    let learned_routes = compile_dynamic_learning_routes(intent, &mut plugins, &mut tag_map);
 
     let smart_targets = compile_smart_routing(intent, &mut plugins, &mut tag_map);
 
@@ -618,6 +696,12 @@ fn compile_config(
             }));
         }
     }
+    for (matcher, action) in &dedicated_routes {
+        main_sequence.push(json!({
+            "matches": format!("${matcher}"),
+            "exec": format!("${action}"),
+        }));
+    }
     for rule in ordered_exceptions(intent).into_iter().filter(|rule| {
         !matches!(
             rule.action,
@@ -658,6 +742,15 @@ fn compile_config(
                 }));
             }
         }
+    }
+    for (matches, action) in advanced.request_routes {
+        main_sequence.push(json!({ "matches": matches, "exec": format!("${action}") }));
+    }
+    for (matcher, action) in learned_routes {
+        main_sequence.push(json!({
+            "matches": format!("${matcher}"),
+            "exec": format!("${action}"),
+        }));
     }
     if let Some(targets) = smart_targets.as_ref() {
         for (matcher, action) in &targets.semantic_routes {
@@ -710,6 +803,7 @@ fn compile_config(
         generated_tags,
         tag_map,
         summary,
+        managed_files: learning.managed_files,
     })
 }
 
@@ -830,6 +924,562 @@ fn compile_filtering(
         }
     }
     has_rules
+}
+
+#[derive(Default)]
+struct DynamicLearningCompilation {
+    tail: Vec<JsonValue>,
+    managed_files: Vec<String>,
+}
+
+#[derive(Default)]
+struct AdvancedCompilation {
+    request_routes: Vec<(Vec<String>, String)>,
+    response_tails: BTreeMap<String, Vec<JsonValue>>,
+}
+
+fn compile_advanced_rules(
+    intent: &StandardIntent,
+    learning_tail: &[JsonValue],
+    plugins: &mut Vec<GeneratedPlugin>,
+    tag_map: &mut StandardTagMap,
+) -> AdvancedCompilation {
+    use super::model::{
+        StandardAdvancedAction, StandardAdvancedCondition, StandardAdvancedFailurePolicy,
+        StandardAdvancedFailureResponse, StandardAdvancedRulePhase,
+    };
+
+    let mut result = AdvancedCompilation::default();
+    let mut ordered: Vec<_> = intent
+        .advanced_rules
+        .iter()
+        .enumerate()
+        .filter(|(_, rule)| rule.enabled)
+        .collect();
+    ordered.sort_by_key(|(index, rule)| (rule.priority, *index));
+
+    for (_, rule) in ordered {
+        let mut matches = Vec::new();
+        let mut source_path = None;
+        for (condition_index, condition) in rule.conditions.iter().enumerate() {
+            if let StandardAdvancedCondition::SourcePath { path_id } = condition {
+                source_path = Some(path_id.clone());
+                continue;
+            }
+            let tag = standard_tag(
+                "advanced_match",
+                &format!("{}_{}", rule.id, condition_index),
+            );
+            let (kind, args, invert) = match condition {
+                StandardAdvancedCondition::Domain { values } => (
+                    "qname",
+                    json!(
+                        values
+                            .iter()
+                            .map(|value| format!("full:{value}"))
+                            .collect::<Vec<_>>()
+                    ),
+                    false,
+                ),
+                StandardAdvancedCondition::Suffix { values } => (
+                    "qname",
+                    json!(
+                        values
+                            .iter()
+                            .map(|value| format!("domain:{value}"))
+                            .collect::<Vec<_>>()
+                    ),
+                    false,
+                ),
+                StandardAdvancedCondition::Keyword { values } => (
+                    "qname",
+                    json!(
+                        values
+                            .iter()
+                            .map(|value| format!("keyword:{value}"))
+                            .collect::<Vec<_>>()
+                    ),
+                    false,
+                ),
+                StandardAdvancedCondition::ClientCidr { values } => {
+                    ("client_ip", json!(values), false)
+                }
+                StandardAdvancedCondition::Qtype { values } => ("qtype", json!(values), false),
+                StandardAdvancedCondition::Time { timezone, periods } => (
+                    "time",
+                    json!({ "timezone": timezone, "periods": periods }),
+                    false,
+                ),
+                StandardAdvancedCondition::RateLimitExceeded {
+                    qps,
+                    burst,
+                    mask4,
+                    mask6,
+                } => (
+                    "rate_limiter",
+                    json!({ "qps": qps, "burst": burst, "mask4": mask4, "mask6": mask6 }),
+                    true,
+                ),
+                StandardAdvancedCondition::Cname { values } => ("cname", json!(values), false),
+                StandardAdvancedCondition::Rcode { values } => ("rcode", json!(values), false),
+                StandardAdvancedCondition::HasWantedAnswer => ("has_wanted_ans", json!({}), false),
+                StandardAdvancedCondition::ResponseIpRole { role, invert } => {
+                    let provider = tag_map
+                        .rule_data
+                        .get(role)
+                        .expect("validated response IP role");
+                    ("resp_ip", json!([format!("${provider}")]), *invert)
+                }
+                StandardAdvancedCondition::SourcePath { .. } => unreachable!(),
+            };
+            plugins.push(GeneratedPlugin::new(&tag, kind, args));
+            matches.push(format!("{}${tag}", if invert { "!" } else { "" }));
+        }
+
+        let action_tag = standard_tag("advanced_action", &rule.id);
+        match rule.phase {
+            StandardAdvancedRulePhase::Request => {
+                match &rule.action {
+                    StandardAdvancedAction::UsePath { path_id } => {
+                        plugins.push(GeneratedPlugin::new(
+                            &action_tag,
+                            "sequence",
+                            json!([
+                                { "exec": format!("${}", standard_tag("path", path_id)) },
+                                { "exec": "accept" }
+                            ]),
+                        ));
+                    }
+                    StandardAdvancedAction::Block { response } => {
+                        plugins.push(GeneratedPlugin::new(
+                            &action_tag,
+                            "black_hole",
+                            json!({ "mode": block_response_mode(*response), "short_circuit": true }),
+                        ));
+                    }
+                }
+                result.request_routes.push((matches, action_tag.clone()));
+            }
+            StandardAdvancedRulePhase::Response => {
+                let StandardAdvancedAction::UsePath { path_id } = &rule.action else {
+                    unreachable!("validated response rule action");
+                };
+                let target = intent
+                    .paths
+                    .iter()
+                    .find(|path| &path.id == path_id)
+                    .expect("validated advanced target path");
+                let forward = tag_map
+                    .upstream_groups
+                    .get(&target.upstream_group_id)
+                    .expect("validated advanced target upstream");
+                let drop_tag = standard_tag("advanced_drop", &rule.id);
+                plugins.push(GeneratedPlugin::new(
+                    &drop_tag,
+                    "drop_resp",
+                    json!({ "reason": format!("advanced_rule_{}", rule.id) }),
+                ));
+                let target_tag = compile_path_bundle(
+                    target,
+                    intent,
+                    forward,
+                    &format!("advanced_target_{}", rule.id),
+                    plugins,
+                    tag_map,
+                    PathOverrides {
+                        prelude: vec![json!({ "exec": format!("${drop_tag}") })],
+                        tail: learning_tail.to_vec(),
+                        ..PathOverrides::default()
+                    },
+                );
+                let secondary = standard_tag("advanced_secondary", &rule.id);
+                match rule.failure_policy {
+                    StandardAdvancedFailurePolicy::FailOpen => plugins.push(GeneratedPlugin::new(
+                        &secondary,
+                        "sequence",
+                        json!([{ "exec": "accept" }]),
+                    )),
+                    StandardAdvancedFailurePolicy::FailClosed => {
+                        let mode = match rule.failure_response {
+                            StandardAdvancedFailureResponse::Servfail => "servfail",
+                            StandardAdvancedFailureResponse::Refused => "refused",
+                        };
+                        plugins.push(GeneratedPlugin::new(
+                            &secondary,
+                            "black_hole",
+                            json!({ "mode": mode, "short_circuit": true }),
+                        ));
+                    }
+                }
+                plugins.push(GeneratedPlugin::new(
+                    &action_tag,
+                    "fallback",
+                    json!({
+                        "primary": target_tag,
+                        "secondary": secondary,
+                        "threshold": 60_000,
+                        "short_circuit": true,
+                        "fallback_on_timeout": false,
+                        "fallback_on_error": true,
+                        "fallback_on_no_response": true,
+                    }),
+                ));
+                result
+                    .response_tails
+                    .entry(source_path.expect("validated response source path"))
+                    .or_default()
+                    .push(json!({ "matches": matches, "exec": format!("${action_tag}") }));
+            }
+        }
+        tag_map.advanced_rules.insert(rule.id.clone(), action_tag);
+    }
+    result
+}
+
+fn compile_dynamic_learning_primitives(
+    intent: &StandardIntent,
+    plugins: &mut Vec<GeneratedPlugin>,
+    tag_map: &mut StandardTagMap,
+) -> DynamicLearningCompilation {
+    let mut result = DynamicLearningCompilation::default();
+    let mut ordered: Vec<_> = intent
+        .dynamic_learning
+        .profiles
+        .iter()
+        .enumerate()
+        .filter(|(_, profile)| profile.enabled)
+        .collect();
+    ordered.sort_by_key(|(index, profile)| (profile.priority, *index));
+
+    for (_, profile) in ordered {
+        let component = safe_tag_component(&profile.id);
+        let provider_tag = standard_tag("learn_provider", &profile.id);
+        let learner_tag = standard_tag("learn_exec", &profile.id);
+        let matcher_tag = standard_tag("learn_match", &profile.id);
+        let qtype_tag = standard_tag("learn_qtype", &profile.id);
+        let rcode_tag = standard_tag("learn_rcode", &profile.id);
+        let answer_tag = standard_tag("learn_answer", &profile.id);
+        let response_ip_tag = profile
+            .response_ip_role
+            .as_ref()
+            .map(|_| standard_tag("learn_resp_ip", &profile.id));
+        let rules_path = format!("{DYNAMIC_LEARNING_DIR}/{component}.txt");
+        let metadata_path = format!("{DYNAMIC_LEARNING_DIR}/{component}.meta.json");
+
+        plugins.push(GeneratedPlugin::new(
+            &provider_tag,
+            "dynamic_domain_set",
+            json!({
+                "path": rules_path,
+                "metadata_path": metadata_path,
+                "max_entries": profile.max_entries,
+                "entry_ttl_seconds": profile.entry_ttl_seconds,
+                "cleanup_interval_seconds": profile.cleanup_interval_seconds,
+                "queue_size": profile.queue_size,
+                "batch_size": profile.batch_size,
+                "flush_interval_ms": profile.flush_interval_ms,
+            }),
+        ));
+        plugins.push(GeneratedPlugin::new(
+            &matcher_tag,
+            "qname",
+            json!([format!("${provider_tag}")]),
+        ));
+        plugins.push(GeneratedPlugin::new(
+            &qtype_tag,
+            "qtype",
+            json!(profile.qtypes),
+        ));
+        plugins.push(GeneratedPlugin::new(
+            &rcode_tag,
+            "rcode",
+            json!(profile.rcodes),
+        ));
+        if profile.answer_required {
+            plugins.push(GeneratedPlugin::new(
+                &answer_tag,
+                "has_wanted_ans",
+                json!({}),
+            ));
+        }
+        if let (Some(role), Some(tag)) = (&profile.response_ip_role, response_ip_tag.as_ref()) {
+            let provider = tag_map
+                .rule_data
+                .get(role)
+                .expect("validated response IP role should have a provider");
+            plugins.push(GeneratedPlugin::new(
+                tag,
+                "resp_ip",
+                json!([format!("${provider}")]),
+            ));
+        }
+        plugins.push(GeneratedPlugin::new(
+            &learner_tag,
+            "learn_domain",
+            json!({
+                "provider": provider_tag,
+                "phase": "before",
+                "questions": "first",
+                "qtypes": profile.qtypes,
+                "success_only": false,
+                "answer_required": false,
+                "rule_kind": match profile.rule_kind {
+                    super::model::StandardLearningRuleKind::Full => "full",
+                    super::model::StandardLearningRuleKind::Domain => "domain",
+                },
+                "async": matches!(profile.failure_policy, super::model::StandardLearningFailurePolicy::Continue),
+                "error_mode": match profile.failure_policy {
+                    super::model::StandardLearningFailurePolicy::Continue => "continue",
+                    super::model::StandardLearningFailurePolicy::FailClosed => "fail",
+                },
+                "timeout": "1s",
+                "paused": profile.paused,
+            }),
+        ));
+
+        let mut matches = vec![format!("${qtype_tag}"), format!("${rcode_tag}")];
+        if profile.answer_required {
+            matches.push(format!("${answer_tag}"));
+        }
+        if let Some(tag) = response_ip_tag {
+            matches.push(format!("${tag}"));
+        }
+        result.tail.push(json!({
+            "matches": matches,
+            "exec": format!("${learner_tag}"),
+        }));
+        result
+            .managed_files
+            .extend([rules_path.clone(), metadata_path.clone()]);
+        tag_map.dynamic_learning.insert(
+            profile.id.clone(),
+            StandardDynamicLearningTagMap {
+                provider: provider_tag,
+                learner: learner_tag,
+                matcher: matcher_tag,
+                action: String::new(),
+                rules_path,
+                metadata_path,
+            },
+        );
+    }
+    result.managed_files.sort();
+    result
+}
+
+fn compile_dynamic_learning_routes(
+    intent: &StandardIntent,
+    plugins: &mut Vec<GeneratedPlugin>,
+    tag_map: &mut StandardTagMap,
+) -> Vec<(String, String)> {
+    let mut ordered: Vec<_> = intent
+        .dynamic_learning
+        .profiles
+        .iter()
+        .enumerate()
+        .filter(|(_, profile)| profile.enabled)
+        .collect();
+    ordered.sort_by_key(|(index, profile)| (profile.priority, *index));
+    ordered
+        .into_iter()
+        .map(|(_, profile)| {
+            let target = tag_map
+                .paths
+                .get(&profile.target_path_id)
+                .expect("validated learning target path")
+                .clone();
+            let action = standard_tag("learn_action", &profile.id);
+            plugins.push(GeneratedPlugin::new(
+                &action,
+                "sequence",
+                json!([{ "exec": format!("${target}") }, { "exec": "accept" }]),
+            ));
+            let entry = tag_map
+                .dynamic_learning
+                .get_mut(&profile.id)
+                .expect("learning tags compiled before routes");
+            entry.action = action.clone();
+            (entry.matcher.clone(), action)
+        })
+        .collect()
+}
+
+fn compile_dedicated_groups(
+    intent: &StandardIntent,
+    plugins: &mut Vec<GeneratedPlugin>,
+    tag_map: &mut StandardTagMap,
+    learning_tail: &[JsonValue],
+) -> Vec<(String, String)> {
+    let mut routes = Vec::new();
+    for (index, group) in intent
+        .dedicated_groups
+        .iter()
+        .enumerate()
+        .filter(|(_, group)| group.enabled)
+    {
+        let provider_tag = standard_tag("dedicated_provider", &group.id);
+        let matcher_tag = standard_tag("dedicated_match", &group.id);
+        let forward_tag = standard_tag("dedicated_forward", &group.id);
+        let namespace = format!("dedicated:{}", group.id);
+
+        plugins.push(GeneratedPlugin::new(
+            &provider_tag,
+            "domain_set",
+            json!({ "exps": group.rules, "files": [], "sets": [] }),
+        ));
+        plugins.push(GeneratedPlugin::new(
+            &matcher_tag,
+            "qname",
+            json!([format!("${provider_tag}")]),
+        ));
+        compile_embedded_forward(&forward_tag, group.strategy, &group.upstreams, plugins);
+
+        let path = StandardResolutionPath {
+            id: format!("dedicated_{}", group.id),
+            name: group.name.clone(),
+            description: group.description.clone(),
+            upstream_group_id: group.id.clone(),
+            filtering: group.path.filtering,
+            cache: group.path.cache,
+            query_log: group.path.query_log,
+            dual_stack: group.path.dual_stack,
+            ip_selection: group.path.ip_selection.clone(),
+            ecs: group.path.ecs.clone(),
+        };
+        let path_tag = compile_path_bundle(
+            &path,
+            intent,
+            &forward_tag,
+            &namespace,
+            plugins,
+            tag_map,
+            PathOverrides {
+                tail: learning_tail.to_vec(),
+                ..PathOverrides::default()
+            },
+        );
+        let cache_tag =
+            path_cache_enabled(&path, intent).then(|| path_bundle_tag("cache", &namespace));
+        if let Some(cache_tag) = cache_tag.as_ref() {
+            tag_map
+                .caches
+                .insert(format!("dedicated:{}", group.id), cache_tag.clone());
+        }
+
+        let entry_tag = standard_tag("dedicated_entry", &group.id);
+        let mut entry = Vec::new();
+        if tag_map.query_log.is_some() {
+            entry.push(json!({ "exec": "$standard_recorder" }));
+        }
+        entry.push(json!({ "exec": format!("${path_tag}") }));
+        entry.push(json!({ "exec": "accept" }));
+        plugins.push(GeneratedPlugin::new(
+            &entry_tag,
+            "sequence",
+            JsonValue::Array(entry),
+        ));
+
+        let mut udp_listener = None;
+        let mut tcp_listener = None;
+        if group.listener.enabled && group.listener.udp {
+            let tag = standard_tag("dedicated_udp", &group.id);
+            plugins.push(GeneratedPlugin::new(
+                &tag,
+                "udp_server",
+                json!({ "listen": group.listener.address, "entry": entry_tag }),
+            ));
+            udp_listener = Some(tag);
+        }
+        if group.listener.enabled && group.listener.tcp {
+            let tag = standard_tag("dedicated_tcp", &group.id);
+            plugins.push(GeneratedPlugin::new(
+                &tag,
+                "tcp_server",
+                json!({ "listen": group.listener.address, "entry": entry_tag }),
+            ));
+            tcp_listener = Some(tag);
+        }
+
+        tag_map.dedicated_groups.insert(
+            group.id.clone(),
+            StandardDedicatedTagMap {
+                provider: provider_tag,
+                matcher: matcher_tag.clone(),
+                upstream_group: forward_tag,
+                path: path_tag.clone(),
+                entry: entry_tag,
+                cache: cache_tag,
+                udp_listener,
+                tcp_listener,
+            },
+        );
+        routes.push((group.priority, index, matcher_tag, path_tag));
+    }
+    routes.sort_by_key(|(priority, index, _, _)| (*priority, *index));
+    routes
+        .into_iter()
+        .map(|(_, _, matcher, action)| (matcher, action))
+        .collect()
+}
+
+fn compile_embedded_forward(
+    tag: &str,
+    strategy: StandardUpstreamStrategy,
+    upstreams: &[StandardUpstream],
+    plugins: &mut Vec<GeneratedPlugin>,
+) {
+    let enabled: Vec<_> = upstreams
+        .iter()
+        .filter(|upstream| upstream.enabled)
+        .collect();
+    if matches!(strategy, StandardUpstreamStrategy::OrderedFallback) && enabled.len() > 1 {
+        let mut forward_tags = Vec::with_capacity(enabled.len());
+        for (index, upstream) in enabled.iter().enumerate() {
+            let member_tag = format!("{tag}_member_{index}");
+            plugins.push(GeneratedPlugin::new(
+                &member_tag,
+                "forward",
+                json!({
+                    "upstreams": [compiled_upstream(upstream)],
+                    "concurrent": 1,
+                    "response_selection": "balanced",
+                }),
+            ));
+            forward_tags.push(member_tag);
+        }
+        let mut secondary = forward_tags.last().cloned().expect("validated group");
+        for index in (0..forward_tags.len() - 1).rev() {
+            let fallback_tag = if index == 0 {
+                tag.to_string()
+            } else {
+                format!("{tag}_fallback_{index}")
+            };
+            plugins.push(GeneratedPlugin::new(
+                &fallback_tag,
+                "fallback",
+                json!({
+                    "primary": forward_tags[index],
+                    "secondary": secondary,
+                    "threshold": 500,
+                }),
+            ));
+            secondary = fallback_tag;
+        }
+    } else {
+        let compiled: Vec<_> = enabled
+            .iter()
+            .map(|upstream| compiled_upstream(upstream))
+            .collect();
+        plugins.push(GeneratedPlugin::new(
+            tag,
+            "forward",
+            json!({
+                "upstreams": compiled,
+                "concurrent": compiled.len().clamp(1, 3),
+                "response_selection": strategy_name(strategy),
+            }),
+        ));
+    }
 }
 
 fn compile_rule_data(
@@ -1468,13 +2118,12 @@ fn compile_path_bundle(
     tag_map: &StandardTagMap,
     mut overrides: PathOverrides,
 ) -> String {
-    let component = safe_tag_component(namespace);
     let mut prelude = Vec::new();
 
     match path.dual_stack {
         StandardDualStackPolicy::Ipv4Only | StandardDualStackPolicy::Ipv6Only => {
-            let matcher_tag = format!("standard_path_qtype_{component}");
-            let action_tag = format!("standard_path_qtype_block_{component}");
+            let matcher_tag = path_bundle_tag("qtype", namespace);
+            let action_tag = path_bundle_tag("qtype_block", namespace);
             plugins.push(GeneratedPlugin::new(
                 &matcher_tag,
                 "qtype",
@@ -1497,7 +2146,7 @@ fn compile_path_bundle(
             }));
         }
         StandardDualStackPolicy::PreferIpv4 | StandardDualStackPolicy::PreferIpv6 => {
-            let selector_tag = format!("standard_path_dual_{component}");
+            let selector_tag = path_bundle_tag("dual", namespace);
             plugins.push(GeneratedPlugin::new(
                 &selector_tag,
                 if matches!(path.dual_stack, StandardDualStackPolicy::PreferIpv4) {
@@ -1513,7 +2162,7 @@ fn compile_path_bundle(
     }
 
     if !matches!(path.ecs, StandardEcsPolicy::Inherit) {
-        let ecs_tag = format!("standard_path_ecs_{component}");
+        let ecs_tag = path_bundle_tag("ecs", namespace);
         let args = match &path.ecs {
             StandardEcsPolicy::Inherit => unreachable!(),
             StandardEcsPolicy::Remove => json!({ "forward": false, "send": false }),
@@ -1542,7 +2191,7 @@ fn compile_path_bundle(
 
     if path.ip_selection.enabled {
         let selection = &path.ip_selection;
-        let selector_tag = format!("standard_path_ip_selector_{component}");
+        let selector_tag = path_bundle_tag("ip_selector", namespace);
         plugins.push(GeneratedPlugin::new(
             &selector_tag,
             "ip_selector",
@@ -1569,7 +2218,7 @@ fn compile_path_bundle(
     }
 
     if !overrides.disable_cache && path_cache_enabled(path, intent) {
-        let cache_tag = standard_tag("cache", namespace);
+        let cache_tag = path_bundle_tag("cache", namespace);
         plugins.push(GeneratedPlugin::new(
             &cache_tag,
             "cache",
@@ -1586,7 +2235,7 @@ fn compile_path_bundle(
         overrides.cache_tag = Some(cache_tag);
     }
     overrides.prelude.extend(prelude);
-    let tag = standard_tag("path", namespace);
+    let tag = path_bundle_tag("path", namespace);
     let sequence = build_path_sequence(path, intent, forward_tag, tag_map, overrides);
     plugins.push(GeneratedPlugin::new(
         &tag,
@@ -1594,6 +2243,20 @@ fn compile_path_bundle(
         JsonValue::Array(sequence),
     ));
     tag
+}
+
+fn path_bundle_tag(kind: &str, namespace: &str) -> String {
+    if let Some(id) = namespace.strip_prefix("dedicated:") {
+        return standard_tag(&format!("dedicated_{kind}"), id);
+    }
+    match kind {
+        "cache" | "path" => standard_tag(kind, namespace),
+        _ => format!(
+            "standard_path_{}_{}",
+            safe_tag_component(kind),
+            safe_tag_component(namespace)
+        ),
+    }
 }
 
 fn build_path_sequence(
@@ -1963,6 +2626,22 @@ fn summarize(intent: &StandardIntent) -> StandardGenerationSummary {
             })
             .sum(),
         smart_routing_enabled: intent.smart_routing.enabled,
+        dedicated_group_count: intent
+            .dedicated_groups
+            .iter()
+            .filter(|group| group.enabled)
+            .count(),
+        dynamic_learning_profile_count: intent
+            .dynamic_learning
+            .profiles
+            .iter()
+            .filter(|profile| profile.enabled)
+            .count(),
+        advanced_rule_count: intent
+            .advanced_rules
+            .iter()
+            .filter(|rule| rule.enabled)
+            .count(),
     }
 }
 

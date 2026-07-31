@@ -25,6 +25,7 @@ import {
   BookOpen,
   FileCode2,
   GitBranch,
+  WandSparkles,
   Gauge,
   LayoutDashboard,
   LogOut,
@@ -90,6 +91,11 @@ const standardNavItems = [
     titleKey: WEBUI.standardNav.routing,
     href: "/standard/routing",
     icon: GitBranch,
+  },
+  {
+    titleKey: WEBUI.standardNav.advanced,
+    href: "/standard/advanced",
+    icon: WandSparkles,
   },
   {
     titleKey: WEBUI.standardNav.exceptions,

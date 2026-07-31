@@ -339,6 +339,7 @@ Generates local interception responses for matched DNS queries, covering every q
   - `null`: returns `0.0.0.0` for `A`, `::` for `AAAA`, and NODATA for other qtypes.
   - `custom`: returns matching address-family values from `ips` for `A` / `AAAA`; missing families and other qtypes return NODATA.
   - `refused`: returns an empty `REFUSED` response.
+  - `servfail`: returns an empty `SERVFAIL` response for explicit fail-closed policies.
 - Compatibility: legacy `ips` + `short_circuit` config does not need `mode`; it is treated as `custom`.
 
 #### `ips`
@@ -361,6 +362,7 @@ Generates local interception responses for matched DNS queries, covering every q
 - exec: "black_hole"
 - exec: "black_hole nxdomain short_circuit=true"
 - exec: "black_hole nodata"
+- exec: "black_hole servfail"
 - exec: "black_hole null"
 - exec: "black_hole custom 0.0.0.0 :: short_circuit=true"
 # legacy form, equivalent to custom
@@ -370,7 +372,7 @@ Generates local interception responses for matched DNS queries, covering every q
 ### Behavior
 
 - Plain `black_hole` returns `NXDOMAIN`.
-- `nxdomain`, `nodata`, and `refused` cover every qtype.
+- `nxdomain`, `nodata`, `refused`, and `servfail` cover every qtype.
 - `null` and `custom` return addresses for A/AAAA and NODATA for other qtypes.
 - Requests without a question pass through unchanged.
 - By default it keeps running the remaining chain after a match; enable `short_circuit` to stop immediately.

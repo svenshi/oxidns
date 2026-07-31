@@ -39,6 +39,7 @@ Observes qnames in the DNS pipeline and writes matching request names into a tar
     async: true
     error_mode: continue
     timeout: 1s
+    paused: false
 ```
 
 ### Configuration Details
@@ -99,6 +100,13 @@ Observes qnames in the DNS pipeline and writes matching request names into a tar
 
 - Type: `duration`; Required: no; Default: `1s`
 - Purpose: Limits provider write waiting time when `async: false`.
+
+#### `paused`
+
+- Type: `bool`; Required: no; Default: `false`
+- Purpose: Starts with new learning paused while existing dynamic rules continue to match.
+
+Runtime controls are `GET /api/plugins/<tag>/status`, `POST /pause`, and `POST /resume`. Pausing only disables the learning side effect; it never stops the downstream DNS chain.
 
 ### Behavior
 

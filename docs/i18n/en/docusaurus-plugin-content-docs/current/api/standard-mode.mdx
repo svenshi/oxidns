@@ -12,7 +12,7 @@ This read-only endpoint performs schema migration, normalization, semantic and c
 
 ```json
 {
-  "intent": { "schema": 5, "listen": {}, "upstreamGroups": [] },
+  "intent": { "schema": 6, "listen": {}, "upstreamGroups": [] },
   "base_config_version": "sha256-hex",
   "base_standard_version": "sha256-hex",
   "takeover": false
@@ -28,7 +28,7 @@ Important response fields:
 | `ownership` | `managed`, `modified`, or `unmanaged` |
 | `semantic_diff` | Preserved top-level fields and generated, replaced, or removed plugin tags |
 | `blockers` | Control-plane blockers such as version conflicts or required takeover |
-| `plan.normalizedIntent` | Backend-migrated and normalized schema v5 intent |
+| `plan.normalizedIntent` | Backend-migrated and normalized schema v6 intent |
 | `plan.diagnostics` | Semantic diagnostics with stable `severity`, `code`, and `path` |
 | `plan.generated` | Candidate YAML, version, tag map, and summary; absent on errors |
 | `can_apply` | `true` only when both the plan and control-plane checks pass |
@@ -41,7 +41,7 @@ Apply reruns the complete plan, verifies both base versions and the reviewed can
 
 ```json
 {
-  "intent": { "schema": 5, "listen": {}, "upstreamGroups": [] },
+  "intent": { "schema": 6, "listen": {}, "upstreamGroups": [] },
   "base_config_version": "plan-response-config-version",
   "base_standard_version": "plan-response-standard-version",
   "planned_config_version": "plan-generated-config-version",
@@ -106,11 +106,16 @@ Returns history metadata in reverse chronological order, including snapshot ID, 
 
 Returns the stored Standard Mode intent only after an operator explicitly selects an entry. The WebUI does not overwrite the current configuration with historical YAML. It submits the intent through Plan, diff review, capability validation, and transactional Apply again. Restore therefore remains protected by current build capabilities, configuration ownership, and optimistic concurrency versions.
 
-## Schema v5 Runtime Semantics
+## `POST /api/standard/templates/preview`
+
+Accepts `base_intent`, a `kind` (`low_latency`, `privacy_dns`, `internal_domains`, or `regional_upstream`), and parameters, then expands a complete schema-v6 draft without side effects. It returns `expansion.proposedIntent`, added/modified objects, explanation tags, and the normal Plan response. Namespace collisions are rejected. Accepting a preview still requires exact-version Plan/Apply.
+
+## Schema v6 Runtime Semantics
 
 - Every filter subscription generates independent `download`, `cron`, and job tags. A download failure stops that subscription's provider reload, leaving the last valid rule file active.
 - Every resolution path owns an independent cache instance. Cache list, delete, flush, dump, and load operations resolve instances through `tagMap.caches` in generated metadata.
 - Hosts, redirects, static records, response TTL, fixed QTYPE responses, and DDNS compile to native OxiDNS plugins. DDNS domains bypass cache and use a short fixed TTL.
-- Standard Mode only references local rule file paths. It does not create, delete, or rewrite platform files, and does not operate OpenWrt/UCI, firewalls, or third-party systems.
+- Dynamic learning rule and metadata files are the only runtime-state files created by Standard Mode. After a successful Apply, cleanup is limited to exact previous-manifest files under `./data/standard-dynamic-learning/`; it is never recursive and never accepts arbitrary user paths.
+- See [Standard Mode Advanced Policies](../standard-mode-advanced.md) for dedicated groups, dynamic learning, advanced request/response rules, and the four server-side templates.
 - Six semantic data roles combine manual, local-file, online-subscription, and native geosite/geoip sources. Lifecycle tags are exposed through `tagMap.ruleDataSources`; aggregate Providers are exposed through `tagMap.ruleData`.
 - Domestic/remote paths, three unknown-domain modes, response-validation fallback, ECS, dual-stack policy, and IP selection compile to native OxiDNS plugins. See [Standard Mode Smart Routing](../standard-mode-smart-routing.md) for the complete semantics.

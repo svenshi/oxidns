@@ -557,6 +557,97 @@ async fn standard_mode_rule_routes_and_filtering_form_one_runtime_pipeline() -> 
 }
 
 #[tokio::test]
+async fn standard_mode_dedicated_group_routes_main_and_native_listener_queries() -> Result<()> {
+    let (primary_addr, _primary_count, primary_task) =
+        start_mock_upstream(Ipv4Addr::new(192, 0, 2, 90)).await?;
+    let (dedicated_addr, dedicated_count, dedicated_task) =
+        start_mock_upstream(Ipv4Addr::new(198, 51, 100, 91)).await?;
+    let listen = reserve_local_addr()?;
+    let dedicated_listen = reserve_local_addr()?;
+    let mut intent = standard_intent(listen, primary_addr, None);
+    intent["cache"]["enabled"] = json!(false);
+    intent["dedicatedGroups"] = json!([{
+        "id": "media",
+        "name": "Media",
+        "enabled": true,
+        "priority": 10,
+        "rules": ["domain:media.test"],
+        "strategy": "balanced",
+        "upstreams": [{
+            "id": "media_upstream",
+            "name": "Media upstream",
+            "protocol": "udp",
+            "address": dedicated_addr.to_string(),
+            "enabled": true,
+            "tlsVerify": true
+        }],
+        "path": { "cache": "disabled" },
+        "listener": {
+            "enabled": true,
+            "address": dedicated_listen.to_string(),
+            "udp": true,
+            "tcp": true
+        }
+    }]);
+    let registry = plugin::init(compiled_standard_config(intent)?).await?;
+
+    let routed = exchange_udp_query(listen, query_for("video.media.test.", RecordType::A)).await?;
+    assert_eq!(
+        answer_ip(&routed),
+        Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 91)))
+    );
+    let direct =
+        exchange_tcp_query(dedicated_listen, query_for("anything.test.", RecordType::A)).await?;
+    assert_eq!(answer_ip(&direct), answer_ip(&routed));
+    assert_eq!(dedicated_count.load(Ordering::SeqCst), 2);
+
+    registry.destroy().await;
+    primary_task.abort();
+    dedicated_task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn standard_mode_response_rule_reroutes_once_to_isolated_target() -> Result<()> {
+    let (primary_addr, primary_count, primary_task) =
+        start_policy_upstream(MockAnswer::ServFail).await?;
+    let (secondary_addr, secondary_count, secondary_task) =
+        start_mock_upstream(Ipv4Addr::new(203, 0, 113, 92)).await?;
+    let listen = reserve_local_addr()?;
+    let mut intent = standard_intent(listen, primary_addr, Some(secondary_addr));
+    intent["devices"] = json!([]);
+    intent["cache"]["enabled"] = json!(false);
+    intent["advancedRules"] = json!([{
+        "id": "retry_servfail",
+        "name": "Retry SERVFAIL",
+        "enabled": true,
+        "priority": 10,
+        "phase": "response",
+        "conditions": [
+            { "type": "source_path", "pathId": "default" },
+            { "type": "rcode", "values": ["SERVFAIL"] }
+        ],
+        "action": { "type": "use_path", "pathId": "secondary" },
+        "failurePolicy": "fail_open",
+        "failureResponse": "servfail"
+    }]);
+    let registry = plugin::init(compiled_standard_config(intent)?).await?;
+
+    let response = exchange_udp_query(listen, query_for("retry.test.", RecordType::A)).await?;
+    assert_eq!(
+        answer_ip(&response),
+        Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 92)))
+    );
+    assert_eq!(primary_count.load(Ordering::SeqCst), 1);
+    assert_eq!(secondary_count.load(Ordering::SeqCst), 1);
+
+    registry.destroy().await;
+    primary_task.abort();
+    secondary_task.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn smart_routing_domestic_validation_has_deterministic_fallback_outcomes() -> Result<()> {
     let cases = [
         (MockAnswer::Address(Ipv4Addr::new(10, 1, 2, 3)), false),

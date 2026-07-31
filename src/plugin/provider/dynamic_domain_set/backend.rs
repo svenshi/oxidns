@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
+use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -13,8 +15,13 @@ use tracing::{info, warn};
 #[cfg(feature = "api")]
 use super::api::{RulesListResponse, register_api};
 use super::config::DynamicDomainSetConfig;
-use super::rules::{DynamicDomainMutation, DynamicDomainRuleKind, canonicalize_rules};
-use super::storage::{append_rule_file, read_rule_file, rewrite_rule_file};
+use super::rules::{
+    DynamicDomainMutation, DynamicDomainRuleKind, DynamicDomainRuleMetadata,
+    DynamicDomainRuleOrigin, canonicalize_rules,
+};
+use super::storage::{
+    append_rule_file, read_metadata_file, read_rule_file, rewrite_metadata_file, rewrite_rule_file,
+};
 use crate::core::rule_matcher::{DomainRuleKind, DomainRuleMatcher, split_domain_rule_expression};
 use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result as DnsResult};
@@ -39,6 +46,7 @@ pub(super) struct DynamicDomainSetSnapshot {
 struct RuleState {
     rules: Vec<Arc<str>>,
     known: HashSet<Arc<str>>,
+    metadata: BTreeMap<String, DynamicDomainRuleMetadata>,
 }
 
 type MutationReply = oneshot::Sender<DnsResult<DynamicDomainMutation>>;
@@ -54,6 +62,7 @@ type MutationReply = oneshot::Sender<DnsResult<DynamicDomainMutation>>;
 enum WorkerCommand {
     Append {
         rules: Vec<String>,
+        origin: DynamicDomainRuleOrigin,
         wait: Option<MutationReply>,
     },
     Remove {
@@ -96,6 +105,11 @@ pub(super) struct DynamicDomainSetBackend {
     tx: Mutex<Option<mpsc::Sender<WorkerCommand>>>,
     /// Joined during plugin destroy to flush pending appends before shutdown.
     worker_handle: Mutex<Option<JoinHandle<()>>>,
+    expired_total: AtomicU64,
+    capacity_rejected_total: AtomicU64,
+    queue_rejected_total: AtomicU64,
+    last_success_at_ms: AtomicU64,
+    last_error: Mutex<Option<String>>,
 }
 
 impl DynamicDomainSetBackend {
@@ -107,6 +121,11 @@ impl DynamicDomainSetBackend {
             snapshot: ArcSwap::from_pointee(DynamicDomainSetSnapshot::default()),
             tx: Mutex::new(None),
             worker_handle: Mutex::new(None),
+            expired_total: AtomicU64::new(0),
+            capacity_rejected_total: AtomicU64::new(0),
+            queue_rejected_total: AtomicU64::new(0),
+            last_success_at_ms: AtomicU64::new(0),
+            last_error: Mutex::new(None),
         }
     }
 
@@ -120,15 +139,21 @@ impl DynamicDomainSetBackend {
         // point the file itself is authoritative, including external edits that
         // become visible through explicit provider reload.
         let config = self.config.clone();
-        let (rules, snapshot) =
+        let (rules, metadata, snapshot) =
             spawn_isolated_build("dynamic_domain_set startup build", move || {
                 bootstrap_file_if_needed(&config)?;
                 let rules = read_rule_file(&config.path)?;
+                let metadata = config
+                    .metadata_path
+                    .as_deref()
+                    .map(read_metadata_file)
+                    .transpose()?
+                    .unwrap_or_default();
                 let snapshot = build_snapshot(&rules)?;
-                Ok((rules, snapshot))
+                Ok((rules, metadata, snapshot))
             })
             .await?;
-        self.install_compiled_rules(rules, snapshot)?;
+        self.install_compiled_rules(rules, metadata, snapshot)?;
         let (tx, rx) = mpsc::channel(self.config.queue_size);
         {
             let mut slot = self
@@ -205,6 +230,7 @@ impl DynamicDomainSetBackend {
         &self,
         raw_rules: Vec<String>,
         default_kind: DynamicDomainRuleKind,
+        origin: DynamicDomainRuleOrigin,
     ) -> DnsResult<DynamicDomainMutation> {
         let rules = canonicalize_rules(raw_rules, default_kind, "append")?;
         if rules.is_empty() {
@@ -217,7 +243,11 @@ impl DynamicDomainSetBackend {
         let queued = rules.len();
         let total_hint = self.current_total()?.saturating_add(queued);
         let tx = self.sender()?;
-        match tx.try_send(WorkerCommand::Append { rules, wait: None }) {
+        match tx.try_send(WorkerCommand::Append {
+            rules,
+            origin,
+            wait: None,
+        }) {
             Ok(()) => {
                 // Async callers only receive an enqueue acknowledgement. The
                 // worker later computes the real added/total counts after it
@@ -228,10 +258,14 @@ impl DynamicDomainSetBackend {
                     total: total_hint,
                 })
             }
-            Err(err) => Err(DnsError::plugin(format!(
-                "dynamic_domain_set '{}' append queue failed: {}",
-                self.tag, err
-            ))),
+            Err(err) => {
+                self.queue_rejected_total.fetch_add(1, Ordering::Relaxed);
+                self.record_error(err.to_string());
+                Err(DnsError::plugin(format!(
+                    "dynamic_domain_set '{}' append queue failed: {}",
+                    self.tag, err
+                )))
+            }
         }
     }
 
@@ -239,6 +273,7 @@ impl DynamicDomainSetBackend {
         &self,
         raw_rules: Vec<String>,
         default_kind: DynamicDomainRuleKind,
+        origin: DynamicDomainRuleOrigin,
         timeout_duration: Duration,
     ) -> DnsResult<DynamicDomainMutation> {
         let rules = canonicalize_rules(raw_rules, default_kind, "append")?;
@@ -258,6 +293,7 @@ impl DynamicDomainSetBackend {
             timeout_duration,
             tx.send(WorkerCommand::Append {
                 rules,
+                origin,
                 wait: Some(reply_tx),
             }),
         )
@@ -429,8 +465,27 @@ impl DynamicDomainSetBackend {
     fn install_compiled_rules(
         &self,
         rules: Vec<Arc<str>>,
+        mut metadata: BTreeMap<String, DynamicDomainRuleMetadata>,
         snapshot: DynamicDomainSetSnapshot,
     ) -> DnsResult<DynamicDomainMutation> {
+        let now = AppClock::now_timestamp();
+        let known = rules
+            .iter()
+            .map(|rule| rule.as_ref())
+            .collect::<HashSet<_>>();
+        metadata.retain(|rule, _| known.contains(rule.as_str()));
+        for rule in &rules {
+            metadata
+                .entry(rule.to_string())
+                .or_insert(DynamicDomainRuleMetadata {
+                    origin: if self.config.metadata_path.is_some() {
+                        DynamicDomainRuleOrigin::Learned
+                    } else {
+                        DynamicDomainRuleOrigin::Manual
+                    },
+                    created_at_ms: now,
+                });
+        }
         let total = rules.len();
         {
             // State and snapshot are updated in this order so API list output
@@ -442,6 +497,7 @@ impl DynamicDomainSetBackend {
                 .map_err(|_| DnsError::runtime("dynamic_domain_set state lock poisoned"))?;
             state.known = rules.iter().cloned().collect();
             state.rules = rules;
+            state.metadata = metadata;
         }
         self.snapshot.store(Arc::new(snapshot));
         Ok(DynamicDomainMutation {
@@ -451,19 +507,50 @@ impl DynamicDomainSetBackend {
         })
     }
 
-    fn stage_new_rules(&self, rules: Vec<String>) -> DnsResult<StagedRules> {
+    fn stage_new_rules(
+        &self,
+        rules: Vec<String>,
+        origin: DynamicDomainRuleOrigin,
+    ) -> DnsResult<StagedRules> {
         let mut staged = Vec::new();
         let total = {
             let mut state = self
                 .state
                 .lock()
                 .map_err(|_| DnsError::runtime("dynamic_domain_set state lock poisoned"))?;
+            let new_count = rules
+                .iter()
+                .filter(|rule| !state.known.contains(rule.as_str()))
+                .count();
+            if self
+                .config
+                .max_entries
+                .is_some_and(|limit| state.rules.len().saturating_add(new_count) > limit)
+            {
+                self.capacity_rejected_total
+                    .fetch_add(new_count as u64, Ordering::Relaxed);
+                let message = format!(
+                    "dynamic_domain_set '{}' capacity {} would be exceeded",
+                    self.tag,
+                    self.config.max_entries.unwrap_or_default()
+                );
+                self.record_error(message.clone());
+                return Err(DnsError::plugin(message));
+            }
+            let now = AppClock::now_timestamp();
             for rule in rules {
                 let rule: Arc<str> = Arc::from(rule);
                 // Insert into both structures while holding one lock so the
                 // ordered list and duplicate set cannot drift apart.
                 if state.known.insert(rule.clone()) {
                     state.rules.push(rule.clone());
+                    state.metadata.insert(
+                        rule.to_string(),
+                        DynamicDomainRuleMetadata {
+                            origin,
+                            created_at_ms: now,
+                        },
+                    );
                     staged.push(rule);
                 }
             }
@@ -486,6 +573,7 @@ impl DynamicDomainSetBackend {
         if let Ok(mut state) = self.state.lock() {
             for rule in rules {
                 state.known.remove(rule.as_ref());
+                state.metadata.remove(rule.as_ref());
             }
             state
                 .rules
@@ -504,8 +592,8 @@ impl DynamicDomainSetBackend {
             .iter()
             .flat_map(|item| item.rules.iter().cloned())
             .collect::<Vec<_>>();
-        let rules = match self.state.lock() {
-            Ok(state) => state.rules.clone(),
+        let (rules, metadata) = match self.state.lock() {
+            Ok(state) => (state.rules.clone(), state.metadata.clone()),
             Err(_) => {
                 let error = DnsError::runtime("dynamic_domain_set state lock poisoned");
                 self.rollback_staged_rules(&appended_rules);
@@ -520,9 +608,13 @@ impl DynamicDomainSetBackend {
         };
         let total = rules.len();
         let path = self.config.path.clone();
+        let metadata_path = self.config.metadata_path.clone();
         let appended_for_task = appended_rules.clone();
         let result = spawn_blocking_result("dynamic_domain_set append build", move || {
             let snapshot = build_snapshot(&rules)?;
+            if let Some(metadata_path) = metadata_path.as_deref() {
+                rewrite_metadata_file(metadata_path, &metadata)?;
+            }
             append_rule_file(&path, &appended_for_task)?;
             Ok(snapshot)
         })
@@ -531,6 +623,7 @@ impl DynamicDomainSetBackend {
         match result {
             Ok((total, snapshot)) => {
                 self.snapshot.store(Arc::new(snapshot));
+                self.record_success();
                 info!(
                     plugin = %self.tag,
                     added = appended_rules.len(),
@@ -558,6 +651,7 @@ impl DynamicDomainSetBackend {
                 // Remove staged rules so later retries can enqueue them again.
                 self.rollback_staged_rules(&appended_rules);
                 let message = err.to_string();
+                self.record_error(message.clone());
                 for item in pending.drain(..) {
                     if let Some(wait) = item.wait {
                         let _ = wait.send(Err(DnsError::plugin(message.clone())));
@@ -568,7 +662,7 @@ impl DynamicDomainSetBackend {
     }
 
     async fn remove_rules(&self, rules: Vec<String>) -> DnsResult<DynamicDomainMutation> {
-        let (current_rules, before) = {
+        let (current_rules, mut metadata, before) = {
             let state = self
                 .state
                 .lock()
@@ -590,15 +684,25 @@ impl DynamicDomainSetBackend {
                     total,
                 });
             }
-            (current_rules, before)
+            (current_rules, state.metadata.clone(), before)
         };
         let removed = before.saturating_sub(current_rules.len());
         let total = current_rules.len();
+        let retained = current_rules
+            .iter()
+            .map(|rule| rule.as_ref())
+            .collect::<HashSet<_>>();
+        metadata.retain(|rule, _| retained.contains(rule.as_str()));
         let committed_rules = current_rules.clone();
+        let committed_metadata = metadata.clone();
         let path = self.config.path.clone();
+        let metadata_path = self.config.metadata_path.clone();
         let snapshot = spawn_isolated_build("dynamic_domain_set remove build", move || {
             let snapshot = build_snapshot(&current_rules)?;
             rewrite_rule_file(&path, &current_rules)?;
+            if let Some(metadata_path) = metadata_path.as_deref() {
+                rewrite_metadata_file(metadata_path, &metadata)?;
+            }
             Ok(snapshot)
         })
         .await?;
@@ -609,8 +713,10 @@ impl DynamicDomainSetBackend {
                 .map_err(|_| DnsError::runtime("dynamic_domain_set state lock poisoned"))?;
             state.known = committed_rules.iter().cloned().collect();
             state.rules = committed_rules;
+            state.metadata = committed_metadata;
         }
         self.snapshot.store(Arc::new(snapshot));
+        self.record_success();
         Ok(DynamicDomainMutation {
             added: 0,
             removed,
@@ -626,9 +732,13 @@ impl DynamicDomainSetBackend {
             .rules
             .len();
         let path = self.config.path.clone();
+        let metadata_path = self.config.metadata_path.clone();
         let snapshot = spawn_isolated_build("dynamic_domain_set clear build", move || {
             let snapshot = build_snapshot::<Arc<str>>(&[])?;
             rewrite_rule_file::<Arc<str>>(&path, &[])?;
+            if let Some(metadata_path) = metadata_path.as_deref() {
+                rewrite_metadata_file(metadata_path, &BTreeMap::new())?;
+            }
             Ok(snapshot)
         })
         .await?;
@@ -639,8 +749,10 @@ impl DynamicDomainSetBackend {
                 .map_err(|_| DnsError::runtime("dynamic_domain_set state lock poisoned"))?;
             state.rules.clear();
             state.known.clear();
+            state.metadata.clear();
         }
         self.snapshot.store(Arc::new(snapshot));
+        self.record_success();
         Ok(DynamicDomainMutation {
             added: 0,
             removed,
@@ -649,19 +761,101 @@ impl DynamicDomainSetBackend {
     }
 
     async fn reload_from_file(&self) -> DnsResult<DynamicDomainMutation> {
-        let path = self.config.path.clone();
-        let (rules, snapshot) =
+        let config = self.config.clone();
+        let (rules, metadata, snapshot) =
             spawn_isolated_build("dynamic_domain_set reload build", move || {
-                let rules = read_rule_file(&path)?;
+                let rules = read_rule_file(&config.path)?;
+                let metadata = config
+                    .metadata_path
+                    .as_deref()
+                    .map(read_metadata_file)
+                    .transpose()?
+                    .unwrap_or_default();
                 let snapshot = build_snapshot(&rules)?;
-                Ok((rules, snapshot))
+                Ok((rules, metadata, snapshot))
             })
             .await?;
         let total = rules.len();
-        self.install_compiled_rules(rules, snapshot)?;
+        self.install_compiled_rules(rules, metadata, snapshot)?;
         Ok(DynamicDomainMutation {
             added: 0,
             removed: 0,
+            total,
+        })
+    }
+
+    async fn cleanup_expired_rules(&self) -> DnsResult<DynamicDomainMutation> {
+        let Some(ttl_seconds) = self.config.entry_ttl_seconds else {
+            return Ok(DynamicDomainMutation {
+                added: 0,
+                removed: 0,
+                total: self.current_total()?,
+            });
+        };
+        let now = AppClock::now_timestamp();
+        let ttl_ms = ttl_seconds.saturating_mul(1000);
+        let (retained, mut metadata, removed) = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| DnsError::runtime("dynamic_domain_set state lock poisoned"))?;
+            let before = state.rules.len();
+            let retained = state
+                .rules
+                .iter()
+                .filter(|rule| {
+                    state.metadata.get(rule.as_ref()).is_none_or(|metadata| {
+                        metadata.origin == DynamicDomainRuleOrigin::Manual
+                            || now.saturating_sub(metadata.created_at_ms) < ttl_ms
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let removed = before.saturating_sub(retained.len());
+            if removed == 0 {
+                return Ok(DynamicDomainMutation {
+                    added: 0,
+                    removed: 0,
+                    total: before,
+                });
+            }
+            (retained, state.metadata.clone(), removed)
+        };
+        let retained_keys = retained
+            .iter()
+            .map(|rule| rule.as_ref())
+            .collect::<HashSet<_>>();
+        metadata.retain(|rule, _| retained_keys.contains(rule.as_str()));
+        let committed_rules = retained.clone();
+        let committed_metadata = metadata.clone();
+        let total = retained.len();
+        let path = self.config.path.clone();
+        let metadata_path = self.config.metadata_path.clone();
+        let snapshot = spawn_isolated_build("dynamic_domain_set cleanup build", move || {
+            let snapshot = build_snapshot(&retained)?;
+            rewrite_rule_file(&path, &retained)?;
+            if let Some(metadata_path) = metadata_path.as_deref() {
+                rewrite_metadata_file(metadata_path, &metadata)?;
+            }
+            Ok(snapshot)
+        })
+        .await?;
+        {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| DnsError::runtime("dynamic_domain_set state lock poisoned"))?;
+            state.known = committed_rules.iter().cloned().collect();
+            state.rules = committed_rules;
+            state.metadata = committed_metadata;
+        }
+        self.snapshot.store(Arc::new(snapshot));
+        self.expired_total
+            .fetch_add(removed as u64, Ordering::Relaxed);
+        self.record_success();
+        Ok(DynamicDomainMutation {
+            added: 0,
+            removed,
             total,
         })
     }
@@ -673,10 +867,20 @@ impl DynamicDomainSetBackend {
         let mut pending = Vec::new();
         let mut interval =
             tokio::time::interval(Duration::from_millis(self.config.flush_interval_ms.max(1)));
+        let mut cleanup_interval = tokio::time::interval(Duration::from_secs(
+            self.config.cleanup_interval_seconds.max(1),
+        ));
         loop {
             tokio::select! {
                 _ = interval.tick() => {
                     self.flush_appends(&mut pending).await;
+                }
+                _ = cleanup_interval.tick() => {
+                    self.flush_appends(&mut pending).await;
+                    if let Err(err) = self.cleanup_expired_rules().await {
+                        self.record_error(err.to_string());
+                        warn!(plugin = %self.tag, error = %err, "dynamic_domain_set cleanup failed");
+                    }
                 }
                 command = rx.recv() => {
                     let Some(command) = command else {
@@ -684,9 +888,9 @@ impl DynamicDomainSetBackend {
                         break;
                     };
                     match command {
-                        WorkerCommand::Append { rules, wait } => {
+                        WorkerCommand::Append { rules, origin, wait } => {
                             let flush_now = wait.is_some();
-                            match self.stage_new_rules(rules) {
+                            match self.stage_new_rules(rules, origin) {
                                 Ok(staged) if staged.rules.is_empty() => {
                                     if let Some(wait) = wait {
                                         let _ = wait.send(Ok(staged.mutation));
@@ -739,6 +943,65 @@ impl DynamicDomainSetBackend {
             }
         }
     }
+
+    pub(super) fn status(&self) -> DnsResult<DynamicDomainSetStatus> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| DnsError::runtime("dynamic_domain_set state lock poisoned"))?;
+        let learned = state
+            .metadata
+            .values()
+            .filter(|metadata| metadata.origin == DynamicDomainRuleOrigin::Learned)
+            .count();
+        let manual = state.rules.len().saturating_sub(learned);
+        Ok(DynamicDomainSetStatus {
+            ok: true,
+            total: state.rules.len(),
+            learned,
+            manual,
+            max_entries: self.config.max_entries,
+            entry_ttl_seconds: self.config.entry_ttl_seconds,
+            expired_total: self.expired_total.load(Ordering::Relaxed),
+            capacity_rejected_total: self.capacity_rejected_total.load(Ordering::Relaxed),
+            queue_rejected_total: self.queue_rejected_total.load(Ordering::Relaxed),
+            last_success_at_ms: match self.last_success_at_ms.load(Ordering::Relaxed) {
+                0 => None,
+                value => Some(value),
+            },
+            last_error: self.last_error.lock().ok().and_then(|value| value.clone()),
+        })
+    }
+
+    fn record_success(&self) {
+        self.last_success_at_ms
+            .store(AppClock::now_timestamp(), Ordering::Relaxed);
+        if let Ok(mut error) = self.last_error.lock() {
+            *error = None;
+        }
+    }
+
+    fn record_error(&self, message: String) {
+        if let Ok(mut error) = self.last_error.lock() {
+            *error = Some(message);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct DynamicDomainSetStatus {
+    ok: bool,
+    total: usize,
+    learned: usize,
+    manual: usize,
+    max_entries: Option<usize>,
+    entry_ttl_seconds: Option<u64>,
+    expired_total: u64,
+    capacity_rejected_total: u64,
+    queue_rejected_total: u64,
+    last_success_at_ms: Option<u64>,
+    last_error: Option<String>,
 }
 
 /// Rules accepted into memory but not necessarily flushed to disk yet.

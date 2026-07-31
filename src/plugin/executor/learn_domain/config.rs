@@ -44,6 +44,8 @@ struct LearnDomainArgs {
     error_mode: Option<LearnErrorMode>,
     /// Sync-mode wait budget.
     timeout: Option<String>,
+    /// Start with learning paused while keeping the downstream chain active.
+    paused: Option<bool>,
 }
 
 /// Learning point relative to the downstream executor chain.
@@ -98,6 +100,7 @@ pub(super) struct LearnDomainConfig {
     pub(super) async_mode: bool,
     pub(super) error_mode: LearnErrorMode,
     pub(super) timeout: Duration,
+    pub(super) paused: bool,
 }
 
 pub(super) fn parse_provider_from_value(args: Option<Value>) -> Result<String> {
@@ -135,6 +138,7 @@ pub(super) fn build_config(plugin_config: &PluginConfig) -> Result<LearnDomainCo
         async_mode: raw.async_mode.unwrap_or(true),
         error_mode: raw.error_mode.unwrap_or_default(),
         timeout,
+        paused: raw.paused.unwrap_or(false),
     })
 }
 
