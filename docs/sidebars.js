@@ -122,6 +122,7 @@ const sidebars = {
         'documentation',
         'contributing',
         'support-development',
+        'standard-mode-plan',
         'roadmap',
         {
           type: 'category',

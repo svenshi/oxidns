@@ -17,6 +17,8 @@ Provide a form-driven configuration path for users who do not want to write YAML
 
 The current focus is generating explainable, validatable configurations that can be switched safely without weakening the underlying `sequence` policy model for the sake of UI simplicity.
 
+See [Standard Mode Product Positioning and Phased Development Plan](standard-mode-plan.md) for product boundaries, the configuration compiler architecture, phased work packages, and acceptance gates.
+
 ## Next
 
 ### Plugin management APIs and WebUI integration
