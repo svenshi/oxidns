@@ -55,7 +55,10 @@ import { useAppStore } from "@/lib/store";
 
 const UNASSIGNED_PATH = "__inherit__";
 
-const policyLabelKeys: Record<NonNullable<StandardDeviceProfile["filtering"]>, string> = {
+const policyLabelKeys: Record<
+  NonNullable<StandardDeviceProfile["filtering"]>,
+  string
+> = {
   inherit: WEBUI.standardDevices.policyInherit,
   enabled: WEBUI.standardDevices.policyEnabled,
   disabled: WEBUI.standardDevices.policyDisabled,
@@ -74,10 +77,12 @@ function lines(value: string) {
 }
 
 function nextDeviceId(devices: StandardDeviceProfile[], address?: string) {
-  const base = `device_${(address || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "_")
-    .replace(/^_+|_+$/g, "") || devices.length + 1}`;
+  const base = `device_${
+    (address || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "_")
+      .replace(/^_+|_+$/g, "") || devices.length + 1
+  }`;
   const used = new Set(devices.map((device) => device.id));
   if (!used.has(base)) return base;
   let index = 2;
@@ -155,7 +160,9 @@ export default function StandardDevicesPage() {
     settings.devices[0];
   const isBusy = isConfigSaving || isApplying;
   const canSave = validationIssues.length === 0 && !isBusy;
-  const assignedDevices = settings.devices.filter((device) => device.assignedPathId);
+  const assignedDevices = settings.devices.filter(
+    (device) => device.assignedPathId,
+  );
   const policyDevices = settings.devices.filter(
     (device) =>
       device.assignedPathId ||
@@ -187,7 +194,10 @@ export default function StandardDevicesPage() {
   };
 
   const addManualDevice = () => {
-    const next = createDevice(settings.devices, t(WEBUI.standardDevices.newDeviceName));
+    const next = createDevice(
+      settings.devices,
+      t(WEBUI.standardDevices.newDeviceName),
+    );
     setDevices([...settings.devices, next]);
     setSelectedDeviceId(next.id);
   };
@@ -240,14 +250,18 @@ export default function StandardDevicesPage() {
     } catch (error) {
       if (requestIdRef.current !== requestId) return;
       setLoadError(
-        error instanceof Error ? error.message : t(WEBUI.standardDevices.readFailed),
+        error instanceof Error
+          ? error.message
+          : t(WEBUI.standardDevices.readFailed),
       );
     } finally {
       if (requestIdRef.current === requestId) setLoadingClients(false);
     }
   };
 
-  const loadDeviceRecords = async (device: StandardDeviceProfile | undefined) => {
+  const loadDeviceRecords = async (
+    device: StandardDeviceProfile | undefined,
+  ) => {
     const clientIp = firstRecordableAddress(device);
     if (!recorderName || !clientIp) {
       setDeviceRecords([]);
@@ -263,7 +277,9 @@ export default function StandardDevicesPage() {
       setDeviceRecords(response.records);
     } catch (error) {
       setLoadError(
-        error instanceof Error ? error.message : t(WEBUI.standardDevices.readFailed),
+        error instanceof Error
+          ? error.message
+          : t(WEBUI.standardDevices.readFailed),
       );
     } finally {
       setLoadingRecords(false);
@@ -487,10 +503,18 @@ export default function StandardDevicesPage() {
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            <TableHead>{t(WEBUI.standardDevices.timeColumn)}</TableHead>
-                            <TableHead>{t(WEBUI.standardDevices.domainColumn)}</TableHead>
-                            <TableHead>{t(WEBUI.standardDevices.qtypeColumn)}</TableHead>
-                            <TableHead>{t(WEBUI.standardDevices.resultColumn)}</TableHead>
+                            <TableHead>
+                              {t(WEBUI.standardDevices.timeColumn)}
+                            </TableHead>
+                            <TableHead>
+                              {t(WEBUI.standardDevices.domainColumn)}
+                            </TableHead>
+                            <TableHead>
+                              {t(WEBUI.standardDevices.qtypeColumn)}
+                            </TableHead>
+                            <TableHead>
+                              {t(WEBUI.standardDevices.resultColumn)}
+                            </TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -545,7 +569,10 @@ function DeviceEditor({
 }) {
   const { t } = useI18n();
   return (
-    <Card className={selected ? "border-primary/50" : undefined}>
+    <Card
+      id={`device-${device.id}`}
+      className={`scroll-mt-6 ${selected ? "border-primary/50" : ""}`}
+    >
       <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
         <div className="min-w-0">
           <CardTitle className="flex items-center gap-2 text-base">
@@ -560,8 +587,9 @@ function DeviceEditor({
             </Badge>
             {device.assignedPathId ? (
               <Badge variant="outline">
-                {settings.paths.find((path) => path.id === device.assignedPathId)
-                  ?.name ?? device.assignedPathId}
+                {settings.paths.find(
+                  (path) => path.id === device.assignedPathId,
+                )?.name ?? device.assignedPathId}
               </Badge>
             ) : null}
           </div>
@@ -572,7 +600,9 @@ function DeviceEditor({
           </Button>
           <Button variant="outline" size="icon" onClick={onRemove}>
             <Trash2 className="size-4" />
-            <span className="sr-only">{t(WEBUI.standardDevices.removeDevice)}</span>
+            <span className="sr-only">
+              {t(WEBUI.standardDevices.removeDevice)}
+            </span>
           </Button>
         </div>
       </CardHeader>
@@ -622,7 +652,9 @@ function DeviceEditor({
             id={`${device.id}-addresses`}
             className="min-h-24 font-mono"
             value={device.addresses.join("\n")}
-            onChange={(event) => onUpdate({ addresses: lines(event.target.value) })}
+            onChange={(event) =>
+              onUpdate({ addresses: lines(event.target.value) })
+            }
             placeholder={"192.168.1.20\n192.168.1.0/24"}
           />
         </div>
@@ -632,7 +664,9 @@ function DeviceEditor({
             value={device.filtering ?? "inherit"}
             onValueChange={(value) =>
               onUpdate({
-                filtering: value as NonNullable<StandardDeviceProfile["filtering"]>,
+                filtering: value as NonNullable<
+                  StandardDeviceProfile["filtering"]
+                >,
               })
             }
           >
@@ -654,7 +688,9 @@ function DeviceEditor({
             value={device.queryLog ?? "inherit"}
             onValueChange={(value) =>
               onUpdate({
-                queryLog: value as NonNullable<StandardDeviceProfile["queryLog"]>,
+                queryLog: value as NonNullable<
+                  StandardDeviceProfile["queryLog"]
+                >,
               })
             }
           >
@@ -706,7 +742,9 @@ function ValidationPanel({
   const { t } = useI18n();
   return (
     <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-      <div className="font-medium">{t(WEBUI.standardDevices.validationTitle)}</div>
+      <div className="font-medium">
+        {t(WEBUI.standardDevices.validationTitle)}
+      </div>
       <ul className="mt-2 list-disc space-y-1 pl-5">
         {issues.map((issue, index) => (
           <li key={`${issue.code}-${issue.deviceId ?? issue.field}-${index}`}>

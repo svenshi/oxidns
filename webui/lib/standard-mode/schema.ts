@@ -3,7 +3,9 @@ import type {
   StandardCacheSettings,
   StandardDeviceProfile,
   StandardExceptionRule,
+  StandardFilterFile,
   StandardFilteringSettings,
+  StandardLocalSettings,
   StandardModeSettings,
   StandardQueryLogSettings,
   StandardResolutionPath,
@@ -56,6 +58,26 @@ function asNumber(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function optionalPositiveNumber<K extends string>(
+  key: K,
+  value: unknown,
+  allowZero = false,
+): Partial<Record<K, number>> {
+  const parsed = Number(value);
+  const minimum = allowZero ? 0 : 1;
+  if (!Number.isFinite(parsed) || parsed < minimum) return {};
+  return { [key]: Math.floor(parsed) } as Partial<Record<K, number>>;
+}
+
+function optionalNonNegativeNumber<K extends string>(
+  key: K,
+  value: unknown,
+): Partial<Record<K, number>> {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return {};
+  return { [key]: Math.floor(parsed) } as Partial<Record<K, number>>;
+}
+
 function asStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.map((item) => String(item).trim()).filter(Boolean)
@@ -90,8 +112,24 @@ function normalizeUpstream(value: unknown, index: number): StandardUpstream {
     ...(asString(source.bootstrap).trim()
       ? { bootstrap: asString(source.bootstrap).trim() }
       : {}),
+    ...(source.bootstrapVersion === 4 || source.bootstrapVersion === 6
+      ? { bootstrapVersion: source.bootstrapVersion }
+      : {}),
     ...(asString(source.dialAddress ?? source.dial_addr).trim()
       ? { dialAddress: asString(source.dialAddress ?? source.dial_addr).trim() }
+      : {}),
+    ...(asString(source.outbound).trim()
+      ? { outbound: asString(source.outbound).trim() }
+      : {}),
+    ...(asString(source.socks5).trim()
+      ? { socks5: asString(source.socks5).trim() }
+      : {}),
+    ...optionalPositiveNumber("timeoutSeconds", source.timeoutSeconds),
+    ...optionalPositiveNumber("idleTimeoutSeconds", source.idleTimeoutSeconds),
+    ...optionalPositiveNumber("maxConns", source.maxConns),
+    ...optionalPositiveNumber("minConns", source.minConns, true),
+    ...(typeof source.enablePipeline === "boolean"
+      ? { enablePipeline: source.enablePipeline }
       : {}),
     ...(typeof source.tlsVerify === "boolean"
       ? { tlsVerify: source.tlsVerify }
@@ -247,7 +285,9 @@ function normalizeFiltering(value: unknown): StandardFilteringSettings {
   const defaults = createDefaultStandardSettings().filtering;
   const source = asRecord(value);
   const blockResponse =
-    source.blockResponse === "nxdomain" || source.blockResponse === "refused"
+    source.blockResponse === "nxdomain" ||
+    source.blockResponse === "nodata" ||
+    source.blockResponse === "refused"
       ? source.blockResponse
       : "null_ip";
   return {
@@ -257,9 +297,84 @@ function normalizeFiltering(value: unknown): StandardFilteringSettings {
           .map(normalizeSubscription)
           .filter((item): item is StandardSubscription => item !== null)
       : [],
+    localFiles: Array.isArray(source.localFiles)
+      ? source.localFiles.map(normalizeFilterFile)
+      : [],
     blockRules: asStringArray(source.blockRules),
     allowRules: asStringArray(source.allowRules),
     blockResponse,
+  };
+}
+
+function normalizeFilterFile(
+  value: unknown,
+  index: number,
+): StandardFilterFile {
+  const source = asRecord(value);
+  const id = cleanId(source.id, `filter_file_${index + 1}`);
+  return {
+    id,
+    name: asString(source.name, id),
+    path: asString(source.path).trim(),
+    enabled: asBoolean(source.enabled, true),
+  };
+}
+
+function normalizeLocal(value: unknown): StandardLocalSettings {
+  const defaults = createDefaultStandardSettings().local;
+  const source = asRecord(value);
+  const hosts = asRecord(source.hosts);
+  const redirects = asRecord(source.redirects);
+  const records = asRecord(source.records);
+  const responseTtl = asRecord(source.responseTtl);
+  const qtypePolicy = asRecord(source.qtypePolicy);
+  const ddns = asRecord(source.ddns);
+  const response =
+    qtypePolicy.response === "null_ip" ||
+    qtypePolicy.response === "nxdomain" ||
+    qtypePolicy.response === "nodata" ||
+    qtypePolicy.response === "refused"
+      ? qtypePolicy.response
+      : defaults.qtypePolicy.response;
+  return {
+    hosts: {
+      entries: asStringArray(hosts.entries),
+      files: asStringArray(hosts.files),
+    },
+    redirects: {
+      rules: asStringArray(redirects.rules),
+      files: asStringArray(redirects.files),
+    },
+    records: {
+      rules: asStringArray(records.rules),
+      files: asStringArray(records.files),
+    },
+    responseTtl: {
+      enabled: asBoolean(responseTtl.enabled, defaults.responseTtl.enabled),
+      ...optionalNonNegativeNumber(
+        "min",
+        responseTtl.min ?? defaults.responseTtl.min,
+      ),
+      ...optionalNonNegativeNumber(
+        "max",
+        responseTtl.max ?? defaults.responseTtl.max,
+      ),
+    },
+    qtypePolicy: {
+      enabled: asBoolean(qtypePolicy.enabled, defaults.qtypePolicy.enabled),
+      qtypes: asStringArray(qtypePolicy.qtypes).map((qtype) =>
+        qtype.toUpperCase(),
+      ),
+      response,
+    },
+    ddns: {
+      enabled: asBoolean(ddns.enabled, defaults.ddns.enabled),
+      domains: asStringArray(ddns.domains),
+      ...(asString(ddns.pathId).trim()
+        ? { pathId: cleanId(ddns.pathId, "") }
+        : {}),
+      ttl: Math.max(1, Math.floor(asNumber(ddns.ttl, defaults.ddns.ttl))),
+    },
   };
 }
 
@@ -462,7 +577,7 @@ export function normalizeStandardSettings(
       notice: "legacy_migrated",
     };
   }
-  if (source.schema !== 2 && source.schema !== 3) {
+  if (source.schema !== 2 && source.schema !== 3 && source.schema !== 4) {
     return {
       settings: createDefaultStandardSettings(),
       notice: "invalid_fallback",
@@ -487,6 +602,7 @@ export function normalizeStandardSettings(
   }
 
   const migratedFromV2 = source.schema === 2;
+  const migratedFromV3 = source.schema === 3;
   const defaultGroupIndex = migratedFromV2
     ? Math.max(
         0,
@@ -497,7 +613,7 @@ export function normalizeStandardSettings(
     : -1;
   return {
     settings: {
-      schema: 3,
+      schema: 4,
       listen: {
         address: asString(asRecord(source.listen).address, "0.0.0.0:5335"),
         udp: asBoolean(asRecord(source.listen).udp, true),
@@ -518,6 +634,7 @@ export function normalizeStandardSettings(
           }))
         : paths,
       filtering: normalizeFiltering(source.filtering),
+      local: normalizeLocal(source.local),
       cache: normalizeCache(source.cache),
       queryLog: migratedFromV2
         ? { ...normalizeQueryLog(source.queryLog), sampleRate: 1 }
@@ -537,7 +654,7 @@ export function normalizeStandardSettings(
         : [],
       system: normalizeSystem(source.system),
     },
-    notice: migratedFromV2 ? "legacy_migrated" : null,
+    notice: migratedFromV2 || migratedFromV3 ? "legacy_migrated" : null,
   };
 }
 

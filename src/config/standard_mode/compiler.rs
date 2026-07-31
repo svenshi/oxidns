@@ -11,7 +11,7 @@ use super::model::{
     StandardBlockResponse, StandardDiagnostic, StandardDiagnosticSeverity, StandardGeneratedConfig,
     StandardGenerationSummary, StandardIntent, StandardMigration, StandardPlan,
     StandardPolicySwitch, StandardResolutionPath, StandardRuleAction, StandardRuleCondition,
-    StandardTagMap, StandardUpstream, StandardUpstreamProtocol,
+    StandardSubscriptionTagMap, StandardTagMap, StandardUpstream, StandardUpstreamProtocol,
 };
 use super::validation::{
     device_has_policy, effective_filtering_used, effective_query_log_used,
@@ -70,6 +70,10 @@ impl StandardCapabilities {
                 "cron",
                 "forward",
                 "sequence",
+                "hosts",
+                "redirect",
+                "arbitrary",
+                "ttl",
                 "prefer_ipv4",
                 "prefer_ipv6",
             ]
@@ -188,6 +192,7 @@ fn compile_config(
     }
 
     let filtering = compile_filtering(intent, &mut plugins, &mut tag_map);
+    compile_local_plugins(intent, &mut plugins, &mut tag_map);
 
     let needs_prefer_ipv4 = intent
         .exceptions
@@ -280,6 +285,43 @@ fn compile_config(
         .expect("default path should have a tag")
         .clone();
 
+    let ddns_action_tag = if intent.local.ddns.enabled {
+        let path = intent
+            .local
+            .ddns
+            .path_id
+            .as_ref()
+            .and_then(|path_id| intent.paths.iter().find(|path| &path.id == path_id))
+            .unwrap_or(default_path);
+        let forward_tag = tag_map
+            .upstream_groups
+            .get(&path.upstream_group_id)
+            .expect("validated DDNS path should have a forward tag");
+        let tag = "standard_local_ddns_action";
+        let sequence = build_path_sequence(
+            path,
+            intent,
+            forward_tag,
+            &tag_map,
+            PathOverrides {
+                disable_cache: true,
+                response_ttl_tag: Some("standard_local_ddns_ttl".to_string()),
+                ..PathOverrides::default()
+            },
+        );
+        plugins.push(GeneratedPlugin::new(
+            tag,
+            "sequence",
+            JsonValue::Array(sequence),
+        ));
+        tag_map
+            .local
+            .insert("ddnsAction".to_string(), tag.to_string());
+        Some(tag.to_string())
+    } else {
+        None
+    };
+
     let mut exception_action_tags = BTreeMap::<String, String>::new();
     for rule in intent.exceptions.iter().filter(|rule| rule.enabled) {
         let matcher = compiled_matcher(&rule.condition);
@@ -341,7 +383,7 @@ fn compile_config(
                 force_filtering: matches!(device.filtering, Some(StandardPolicySwitch::Enabled)),
                 disable_query_log: matches!(device.query_log, Some(StandardPolicySwitch::Disabled)),
                 force_query_log: matches!(device.query_log, Some(StandardPolicySwitch::Enabled)),
-                prepend_exec: None,
+                ..PathOverrides::default()
             },
         );
         plugins.push(GeneratedPlugin::new(
@@ -365,6 +407,20 @@ fn compile_config(
     if tag_map.system.iter().any(|tag| tag == "standard_metrics") {
         main_sequence.push(json!({ "exec": "$standard_metrics" }));
     }
+    for key in ["hosts", "records", "redirect"] {
+        if let Some(tag) = tag_map.local.get(key) {
+            main_sequence.push(json!({ "exec": format!("${tag}") }));
+        }
+    }
+    if let (Some(matcher), Some(action)) = (
+        tag_map.local.get("qtypeMatcher"),
+        tag_map.local.get("qtypeAction"),
+    ) {
+        main_sequence.push(json!({
+            "matches": format!("${matcher}"),
+            "exec": format!("${action}"),
+        }));
+    }
     for rule in ordered_exceptions(intent) {
         let Some(match_tag) = tag_map.exception_rules.get(&rule.id) else {
             continue;
@@ -380,6 +436,14 @@ fn compile_config(
                 "exec": format!("${exec_tag}"),
             }));
         }
+    }
+    if let (Some(matcher), Some(action)) =
+        (tag_map.local.get("ddnsMatcher"), ddns_action_tag.as_ref())
+    {
+        main_sequence.push(json!({
+            "matches": format!("${matcher}"),
+            "exec": format!("${action}"),
+        }));
     }
     for device in intent
         .devices
@@ -470,28 +534,38 @@ fn compile_filtering(
         .iter()
         .filter(|subscription| subscription.enabled)
         .collect();
+    let local_files: Vec<_> = intent
+        .filtering
+        .local_files
+        .iter()
+        .filter(|file| file.enabled)
+        .collect();
     if should_generate && !subscriptions.is_empty() {
-        plugins.push(GeneratedPlugin::new(
-            "standard_filter_download",
-            "download",
-            json!({
-                "startup_if_missing": true,
-                "downloads": subscriptions.iter().map(|subscription| json!({
-                    "url": subscription.url,
-                    "dir": FILTER_SUBSCRIPTION_DIR,
-                    "filename": subscription_filename(&subscription.id),
-                })).collect::<Vec<_>>(),
-            }),
-        ));
-        tag_map
-            .filtering
-            .push("standard_filter_download".to_string());
+        for subscription in &subscriptions {
+            let component = safe_tag_component(&subscription.id);
+            let download_tag = format!("standard_filter_download_{component}");
+            plugins.push(GeneratedPlugin::new(
+                &download_tag,
+                "download",
+                json!({
+                    "startup_if_missing": true,
+                    "fail_on_error": true,
+                    "downloads": [{
+                        "url": subscription.url,
+                        "dir": FILTER_SUBSCRIPTION_DIR,
+                        "filename": subscription_filename(&subscription.id),
+                    }],
+                }),
+            ));
+            tag_map.filtering.push(download_tag);
+        }
     }
 
     let has_rules = should_generate
         && (!intent.filtering.block_rules.is_empty()
             || !intent.filtering.allow_rules.is_empty()
-            || !subscriptions.is_empty());
+            || !subscriptions.is_empty()
+            || !local_files.is_empty());
     if has_rules {
         let mut rules = intent.filtering.block_rules.clone();
         rules.extend(intent.filtering.allow_rules.clone());
@@ -501,7 +575,7 @@ fn compile_filtering(
             json!({
                 "files": subscriptions.iter().map(|subscription| {
                     format!("{FILTER_SUBSCRIPTION_DIR}/{}", subscription_filename(&subscription.id))
-                }).collect::<Vec<_>>(),
+                }).chain(local_files.iter().map(|file| file.path.clone())).collect::<Vec<_>>(),
                 "rules": rules,
             }),
         ));
@@ -520,6 +594,7 @@ fn compile_filtering(
                 "mode": match intent.filtering.block_response {
                     StandardBlockResponse::NullIp => "null",
                     StandardBlockResponse::Nxdomain => "nxdomain",
+                    StandardBlockResponse::Nodata => "nodata",
                     StandardBlockResponse::Refused => "refused",
                 },
                 "short_circuit": true,
@@ -535,20 +610,157 @@ fn compile_filtering(
             json!(["$standard_ad_rules"]),
         ));
         tag_map.filtering.push("standard_filter_reload".to_string());
-        plugins.push(GeneratedPlugin::new(
-            "standard_filter_cron",
-            "cron",
-            json!({
-                "jobs": subscriptions.iter().map(|subscription| json!({
-                    "name": format!("refresh_filter_{}", safe_tag_component(&subscription.id)),
-                    "interval": format!("{}h", subscription.update_interval_hours.max(1)),
-                    "executors": ["$standard_filter_download", "$standard_filter_reload"],
-                })).collect::<Vec<_>>(),
-            }),
-        ));
-        tag_map.filtering.push("standard_filter_cron".to_string());
+        for subscription in subscriptions {
+            let component = safe_tag_component(&subscription.id);
+            let download_tag = format!("standard_filter_download_{component}");
+            let cron_tag = format!("standard_filter_cron_{component}");
+            let job = format!("refresh_filter_{component}");
+            plugins.push(GeneratedPlugin::new(
+                &cron_tag,
+                "cron",
+                json!({
+                    "jobs": [{
+                        "name": job,
+                        "interval": format!("{}h", subscription.update_interval_hours.max(1)),
+                        "executors": [format!("${download_tag}"), "$standard_filter_reload"],
+                        "stop_on_error": true,
+                    }],
+                }),
+            ));
+            tag_map.filtering.push(cron_tag.clone());
+            tag_map.filter_subscriptions.insert(
+                subscription.id.clone(),
+                StandardSubscriptionTagMap {
+                    download: download_tag,
+                    cron: cron_tag,
+                    job,
+                },
+            );
+        }
     }
     has_rules
+}
+
+fn compile_local_plugins(
+    intent: &StandardIntent,
+    plugins: &mut Vec<GeneratedPlugin>,
+    tag_map: &mut StandardTagMap,
+) {
+    let local = &intent.local;
+    if !local.hosts.entries.is_empty() || !local.hosts.files.is_empty() {
+        plugins.push(GeneratedPlugin::new(
+            "standard_local_hosts",
+            "hosts",
+            json!({
+                "entries": local.hosts.entries,
+                "files": local.hosts.files,
+                "short_circuit": true,
+            }),
+        ));
+        tag_map
+            .local
+            .insert("hosts".to_string(), "standard_local_hosts".to_string());
+    }
+    if !local.records.rules.is_empty() || !local.records.files.is_empty() {
+        plugins.push(GeneratedPlugin::new(
+            "standard_local_records",
+            "arbitrary",
+            json!({
+                "rules": local.records.rules,
+                "files": local.records.files,
+                "short_circuit": true,
+            }),
+        ));
+        tag_map
+            .local
+            .insert("records".to_string(), "standard_local_records".to_string());
+    }
+    if !local.redirects.rules.is_empty() || !local.redirects.files.is_empty() {
+        plugins.push(GeneratedPlugin::new(
+            "standard_local_redirect",
+            "redirect",
+            json!({
+                "rules": local.redirects.rules,
+                "files": local.redirects.files,
+            }),
+        ));
+        tag_map.local.insert(
+            "redirect".to_string(),
+            "standard_local_redirect".to_string(),
+        );
+    }
+    if local.response_ttl.enabled {
+        plugins.push(GeneratedPlugin::new(
+            "standard_local_response_ttl",
+            "ttl",
+            json!({
+                "min": local.response_ttl.min,
+                "max": local.response_ttl.max,
+            }),
+        ));
+        tag_map.local.insert(
+            "responseTtl".to_string(),
+            "standard_local_response_ttl".to_string(),
+        );
+    }
+    if local.qtype_policy.enabled {
+        plugins.push(GeneratedPlugin::new(
+            "standard_local_qtype_match",
+            "qtype",
+            json!(local.qtype_policy.qtypes),
+        ));
+        plugins.push(GeneratedPlugin::new(
+            "standard_local_qtype_action",
+            "black_hole",
+            json!({
+                "mode": block_response_mode(local.qtype_policy.response),
+                "short_circuit": true,
+            }),
+        ));
+        tag_map.local.insert(
+            "qtypeMatcher".to_string(),
+            "standard_local_qtype_match".to_string(),
+        );
+        tag_map.local.insert(
+            "qtypeAction".to_string(),
+            "standard_local_qtype_action".to_string(),
+        );
+    }
+    if local.ddns.enabled {
+        plugins.push(GeneratedPlugin::new(
+            "standard_local_ddns_match",
+            "qname",
+            json!(
+                local
+                    .ddns
+                    .domains
+                    .iter()
+                    .map(|domain| format!("full:{domain}"))
+                    .collect::<Vec<_>>()
+            ),
+        ));
+        plugins.push(GeneratedPlugin::new(
+            "standard_local_ddns_ttl",
+            "ttl",
+            json!({ "fix": local.ddns.ttl }),
+        ));
+        tag_map.local.insert(
+            "ddnsMatcher".to_string(),
+            "standard_local_ddns_match".to_string(),
+        );
+        tag_map
+            .local
+            .insert("ddnsTtl".to_string(), "standard_local_ddns_ttl".to_string());
+    }
+}
+
+fn block_response_mode(response: StandardBlockResponse) -> &'static str {
+    match response {
+        StandardBlockResponse::NullIp => "null",
+        StandardBlockResponse::Nxdomain => "nxdomain",
+        StandardBlockResponse::Nodata => "nodata",
+        StandardBlockResponse::Refused => "refused",
+    }
 }
 
 fn build_path_sequence(
@@ -569,7 +781,7 @@ fn build_path_sequence(
             || (matches!(path.query_log, StandardPolicySwitch::Inherit)
                 && intent.query_log.enabled));
     let mut sequence = Vec::new();
-    if let Some(prepend_exec) = overrides.prepend_exec {
+    if let Some(prepend_exec) = overrides.prepend_exec.as_ref() {
         sequence.push(json!({ "exec": prepend_exec }));
     }
     if query_log_enabled && let Some(query_log) = &tag_map.query_log {
@@ -590,13 +802,22 @@ fn build_path_sequence(
             "exec": "$standard_blocked",
         }));
     }
-    if let Some(cache_tag) = tag_map.caches.get(&path.id) {
+    if !overrides.disable_cache
+        && let Some(cache_tag) = tag_map.caches.get(&path.id)
+    {
         sequence.push(json!({ "exec": format!("${cache_tag}") }));
     }
     sequence.push(json!({
         "matches": "!has_resp",
         "exec": format!("${forward_tag}"),
     }));
+    let response_ttl_tag = overrides
+        .response_ttl_tag
+        .as_ref()
+        .or_else(|| tag_map.local.get("responseTtl"));
+    if let Some(ttl_tag) = response_ttl_tag {
+        sequence.push(json!({ "exec": format!("${ttl_tag}") }));
+    }
     sequence.push(json!({ "exec": "accept" }));
     sequence
 }
@@ -628,11 +849,11 @@ fn build_exception_sequence(
             ..PathOverrides::default()
         },
         StandardRuleAction::PreferIpv4 => PathOverrides {
-            prepend_exec: Some("$standard_prefer_ipv4"),
+            prepend_exec: Some("$standard_prefer_ipv4".to_string()),
             ..PathOverrides::default()
         },
         StandardRuleAction::PreferIpv6 => PathOverrides {
-            prepend_exec: Some("$standard_prefer_ipv6"),
+            prepend_exec: Some("$standard_prefer_ipv6".to_string()),
             ..PathOverrides::default()
         },
         _ => PathOverrides::default(),
@@ -693,11 +914,41 @@ fn compiled_upstream(upstream: &StandardUpstream) -> JsonValue {
     if let Some(bootstrap) = &upstream.bootstrap {
         value.insert("bootstrap".to_string(), JsonValue::from(bootstrap.clone()));
     }
+    if let Some(bootstrap_version) = upstream.bootstrap_version {
+        value.insert(
+            "bootstrap_version".to_string(),
+            JsonValue::from(bootstrap_version),
+        );
+    }
     if let Some(dial_address) = &upstream.dial_address {
         value.insert(
             "dial_addr".to_string(),
             JsonValue::from(dial_address.clone()),
         );
+    }
+    if let Some(outbound) = &upstream.outbound {
+        value.insert("outbound".to_string(), JsonValue::from(outbound.clone()));
+    }
+    if let Some(socks5) = &upstream.socks5 {
+        value.insert("socks5".to_string(), JsonValue::from(socks5.clone()));
+    }
+    if let Some(timeout_seconds) = upstream.timeout_seconds {
+        value.insert("timeout".to_string(), JsonValue::from(timeout_seconds));
+    }
+    if let Some(idle_timeout_seconds) = upstream.idle_timeout_seconds {
+        value.insert(
+            "idle_timeout".to_string(),
+            JsonValue::from(idle_timeout_seconds),
+        );
+    }
+    if let Some(max_conns) = upstream.max_conns {
+        value.insert("max_conns".to_string(), JsonValue::from(max_conns));
+    }
+    if let Some(min_conns) = upstream.min_conns {
+        value.insert("min_conns".to_string(), JsonValue::from(min_conns));
+    }
+    if upstream.enable_pipeline {
+        value.insert("enable_pipeline".to_string(), JsonValue::from(true));
     }
     if !upstream.tls_verify {
         value.insert("insecure_skip_verify".to_string(), JsonValue::from(true));
@@ -849,6 +1100,17 @@ fn summarize(intent: &StandardIntent) -> StandardGenerationSummary {
             .count(),
         exception_rule_count: intent.exceptions.iter().filter(|rule| rule.enabled).count(),
         device_count: intent.devices.len(),
+        local_policy_count: [
+            !intent.local.hosts.entries.is_empty() || !intent.local.hosts.files.is_empty(),
+            !intent.local.redirects.rules.is_empty() || !intent.local.redirects.files.is_empty(),
+            !intent.local.records.rules.is_empty() || !intent.local.records.files.is_empty(),
+            intent.local.response_ttl.enabled,
+            intent.local.qtype_policy.enabled,
+            intent.local.ddns.enabled,
+        ]
+        .into_iter()
+        .filter(|enabled| *enabled)
+        .count(),
     }
 }
 
@@ -913,5 +1175,7 @@ struct PathOverrides {
     force_filtering: bool,
     disable_query_log: bool,
     force_query_log: bool,
-    prepend_exec: Option<&'static str>,
+    prepend_exec: Option<String>,
+    disable_cache: bool,
+    response_ttl_tag: Option<String>,
 }

@@ -100,6 +100,27 @@ export interface StandardApplyOptions {
   takeover?: boolean;
 }
 
+export interface StandardHistoryItem {
+  id: string;
+  created_at_ms: number;
+  transaction_id: string;
+  config_version: string;
+  standard_version: string;
+  settings_schema?: number | null;
+  upstream_group_count: number;
+  path_count: number;
+}
+
+export interface StandardHistoryListResponse {
+  ok: boolean;
+  entries: StandardHistoryItem[];
+}
+
+export interface StandardHistoryRestoreResponse {
+  ok: boolean;
+  entry: StandardHistoryItem & { settings: StandardModeSettings };
+}
+
 export class StandardPlanConflictError extends Error {
   constructor(public readonly plan: StandardPlanResponse) {
     super("Standard Mode state changed; review the refreshed plan");
@@ -495,7 +516,15 @@ export interface UpstreamTestInput {
   addr: string;
   tag?: string;
   bootstrap?: string;
+  bootstrap_version?: 4 | 6;
   dial_addr?: string;
+  outbound?: string;
+  socks5?: string;
+  timeout_seconds?: number;
+  idle_timeout_seconds?: number;
+  max_conns?: number;
+  min_conns?: number;
+  enable_pipeline?: boolean;
   insecure_skip_verify?: boolean;
   enable_http3?: boolean;
 }
@@ -769,6 +798,28 @@ export async function fetchStandardTransactionStatus(): Promise<StandardTransact
     headers: apiHeaders(),
   });
   return readJsonResponse<StandardTransactionStatusResponse>(response);
+}
+
+export async function fetchStandardHistory(): Promise<StandardHistoryListResponse> {
+  const response = await fetch(apiUrl("/standard/history"), {
+    method: "GET",
+    headers: apiHeaders(),
+  });
+  return readJsonResponse<StandardHistoryListResponse>(response);
+}
+
+export async function fetchStandardHistoryRestore(
+  id: string,
+): Promise<StandardHistoryRestoreResponse> {
+  const response = await fetch(apiUrl("/standard/history/restore"), {
+    method: "POST",
+    headers: {
+      ...apiHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ id }),
+  });
+  return readJsonResponse<StandardHistoryRestoreResponse>(response);
 }
 
 export async function fetchHealth(): Promise<HealthResponse> {

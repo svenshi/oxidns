@@ -402,7 +402,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({
       editorMode: mode && state.webUiMode === "standard" ? false : mode,
     })),
-  setHistoryOpen: (open) => set({ historyOpen: open }),
+  setHistoryOpen: (open) =>
+    set((state) => ({
+      historyOpen: state.webUiMode === "standard" ? false : open,
+    })),
   setWebUiMode: (mode, options) => {
     const modeSelectionDismissed = options?.dismissSelection ?? true;
     const patch: JsonObject = {
@@ -413,6 +416,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       webUiMode: mode,
       webUiConfig: applyWebUiConfigPatch(state.webUiConfig, patch),
       editorMode: mode === "standard" ? false : state.editorMode,
+      historyOpen: mode === "standard" ? false : state.historyOpen,
       modeSelectionDismissed,
       standardConfigOutOfSync:
         mode === "standard"

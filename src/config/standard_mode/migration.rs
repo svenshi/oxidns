@@ -44,25 +44,19 @@ pub fn decode_standard_intent(
 
     let (value, migration) = match schema {
         CURRENT_STANDARD_SCHEMA => (value, None),
-        2 => migrate_v2(value),
+        3 => migrate_v3(value),
+        2 => {
+            let (value, v2_migration) = migrate_v2(value);
+            let (value, v3_migration) = migrate_v3(value);
+            (value, combine_migrations(2, [v2_migration, v3_migration]))
+        }
         1 => {
             let (value, v1_migration) = migrate_v1(value);
             let (value, v2_migration) = migrate_v2(value);
-            let mut diagnostics = v1_migration
-                .map(|migration| migration.diagnostics)
-                .unwrap_or_default();
-            diagnostics.extend(
-                v2_migration
-                    .map(|migration| migration.diagnostics)
-                    .unwrap_or_default(),
-            );
+            let (value, v3_migration) = migrate_v3(value);
             (
                 value,
-                Some(StandardMigration {
-                    from_schema: 1,
-                    to_schema: CURRENT_STANDARD_SCHEMA,
-                    diagnostics,
-                }),
+                combine_migrations(1, [v1_migration, v2_migration, v3_migration]),
             )
         }
         other => return Err(StandardIntentDecodeError::UnsupportedSchema(other)),
@@ -73,12 +67,53 @@ pub fn decode_standard_intent(
         .map_err(|err| StandardIntentDecodeError::InvalidIntent(err.to_string()))
 }
 
+fn combine_migrations<const N: usize>(
+    from_schema: u32,
+    migrations: [Option<StandardMigration>; N],
+) -> Option<StandardMigration> {
+    let diagnostics = migrations
+        .into_iter()
+        .flatten()
+        .flat_map(|migration| migration.diagnostics)
+        .collect();
+    Some(StandardMigration {
+        from_schema,
+        to_schema: CURRENT_STANDARD_SCHEMA,
+        diagnostics,
+    })
+}
+
+fn migrate_v3(mut value: Value) -> (Value, Option<StandardMigration>) {
+    let root = value
+        .as_object_mut()
+        .expect("v3 migration input was checked as an object");
+    root.insert("schema".to_string(), Value::from(CURRENT_STANDARD_SCHEMA));
+    root.entry("local".to_string()).or_insert_with(|| json!({}));
+    if let Some(filtering) = root.get_mut("filtering").and_then(Value::as_object_mut) {
+        filtering
+            .entry("localFiles".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
+    }
+    (
+        value,
+        Some(StandardMigration {
+            from_schema: 3,
+            to_schema: CURRENT_STANDARD_SCHEMA,
+            diagnostics: vec![StandardDiagnostic::warning(
+                "schema_v3_migrated",
+                "schema",
+                "Standard Mode schema 3 was migrated with inactive Phase 1 defaults",
+            )],
+        }),
+    )
+}
+
 fn migrate_v2(mut value: Value) -> (Value, Option<StandardMigration>) {
     let mut diagnostics = Vec::new();
     let root = value
         .as_object_mut()
         .expect("v2 migration input was checked as an object");
-    root.insert("schema".to_string(), Value::from(CURRENT_STANDARD_SCHEMA));
+    root.insert("schema".to_string(), Value::from(3));
 
     if let Some(groups) = root.get_mut("upstreamGroups").and_then(Value::as_array_mut) {
         for (index, group) in groups.iter_mut().enumerate() {
@@ -121,7 +156,7 @@ fn migrate_v2(mut value: Value) -> (Value, Option<StandardMigration>) {
         value,
         Some(StandardMigration {
             from_schema: 2,
-            to_schema: CURRENT_STANDARD_SCHEMA,
+            to_schema: 3,
             diagnostics,
         }),
     )

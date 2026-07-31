@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
+use std::str::FromStr;
 
 use super::compiler::StandardCapabilities;
 use super::model::{
@@ -25,6 +26,8 @@ pub fn normalize_standard_intent(mut intent: StandardIntent) -> StandardIntent {
             upstream.address = upstream.address.trim().to_string();
             upstream.bootstrap = trimmed_option(upstream.bootstrap.take());
             upstream.dial_address = trimmed_option(upstream.dial_address.take());
+            upstream.outbound = trimmed_option(upstream.outbound.take());
+            upstream.socks5 = trimmed_option(upstream.socks5.take());
             upstream.doh_path = trimmed_option(upstream.doh_path.take());
             if matches!(
                 upstream.protocol,
@@ -51,6 +54,37 @@ pub fn normalize_standard_intent(mut intent: StandardIntent) -> StandardIntent {
         subscription.name = subscription.name.trim().to_string();
         subscription.url = subscription.url.trim().to_string();
     }
+    for file in &mut intent.filtering.local_files {
+        file.id = normalize_id(&file.id);
+        file.name = file.name.trim().to_string();
+        file.path = file.path.trim().to_string();
+    }
+
+    normalize_lines(&mut intent.local.hosts.entries, false);
+    normalize_lines(&mut intent.local.hosts.files, false);
+    normalize_lines(&mut intent.local.redirects.rules, false);
+    normalize_lines(&mut intent.local.redirects.files, false);
+    normalize_lines(&mut intent.local.records.rules, false);
+    normalize_lines(&mut intent.local.records.files, false);
+    normalize_lines(&mut intent.local.qtype_policy.qtypes, false);
+    for qtype in &mut intent.local.qtype_policy.qtypes {
+        qtype.make_ascii_uppercase();
+    }
+    normalize_lines(&mut intent.local.ddns.domains, false);
+    for domain in &mut intent.local.ddns.domains {
+        *domain = domain
+            .trim()
+            .trim_start_matches("full:")
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
+    }
+    intent.local.ddns.path_id = intent
+        .local
+        .ddns
+        .path_id
+        .take()
+        .map(|path_id| normalize_id(&path_id))
+        .filter(|path_id| !path_id.is_empty());
 
     for rule in &mut intent.routing.rules {
         rule.id = normalize_id(&rule.id);
@@ -105,6 +139,7 @@ pub fn validate_standard_intent(
     validate_upstreams(intent, capabilities, &mut diagnostics);
     validate_cache(intent, capabilities, &mut diagnostics);
     validate_filtering(intent, capabilities, &mut diagnostics);
+    validate_local(intent, capabilities, &mut diagnostics);
     validate_paths(intent, capabilities, &mut diagnostics);
     validate_rules(intent, capabilities, &mut diagnostics);
     validate_devices(intent, capabilities, &mut diagnostics);
@@ -194,6 +229,16 @@ fn validate_identifiers(intent: &StandardIntent, diagnostics: &mut Vec<StandardD
             .enumerate()
             .map(|(index, item)| (index, item.id.as_str(), item.name.as_str())),
         "filtering.subscriptions",
+        diagnostics,
+    );
+    validate_unique_objects(
+        intent
+            .filtering
+            .local_files
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (index, item.id.as_str(), item.name.as_str())),
+        "filtering.localFiles",
         diagnostics,
     );
     validate_unique_objects(
@@ -332,6 +377,75 @@ fn validate_upstreams(
                     ));
                 }
             }
+            if !matches!(upstream.bootstrap_version, None | Some(4) | Some(6)) {
+                diagnostics.push(StandardDiagnostic::error(
+                    "upstream_bootstrap_version_invalid",
+                    format!("{path}.bootstrapVersion"),
+                    "bootstrapVersion must be 4 or 6",
+                ));
+            }
+            if let Some(dial_address) = &upstream.dial_address
+                && dial_address.parse::<IpAddr>().is_err()
+            {
+                diagnostics.push(StandardDiagnostic::error(
+                    "upstream_dial_address_invalid",
+                    format!("{path}.dialAddress"),
+                    "dialAddress must be an IPv4 or IPv6 address",
+                ));
+            }
+            if matches!(upstream.timeout_seconds, Some(0)) {
+                diagnostics.push(StandardDiagnostic::error(
+                    "upstream_timeout_invalid",
+                    format!("{path}.timeoutSeconds"),
+                    "timeoutSeconds must be greater than zero",
+                ));
+            }
+            if matches!(upstream.idle_timeout_seconds, Some(0)) {
+                diagnostics.push(StandardDiagnostic::error(
+                    "upstream_idle_timeout_invalid",
+                    format!("{path}.idleTimeoutSeconds"),
+                    "idleTimeoutSeconds must be greater than zero",
+                ));
+            }
+            if matches!(upstream.max_conns, Some(0)) {
+                diagnostics.push(StandardDiagnostic::error(
+                    "upstream_max_conns_invalid",
+                    format!("{path}.maxConns"),
+                    "maxConns must be greater than zero",
+                ));
+            }
+            if upstream.max_conns.is_some_and(|value| value > 4096)
+                || upstream.min_conns.is_some_and(|value| value > 4096)
+            {
+                diagnostics.push(StandardDiagnostic::error(
+                    "upstream_pool_size_invalid",
+                    format!("{path}.maxConns"),
+                    "upstream pool sizes must not exceed 4096",
+                ));
+            }
+            if let (Some(min), Some(max)) = (upstream.min_conns, upstream.max_conns)
+                && min > max
+            {
+                diagnostics.push(StandardDiagnostic::error(
+                    "upstream_pool_range_invalid",
+                    format!("{path}.minConns"),
+                    "minConns must not exceed maxConns",
+                ));
+            }
+            if upstream.enable_pipeline
+                && !matches!(
+                    upstream.protocol,
+                    StandardUpstreamProtocol::Auto
+                        | StandardUpstreamProtocol::Tcp
+                        | StandardUpstreamProtocol::Dot
+                )
+            {
+                diagnostics.push(StandardDiagnostic::error(
+                    "upstream_pipeline_protocol_invalid",
+                    format!("{path}.enablePipeline"),
+                    "pipelining is only available for auto, TCP, or DoT upstreams",
+                ));
+            }
         }
     }
 }
@@ -380,9 +494,17 @@ fn validate_filtering(
         .enumerate()
         .filter(|(_, item)| item.enabled)
         .collect();
+    let enabled_local_files: Vec<_> = intent
+        .filtering
+        .local_files
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item.enabled)
+        .collect();
     if filtering_used
         && intent.filtering.block_rules.is_empty()
         && enabled_subscriptions.is_empty()
+        && enabled_local_files.is_empty()
         && !intent
             .exceptions
             .iter()
@@ -391,7 +513,7 @@ fn validate_filtering(
         diagnostics.push(StandardDiagnostic::error(
             "filter_rule_source_required",
             "filtering",
-            "enabled filtering requires a block rule or subscription",
+            "enabled filtering requires a block rule, local file, or subscription",
         ));
     }
     if filtering_used && !capabilities.provider("adguard_rule") {
@@ -429,6 +551,138 @@ fn validate_filtering(
                 format!("{path}.updateIntervalHours"),
                 "subscription update interval must be at least one hour",
             ));
+        }
+    }
+    for (index, file) in enabled_local_files {
+        let path = format!("filtering.localFiles[{index}]");
+        if file.name.trim().is_empty() {
+            diagnostics.push(StandardDiagnostic::error(
+                "filter_file_name_required",
+                format!("{path}.name"),
+                "local filter file name is required",
+            ));
+        }
+        if file.path.trim().is_empty() {
+            diagnostics.push(StandardDiagnostic::error(
+                "filter_file_path_required",
+                format!("{path}.path"),
+                "local filter file path is required",
+            ));
+        }
+    }
+}
+
+fn validate_local(
+    intent: &StandardIntent,
+    capabilities: &StandardCapabilities,
+    diagnostics: &mut Vec<StandardDiagnostic>,
+) {
+    let local = &intent.local;
+    if (!local.hosts.entries.is_empty() || !local.hosts.files.is_empty())
+        && !capabilities.executor("hosts")
+    {
+        diagnostics.push(missing_plugin("local.hosts", "executor", "hosts"));
+    }
+    if (!local.redirects.rules.is_empty() || !local.redirects.files.is_empty())
+        && !capabilities.executor("redirect")
+    {
+        diagnostics.push(missing_plugin("local.redirects", "executor", "redirect"));
+    }
+    if (!local.records.rules.is_empty() || !local.records.files.is_empty())
+        && !capabilities.executor("arbitrary")
+    {
+        diagnostics.push(missing_plugin("local.records", "executor", "arbitrary"));
+    }
+    if local.response_ttl.enabled {
+        if !capabilities.executor("ttl") {
+            diagnostics.push(missing_plugin("local.responseTtl", "executor", "ttl"));
+        }
+        if local.response_ttl.min.is_none() && local.response_ttl.max.is_none() {
+            diagnostics.push(StandardDiagnostic::error(
+                "response_ttl_required",
+                "local.responseTtl",
+                "response TTL policy requires a minimum or maximum",
+            ));
+        }
+        if let (Some(min), Some(max)) = (local.response_ttl.min, local.response_ttl.max)
+            && min > max
+        {
+            diagnostics.push(StandardDiagnostic::error(
+                "response_ttl_range_invalid",
+                "local.responseTtl",
+                "response TTL minimum must not exceed maximum",
+            ));
+        }
+    }
+    if local.qtype_policy.enabled {
+        if local.qtype_policy.qtypes.is_empty() {
+            diagnostics.push(StandardDiagnostic::error(
+                "qtype_policy_values_required",
+                "local.qtypePolicy.qtypes",
+                "QTYPE policy requires at least one record type",
+            ));
+        }
+        for (index, qtype) in local.qtype_policy.qtypes.iter().enumerate() {
+            if crate::proto::RecordType::from_str(qtype).is_err() {
+                diagnostics.push(StandardDiagnostic::error(
+                    "qtype_policy_value_invalid",
+                    format!("local.qtypePolicy.qtypes[{index}]"),
+                    format!("'{qtype}' is not a supported DNS record type"),
+                ));
+            }
+        }
+        if !capabilities.matcher("qtype") {
+            diagnostics.push(missing_plugin("local.qtypePolicy", "matcher", "qtype"));
+        }
+        if !capabilities.executor("black_hole") {
+            diagnostics.push(missing_plugin(
+                "local.qtypePolicy",
+                "executor",
+                "black_hole",
+            ));
+        }
+    }
+    if local.ddns.enabled {
+        if local.ddns.domains.is_empty() {
+            diagnostics.push(StandardDiagnostic::error(
+                "ddns_domains_required",
+                "local.ddns.domains",
+                "DDNS policy requires at least one domain",
+            ));
+        }
+        for (index, domain) in local.ddns.domains.iter().enumerate() {
+            if crate::proto::Name::from_ascii(domain).is_err() {
+                diagnostics.push(StandardDiagnostic::error(
+                    "ddns_domain_invalid",
+                    format!("local.ddns.domains[{index}]"),
+                    format!("'{domain}' is not a valid domain name"),
+                ));
+            }
+        }
+        if local.ddns.ttl == 0 {
+            diagnostics.push(StandardDiagnostic::error(
+                "ddns_ttl_invalid",
+                "local.ddns.ttl",
+                "DDNS TTL must be greater than zero",
+            ));
+        }
+        if let Some(path_id) = &local.ddns.path_id
+            && !intent.paths.iter().any(|path| &path.id == path_id)
+        {
+            diagnostics.push(StandardDiagnostic::error(
+                "ddns_path_missing",
+                "local.ddns.pathId",
+                format!("DDNS policy references missing path '{path_id}'"),
+            ));
+        }
+        for (kind, plugin_type) in [("matcher", "qname"), ("executor", "ttl")] {
+            let available = match kind {
+                "matcher" => capabilities.matcher(plugin_type),
+                _ => capabilities.executor(plugin_type),
+            };
+            if !available {
+                diagnostics.push(missing_plugin("local.ddns", kind, plugin_type));
+            }
         }
     }
 }

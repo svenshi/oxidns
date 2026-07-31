@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { GitBranch, Loader2, Plus, Route, Save, Trash2 } from "lucide-react";
 import { AppHeader } from "@/components/shell/app-header";
@@ -19,13 +20,17 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
+import {
+  selectStandardPathReferences,
+  type StandardEntityReference,
+  type StandardReferenceKind,
+} from "@/lib/standard-mode/selectors";
 import type {
   StandardModeSettings,
   StandardResolutionPath,
   StandardRoutingRule,
 } from "@/lib/standard-mode/types";
 import {
-  isPathReferencedByRouting,
   normalizeStandardRoutingSettings,
   standardRoutingCapabilityMap,
   validateStandardRoutingSettings,
@@ -52,6 +57,14 @@ const policyLabelKeys: Record<PathPolicy, string> = {
   inherit: WEBUI.standardRouting.policyInherit,
   enabled: WEBUI.standardRouting.policyEnabled,
   disabled: WEBUI.standardRouting.policyDisabled,
+};
+
+const referenceKindLabelKeys: Record<StandardReferenceKind, string> = {
+  path: WEBUI.standardRouting.referencePath,
+  routing_rule: WEBUI.standardRouting.referenceRoutingRule,
+  exception: WEBUI.standardRouting.referenceException,
+  device: WEBUI.standardRouting.referenceDevice,
+  ddns: WEBUI.standardRouting.referenceDdns,
 };
 
 const conditionPlaceholders: Record<RoutingConditionType, string> = {
@@ -171,7 +184,7 @@ export default function StandardRoutingPage() {
   const removePath = (pathId: string) => {
     if (
       pathId === settings.paths[0]?.id ||
-      isPathReferencedByRouting(pathId, settings.routing)
+      selectStandardPathReferences(settings, pathId).length > 0
     ) {
       return;
     }
@@ -303,20 +316,24 @@ export default function StandardRoutingPage() {
               </Button>
             </CardHeader>
             <CardContent className="space-y-3">
-              {settings.paths.map((path, index) => (
-                <PathEditor
-                  key={path.id}
-                  path={path}
-                  isDefault={index === 0}
-                  canRemove={
-                    index > 0 &&
-                    !isPathReferencedByRouting(path.id, settings.routing)
-                  }
-                  settings={settings}
-                  onChange={(patch) => updatePath(path.id, patch)}
-                  onRemove={() => removePath(path.id)}
-                />
-              ))}
+              {settings.paths.map((path, index) => {
+                const references = selectStandardPathReferences(
+                  settings,
+                  path.id,
+                );
+                return (
+                  <PathEditor
+                    key={path.id}
+                    path={path}
+                    isDefault={index === 0}
+                    canRemove={index > 0 && references.length === 0}
+                    references={references}
+                    settings={settings}
+                    onChange={(patch) => updatePath(path.id, patch)}
+                    onRemove={() => removePath(path.id)}
+                  />
+                );
+              })}
             </CardContent>
           </Card>
 
@@ -388,6 +405,7 @@ function PathEditor({
   path,
   isDefault,
   canRemove,
+  references,
   settings,
   onChange,
   onRemove,
@@ -395,13 +413,17 @@ function PathEditor({
   path: StandardResolutionPath;
   isDefault: boolean;
   canRemove: boolean;
+  references: StandardEntityReference[];
   settings: StandardModeSettings;
   onChange: (patch: Partial<StandardResolutionPath>) => void;
   onRemove: () => void;
 }) {
   const { t } = useI18n();
   return (
-    <div className="rounded-lg border bg-card/40 p-4">
+    <div
+      id={`path-${path.id}`}
+      className="scroll-mt-6 rounded-lg border bg-card/40 p-4"
+    >
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <span className="font-medium">{path.name || path.id}</span>
@@ -480,6 +502,30 @@ function PathEditor({
           />
         </div>
       </div>
+      <div className="mt-4 rounded-lg border bg-muted/20 p-3 text-sm">
+        <div className="font-medium">
+          {t(WEBUI.standardRouting.pathReferences)}
+        </div>
+        {references.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-2">
+            {references.map((reference) => (
+              <Badge
+                key={`${reference.kind}-${reference.id}`}
+                variant={reference.enabled ? "secondary" : "outline"}
+                asChild
+              >
+                <Link href={reference.href}>
+                  {t(referenceKindLabelKeys[reference.kind])}: {reference.name}
+                </Link>
+              </Badge>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-1 text-muted-foreground">
+            {t(WEBUI.standardRouting.pathNoReferences)}
+          </p>
+        )}
+      </div>
     </div>
   );
 }
@@ -548,7 +594,10 @@ function RuleEditor({
       : (settings.paths[0]?.id ?? "default");
 
   return (
-    <div className="rounded-lg border bg-card/40 p-4">
+    <div
+      id={`rule-${rule.id}`}
+      className="scroll-mt-6 rounded-lg border bg-card/40 p-4"
+    >
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <Label className="text-sm font-normal">
           <Switch

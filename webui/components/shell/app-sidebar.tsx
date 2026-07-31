@@ -23,6 +23,7 @@ import {
 import { useAuthStore } from "@/lib/auth-store";
 import {
   BookOpen,
+  FileCode2,
   GitBranch,
   Gauge,
   LayoutDashboard,
@@ -30,6 +31,7 @@ import {
   Network,
   Puzzle,
   ScrollText,
+  ServerCog,
   Settings,
   ShieldAlert,
   ShieldCheck,
@@ -80,6 +82,11 @@ const standardNavItems = [
     icon: ShieldCheck,
   },
   {
+    titleKey: WEBUI.standardNav.local,
+    href: "/standard/local",
+    icon: FileCode2,
+  },
+  {
     titleKey: WEBUI.standardNav.routing,
     href: "/standard/routing",
     icon: GitBranch,
@@ -98,6 +105,11 @@ const standardNavItems = [
     titleKey: WEBUI.standardNav.devices,
     href: "/standard/devices",
     icon: Smartphone,
+  },
+  {
+    titleKey: WEBUI.standardNav.operations,
+    href: "/standard/operations",
+    icon: ServerCog,
   },
   {
     titleKey: WEBUI.standardNav.system,

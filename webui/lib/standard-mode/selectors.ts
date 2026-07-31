@@ -7,6 +7,21 @@ import type {
   StandardUpstreamGroup,
 } from "./types";
 
+export type StandardReferenceKind =
+  | "path"
+  | "routing_rule"
+  | "exception"
+  | "device"
+  | "ddns";
+
+export interface StandardEntityReference {
+  kind: StandardReferenceKind;
+  id: string;
+  name: string;
+  href: string;
+  enabled: boolean;
+}
+
 export function selectStandardCapabilityMap(buildInfo: BuildInfo | null) {
   return {
     cache: isPluginKindSupported(buildInfo, "executor", "cache"),
@@ -45,6 +60,76 @@ export function selectAllStandardUpstreams(
   settings: StandardModeSettings,
 ): StandardUpstream[] {
   return settings.upstreamGroups.flatMap((group) => group.upstreams);
+}
+
+export function selectStandardUpstreamGroupReferences(
+  settings: StandardModeSettings,
+  groupId: string,
+): StandardEntityReference[] {
+  return settings.paths
+    .filter((path) => path.upstreamGroupId === groupId)
+    .map((path) => ({
+      kind: "path",
+      id: path.id,
+      name: path.name || path.id,
+      href: `/standard/routing#path-${encodeURIComponent(path.id)}`,
+      enabled: true,
+    }));
+}
+
+export function selectStandardPathReferences(
+  settings: StandardModeSettings,
+  pathId: string,
+): StandardEntityReference[] {
+  const references: StandardEntityReference[] = [];
+
+  for (const rule of settings.routing.rules) {
+    if (rule.action.type === "use_path" && rule.action.pathId === pathId) {
+      references.push({
+        kind: "routing_rule",
+        id: rule.id,
+        name: rule.name || rule.id,
+        href: `/standard/routing#rule-${encodeURIComponent(rule.id)}`,
+        enabled: rule.enabled,
+      });
+    }
+  }
+  for (const exception of settings.exceptions) {
+    if (
+      exception.action.type === "use_path" &&
+      exception.action.pathId === pathId
+    ) {
+      references.push({
+        kind: "exception",
+        id: exception.id,
+        name: exception.name || exception.id,
+        href: `/standard/exceptions#exception-${encodeURIComponent(exception.id)}`,
+        enabled: exception.enabled,
+      });
+    }
+  }
+  for (const device of settings.devices) {
+    if (device.assignedPathId === pathId) {
+      references.push({
+        kind: "device",
+        id: device.id,
+        name: device.name || device.id,
+        href: `/standard/devices#device-${encodeURIComponent(device.id)}`,
+        enabled: true,
+      });
+    }
+  }
+  if (settings.local.ddns.pathId === pathId) {
+    references.push({
+      kind: "ddns",
+      id: "ddns",
+      name: "DDNS",
+      href: "/standard/local#ddns",
+      enabled: settings.local.ddns.enabled,
+    });
+  }
+
+  return references;
 }
 
 export function selectStandardSummary(

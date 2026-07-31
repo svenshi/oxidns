@@ -102,7 +102,9 @@ function nextId(existing: string[]) {
   return id;
 }
 
-function createException(settings: StandardModeSettings): StandardExceptionRule {
+function createException(
+  settings: StandardModeSettings,
+): StandardExceptionRule {
   const id = nextId(settings.exceptions.map((exception) => exception.id));
   return {
     id,
@@ -340,13 +342,16 @@ function ExceptionEditor({
   const targetPathId =
     exception.action.type === "use_path"
       ? exception.action.pathId
-      : settings.paths[0]?.id ?? "default";
+      : (settings.paths[0]?.id ?? "default");
   const supported =
     conditionSupported(conditionType, capabilities) &&
     actionSupported(actionType, capabilities);
 
   return (
-    <div className="rounded-lg border bg-card/40 p-4">
+    <div
+      id={`exception-${exception.id}`}
+      className="scroll-mt-6 rounded-lg border bg-card/40 p-4"
+    >
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <Label className="text-sm font-normal">
           <Switch
@@ -398,13 +403,13 @@ function ExceptionEditor({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {(Object.keys(conditionLabelKeys) as ExceptionConditionType[]).map(
-                (type) => (
-                  <SelectItem key={type} value={type}>
-                    {t(conditionLabelKeys[type])}
-                  </SelectItem>
-                ),
-              )}
+              {(
+                Object.keys(conditionLabelKeys) as ExceptionConditionType[]
+              ).map((type) => (
+                <SelectItem key={type} value={type}>
+                  {t(conditionLabelKeys[type])}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>
@@ -416,7 +421,10 @@ function ExceptionEditor({
             value={actionType}
             onValueChange={(value) =>
               onChange({
-                action: createAction(value as ExceptionActionType, targetPathId),
+                action: createAction(
+                  value as ExceptionActionType,
+                  targetPathId,
+                ),
               })
             }
           >

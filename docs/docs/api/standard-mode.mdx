@@ -12,7 +12,7 @@ title: 标准模式 Plan/Apply
 
 ```json
 {
-  "intent": { "schema": 3, "listen": {}, "upstreamGroups": [] },
+  "intent": { "schema": 4, "listen": {}, "upstreamGroups": [] },
   "base_config_version": "sha256-hex",
   "base_standard_version": "sha256-hex",
   "takeover": false
@@ -28,7 +28,7 @@ title: 标准模式 Plan/Apply
 | `ownership` | `managed`、`modified` 或 `unmanaged` |
 | `semantic_diff` | 保留的顶层字段及将生成、替换、移除的插件 tag |
 | `blockers` | 版本冲突或需要显式接管等控制面阻断项 |
-| `plan.normalizedIntent` | 后端迁移和规范化后的 schema v3 意图 |
+| `plan.normalizedIntent` | 后端迁移和规范化后的 schema v4 意图 |
 | `plan.diagnostics` | 带稳定 `severity`、`code`、`path` 的语义诊断 |
 | `plan.generated` | 候选 YAML、版本、tag map 和摘要；有错误时不存在 |
 | `can_apply` | Plan 与控制面阻断项均通过时为 `true` |
@@ -41,7 +41,7 @@ Apply 会重新执行完整 Plan，检查两个基础版本和已审阅的候选
 
 ```json
 {
-  "intent": { "schema": 3, "listen": {}, "upstreamGroups": [] },
+  "intent": { "schema": 4, "listen": {}, "upstreamGroups": [] },
   "base_config_version": "plan-response-config-version",
   "base_standard_version": "plan-response-standard-version",
   "planned_config_version": "plan-generated-config-version",
@@ -89,3 +89,26 @@ Apply 会重新执行完整 Plan，检查两个基础版本和已审阅的候选
 ```
 
 `status` 为 `pending`、`succeeded`、`failed` 或 `recovered`。失败信息经过长度限制，不返回候选 YAML 或标准意图。
+
+## 标准模式配置历史
+
+后端在每次事务成功提交后保存规范化的标准模式意图，最多保留最近 20 条。历史文件位于 DNS 配置文件旁，使用原子替换，并在 Unix 上以 `0600` 权限写入。列表接口不返回完整意图，避免在日常状态读取中暴露上游代理等敏感配置。
+
+### `GET /api/standard/history`
+
+返回按时间倒序排列的历史元数据，包括快照 ID、事务 ID、配置版本、schema、上游组数量和解析路径数量。
+
+### `POST /api/standard/history/restore`
+
+```json
+{ "id": "standard-..." }
+```
+
+仅在操作者明确选择某条历史时返回其中保存的标准模式意图。WebUI 不会把历史 YAML 直接覆盖到当前配置，而是把该意图重新送入 Plan、差异预览、能力校验和事务 Apply。因此恢复操作仍受当前构建能力、配置所有权和乐观并发版本保护。
+
+## schema v4 运行语义
+
+- 每个过滤订阅生成独立的 `download`、`cron` 和任务标签。下载失败会停止该订阅的 provider reload，已有规则文件继续生效。
+- 每条解析路径拥有独立缓存实例；缓存查看、删除、清空、dump/load 使用生成元数据中的 `tagMap.caches` 定位。
+- Hosts、重定向、静态记录、响应 TTL、QTYPE 固定响应和 DDNS 均编译为 OxiDNS 原生插件。DDNS 域名绕过缓存并使用短固定 TTL。
+- 标准模式只引用本地规则文件路径，不创建、删除或改写平台文件，也不执行 OpenWrt/UCI、防火墙或第三方系统操作。

@@ -217,98 +217,103 @@ export function ConfigSyncControl() {
 
   const pillClass = tone === "neutral" ? "" : PILL_TONE[tone];
 
-  const primary =
-    state === "in-sync" && isStandardMode ? (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1.5 rounded-md px-2.5 text-muted-foreground"
-            disabled
-          >
+  const primary = isStandardMode ? (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant={tone === "neutral" ? "ghost" : "outline"}
+          size="sm"
+          className={`h-7 gap-1.5 rounded-md px-2.5 ${pillClass}`}
+          disabled
+        >
+          {state === "applying" ? (
+            <Spinner className="h-3.5 w-3.5" />
+          ) : state === "in-sync" ? (
             <CheckCircle2 className="h-3.5 w-3.5" />
-            {t(WEBUI.configSync.inSync)}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>{t(WEBUI.configSync.historyInSync)}</TooltipContent>
-      </Tooltip>
-    ) : state === "in-sync" ? (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="rounded-md"
-            onClick={() => setHistoryOpen(true)}
-          >
-            <History className="h-4 w-4" />
-            <span className="sr-only">{t(WEBUI.configSync.historyButton)}</span>
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>{t(WEBUI.configSync.historyInSync)}</TooltipContent>
-      </Tooltip>
-    ) : state === "applying" ? (
-      <Button
-        variant="outline"
-        size="sm"
-        className="h-7 gap-1.5 rounded-md px-2.5"
-        disabled
-      >
-        <Spinner className="h-3.5 w-3.5" />
-        {isRestarting
-          ? t(WEBUI.configSync.restartingLabel)
-          : t(WEBUI.configSync.applyingLabel)}
-      </Button>
-    ) : isRestarting ? (
-      <Button
-        variant="outline"
-        size="sm"
-        className="h-7 gap-1.5 rounded-md px-2.5"
-        disabled
-      >
-        <Spinner className="h-3.5 w-3.5" />
-        {t(WEBUI.configSync.restartingLabel)}
-      </Button>
-    ) : (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="outline"
-            size="sm"
-            className={`h-7 gap-1.5 rounded-md px-2.5 ${pillClass}`}
-            onClick={() => {
-              if (pendingRestartOnlyChange) {
-                setRestartConfirmOpen(true);
-              } else {
-                void handleApply();
-              }
-            }}
-            disabled={state === "error" || isConfigSaving}
-          >
-            {state === "not-applied" || state === "apply-failed" ? (
-              pendingRestartOnlyChange ? (
-                <RotateCw className="h-3.5 w-3.5" />
-              ) : (
-                <Rocket className="h-3.5 w-3.5" />
-              )
+          ) : (
+            <AlertCircle className="h-3.5 w-3.5" />
+          )}
+          {state === "in-sync" ? t(WEBUI.configSync.inSync) : label}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  ) : state === "in-sync" ? (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="rounded-md"
+          onClick={() => setHistoryOpen(true)}
+        >
+          <History className="h-4 w-4" />
+          <span className="sr-only">{t(WEBUI.configSync.historyButton)}</span>
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{t(WEBUI.configSync.historyInSync)}</TooltipContent>
+    </Tooltip>
+  ) : state === "applying" ? (
+    <Button
+      variant="outline"
+      size="sm"
+      className="h-7 gap-1.5 rounded-md px-2.5"
+      disabled
+    >
+      <Spinner className="h-3.5 w-3.5" />
+      {isRestarting
+        ? t(WEBUI.configSync.restartingLabel)
+        : t(WEBUI.configSync.applyingLabel)}
+    </Button>
+  ) : isRestarting ? (
+    <Button
+      variant="outline"
+      size="sm"
+      className="h-7 gap-1.5 rounded-md px-2.5"
+      disabled
+    >
+      <Spinner className="h-3.5 w-3.5" />
+      {t(WEBUI.configSync.restartingLabel)}
+    </Button>
+  ) : (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          className={`h-7 gap-1.5 rounded-md px-2.5 ${pillClass}`}
+          onClick={() => {
+            if (pendingRestartOnlyChange) {
+              setRestartConfirmOpen(true);
+            } else {
+              void handleApply();
+            }
+          }}
+          disabled={state === "error" || isConfigSaving}
+        >
+          {state === "not-applied" || state === "apply-failed" ? (
+            pendingRestartOnlyChange ? (
+              <RotateCw className="h-3.5 w-3.5" />
             ) : (
-              <AlertCircle className="h-3.5 w-3.5" />
-            )}
-            {state === "not-applied"
-              ? requiresRestart
+              <Rocket className="h-3.5 w-3.5" />
+            )
+          ) : (
+            <AlertCircle className="h-3.5 w-3.5" />
+          )}
+          {state === "not-applied"
+            ? requiresRestart
+              ? t(WEBUI.configSync.needsRestart)
+              : t(WEBUI.configSync.applyChanges)
+            : state === "apply-failed"
+              ? pendingRestartOnlyChange
                 ? t(WEBUI.configSync.needsRestart)
-                : t(WEBUI.configSync.applyChanges)
-              : state === "apply-failed"
-                ? pendingRestartOnlyChange
-                  ? t(WEBUI.configSync.needsRestart)
-                  : t(WEBUI.configSync.applyFailed)
-                : t(WEBUI.configSync.configHasError)}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>{label}</TooltipContent>
-      </Tooltip>
-    );
+                : t(WEBUI.configSync.applyFailed)
+              : t(WEBUI.configSync.configHasError)}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
 
   return (
     <>

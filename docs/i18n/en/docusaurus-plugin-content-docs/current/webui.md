@@ -16,6 +16,8 @@ In both modes, the WebUI defaults to the relative backend URL `/api`. When the W
 - Standard Mode manages native OxiDNS DNS intent. It does not operate OpenWrt/UCI, OS DNS, firewalls, or third-party proxy systems.
 - Before saving, the Rust backend builds a Plan that exposes diagnostics, configuration ownership, and plugin changes. Unmanaged or modified configurations require explicit takeover confirmation.
 - After confirmation, Standard state, generated metadata, DNS YAML, and runtime reload are applied as one recoverable transaction. Failure restores the previous files and runtime.
+- Standard Mode provides multiple upstream groups, reference-aware resolution paths, independent filter subscriptions, local DNS policies, query-log export, per-path cache operations, and backend configuration history.
+- Local DNS Policies only use native OxiDNS plugins. History restores under Operations & Recovery pass through diff review and transactional apply instead of overwriting YAML.
 - Switching the WebUI view alone does not rewrite DNS YAML. See [Standard Mode Plan/Apply](api/standard-mode.mdx) for the API contract.
 
 ## Use The WebUI Included In Release Packages

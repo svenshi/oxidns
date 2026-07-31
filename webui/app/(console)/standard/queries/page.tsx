@@ -4,10 +4,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Ban,
   CheckCircle2,
+  Download,
   Loader2,
   RefreshCw,
   Route,
   Search,
+  Trash2,
 } from "lucide-react";
 import { AppHeader } from "@/components/shell/app-header";
 import { DnsRecordDetailDialog } from "@/components/plugins/dns-record-detail-dialog";
@@ -35,6 +37,7 @@ import {
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
 import {
+  clearQueryRecorderHistory,
   fetchQueryRecordDetail,
   fetchQueryRecords,
   type QueryRecordDetail,
@@ -134,10 +137,12 @@ function createRoutingRule(
 }
 
 function nextRuleId(settings: StandardModeSettings, domain: string) {
-  const base = `query_${domain
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "_")
-    .replace(/^_+|_+$/g, "") || "rule"}`;
+  const base = `query_${
+    domain
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "_")
+      .replace(/^_+|_+$/g, "") || "rule"
+  }`;
   const used = new Set(settings.routing.rules.map((rule) => rule.id));
   if (!used.has(base)) return base;
   let index = 2;
@@ -161,6 +166,69 @@ function uniqueAppend(values: string[], value: string) {
   return result;
 }
 
+async function fetchAllQueryRecords(
+  recorderName: string,
+  filters: QueryRecordFilters,
+) {
+  const result: QueryRecordRow[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await fetchQueryRecords(recorderName, {
+      ...filters,
+      limit: 500,
+      cursor,
+    });
+    result.push(...page.records);
+    cursor = page.next_cursor;
+  } while (cursor && result.length < 100_000);
+  return result;
+}
+
+function exportRows(rows: QueryRecordRow[], format: "json" | "csv") {
+  const content =
+    format === "json"
+      ? JSON.stringify(rows, null, 2)
+      : [
+          [
+            "created_at_ms",
+            "client_ip",
+            "qname",
+            "qtype",
+            "rcode",
+            "elapsed_ms",
+            "has_response",
+            "error",
+          ],
+          ...rows.map((row) => [
+            row.created_at_ms,
+            row.client_ip,
+            queryRecordDomain(row),
+            queryRecordQtype(row),
+            row.rcode ?? "",
+            row.elapsed_ms,
+            row.has_response,
+            row.error ?? "",
+          ]),
+        ]
+          .map((row) => row.map(csvCell).join(","))
+          .join("\n");
+  const blob = new Blob([content], {
+    type: format === "json" ? "application/json" : "text/csv;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  const timestamp = new Date().toISOString().replaceAll(":", "-");
+  anchor.download = `oxidns-query-log-${timestamp}.${format}`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function csvCell(value: unknown) {
+  const text = String(value ?? "");
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
 export default function StandardQueriesPage() {
   const plugins = useAppStore((s) => s.plugins);
   const buildInfo = useAppStore((s) => s.buildInfo);
@@ -180,9 +248,9 @@ export default function StandardQueriesPage() {
     plugins.find((plugin) => plugin.pluginKind === "query_recorder");
   const recorderName = recorder?.name;
   const [records, setRecords] = useState<QueryRecordRow[]>([]);
-  const [detailsById, setDetailsById] = useState<Record<number, QueryRecordDetail>>(
-    {},
-  );
+  const [detailsById, setDetailsById] = useState<
+    Record<number, QueryRecordDetail>
+  >({});
   const [selected, setSelected] = useState<QueryRecordDetail | null>(null);
   const [filterForm, setFilterForm] = useState<QueryFilterForm>(EMPTY_FILTERS);
   const [appliedFilters, setAppliedFilters] = useState<QueryRecordFilters>({});
@@ -191,6 +259,8 @@ export default function StandardQueriesPage() {
   );
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [exporting, setExporting] = useState<"json" | "csv" | null>(null);
   const [savingAction, setSavingAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -236,7 +306,9 @@ export default function StandardQueriesPage() {
       if (requestIdRef.current !== requestId) return;
       setDetailLoading(false);
       setError(
-        err instanceof Error ? err.message : t(WEBUI.standardQueries.readFailed),
+        err instanceof Error
+          ? err.message
+          : t(WEBUI.standardQueries.readFailed),
       );
     } finally {
       if (requestIdRef.current === requestId) setLoading(false);
@@ -277,6 +349,58 @@ export default function StandardQueriesPage() {
     setFilterForm(EMPTY_FILTERS);
     setAppliedFilters({});
     void load({});
+  };
+
+  const clearHistory = async () => {
+    if (
+      !recorderName ||
+      !window.confirm(t(WEBUI.standardQueries.clearConfirm))
+    ) {
+      return;
+    }
+    setClearing(true);
+    setError(null);
+    setActionMessage(null);
+    try {
+      const result = await clearQueryRecorderHistory(recorderName);
+      setRecords([]);
+      setDetailsById({});
+      setSelected(null);
+      setActionMessage(
+        t(WEBUI.standardQueries.clearSuccess, {
+          count: formatNumber(result.cleared_records),
+        }),
+      );
+    } catch (clearError) {
+      setError(
+        clearError instanceof Error ? clearError.message : String(clearError),
+      );
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  const exportHistory = async (format: "json" | "csv") => {
+    if (!recorderName) return;
+    setExporting(format);
+    setError(null);
+    try {
+      const rows = await fetchAllQueryRecords(recorderName, appliedFilters);
+      exportRows(rows, format);
+      setActionMessage(
+        t(WEBUI.standardQueries.exportSuccess, {
+          count: formatNumber(rows.length),
+        }),
+      );
+    } catch (exportError) {
+      setError(
+        exportError instanceof Error
+          ? exportError.message
+          : String(exportError),
+      );
+    } finally {
+      setExporting(null);
+    }
   };
 
   const openDetail = async (record: QueryRecordRow) => {
@@ -346,7 +470,11 @@ export default function StandardQueriesPage() {
 
   const saveRoutingRule = async () => {
     if (!selectedDomain) return;
-    const rule = createRoutingRule(standardSettings, selectedDomain, routePathId);
+    const rule = createRoutingRule(
+      standardSettings,
+      selectedDomain,
+      routePathId,
+    );
     const nextSettings = normalizeStandardRoutingSettings({
       ...standardSettings,
       routing: {
@@ -395,14 +523,55 @@ export default function StandardQueriesPage() {
                 {t(WEBUI.standardQueries.description)}
               </p>
             </div>
-            <Button onClick={() => void load()} disabled={!recorderName || loading}>
-              {loading ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <RefreshCw className="size-4" />
-              )}
-              {t(WEBUI.standardQueries.refresh)}
-            </Button>
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => void exportHistory("json")}
+                disabled={!recorderName || exporting !== null}
+              >
+                {exporting === "json" ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Download className="size-4" />
+                )}
+                {t(WEBUI.standardQueries.exportJson)}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => void exportHistory("csv")}
+                disabled={!recorderName || exporting !== null}
+              >
+                {exporting === "csv" ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Download className="size-4" />
+                )}
+                {t(WEBUI.standardQueries.exportCsv)}
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => void clearHistory()}
+                disabled={!recorderName || clearing}
+              >
+                {clearing ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Trash2 className="size-4" />
+                )}
+                {t(WEBUI.standardQueries.clearHistory)}
+              </Button>
+              <Button
+                onClick={() => void load()}
+                disabled={!recorderName || loading}
+              >
+                {loading ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="size-4" />
+                )}
+                {t(WEBUI.standardQueries.refresh)}
+              </Button>
+            </div>
           </div>
 
           {!capabilities.queryRecorder || !recorderName ? (
@@ -468,7 +637,9 @@ export default function StandardQueriesPage() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="all">{t(WEBUI.common.all)}</SelectItem>
+                        <SelectItem value="all">
+                          {t(WEBUI.common.all)}
+                        </SelectItem>
                         {QTYPE_OPTIONS.map((qtype) => (
                           <SelectItem key={qtype} value={qtype}>
                             {qtype}
@@ -517,7 +688,9 @@ export default function StandardQueriesPage() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="all">{t(WEBUI.common.all)}</SelectItem>
+                        <SelectItem value="all">
+                          {t(WEBUI.common.all)}
+                        </SelectItem>
                         <SelectItem value="error">
                           {t(WEBUI.standardQueries.statusError)}
                         </SelectItem>
@@ -561,15 +734,29 @@ export default function StandardQueriesPage() {
                   <Table className="min-w-[1120px]">
                     <TableHeader>
                       <TableRow className="bg-muted/30 hover:bg-muted/30">
-                        <TableHead>{t(WEBUI.standardQueries.timeColumn)}</TableHead>
-                        <TableHead>{t(WEBUI.standardQueries.clientColumn)}</TableHead>
-                        <TableHead>{t(WEBUI.standardQueries.domainColumn)}</TableHead>
+                        <TableHead>
+                          {t(WEBUI.standardQueries.timeColumn)}
+                        </TableHead>
+                        <TableHead>
+                          {t(WEBUI.standardQueries.clientColumn)}
+                        </TableHead>
+                        <TableHead>
+                          {t(WEBUI.standardQueries.domainColumn)}
+                        </TableHead>
                         <TableHead>QTYPE</TableHead>
                         <TableHead>RCODE</TableHead>
-                        <TableHead>{t(WEBUI.standardQueries.pathColumn)}</TableHead>
-                        <TableHead>{t(WEBUI.standardQueries.upstreamColumn)}</TableHead>
-                        <TableHead>{t(WEBUI.standardQueries.ruleColumn)}</TableHead>
-                        <TableHead>{t(WEBUI.standardQueries.outcomeColumn)}</TableHead>
+                        <TableHead>
+                          {t(WEBUI.standardQueries.pathColumn)}
+                        </TableHead>
+                        <TableHead>
+                          {t(WEBUI.standardQueries.upstreamColumn)}
+                        </TableHead>
+                        <TableHead>
+                          {t(WEBUI.standardQueries.ruleColumn)}
+                        </TableHead>
+                        <TableHead>
+                          {t(WEBUI.standardQueries.outcomeColumn)}
+                        </TableHead>
                         <TableHead className="text-right">
                           {t(WEBUI.standardQueries.elapsedColumn)}
                         </TableHead>
@@ -608,9 +795,7 @@ export default function StandardQueriesPage() {
                               {explanation?.upstreamGroup?.name ??
                                 t(WEBUI.standardQueries.unknown)}
                             </TableCell>
-                            <TableCell>
-                              {ruleLabel(explanation, t)}
-                            </TableCell>
+                            <TableCell>{ruleLabel(explanation, t)}</TableCell>
                             <TableCell>
                               <OutcomeBadge
                                 outcome={
@@ -760,7 +945,8 @@ function RecordDetailDialog({
               { label: "RCODE", value: record.rcode ?? "-", mono: true },
               {
                 label: t(WEBUI.standardQueries.pathColumn),
-                value: explanation?.path?.name ?? t(WEBUI.standardQueries.unknown),
+                value:
+                  explanation?.path?.name ?? t(WEBUI.standardQueries.unknown),
               },
               {
                 label: t(WEBUI.standardQueries.upstreamColumn),

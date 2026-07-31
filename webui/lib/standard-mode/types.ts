@@ -34,7 +34,15 @@ export interface StandardUpstream {
   address: string;
   enabled: boolean;
   bootstrap?: string;
+  bootstrapVersion?: 4 | 6;
   dialAddress?: string;
+  outbound?: string;
+  socks5?: string;
+  timeoutSeconds?: number;
+  idleTimeoutSeconds?: number;
+  maxConns?: number;
+  minConns?: number;
+  enablePipeline?: boolean;
   tlsVerify?: boolean;
   dohPath?: string;
   enableHttp3?: boolean;
@@ -77,10 +85,17 @@ export interface StandardQueryLogSettings {
 export interface StandardFilteringSettings {
   enabled: boolean;
   subscriptions: StandardSubscription[];
+  localFiles: StandardFilterFile[];
   blockRules: string[];
   allowRules: string[];
-  blockResponse: "null_ip" | "nxdomain" | "refused";
+  blockResponse: StandardBlockResponse;
 }
+
+export type StandardBlockResponse =
+  | "null_ip"
+  | "nxdomain"
+  | "nodata"
+  | "refused";
 
 export interface StandardSubscription {
   id: string;
@@ -88,6 +103,44 @@ export interface StandardSubscription {
   url: string;
   enabled: boolean;
   updateIntervalHours: number;
+}
+
+export interface StandardFilterFile {
+  id: string;
+  name: string;
+  path: string;
+  enabled: boolean;
+}
+
+export interface StandardLocalSettings {
+  hosts: {
+    entries: string[];
+    files: string[];
+  };
+  redirects: {
+    rules: string[];
+    files: string[];
+  };
+  records: {
+    rules: string[];
+    files: string[];
+  };
+  responseTtl: {
+    enabled: boolean;
+    min?: number;
+    max?: number;
+  };
+  qtypePolicy: {
+    enabled: boolean;
+    qtypes: string[];
+    response: StandardBlockResponse;
+  };
+  ddns: {
+    enabled: boolean;
+    domains: string[];
+    pathId?: string;
+    ttl: number;
+  };
 }
 
 export interface StandardRoutingSettings {
@@ -156,11 +209,12 @@ export interface StandardSystemSettings {
 }
 
 export interface StandardModeSettings {
-  schema: 3;
+  schema: 4;
   listen: StandardListenSettings;
   upstreamGroups: StandardUpstreamGroup[];
   paths: StandardResolutionPath[];
   filtering: StandardFilteringSettings;
+  local: StandardLocalSettings;
   cache: StandardCacheSettings;
   queryLog: StandardQueryLogSettings;
   routing: StandardRoutingSettings;
@@ -176,11 +230,19 @@ export interface StandardTagMap {
   cache?: string;
   queryLog?: string;
   filtering?: string[];
+  filterSubscriptions?: Record<string, StandardSubscriptionTagMap>;
+  local?: Record<string, string>;
   upstreamGroups: Record<string, string>;
   paths: Record<string, string>;
   routingRules: Record<string, string>;
   exceptionRules: Record<string, string>;
   devices?: Record<string, string>;
+}
+
+export interface StandardSubscriptionTagMap {
+  download: string;
+  cron: string;
+  job: string;
 }
 
 export interface StandardGenerationSummary {
@@ -193,6 +255,7 @@ export interface StandardGenerationSummary {
   routingRuleCount: number;
   exceptionRuleCount: number;
   deviceCount: number;
+  localPolicyCount: number;
 }
 
 export interface StandardGeneratedMetadata {

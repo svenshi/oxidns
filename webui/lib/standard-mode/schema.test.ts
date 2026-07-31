@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createDefaultStandardSettings } from "./defaults";
 import { normalizeStandardSettings } from "./schema";
 
-describe("Standard Mode schema v3", () => {
+describe("Standard Mode schema v4", () => {
   it("migrates v2 cache fields and removes inert Phase 2 values", () => {
     const legacy = createDefaultStandardSettings() as unknown as Record<
       string,
@@ -60,7 +60,7 @@ describe("Standard Mode schema v3", () => {
 
     expect(result.notice).toBe("legacy_migrated");
     expect(result.settings).toMatchObject({
-      schema: 3,
+      schema: 4,
       cache: {
         minPositiveTtl: 12,
         maxPositiveTtl: 1200,
@@ -81,7 +81,27 @@ describe("Standard Mode schema v3", () => {
     });
   });
 
-  it("preserves v3 invalid references and duplicate ids for backend diagnostics", () => {
+  it("migrates v3 with inactive local-policy defaults", () => {
+    const previous = createDefaultStandardSettings() as unknown as Record<
+      string,
+      unknown
+    >;
+    previous.schema = 3;
+    delete previous.local;
+    const filtering = previous.filtering as Record<string, unknown>;
+    delete filtering.localFiles;
+
+    const result = normalizeStandardSettings(previous);
+
+    expect(result.notice).toBe("legacy_migrated");
+    expect(result.settings.schema).toBe(4);
+    expect(result.settings.filtering.localFiles).toEqual([]);
+    expect(result.settings.local).toEqual(
+      createDefaultStandardSettings().local,
+    );
+  });
+
+  it("preserves v4 invalid references and duplicate ids for backend diagnostics", () => {
     const current = createDefaultStandardSettings();
     current.paths[0].upstreamGroupId = "missing";
     current.paths.push({ ...current.paths[0] });

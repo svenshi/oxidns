@@ -15,7 +15,7 @@ use oxidns::infra::error::{DnsError, Result};
 use oxidns::infra::network::transport::tcp::{TcpTransportReader, TcpTransportWriter};
 use oxidns::infra::network::transport::udp::UdpTransport;
 use oxidns::plugin::{self, PluginRegistry};
-use oxidns::proto::{DNSClass, Message, Name, Question, RecordType};
+use oxidns::proto::{DNSClass, Message, Name, Question, Rcode, RecordType};
 use serde_json::json;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::task::JoinHandle;
@@ -140,22 +140,29 @@ fn standard_intent(
     intent
 }
 
-fn query() -> Message {
+fn query_for(name: &str, qtype: RecordType) -> Message {
     let mut request = Message::new();
     request.set_id(0x534D);
     request.add_question(Question::new(
-        Name::from_ascii("cache-isolation.test.").expect("valid query name"),
-        RecordType::A,
+        Name::from_ascii(name).expect("valid query name"),
+        qtype,
         DNSClass::IN,
     ));
     request
 }
 
+fn query() -> Message {
+    query_for("cache-isolation.test.", RecordType::A)
+}
+
 async fn exchange_udp(server: SocketAddr) -> Result<Message> {
+    exchange_udp_query(server, query()).await
+}
+
+async fn exchange_udp_query(server: SocketAddr, request: Message) -> Result<Message> {
     let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
     socket.connect(server).await?;
     let transport = UdpTransport::new(socket);
-    let request = query();
     transport
         .write_message_with_id(&request, request.id())
         .await?;
@@ -166,11 +173,19 @@ async fn exchange_udp(server: SocketAddr) -> Result<Message> {
 }
 
 async fn execute_standard_main(registry: Arc<PluginRegistry>, client: Ipv4Addr) -> Result<Message> {
+    execute_standard_main_query(registry, client, query()).await
+}
+
+async fn execute_standard_main_query(
+    registry: Arc<PluginRegistry>,
+    client: Ipv4Addr,
+    request: Message,
+) -> Result<Message> {
     let executor = registry
         .get_plugin("standard_main_sequence")
         .ok_or_else(|| DnsError::runtime("compiled Standard main sequence is missing"))?
         .to_executor();
-    let mut context = DnsContext::new(SocketAddr::from((client, 5300)), query());
+    let mut context = DnsContext::new(SocketAddr::from((client, 5300)), request);
     executor.execute(&mut context).await?;
     context
         .response()
@@ -250,5 +265,144 @@ async fn standard_mode_tcp_listener_uses_the_compiled_default_path() -> Result<(
 
     registry.destroy().await;
     upstream_task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn standard_mode_native_local_policies_short_circuit_and_ddns_bypasses_cache() -> Result<()> {
+    let (upstream_addr, upstream_count, upstream_task) =
+        start_mock_upstream(Ipv4Addr::new(203, 0, 113, 40)).await?;
+    let listen = reserve_local_addr()?;
+    let mut intent = standard_intent(listen, upstream_addr, None);
+    intent["local"] = json!({
+        "hosts": {
+            "entries": ["full:router.test 192.0.2.50"],
+            "files": []
+        },
+        "redirects": { "rules": [], "files": [] },
+        "records": {
+            "rules": ["answer.test. 60 IN A 192.0.2.60"],
+            "files": []
+        },
+        "responseTtl": { "enabled": false, "min": 30, "max": 86400 },
+        "qtypePolicy": {
+            "enabled": true,
+            "qtypes": ["HTTPS", "SVCB"],
+            "response": "nodata"
+        },
+        "ddns": {
+            "enabled": true,
+            "domains": ["dynamic.test"],
+            "ttl": 20
+        }
+    });
+    let config = compiled_standard_config(intent)?;
+    let registry = plugin::init(config).await?;
+
+    let hosts = exchange_udp_query(listen, query_for("router.test.", RecordType::A)).await?;
+    assert_eq!(
+        answer_ip(&hosts),
+        Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50)))
+    );
+    let record = exchange_udp_query(listen, query_for("answer.test.", RecordType::A)).await?;
+    assert_eq!(
+        answer_ip(&record),
+        Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 60)))
+    );
+    let qtype = exchange_udp_query(listen, query_for("service.test.", RecordType::HTTPS)).await?;
+    assert_eq!(qtype.rcode(), Rcode::NoError);
+    assert!(qtype.answers().is_empty());
+    assert_eq!(upstream_count.load(Ordering::SeqCst), 0);
+
+    let ddns_first = exchange_udp_query(listen, query_for("dynamic.test.", RecordType::A)).await?;
+    let ddns_second = exchange_udp_query(listen, query_for("dynamic.test.", RecordType::A)).await?;
+    assert_eq!(ddns_first.answers()[0].ttl(), 20);
+    assert_eq!(ddns_second.answers()[0].ttl(), 20);
+    assert_eq!(upstream_count.load(Ordering::SeqCst), 2);
+
+    let normal_first = exchange_udp(listen).await?;
+    let normal_cached = exchange_udp(listen).await?;
+    assert_eq!(answer_ip(&normal_first), answer_ip(&normal_cached));
+    assert_eq!(upstream_count.load(Ordering::SeqCst), 3);
+
+    registry.destroy().await;
+    upstream_task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn standard_mode_rule_routes_and_filtering_form_one_runtime_pipeline() -> Result<()> {
+    let (primary_addr, primary_count, primary_task) =
+        start_mock_upstream(Ipv4Addr::new(192, 0, 2, 70)).await?;
+    let (secondary_addr, secondary_count, secondary_task) =
+        start_mock_upstream(Ipv4Addr::new(198, 51, 100, 80)).await?;
+    let listen = reserve_local_addr()?;
+    let mut intent = standard_intent(listen, primary_addr, Some(secondary_addr));
+    intent["filtering"] = json!({
+        "enabled": true,
+        "subscriptions": [],
+        "localFiles": [],
+        "blockRules": ["||ads.test^"],
+        "allowRules": [],
+        "blockResponse": "nxdomain"
+    });
+    intent["routing"] = json!({
+        "enabled": true,
+        "rules": [{
+            "id": "route_secondary",
+            "name": "Route secondary",
+            "enabled": true,
+            "condition": { "type": "domain", "values": ["route.test"] },
+            "action": { "type": "use_path", "pathId": "secondary" },
+            "source": "manual"
+        }],
+        "scenarios": []
+    });
+    let config = compiled_standard_config(intent)?;
+    let registry = plugin::init(config).await?;
+
+    let routed = execute_standard_main_query(
+        registry.clone(),
+        Ipv4Addr::LOCALHOST,
+        query_for("route.test.", RecordType::A),
+    )
+    .await?;
+    let routed_cached = execute_standard_main_query(
+        registry.clone(),
+        Ipv4Addr::LOCALHOST,
+        query_for("route.test.", RecordType::A),
+    )
+    .await?;
+    assert_eq!(
+        answer_ip(&routed),
+        Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 80)))
+    );
+    assert_eq!(answer_ip(&routed_cached), answer_ip(&routed));
+    assert_eq!(secondary_count.load(Ordering::SeqCst), 1);
+
+    let blocked = execute_standard_main_query(
+        registry.clone(),
+        Ipv4Addr::LOCALHOST,
+        query_for("ads.test.", RecordType::A),
+    )
+    .await?;
+    assert_eq!(blocked.rcode(), Rcode::NXDomain);
+    assert_eq!(primary_count.load(Ordering::SeqCst), 0);
+
+    let default = execute_standard_main_query(
+        registry.clone(),
+        Ipv4Addr::LOCALHOST,
+        query_for("ordinary.test.", RecordType::A),
+    )
+    .await?;
+    assert_eq!(
+        answer_ip(&default),
+        Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 70)))
+    );
+    assert_eq!(primary_count.load(Ordering::SeqCst), 1);
+
+    registry.destroy().await;
+    primary_task.abort();
+    secondary_task.abort();
     Ok(())
 }

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-pub const CURRENT_STANDARD_SCHEMA: u32 = 3;
+pub const CURRENT_STANDARD_SCHEMA: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,6 +20,8 @@ pub struct StandardIntent {
     pub paths: Vec<StandardResolutionPath>,
     #[serde(default)]
     pub filtering: StandardFilteringSettings,
+    #[serde(default)]
+    pub local: StandardLocalSettings,
     #[serde(default)]
     pub cache: StandardCacheSettings,
     #[serde(default)]
@@ -42,6 +44,7 @@ impl Default for StandardIntent {
             upstream_groups: vec![StandardUpstreamGroup::default()],
             paths: vec![StandardResolutionPath::default()],
             filtering: StandardFilteringSettings::default(),
+            local: StandardLocalSettings::default(),
             cache: StandardCacheSettings::default(),
             query_log: StandardQueryLogSettings::default(),
             routing: StandardRoutingSettings::default(),
@@ -128,7 +131,23 @@ pub struct StandardUpstream {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bootstrap: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap_version: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dial_address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbound: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socks5: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_conns: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_conns: Option<usize>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub enable_pipeline: bool,
     #[serde(default = "default_true")]
     pub tls_verify: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -146,7 +165,15 @@ impl StandardUpstream {
             address: address.to_string(),
             enabled: true,
             bootstrap: None,
+            bootstrap_version: None,
             dial_address: None,
+            outbound: None,
+            socks5: None,
+            timeout_seconds: None,
+            idle_timeout_seconds: None,
+            max_conns: None,
+            min_conns: None,
+            enable_pipeline: false,
             tls_verify: true,
             doh_path: None,
             enable_http3: false,
@@ -286,6 +313,8 @@ pub struct StandardFilteringSettings {
     #[serde(default)]
     pub subscriptions: Vec<StandardSubscription>,
     #[serde(default)]
+    pub local_files: Vec<StandardFilterFile>,
+    #[serde(default)]
     pub block_rules: Vec<String>,
     #[serde(default)]
     pub allow_rules: Vec<String>,
@@ -298,6 +327,7 @@ impl Default for StandardFilteringSettings {
         Self {
             enabled: false,
             subscriptions: Vec::new(),
+            local_files: Vec::new(),
             block_rules: Vec::new(),
             allow_rules: Vec::new(),
             block_response: StandardBlockResponse::NullIp,
@@ -317,13 +347,134 @@ pub struct StandardSubscription {
     pub update_interval_hours: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardFilterFile {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StandardBlockResponse {
     #[default]
     NullIp,
     Nxdomain,
+    Nodata,
     Refused,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardLocalSettings {
+    #[serde(default)]
+    pub hosts: StandardLocalHosts,
+    #[serde(default)]
+    pub redirects: StandardLocalRedirects,
+    #[serde(default)]
+    pub records: StandardLocalRecords,
+    #[serde(default)]
+    pub response_ttl: StandardResponseTtl,
+    #[serde(default)]
+    pub qtype_policy: StandardQtypePolicy,
+    #[serde(default)]
+    pub ddns: StandardDdnsPolicy,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardLocalHosts {
+    #[serde(default)]
+    pub entries: Vec<String>,
+    #[serde(default)]
+    pub files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardLocalRedirects {
+    #[serde(default)]
+    pub rules: Vec<String>,
+    #[serde(default)]
+    pub files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardLocalRecords {
+    #[serde(default)]
+    pub rules: Vec<String>,
+    #[serde(default)]
+    pub files: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardResponseTtl {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<u32>,
+}
+
+impl Default for StandardResponseTtl {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min: Some(30),
+            max: Some(86_400),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardQtypePolicy {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub qtypes: Vec<String>,
+    #[serde(default)]
+    pub response: StandardBlockResponse,
+}
+
+impl Default for StandardQtypePolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            qtypes: Vec::new(),
+            response: StandardBlockResponse::Nodata,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardDdnsPolicy {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub domains: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_id: Option<String>,
+    #[serde(default = "default_ddns_ttl")]
+    pub ttl: u32,
+}
+
+impl Default for StandardDdnsPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            domains: Vec::new(),
+            path_id: None,
+            ttl: default_ddns_ttl(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -551,11 +702,21 @@ pub struct StandardTagMap {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub query_log: Option<String>,
     pub filtering: Vec<String>,
+    pub filter_subscriptions: BTreeMap<String, StandardSubscriptionTagMap>,
+    pub local: BTreeMap<String, String>,
     pub upstream_groups: BTreeMap<String, String>,
     pub paths: BTreeMap<String, String>,
     pub routing_rules: BTreeMap<String, String>,
     pub exception_rules: BTreeMap<String, String>,
     pub devices: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardSubscriptionTagMap {
+    pub download: String,
+    pub cron: String,
+    pub job: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -570,6 +731,7 @@ pub struct StandardGenerationSummary {
     pub routing_rule_count: usize,
     pub exception_rule_count: usize,
     pub device_count: usize,
+    pub local_policy_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -599,6 +761,10 @@ pub struct StandardPlan {
 
 const fn default_true() -> bool {
     true
+}
+
+const fn default_ddns_ttl() -> u32 {
+    30
 }
 
 fn default_listen_address() -> String {

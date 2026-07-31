@@ -74,6 +74,8 @@ struct JobConfig {
     schedule: Option<String>,
     interval: Option<String>,
     executors: Vec<String>,
+    #[serde(default)]
+    stop_on_error: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +113,7 @@ struct PreparedJob {
     name: String,
     trigger: JobTrigger,
     executors: Vec<Arc<dyn Executor>>,
+    stop_on_error: bool,
 }
 
 #[derive(Debug)]
@@ -136,6 +139,7 @@ struct CronJobControl {
     name: String,
     trigger: JobTrigger,
     executors: Vec<Arc<dyn Executor>>,
+    stop_on_error: bool,
     status: Mutex<CronJobRuntimeStatus>,
     run_lock: Mutex<()>,
 }
@@ -260,6 +264,7 @@ impl Plugin for CronExecutor {
                 name: job.name,
                 trigger: job.trigger,
                 executors: job.executors,
+                stop_on_error: job.stop_on_error,
                 status: Mutex::new(CronJobRuntimeStatus {
                     next_run_ms: Some(next_run_ms),
                     ..CronJobRuntimeStatus::default()
@@ -371,6 +376,7 @@ impl CronExecutor {
             name: job.name.trim().to_string(),
             trigger,
             executors,
+            stop_on_error: job.stop_on_error,
         })
     }
 
@@ -904,6 +910,9 @@ async fn run_job(
                     error = %err,
                     "cron job executor failed"
                 );
+                if control.stop_on_error {
+                    break;
+                }
             }
         }
     }
@@ -1235,6 +1244,7 @@ mod tests {
                 interval: Duration::from_secs(3600),
             },
             executors: Vec::new(),
+            stop_on_error: false,
             status: Mutex::new(CronJobRuntimeStatus {
                 next_run_ms: Some(12_345),
                 last_run_ms: Some(10_000),
@@ -1291,6 +1301,7 @@ jobs:
             schedule: Some("0 0 * * * *".to_string()),
             interval: None,
             executors: vec!["$a".to_string()],
+            stop_on_error: false,
         };
         let err = parse_job_trigger_with_timezone(&job, "UTC")
             .expect_err("6-field cron should be rejected");
@@ -1304,6 +1315,7 @@ jobs:
             schedule: Some("0 */6 * * *".to_string()),
             interval: None,
             executors: vec!["$a".to_string()],
+            stop_on_error: false,
         };
         let trigger =
             parse_job_trigger_with_timezone(&job, "Asia/Shanghai").expect("timezone should work");
@@ -1339,6 +1351,7 @@ jobs:
                 interval: Duration::from_secs(60),
             },
             executors,
+            stop_on_error: false,
             status: Mutex::new(CronJobRuntimeStatus::default()),
             run_lock: Mutex::new(()),
         });
@@ -1362,6 +1375,46 @@ jobs:
     }
 
     #[tokio::test]
+    async fn test_run_job_can_stop_after_executor_error() {
+        AppClock::start();
+        let log = Arc::new(StdMutex::new(Vec::new()));
+        let executors: Vec<Arc<dyn Executor>> = vec![
+            Arc::new(StubExecutor::new(
+                "download",
+                StubBehavior::Error("download failed"),
+                log.clone(),
+            )),
+            Arc::new(StubExecutor::new(
+                "reload_provider",
+                StubBehavior::Next,
+                log.clone(),
+            )),
+        ];
+        let control = Arc::new(CronJobControl {
+            name: "refresh".to_string(),
+            trigger: JobTrigger::Interval {
+                interval: Duration::from_secs(60),
+            },
+            executors,
+            stop_on_error: true,
+            status: Mutex::new(CronJobRuntimeStatus::default()),
+            run_lock: Mutex::new(()),
+        });
+
+        let result = run_job(
+            "cron".to_string(),
+            control,
+            123,
+            Arc::new(CronMetrics::new("cron".to_string())),
+        )
+        .await;
+
+        assert_eq!(log.lock().unwrap().clone(), vec!["download".to_string()]);
+        assert!(!result.ok);
+        assert_eq!(result.executor_error_count, 1);
+    }
+
+    #[tokio::test]
     async fn test_interval_scheduler_waits_full_interval_before_first_run() {
         AppClock::start();
         let log = Arc::new(StdMutex::new(Vec::new()));
@@ -1379,6 +1432,7 @@ jobs:
                 name: "job".to_string(),
                 trigger: JobTrigger::Interval { interval },
                 executors: vec![executor.clone()],
+                stop_on_error: false,
                 status: Mutex::new(CronJobRuntimeStatus {
                     next_run_ms: Some(first_run_at),
                     ..CronJobRuntimeStatus::default()
@@ -1422,6 +1476,7 @@ jobs:
                 name: "job".to_string(),
                 trigger: JobTrigger::Interval { interval },
                 executors: vec![executor.clone()],
+                stop_on_error: false,
                 status: Mutex::new(CronJobRuntimeStatus {
                     next_run_ms: Some(next_run_ms),
                     ..CronJobRuntimeStatus::default()
@@ -1472,6 +1527,7 @@ jobs:
                     schedule: Some("0 * * * *".to_string()),
                     interval: None,
                     executors: vec!["$x".to_string()],
+                    stop_on_error: false,
                 }],
             },
             quick_setup_executors: vec![quick],

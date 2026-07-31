@@ -124,6 +124,182 @@ fn schema_v1_reports_the_complete_migration_range() {
 }
 
 #[test]
+fn schema_v3_migrates_with_inactive_phase_one_defaults() {
+    let value = serde_json::to_value(StandardIntent::default()).expect("serialize default");
+    let mut value = value.as_object().cloned().expect("intent object");
+    value.insert("schema".to_string(), json!(3));
+    value.remove("local");
+    value
+        .get_mut("filtering")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("filtering object")
+        .remove("localFiles");
+
+    let (intent, migration) =
+        decode_standard_intent(serde_json::Value::Object(value)).expect("v3 should migrate");
+
+    assert_eq!(intent.schema, CURRENT_STANDARD_SCHEMA);
+    assert_eq!(intent.local, super::model::StandardLocalSettings::default());
+    assert!(intent.filtering.local_files.is_empty());
+    let migration = migration.expect("migration metadata");
+    assert_eq!(migration.from_schema, 3);
+    assert_eq!(migration.to_schema, CURRENT_STANDARD_SCHEMA);
+}
+
+#[test]
+fn upstream_native_connection_fields_compile_without_platform_side_effects() {
+    let mut intent = StandardIntent::default();
+    let upstream = &mut intent.upstream_groups[0].upstreams[0];
+    upstream.protocol = super::model::StandardUpstreamProtocol::Tcp;
+    upstream.bootstrap = Some("1.1.1.1:53".to_string());
+    upstream.bootstrap_version = Some(6);
+    upstream.outbound = Some("private".to_string());
+    upstream.socks5 = Some("127.0.0.1:1080".to_string());
+    upstream.timeout_seconds = Some(7);
+    upstream.idle_timeout_seconds = Some(30);
+    upstream.max_conns = Some(32);
+    upstream.min_conns = Some(2);
+    upstream.enable_pipeline = true;
+
+    let plan = compile_standard_intent(
+        intent,
+        &StandardCapabilities::for_tests(),
+        Some(
+            "network:\n  outbound:\n    profiles:\n      private:\n        resolver: system\nplugins: []\n",
+        ),
+        None,
+    );
+
+    assert!(plan.can_apply, "diagnostics: {:?}", plan.diagnostics);
+    let yaml = plan.generated.expect("generated config").yaml;
+    for expected in [
+        "bootstrap_version: 6",
+        "outbound: private",
+        "socks5: 127.0.0.1:1080",
+        "timeout: 7",
+        "idle_timeout: 30",
+        "max_conns: 32",
+        "min_conns: 2",
+        "enable_pipeline: true",
+    ] {
+        assert!(yaml.contains(expected), "missing {expected} in {yaml}");
+    }
+    assert!(!yaml.contains("so_mark"));
+    assert!(!yaml.contains("bind_to_device"));
+}
+
+#[test]
+fn subscriptions_compile_to_independent_failure_stopping_jobs() {
+    let mut intent = StandardIntent::default();
+    intent.filtering.enabled = true;
+    intent.filtering.subscriptions = vec![
+        super::model::StandardSubscription {
+            id: "one".to_string(),
+            name: "One".to_string(),
+            url: "https://example.com/one.txt".to_string(),
+            enabled: true,
+            update_interval_hours: 4,
+        },
+        super::model::StandardSubscription {
+            id: "two".to_string(),
+            name: "Two".to_string(),
+            url: "https://example.com/two.txt".to_string(),
+            enabled: true,
+            update_interval_hours: 12,
+        },
+    ];
+
+    let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
+
+    assert!(plan.can_apply, "diagnostics: {:?}", plan.diagnostics);
+    let generated = plan.generated.expect("generated config");
+    assert_eq!(generated.tag_map.filter_subscriptions.len(), 2);
+    let one = generated
+        .tag_map
+        .filter_subscriptions
+        .get("one")
+        .expect("one tags");
+    let two = generated
+        .tag_map
+        .filter_subscriptions
+        .get("two")
+        .expect("two tags");
+    assert_ne!(one.download, two.download);
+    assert_ne!(one.cron, two.cron);
+    assert!(generated.yaml.contains("fail_on_error: true"));
+    assert!(generated.yaml.contains("stop_on_error: true"));
+    assert!(generated.yaml.contains("interval: 4h"));
+    assert!(generated.yaml.contains("interval: 12h"));
+    assert_eq!(
+        generated
+            .yaml
+            .matches("url: https://example.com/one.txt")
+            .count(),
+        1
+    );
+    assert_eq!(
+        generated
+            .yaml
+            .matches("url: https://example.com/two.txt")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn native_local_policies_compile_with_ddns_cache_bypass_and_ttl() {
+    let mut intent = StandardIntent::default();
+    intent.local.hosts.entries = vec!["full:router.test 192.0.2.1".to_string()];
+    intent.local.redirects.rules = vec!["full:old.test target.test".to_string()];
+    intent.local.records.rules = vec!["answer.test. 60 IN A 192.0.2.2".to_string()];
+    intent.local.response_ttl.enabled = true;
+    intent.local.response_ttl.min = Some(30);
+    intent.local.response_ttl.max = Some(600);
+    intent.local.qtype_policy.enabled = true;
+    intent.local.qtype_policy.qtypes = vec!["HTTPS".to_string(), "SVCB".to_string()];
+    intent.local.qtype_policy.response = super::model::StandardBlockResponse::Nodata;
+    intent.local.ddns.enabled = true;
+    intent.local.ddns.domains = vec!["dynamic.test".to_string()];
+    intent.local.ddns.ttl = 20;
+
+    let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
+
+    assert!(plan.can_apply, "diagnostics: {:?}", plan.diagnostics);
+    let generated = plan.generated.expect("generated config");
+    for tag in [
+        "standard_local_hosts",
+        "standard_local_redirect",
+        "standard_local_records",
+        "standard_local_response_ttl",
+        "standard_local_qtype_match",
+        "standard_local_qtype_action",
+        "standard_local_ddns_match",
+        "standard_local_ddns_ttl",
+        "standard_local_ddns_action",
+    ] {
+        assert!(generated.generated_tags.iter().any(|value| value == tag));
+    }
+    let parsed: YamlValue = serde_yaml_ng::from_str(&generated.yaml).expect("generated YAML");
+    let plugins = parsed["plugins"].as_sequence().expect("plugins");
+    let ddns = plugins
+        .iter()
+        .find(|plugin| plugin["tag"] == "standard_local_ddns_action")
+        .expect("DDNS action");
+    let ddns_steps = ddns["args"].as_sequence().expect("DDNS sequence");
+    assert!(
+        ddns_steps
+            .iter()
+            .all(|step| step["exec"] != "$standard_cache_default"),
+        "DDNS action must bypass the normal path cache"
+    );
+    assert!(
+        ddns_steps
+            .iter()
+            .any(|step| { step["exec"] == "$standard_local_ddns_ttl" })
+    );
+}
+
+#[test]
 fn invalid_path_reference_is_an_error_instead_of_default_fallback() {
     let mut intent = StandardIntent::default();
     intent.paths[0].upstream_group_id = "missing".to_string();

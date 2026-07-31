@@ -39,8 +39,10 @@ import {
   type ProviderStatusResponse,
 } from "@/lib/oxidns-api";
 import type {
+  StandardFilterFile,
   StandardFilteringSettings,
   StandardModeSettings,
+  StandardSubscriptionTagMap,
   StandardSubscription,
 } from "@/lib/standard-mode/types";
 import {
@@ -57,16 +59,19 @@ const blockResponseLabelKeys: Record<
 > = {
   null_ip: WEBUI.standardFiltering.responseNullIp,
   nxdomain: WEBUI.standardFiltering.responseNxdomain,
+  nodata: WEBUI.standardFiltering.responseNodata,
   refused: WEBUI.standardFiltering.responseRefused,
 };
 
-const STANDARD_FILTER_SUBSCRIPTION_DIR =
-  "./data/standard-filter-subscriptions";
-const FILTER_REFRESH_JOB = "refresh_filter_subscriptions";
+const STANDARD_FILTER_SUBSCRIPTION_DIR = "./data/standard-filter-subscriptions";
 
-interface SubscriptionRuntimeState {
+interface SubscriptionRuntimeItemState {
   download?: DownloadStatusResponse | null;
   cron?: CronStatusResponse | null;
+}
+
+interface SubscriptionRuntimeState {
+  subscriptions: Record<string, SubscriptionRuntimeItemState>;
   provider?: ProviderStatusResponse | null;
 }
 
@@ -106,6 +111,17 @@ function createSubscription(
   };
 }
 
+function createFilterFile(files: StandardFilterFile[]): StandardFilterFile {
+  const used = new Set(files.map((file) => file.id));
+  let index = files.length + 1;
+  let id = `filter_file_${index}`;
+  while (used.has(id)) {
+    index += 1;
+    id = `filter_file_${index}`;
+  }
+  return { id, name: id, path: "", enabled: true };
+}
+
 function numberValue(value: string, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -129,10 +145,6 @@ function findDownloadItem(
 ) {
   const path = subscriptionFilePath(subscription);
   return status?.items.find((item) => item.path === path) ?? null;
-}
-
-function tagAvailable(tags: string[], tag: string) {
-  return tags.includes(tag);
 }
 
 function sumMetric(
@@ -162,30 +174,30 @@ export default function StandardFilteringPage() {
   const [draftSettings, setDraftSettings] =
     useState<StandardModeSettings | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [runtimeState, setRuntimeState] = useState<SubscriptionRuntimeState>(
-    {},
-  );
+  const [runtimeState, setRuntimeState] = useState<SubscriptionRuntimeState>({
+    subscriptions: {},
+  });
   const [runtimeLoading, setRuntimeLoading] = useState(false);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
-  const [refreshingSubscriptions, setRefreshingSubscriptions] = useState(false);
+  const [refreshingSubscriptions, setRefreshingSubscriptions] = useState<
+    Record<string, boolean>
+  >({});
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
   const settings = draftSettings ?? storeSettings;
   const filteringTags = useMemo(
     () => standardLastGenerated?.tagMap.filtering ?? [],
     [standardLastGenerated],
   );
+  const subscriptionRuntimeTags = useMemo(
+    () => standardLastGenerated?.tagMap.filterSubscriptions ?? {},
+    [standardLastGenerated],
+  );
   const runtimeTags = useMemo(
     () => ({
-      download: tagAvailable(filteringTags, "standard_filter_download")
-        ? "standard_filter_download"
-        : null,
-      cron: tagAvailable(filteringTags, "standard_filter_cron")
-        ? "standard_filter_cron"
-        : null,
-      provider: tagAvailable(filteringTags, "standard_ad_rules")
+      provider: filteringTags.includes("standard_ad_rules")
         ? "standard_ad_rules"
         : null,
-      reload: tagAvailable(filteringTags, "standard_filter_reload")
+      reload: filteringTags.includes("standard_filter_reload")
         ? "standard_filter_reload"
         : null,
     }),
@@ -205,48 +217,53 @@ export default function StandardFilteringPage() {
     "blackhole_block_total",
   );
   const hasRuntimeTags =
-    runtimeTags.download !== null ||
-    runtimeTags.cron !== null ||
+    Object.keys(subscriptionRuntimeTags).length > 0 ||
     runtimeTags.provider !== null;
 
   const loadRuntimeStatus = useCallback(async () => {
     if (!hasRuntimeTags) {
-      setRuntimeState({});
+      setRuntimeState({ subscriptions: {} });
       setRuntimeError(null);
       return;
     }
     setRuntimeLoading(true);
     setRuntimeError(null);
-    const [downloadResult, cronResult, providerResult] = await Promise.all([
-      runtimeTags.download
-        ? fetchDownloadStatus(runtimeTags.download)
-        : Promise.resolve(null),
-      runtimeTags.cron ? fetchCronStatus(runtimeTags.cron) : Promise.resolve(null),
-      runtimeTags.provider
-        ? fetchProviderStatus(runtimeTags.provider)
-        : Promise.resolve(null),
-    ].map((promise) => promise.catch((error) => error)));
+    const failures: Error[] = [];
+    const subscriptionEntries = await Promise.all(
+      Object.entries(subscriptionRuntimeTags).map(async ([id, tags]) => {
+        const [download, cron] = await Promise.all([
+          fetchDownloadStatus(tags.download).catch((error) => {
+            failures.push(
+              error instanceof Error ? error : new Error(String(error)),
+            );
+            return null;
+          }),
+          fetchCronStatus(tags.cron).catch((error) => {
+            failures.push(
+              error instanceof Error ? error : new Error(String(error)),
+            );
+            return null;
+          }),
+        ]);
+        return [id, { download, cron }] as const;
+      }),
+    );
+    const provider = runtimeTags.provider
+      ? await fetchProviderStatus(runtimeTags.provider).catch((error) => {
+          failures.push(
+            error instanceof Error ? error : new Error(String(error)),
+          );
+          return null;
+        })
+      : null;
 
-    const failures = [downloadResult, cronResult, providerResult].filter(
-      (result) => result instanceof Error,
-    ) as Error[];
     setRuntimeState({
-      download:
-        downloadResult instanceof Error
-          ? null
-          : (downloadResult as DownloadStatusResponse | null),
-      cron:
-        cronResult instanceof Error
-          ? null
-          : (cronResult as CronStatusResponse | null),
-      provider:
-        providerResult instanceof Error
-          ? null
-          : (providerResult as ProviderStatusResponse | null),
+      subscriptions: Object.fromEntries(subscriptionEntries),
+      provider,
     });
     setRuntimeError(failures[0]?.message ?? null);
     setRuntimeLoading(false);
-  }, [hasRuntimeTags, runtimeTags]);
+  }, [hasRuntimeTags, runtimeTags.provider, subscriptionRuntimeTags]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadRuntimeStatus(), 0);
@@ -285,6 +302,25 @@ export default function StandardFilteringPage() {
     });
   };
 
+  const updateFilterFile = (
+    fileId: string,
+    patch: Partial<StandardFilterFile>,
+  ) => {
+    setFiltering({
+      localFiles: settings.filtering.localFiles.map((file) =>
+        file.id === fileId ? { ...file, ...patch } : file,
+      ),
+    });
+  };
+
+  const removeFilterFile = (fileId: string) => {
+    setFiltering({
+      localFiles: settings.filtering.localFiles.filter(
+        (file) => file.id !== fileId,
+      ),
+    });
+  };
+
   const handleSave = async () => {
     const nextSettings = normalizeStandardFilteringSettings(settings);
     const issues = validateStandardFilteringSettings(nextSettings, buildInfo);
@@ -298,21 +334,27 @@ export default function StandardFilteringPage() {
     }
   };
 
-  const handleRefreshSubscriptions = async () => {
-    setRefreshingSubscriptions(true);
+  const refreshSubscription = async (
+    subscriptionId: string,
+    tags: StandardSubscriptionTagMap,
+  ) => {
+    setRefreshingSubscriptions((current) => ({
+      ...current,
+      [subscriptionId]: true,
+    }));
     setRefreshMessage(null);
     setRuntimeError(null);
     try {
-      if (runtimeTags.cron) {
-        const result = await runCronJob(runtimeTags.cron, FILTER_REFRESH_JOB);
+      if (tags.cron) {
+        const result = await runCronJob(tags.cron, tags.job);
         if (!result.ok) {
           throw new Error(
             result.last_error ||
               t(WEBUI.standardFiltering.subscriptionRefreshFailed),
           );
         }
-      } else if (runtimeTags.download && runtimeTags.provider && runtimeTags.reload) {
-        const result = await runDownload(runtimeTags.download);
+      } else if (tags.download && runtimeTags.provider && runtimeTags.reload) {
+        const result = await runDownload(tags.download);
         if (!result.ok) {
           throw new Error(
             result.results.find((item) => item.last_error)?.last_error ||
@@ -331,9 +373,24 @@ export default function StandardFilteringPage() {
       setRuntimeError(error instanceof Error ? error.message : String(error));
       setRefreshMessage(null);
     } finally {
-      setRefreshingSubscriptions(false);
+      setRefreshingSubscriptions((current) => ({
+        ...current,
+        [subscriptionId]: false,
+      }));
     }
   };
+
+  const handleRefreshSubscriptions = async () => {
+    const entries = enabledSubscriptions.flatMap((subscription) => {
+      const tags = subscriptionRuntimeTags[subscription.id];
+      return tags ? ([[subscription.id, tags]] as const) : [];
+    });
+    await Promise.allSettled(
+      entries.map(([id, tags]) => refreshSubscription(id, tags)),
+    );
+  };
+
+  const isRefreshingAny = Object.values(refreshingSubscriptions).some(Boolean);
 
   return (
     <>
@@ -409,20 +466,22 @@ export default function StandardFilteringPage() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {(["null_ip", "nxdomain", "refused"] as const).map(
-                          (value) => (
-                            <SelectItem key={value} value={value}>
-                              {t(blockResponseLabelKeys[value])}
-                            </SelectItem>
-                          ),
-                        )}
+                        {(
+                          ["null_ip", "nxdomain", "nodata", "refused"] as const
+                        ).map((value) => (
+                          <SelectItem key={value} value={value}>
+                            {t(blockResponseLabelKeys[value])}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
                   {settings.filtering.subscriptions.length > 0 &&
                   !capabilities.subscriptionRuntime ? (
                     <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 md:col-span-2 dark:text-amber-300">
-                      {t(WEBUI.standardFiltering.subscriptionRuntimeUnavailable)}
+                      {t(
+                        WEBUI.standardFiltering.subscriptionRuntimeUnavailable,
+                      )}
                     </div>
                   ) : null}
                 </CardContent>
@@ -467,8 +526,54 @@ export default function StandardFilteringPage() {
                       setFiltering({ allowRules: lines(event.target.value) })
                     }
                     rows={6}
-                    placeholder={"@@||allowed.example.com^\n||safe.example.net^"}
+                    placeholder={
+                      "@@||allowed.example.com^\n||safe.example.net^"
+                    }
                   />
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+                  <div>
+                    <CardTitle className="text-base">
+                      {t(WEBUI.standardFiltering.localFilesTitle)}
+                    </CardTitle>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {t(WEBUI.standardFiltering.localFilesDescription)}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      setFiltering({
+                        localFiles: [
+                          ...settings.filtering.localFiles,
+                          createFilterFile(settings.filtering.localFiles),
+                        ],
+                      })
+                    }
+                  >
+                    <Plus className="size-4" />
+                    {t(WEBUI.standardFiltering.addLocalFile)}
+                  </Button>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {settings.filtering.localFiles.map((file) => (
+                    <FilterFileEditor
+                      key={file.id}
+                      file={file}
+                      onChange={(patch) => updateFilterFile(file.id, patch)}
+                      onRemove={() => removeFilterFile(file.id)}
+                    />
+                  ))}
+                  {settings.filtering.localFiles.length === 0 ? (
+                    <div className="rounded-lg border border-dashed p-5 text-sm text-muted-foreground">
+                      {t(WEBUI.standardFiltering.localFilesEmpty)}
+                    </div>
+                  ) : null}
                 </CardContent>
               </Card>
             </div>
@@ -526,12 +631,12 @@ export default function StandardFilteringPage() {
                   size="sm"
                   onClick={handleRefreshSubscriptions}
                   disabled={
-                    refreshingSubscriptions ||
+                    isRefreshingAny ||
                     enabledSubscriptions.length === 0 ||
                     !hasRuntimeTags
                   }
                 >
-                  {refreshingSubscriptions ? (
+                  {isRefreshingAny ? (
                     <Loader2 className="size-4 animate-spin" />
                   ) : (
                     <RefreshCw className="size-4" />
@@ -578,6 +683,12 @@ export default function StandardFilteringPage() {
                 error={runtimeError}
                 refreshMessage={refreshMessage}
                 hasRuntimeTags={hasRuntimeTags}
+                runtimeTags={subscriptionRuntimeTags}
+                refreshing={refreshingSubscriptions}
+                onRefresh={(subscriptionId) => {
+                  const tags = subscriptionRuntimeTags[subscriptionId];
+                  if (tags) void refreshSubscription(subscriptionId, tags);
+                }}
                 formatNumber={formatNumber}
                 formatDateTime={formatDateTime}
               />
@@ -596,6 +707,9 @@ function SubscriptionRuntimePanel({
   error,
   refreshMessage,
   hasRuntimeTags,
+  runtimeTags,
+  refreshing,
+  onRefresh,
   formatNumber,
   formatDateTime,
 }: {
@@ -605,6 +719,9 @@ function SubscriptionRuntimePanel({
   error: string | null;
   refreshMessage: string | null;
   hasRuntimeTags: boolean;
+  runtimeTags: Record<string, StandardSubscriptionTagMap>;
+  refreshing: Record<string, boolean>;
+  onRefresh: (subscriptionId: string) => void;
   formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string;
   formatDateTime: (
     value: Date | number | string,
@@ -613,9 +730,6 @@ function SubscriptionRuntimePanel({
 }) {
   const { t } = useI18n();
   if (subscriptions.length === 0) return null;
-  const refreshJob = runtimeState.cron?.jobs.find(
-    (job) => job.name === FILTER_REFRESH_JOB,
-  );
   const ruleStats = runtimeState.provider?.rule_stats;
 
   return (
@@ -655,12 +769,21 @@ function SubscriptionRuntimePanel({
 
       <div className="grid gap-3 md:grid-cols-2">
         {subscriptions.map((subscription) => {
-          const item = findDownloadItem(runtimeState.download, subscription);
+          const itemState = runtimeState.subscriptions[subscription.id];
+          const item = findDownloadItem(itemState?.download, subscription);
+          const tags = runtimeTags[subscription.id];
+          const refreshJob = itemState?.cron?.jobs.find(
+            (job) => job.name === tags?.job,
+          );
           return (
             <SubscriptionRuntimeItem
               key={subscription.id}
               subscription={subscription}
               item={item}
+              refreshJob={refreshJob}
+              canRefresh={subscription.enabled && Boolean(tags)}
+              refreshing={Boolean(refreshing[subscription.id])}
+              onRefresh={() => onRefresh(subscription.id)}
               formatNumber={formatNumber}
               formatDateTime={formatDateTime}
             />
@@ -693,22 +816,6 @@ function SubscriptionRuntimePanel({
             formatNumber,
           )}
         />
-        <RuntimeFact
-          label={t(WEBUI.standardFiltering.cronNextRun)}
-          value={timeOrPlaceholder(
-            refreshJob?.next_run_ms,
-            t,
-            formatDateTime,
-          )}
-        />
-        <RuntimeFact
-          label={t(WEBUI.standardFiltering.cronLastSuccess)}
-          value={timeOrPlaceholder(
-            refreshJob?.last_success_ms,
-            t,
-            formatDateTime,
-          )}
-        />
       </div>
     </div>
   );
@@ -717,11 +824,19 @@ function SubscriptionRuntimePanel({
 function SubscriptionRuntimeItem({
   subscription,
   item,
+  refreshJob,
+  canRefresh,
+  refreshing,
+  onRefresh,
   formatNumber,
   formatDateTime,
 }: {
   subscription: StandardSubscription;
   item: DownloadItemStatus | null;
+  refreshJob: CronStatusResponse["jobs"][number] | undefined;
+  canRefresh: boolean;
+  refreshing: boolean;
+  onRefresh: () => void;
   formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string;
   formatDateTime: (
     value: Date | number | string,
@@ -733,9 +848,27 @@ function SubscriptionRuntimeItem({
     <div className="space-y-2 rounded-lg border bg-card p-3 text-sm">
       <div className="flex min-w-0 items-center justify-between gap-2">
         <span className="truncate font-medium">{subscription.name}</span>
-        <Badge variant={subscription.enabled ? "default" : "secondary"}>
-          {subscription.enabled ? t(WEBUI.common.enabled) : t(WEBUI.common.disabled)}
-        </Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant={subscription.enabled ? "default" : "secondary"}>
+            {subscription.enabled
+              ? t(WEBUI.common.enabled)
+              : t(WEBUI.common.disabled)}
+          </Badge>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={!canRefresh || refreshing}
+            onClick={onRefresh}
+          >
+            {refreshing ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <RefreshCw className="size-3" />
+            )}
+            {t(WEBUI.standardFiltering.refreshSubscription)}
+          </Button>
+        </div>
       </div>
       <RuntimeFact
         label={t(WEBUI.standardFiltering.subscriptionFile)}
@@ -751,11 +884,7 @@ function SubscriptionRuntimeItem({
       />
       <RuntimeFact
         label={t(WEBUI.standardFiltering.subscriptionFileModified)}
-        value={timeOrPlaceholder(
-          item?.file.modified_at_ms,
-          t,
-          formatDateTime,
-        )}
+        value={timeOrPlaceholder(item?.file.modified_at_ms, t, formatDateTime)}
       />
       <RuntimeFact
         label={t(WEBUI.standardFiltering.subscriptionLastSuccess)}
@@ -764,6 +893,18 @@ function SubscriptionRuntimeItem({
       <RuntimeFact
         label={t(WEBUI.standardFiltering.subscriptionLastError)}
         value={item?.last_error || t(WEBUI.common.empty)}
+      />
+      <RuntimeFact
+        label={t(WEBUI.standardFiltering.cronNextRun)}
+        value={timeOrPlaceholder(refreshJob?.next_run_ms, t, formatDateTime)}
+      />
+      <RuntimeFact
+        label={t(WEBUI.standardFiltering.cronLastSuccess)}
+        value={timeOrPlaceholder(
+          refreshJob?.last_success_ms,
+          t,
+          formatDateTime,
+        )}
       />
     </div>
   );
@@ -893,6 +1034,59 @@ function SubscriptionEditor({
   );
 }
 
+function FilterFileEditor({
+  file,
+  onChange,
+  onRemove,
+}: {
+  file: StandardFilterFile;
+  onChange: (patch: Partial<StandardFilterFile>) => void;
+  onRemove: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="rounded-lg border bg-card/40 p-4">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <Label className="text-sm font-normal">
+          <Switch
+            checked={file.enabled}
+            onCheckedChange={(enabled) => onChange({ enabled })}
+          />
+          {t(WEBUI.standardFiltering.localFileEnabled)}
+        </Label>
+        <Button type="button" variant="ghost" size="sm" onClick={onRemove}>
+          <Trash2 className="size-4" />
+          {t(WEBUI.standardFiltering.removeLocalFile)}
+        </Button>
+      </div>
+      <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+        <div className="space-y-2">
+          <Label htmlFor={`${file.id}-name`}>
+            {t(WEBUI.standardFiltering.localFileName)}
+          </Label>
+          <Input
+            id={`${file.id}-name`}
+            value={file.name}
+            onChange={(event) => onChange({ name: event.target.value })}
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`${file.id}-path`}>
+            {t(WEBUI.standardFiltering.localFilePath)}
+          </Label>
+          <Input
+            id={`${file.id}-path`}
+            className="font-mono"
+            value={file.path}
+            placeholder="./rules/adguard-local.txt"
+            onChange={(event) => onChange({ path: event.target.value })}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StatRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex min-h-10 items-center justify-between gap-3 rounded-lg border px-3 text-sm">
@@ -948,6 +1142,12 @@ function validationMessage(
   }
   if (issue.code === "subscription_url_invalid") {
     return t(WEBUI.standardFiltering.validationSubscriptionUrlInvalid);
+  }
+  if (issue.code === "filter_file_name_required") {
+    return t(WEBUI.standardFiltering.validationFilterFileNameRequired);
+  }
+  if (issue.code === "filter_file_path_required") {
+    return t(WEBUI.standardFiltering.validationFilterFilePathRequired);
   }
   return t(WEBUI.standardFiltering.validationSubscriptionIntervalInvalid);
 }

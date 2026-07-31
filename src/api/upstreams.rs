@@ -60,7 +60,15 @@ struct UpstreamTestInput {
     addr: String,
     tag: Option<String>,
     bootstrap: Option<String>,
+    bootstrap_version: Option<u8>,
     dial_addr: Option<std::net::IpAddr>,
+    outbound: Option<String>,
+    socks5: Option<String>,
+    timeout_seconds: Option<u64>,
+    idle_timeout_seconds: Option<u64>,
+    max_conns: Option<usize>,
+    min_conns: Option<usize>,
+    enable_pipeline: Option<bool>,
     insecure_skip_verify: Option<bool>,
     enable_http3: Option<bool>,
 }
@@ -273,18 +281,25 @@ async fn run_upstream_test(
     let config = UpstreamConfig {
         tag: input.tag,
         addr: input.addr,
-        outbound: None,
+        outbound: input.outbound,
         dial_addr: input.dial_addr,
         port: None,
         bootstrap: input.bootstrap,
-        bootstrap_version: None,
-        socks5: None,
-        idle_timeout: None,
-        max_conns: None,
-        min_conns: None,
+        bootstrap_version: input.bootstrap_version,
+        socks5: input.socks5,
+        idle_timeout: input
+            .idle_timeout_seconds
+            .map(std::time::Duration::from_secs),
+        max_conns: input.max_conns,
+        min_conns: input.min_conns,
         insecure_skip_verify: input.insecure_skip_verify,
-        timeout: Some(std::time::Duration::from_millis(query.timeout_ms)),
-        enable_pipeline: None,
+        timeout: Some(
+            input
+                .timeout_seconds
+                .map(std::time::Duration::from_secs)
+                .unwrap_or_else(|| std::time::Duration::from_millis(query.timeout_ms)),
+        ),
+        enable_pipeline: input.enable_pipeline,
         enable_http3: input.enable_http3,
         so_mark: None,
         bind_to_device: None,

@@ -1,7 +1,16 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Loader2, Plus, Save, TestTube2, Trash2 } from "lucide-react";
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+import {
+  ArrowRight,
+  Copy,
+  Loader2,
+  Plus,
+  Save,
+  TestTube2,
+  Trash2,
+} from "lucide-react";
 import { AppHeader } from "@/components/shell/app-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,10 +37,12 @@ import { upstreamAddress } from "@/lib/standard-mode/generator";
 import {
   selectDefaultUpstreamGroup,
   selectStandardCapabilityMap,
+  selectStandardUpstreamGroupReferences,
 } from "@/lib/standard-mode/selectors";
 import type {
   StandardModeSettings,
   StandardUpstream,
+  StandardUpstreamGroup,
   StandardUpstreamProtocol,
 } from "@/lib/standard-mode/types";
 import {
@@ -78,6 +89,22 @@ function createUpstream(upstreams: StandardUpstream[]): StandardUpstream {
   };
 }
 
+function createGroup(groups: StandardUpstreamGroup[]): StandardUpstreamGroup {
+  const used = new Set(groups.map((group) => group.id));
+  let index = groups.length + 1;
+  let id = `group_${index}`;
+  while (used.has(id)) {
+    index += 1;
+    id = `group_${index}`;
+  }
+  return {
+    id,
+    name: id,
+    strategy: "balanced",
+    upstreams: [createUpstream([])],
+  };
+}
+
 function numberValue(value: string, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -91,7 +118,21 @@ function upstreamTestInput(upstream: StandardUpstream): UpstreamGroupTestInput {
     tag: normalized.id,
     addr: upstreamAddress(normalized),
     ...(normalized.bootstrap ? { bootstrap: normalized.bootstrap } : {}),
+    ...(normalized.bootstrapVersion
+      ? { bootstrap_version: normalized.bootstrapVersion }
+      : {}),
     ...(normalized.dialAddress ? { dial_addr: normalized.dialAddress } : {}),
+    ...(normalized.outbound ? { outbound: normalized.outbound } : {}),
+    ...(normalized.socks5 ? { socks5: normalized.socks5 } : {}),
+    ...(normalized.timeoutSeconds
+      ? { timeout_seconds: normalized.timeoutSeconds }
+      : {}),
+    ...(normalized.idleTimeoutSeconds
+      ? { idle_timeout_seconds: normalized.idleTimeoutSeconds }
+      : {}),
+    ...(normalized.maxConns ? { max_conns: normalized.maxConns } : {}),
+    ...(normalized.minConns != null ? { min_conns: normalized.minConns } : {}),
+    ...(normalized.enablePipeline ? { enable_pipeline: true } : {}),
     ...(normalized.tlsVerify === false ? { insecure_skip_verify: true } : {}),
     ...(normalized.protocol === "doh3" || normalized.enableHttp3
       ? { enable_http3: true }
@@ -126,6 +167,9 @@ export default function StandardDnsPage() {
   );
   const [draftSettings, setDraftSettings] =
     useState<StandardModeSettings | null>(null);
+  const [selectedGroupId, setSelectedGroupId] = useState(
+    () => selectDefaultUpstreamGroup(storeSettings).id,
+  );
   const [saveError, setSaveError] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<
     Record<string, UpstreamTestResult>
@@ -136,14 +180,20 @@ export default function StandardDnsPage() {
   const [groupTestSummary, setGroupTestSummary] = useState<string | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
   const settings = draftSettings ?? storeSettings;
-  const defaultGroup = selectDefaultUpstreamGroup(settings);
+  const selectedGroup =
+    settings.upstreamGroups.find((group) => group.id === selectedGroupId) ??
+    selectDefaultUpstreamGroup(settings);
+  const groupReferences = selectStandardUpstreamGroupReferences(
+    settings,
+    selectedGroup.id,
+  );
   const validationIssues = useMemo(
     () => validateStandardDnsSettings(settings, buildInfo),
     [settings, buildInfo],
   );
   const isBusy = isConfigSaving || isApplying;
   const canSave = validationIssues.length === 0 && !isBusy;
-  const testableUpstreams = defaultGroup.upstreams.filter(
+  const testableUpstreams = selectedGroup.upstreams.filter(
     (upstream) =>
       upstream.enabled &&
       upstream.address.trim() &&
@@ -151,20 +201,77 @@ export default function StandardDnsPage() {
   );
   const isGroupTesting = Object.values(testingUpstreams).some(Boolean);
 
+  useEffect(() => {
+    if (
+      !settings.upstreamGroups.some((group) => group.id === selectedGroupId)
+    ) {
+      setSelectedGroupId(selectDefaultUpstreamGroup(settings).id);
+    }
+  }, [selectedGroupId, settings]);
+
   const setPartial = (patch: Partial<StandardModeSettings>) => {
     setSaveError(null);
     setDraftSettings((current) => ({ ...(current ?? settings), ...patch }));
   };
 
-  const setDefaultUpstreams = (upstreams: StandardUpstream[]) => {
-    const defaultGroupId = defaultGroup.id;
+  const setSelectedUpstreams = (upstreams: StandardUpstream[]) => {
     setPartial({
-      upstreamGroups: settings.upstreamGroups.map((group, index) =>
-        group.id === defaultGroupId ||
-        (index === 0 && defaultGroupId === group.id)
-          ? { ...group, upstreams }
-          : group,
+      upstreamGroups: settings.upstreamGroups.map((group) =>
+        group.id === selectedGroup.id ? { ...group, upstreams } : group,
       ),
+    });
+  };
+
+  const updateSelectedGroup = (patch: Partial<StandardUpstreamGroup>) => {
+    setPartial({
+      upstreamGroups: settings.upstreamGroups.map((group) =>
+        group.id === selectedGroup.id ? { ...group, ...patch } : group,
+      ),
+    });
+  };
+
+  const addGroup = () => {
+    const group = createGroup(settings.upstreamGroups);
+    setPartial({ upstreamGroups: [...settings.upstreamGroups, group] });
+    setSelectedGroupId(group.id);
+  };
+
+  const copySelectedGroup = () => {
+    const group = createGroup(settings.upstreamGroups);
+    const copy: StandardUpstreamGroup = {
+      ...selectedGroup,
+      id: group.id,
+      name: `${selectedGroup.name} copy`,
+      isDefault: false,
+      upstreams: selectedGroup.upstreams.map((upstream) => ({ ...upstream })),
+    };
+    setPartial({ upstreamGroups: [...settings.upstreamGroups, copy] });
+    setSelectedGroupId(copy.id);
+  };
+
+  const removeSelectedGroup = () => {
+    if (
+      settings.upstreamGroups.length <= 1 ||
+      selectedGroup.isDefault ||
+      groupReferences.length > 0
+    ) {
+      return;
+    }
+    const remaining = settings.upstreamGroups.filter(
+      (group) => group.id !== selectedGroup.id,
+    );
+    setPartial({ upstreamGroups: remaining });
+    setSelectedGroupId(
+      selectDefaultUpstreamGroup({ ...settings, upstreamGroups: remaining }).id,
+    );
+  };
+
+  const setDefaultGroup = () => {
+    setPartial({
+      upstreamGroups: settings.upstreamGroups.map((group) => ({
+        ...group,
+        isDefault: group.id === selectedGroup.id,
+      })),
     });
   };
 
@@ -172,8 +279,8 @@ export default function StandardDnsPage() {
     upstreamId: string,
     patch: Partial<StandardUpstream>,
   ) => {
-    setDefaultUpstreams(
-      defaultGroup.upstreams.map((upstream) => {
+    setSelectedUpstreams(
+      selectedGroup.upstreams.map((upstream) => {
         if (upstream.id !== upstreamId) return upstream;
         const next = { ...upstream, ...patch };
         if (patch.protocol === "doh3") {
@@ -186,15 +293,23 @@ export default function StandardDnsPage() {
           next.enableHttp3 = false;
           next.dohPath = undefined;
         }
+        if (
+          patch.protocol &&
+          patch.protocol !== "auto" &&
+          patch.protocol !== "tcp" &&
+          patch.protocol !== "dot"
+        ) {
+          next.enablePipeline = false;
+        }
         return next;
       }),
     );
   };
 
   const removeUpstream = (upstreamId: string) => {
-    if (defaultGroup.upstreams.length <= 1) return;
-    setDefaultUpstreams(
-      defaultGroup.upstreams.filter((upstream) => upstream.id !== upstreamId),
+    if (selectedGroup.upstreams.length <= 1) return;
+    setSelectedUpstreams(
+      selectedGroup.upstreams.filter((upstream) => upstream.id !== upstreamId),
     );
   };
 
@@ -212,9 +327,10 @@ export default function StandardDnsPage() {
   };
 
   const handleTestUpstream = async (upstream: StandardUpstream) => {
+    const resultKey = `${selectedGroup.id}/${upstream.id}`;
     setTestError(null);
     setGroupTestSummary(null);
-    setTestingUpstreams((current) => ({ ...current, [upstream.id]: true }));
+    setTestingUpstreams((current) => ({ ...current, [resultKey]: true }));
     try {
       const response = await testUpstream({
         upstream: upstreamTestInput(upstream),
@@ -222,7 +338,7 @@ export default function StandardDnsPage() {
       });
       setTestResults((current) => ({
         ...current,
-        [upstream.id]: {
+        [resultKey]: {
           ...response.result,
           id: upstream.id,
           name: upstream.name,
@@ -231,13 +347,13 @@ export default function StandardDnsPage() {
     } catch (error) {
       setTestResults((current) => ({
         ...current,
-        [upstream.id]: failedUiTestResult(
+        [resultKey]: failedUiTestResult(
           upstream,
           error instanceof Error ? error.message : String(error),
         ),
       }));
     } finally {
-      setTestingUpstreams((current) => ({ ...current, [upstream.id]: false }));
+      setTestingUpstreams((current) => ({ ...current, [resultKey]: false }));
     }
   };
 
@@ -247,7 +363,9 @@ export default function StandardDnsPage() {
     setGroupTestSummary(null);
     setTestingUpstreams((current) => {
       const next = { ...current };
-      for (const upstream of testableUpstreams) next[upstream.id] = true;
+      for (const upstream of testableUpstreams) {
+        next[`${selectedGroup.id}/${upstream.id}`] = true;
+      }
       return next;
     });
     try {
@@ -258,7 +376,7 @@ export default function StandardDnsPage() {
       setTestResults((current) => {
         const next = { ...current };
         for (const result of response.results) {
-          if (result.id) next[result.id] = result;
+          if (result.id) next[`${selectedGroup.id}/${result.id}`] = result;
         }
         return next;
       });
@@ -279,7 +397,9 @@ export default function StandardDnsPage() {
     } finally {
       setTestingUpstreams((current) => {
         const next = { ...current };
-        for (const upstream of testableUpstreams) next[upstream.id] = false;
+        for (const upstream of testableUpstreams) {
+          next[`${selectedGroup.id}/${upstream.id}`] = false;
+        }
         return next;
       });
     }
@@ -380,6 +500,191 @@ export default function StandardDnsPage() {
             </CardContent>
           </Card>
 
+          <Card id={`group-${selectedGroup.id}`}>
+            <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+              <div>
+                <CardTitle className="text-base">
+                  {t(WEBUI.standardDns.groupsTitle)}
+                </CardTitle>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {t(WEBUI.standardDns.groupsDescription)}
+                </p>
+              </div>
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={addGroup}
+                >
+                  <Plus className="size-4" />
+                  {t(WEBUI.standardDns.addGroup)}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={copySelectedGroup}
+                >
+                  <Copy className="size-4" />
+                  {t(WEBUI.standardDns.copyGroup)}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={
+                    settings.upstreamGroups.length <= 1 ||
+                    Boolean(selectedGroup.isDefault) ||
+                    groupReferences.length > 0
+                  }
+                  onClick={removeSelectedGroup}
+                >
+                  <Trash2 className="size-4" />
+                  {t(WEBUI.standardDns.removeGroup)}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <div className="space-y-2">
+                  <Label>{t(WEBUI.standardDns.groupSelect)}</Label>
+                  <Select
+                    value={selectedGroup.id}
+                    onValueChange={setSelectedGroupId}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {settings.upstreamGroups.map((group) => (
+                        <SelectItem key={group.id} value={group.id}>
+                          {group.name || group.id}
+                          {group.isDefault
+                            ? ` · ${t(WEBUI.common.defaultValue)}`
+                            : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor={`${selectedGroup.id}-group-name`}>
+                    {t(WEBUI.standardDns.groupName)}
+                  </Label>
+                  <Input
+                    id={`${selectedGroup.id}-group-name`}
+                    value={selectedGroup.name}
+                    onChange={(event) =>
+                      updateSelectedGroup({ name: event.target.value })
+                    }
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor={`${selectedGroup.id}-group-strategy`}>
+                    {t(WEBUI.standardDns.groupStrategy)}
+                  </Label>
+                  <Select
+                    value={selectedGroup.strategy}
+                    onValueChange={(strategy) =>
+                      updateSelectedGroup({
+                        strategy: strategy as StandardUpstreamGroup["strategy"],
+                      })
+                    }
+                  >
+                    <SelectTrigger
+                      id={`${selectedGroup.id}-group-strategy`}
+                      className="w-full"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(
+                        [
+                          "balanced",
+                          "fastest",
+                          "prefer_positive",
+                          "consensus",
+                        ] as const
+                      ).map((strategy) => (
+                        <SelectItem key={strategy} value={strategy}>
+                          {t(
+                            {
+                              balanced: WEBUI.standardDns.strategyBalanced,
+                              fastest: WEBUI.standardDns.strategyFastest,
+                              prefer_positive:
+                                WEBUI.standardDns.strategyPreferPositive,
+                              consensus: WEBUI.standardDns.strategyConsensus,
+                            }[strategy],
+                          )}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-end">
+                  <Button
+                    type="button"
+                    variant={selectedGroup.isDefault ? "secondary" : "outline"}
+                    className="w-full"
+                    disabled={Boolean(selectedGroup.isDefault)}
+                    onClick={setDefaultGroup}
+                  >
+                    {selectedGroup.isDefault
+                      ? t(WEBUI.standardDns.groupDefault)
+                      : t(WEBUI.standardDns.setDefaultGroup)}
+                  </Button>
+                </div>
+                <div className="space-y-2 md:col-span-2 xl:col-span-4">
+                  <Label htmlFor={`${selectedGroup.id}-group-description`}>
+                    {t(WEBUI.standardDns.groupDescription)}
+                  </Label>
+                  <Input
+                    id={`${selectedGroup.id}-group-description`}
+                    value={selectedGroup.description ?? ""}
+                    onChange={(event) =>
+                      updateSelectedGroup({ description: event.target.value })
+                    }
+                  />
+                </div>
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3 text-sm">
+                <div className="font-medium">
+                  {t(WEBUI.standardDns.groupReferences)}
+                </div>
+                {groupReferences.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {groupReferences.map((reference) => (
+                      <Badge key={reference.id} variant="secondary" asChild>
+                        <Link href={reference.href}>{reference.name}</Link>
+                      </Badge>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-1 text-muted-foreground">
+                    {t(WEBUI.standardDns.groupNoReferences)}
+                  </p>
+                )}
+                <Button
+                  asChild
+                  variant="link"
+                  size="sm"
+                  className="mt-1 h-auto px-0"
+                >
+                  <Link
+                    href={
+                      groupReferences[0]?.href ??
+                      `/standard/routing?group=${encodeURIComponent(selectedGroup.id)}`
+                    }
+                  >
+                    {t(WEBUI.standardDns.openGroupPaths)}
+                    <ArrowRight className="size-4" />
+                  </Link>
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
               <div>
@@ -408,9 +713,9 @@ export default function StandardDnsPage() {
                   variant="outline"
                   size="sm"
                   onClick={() =>
-                    setDefaultUpstreams([
-                      ...defaultGroup.upstreams,
-                      createUpstream(defaultGroup.upstreams),
+                    setSelectedUpstreams([
+                      ...selectedGroup.upstreams,
+                      createUpstream(selectedGroup.upstreams),
                     ])
                   }
                 >
@@ -425,13 +730,16 @@ export default function StandardDnsPage() {
                   {groupTestSummary}
                 </div>
               ) : null}
-              {defaultGroup.upstreams.map((upstream) => (
+              {selectedGroup.upstreams.map((upstream) => (
                 <UpstreamEditor
-                  key={upstream.id}
+                  key={`${selectedGroup.id}/${upstream.id}`}
                   upstream={upstream}
-                  canRemove={defaultGroup.upstreams.length > 1}
-                  testResult={testResults[upstream.id]}
-                  testing={testingUpstreams[upstream.id] ?? false}
+                  canRemove={selectedGroup.upstreams.length > 1}
+                  testResult={testResults[`${selectedGroup.id}/${upstream.id}`]}
+                  testing={
+                    testingUpstreams[`${selectedGroup.id}/${upstream.id}`] ??
+                    false
+                  }
                   onChange={(patch) => updateUpstream(upstream.id, patch)}
                   onRemove={() => removeUpstream(upstream.id)}
                   onTest={() => void handleTestUpstream(upstream)}
@@ -752,12 +1060,78 @@ function UpstreamEditor({
           placeholder="223.5.5.5:53"
           onChange={(value) => onChange({ bootstrap: value })}
         />
+        <div className="space-y-2">
+          <Label htmlFor={`${upstream.id}-bootstrap-version`}>
+            {t(WEBUI.standardDns.bootstrapVersion)}
+          </Label>
+          <Select
+            value={String(upstream.bootstrapVersion ?? 4)}
+            onValueChange={(value) =>
+              onChange({ bootstrapVersion: Number(value) as 4 | 6 })
+            }
+          >
+            <SelectTrigger
+              id={`${upstream.id}-bootstrap-version`}
+              className="w-full"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="4">IPv4</SelectItem>
+              <SelectItem value="6">IPv6</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
         <OptionalTextField
           id={`${upstream.id}-dial-address`}
           label={t(WEBUI.standardDns.dialAddress)}
           value={upstream.dialAddress ?? ""}
-          placeholder="1.1.1.1:853"
+          placeholder="1.1.1.1"
           onChange={(value) => onChange({ dialAddress: value })}
+        />
+        <OptionalTextField
+          id={`${upstream.id}-outbound`}
+          label={t(WEBUI.standardDns.outbound)}
+          value={upstream.outbound ?? ""}
+          placeholder="private"
+          onChange={(value) => onChange({ outbound: value })}
+        />
+        <OptionalTextField
+          id={`${upstream.id}-socks5`}
+          label={t(WEBUI.standardDns.socks5)}
+          value={upstream.socks5 ?? ""}
+          placeholder="127.0.0.1:1080"
+          onChange={(value) => onChange({ socks5: value })}
+        />
+        <OptionalNumberField
+          id={`${upstream.id}-timeout`}
+          label={t(WEBUI.standardDns.timeoutSeconds)}
+          min={1}
+          value={upstream.timeoutSeconds}
+          onChange={(value) => onChange({ timeoutSeconds: value })}
+        />
+        <OptionalNumberField
+          id={`${upstream.id}-idle-timeout`}
+          label={t(WEBUI.standardDns.idleTimeoutSeconds)}
+          min={1}
+          value={upstream.idleTimeoutSeconds}
+          onChange={(value) => onChange({ idleTimeoutSeconds: value })}
+        />
+        <OptionalNumberField
+          id={`${upstream.id}-max-conns`}
+          label={t(WEBUI.standardDns.maxConns)}
+          min={1}
+          max={4096}
+          value={upstream.maxConns}
+          onChange={(value) => onChange({ maxConns: value })}
+        />
+        <OptionalNumberField
+          id={`${upstream.id}-min-conns`}
+          label={t(WEBUI.standardDns.minConns)}
+          min={0}
+          max={4096}
+          value={upstream.minConns}
+          onChange={(value) => onChange({ minConns: value })}
         />
         {usesHttpDns ? (
           <OptionalTextField
@@ -774,6 +1148,19 @@ function UpstreamEditor({
             <Switch
               checked={upstream.tlsVerify ?? true}
               onCheckedChange={(checked) => onChange({ tlsVerify: checked })}
+            />
+          </Label>
+        ) : null}
+        {upstream.protocol === "auto" ||
+        upstream.protocol === "tcp" ||
+        upstream.protocol === "dot" ? (
+          <Label className="flex min-h-10 items-center justify-between rounded-lg border px-3 text-sm font-normal">
+            {t(WEBUI.standardDns.enablePipeline)}
+            <Switch
+              checked={upstream.enablePipeline ?? false}
+              onCheckedChange={(checked) =>
+                onChange({ enablePipeline: checked })
+              }
             />
           </Label>
         ) : null}
@@ -920,6 +1307,45 @@ function NumberField({
   );
 }
 
+function OptionalNumberField({
+  id,
+  label,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  value?: number;
+  min: number;
+  max?: number;
+  onChange: (value: number | undefined) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={id}>
+        {label}
+        <span className="text-xs font-normal text-muted-foreground">
+          {t(WEBUI.standardDns.optional)}
+        </span>
+      </Label>
+      <Input
+        id={id}
+        type="number"
+        min={min}
+        max={max}
+        value={value ?? ""}
+        onChange={(event) => {
+          const raw = event.target.value.trim();
+          onChange(raw ? Number(raw) : undefined);
+        }}
+      />
+    </div>
+  );
+}
+
 function ValidationPanel({
   issues,
   saveError,
@@ -953,11 +1379,29 @@ function validationMessage(
   if (issue.code === "listen_required") {
     return t(WEBUI.standardDns.validationListenRequired);
   }
+  if (issue.code === "group_required") {
+    return t(WEBUI.standardDns.validationGroupRequired);
+  }
+  if (issue.code === "group_name_required") {
+    return t(WEBUI.standardDns.validationGroupNameRequired);
+  }
+  if (issue.code === "default_group_invalid") {
+    return t(WEBUI.standardDns.validationDefaultGroupInvalid);
+  }
   if (issue.code === "upstream_required") {
     return t(WEBUI.standardDns.validationUpstreamRequired);
   }
   if (issue.code === "upstream_address_required") {
     return t(WEBUI.standardDns.validationAddressRequired);
+  }
+  if (issue.code === "upstream_timeout_invalid") {
+    return t(WEBUI.standardDns.validationTimeoutInvalid);
+  }
+  if (issue.code === "upstream_pool_invalid") {
+    return t(WEBUI.standardDns.validationPoolInvalid);
+  }
+  if (issue.code === "upstream_pipeline_invalid") {
+    return t(WEBUI.standardDns.validationPipelineInvalid);
   }
   return t(WEBUI.standardDns.validationProtocolUnsupported, {
     protocol: issue.protocol ? protocolLabel(issue.protocol) : "",

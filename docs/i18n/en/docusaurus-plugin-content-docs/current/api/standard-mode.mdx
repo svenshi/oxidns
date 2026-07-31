@@ -12,7 +12,7 @@ This read-only endpoint performs schema migration, normalization, semantic and c
 
 ```json
 {
-  "intent": { "schema": 3, "listen": {}, "upstreamGroups": [] },
+  "intent": { "schema": 4, "listen": {}, "upstreamGroups": [] },
   "base_config_version": "sha256-hex",
   "base_standard_version": "sha256-hex",
   "takeover": false
@@ -28,7 +28,7 @@ Important response fields:
 | `ownership` | `managed`, `modified`, or `unmanaged` |
 | `semantic_diff` | Preserved top-level fields and generated, replaced, or removed plugin tags |
 | `blockers` | Control-plane blockers such as version conflicts or required takeover |
-| `plan.normalizedIntent` | Backend-migrated and normalized schema v3 intent |
+| `plan.normalizedIntent` | Backend-migrated and normalized schema v4 intent |
 | `plan.diagnostics` | Semantic diagnostics with stable `severity`, `code`, and `path` |
 | `plan.generated` | Candidate YAML, version, tag map, and summary; absent on errors |
 | `can_apply` | `true` only when both the plan and control-plane checks pass |
@@ -41,7 +41,7 @@ Apply reruns the complete plan, verifies both base versions and the reviewed can
 
 ```json
 {
-  "intent": { "schema": 3, "listen": {}, "upstreamGroups": [] },
+  "intent": { "schema": 4, "listen": {}, "upstreamGroups": [] },
   "base_config_version": "plan-response-config-version",
   "base_standard_version": "plan-response-standard-version",
   "planned_config_version": "plan-generated-config-version",
@@ -89,3 +89,26 @@ Returns the current pending transaction, or the most recent completed record whe
 ```
 
 `status` is `pending`, `succeeded`, `failed`, or `recovered`. Failure text is bounded; candidate YAML and Standard intent are never returned by this endpoint.
+
+## Standard Mode Configuration History
+
+After every successful transaction commit, the backend persists the normalized Standard Mode intent and retains the latest 20 entries. The history file sits beside the DNS configuration, is atomically replaced, and uses mode `0600` on Unix. The list endpoint omits complete intent so routine status reads do not expose sensitive upstream proxy settings.
+
+### `GET /api/standard/history`
+
+Returns history metadata in reverse chronological order, including snapshot ID, transaction ID, configuration version, schema, upstream group count, and resolution path count.
+
+### `POST /api/standard/history/restore`
+
+```json
+{ "id": "standard-..." }
+```
+
+Returns the stored Standard Mode intent only after an operator explicitly selects an entry. The WebUI does not overwrite the current configuration with historical YAML. It submits the intent through Plan, diff review, capability validation, and transactional Apply again. Restore therefore remains protected by current build capabilities, configuration ownership, and optimistic concurrency versions.
+
+## Schema v4 Runtime Semantics
+
+- Every filter subscription generates independent `download`, `cron`, and job tags. A download failure stops that subscription's provider reload, leaving the last valid rule file active.
+- Every resolution path owns an independent cache instance. Cache list, delete, flush, dump, and load operations resolve instances through `tagMap.caches` in generated metadata.
+- Hosts, redirects, static records, response TTL, fixed QTYPE responses, and DDNS compile to native OxiDNS plugins. DDNS domains bypass cache and use a short fixed TTL.
+- Standard Mode only references local rule file paths. It does not create, delete, or rewrite platform files, and does not operate OpenWrt/UCI, firewalls, or third-party systems.

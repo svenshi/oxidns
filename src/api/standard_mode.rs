@@ -33,6 +33,8 @@ use crate::infra::error::{DnsError, Result};
 
 const STANDARD_TRANSACTION_SCHEMA: u8 = 1;
 const STANDARD_TRANSACTION_MAX_BYTES: usize = 2 * 1024 * 1024;
+const STANDARD_HISTORY_SCHEMA: u8 = 1;
+const STANDARD_HISTORY_MAX_ENTRIES: usize = 20;
 static STANDARD_APPLY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Clone, Deserialize)]
@@ -142,6 +144,51 @@ struct StandardTransactionStatusResponse {
     transaction: Option<StandardTransactionRecord>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StandardHistoryEntry {
+    id: String,
+    created_at_ms: u64,
+    transaction_id: String,
+    config_version: String,
+    standard_version: String,
+    settings: Value,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct StandardHistoryStore {
+    schema: u8,
+    entries: Vec<StandardHistoryEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct StandardHistoryItem {
+    id: String,
+    created_at_ms: u64,
+    transaction_id: String,
+    config_version: String,
+    standard_version: String,
+    settings_schema: Option<u64>,
+    upstream_group_count: usize,
+    path_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct StandardHistoryListResponse {
+    ok: bool,
+    entries: Vec<StandardHistoryItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StandardHistoryRestoreRequest {
+    id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct StandardHistoryRestoreResponse {
+    ok: bool,
+    entry: StandardHistoryEntry,
+}
+
 #[derive(Debug)]
 struct StandardPlanHandler {
     controller: Arc<AppController>,
@@ -154,6 +201,16 @@ struct StandardApplyHandler {
 
 #[derive(Debug)]
 struct StandardTransactionStatusHandler {
+    controller: Arc<AppController>,
+}
+
+#[derive(Debug)]
+struct StandardHistoryListHandler {
+    controller: Arc<AppController>,
+}
+
+#[derive(Debug)]
+struct StandardHistoryRestoreHandler {
     controller: Arc<AppController>,
 }
 
@@ -255,6 +312,56 @@ impl ApiHandler for StandardTransactionStatusHandler {
     }
 }
 
+#[async_trait]
+impl ApiHandler for StandardHistoryListHandler {
+    async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
+        match list_history(self.controller.config_path()) {
+            Ok(entries) => json_ok(
+                StatusCode::OK,
+                &StandardHistoryListResponse { ok: true, entries },
+            ),
+            Err(message) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "standard_history_read_failed",
+                message,
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl ApiHandler for StandardHistoryRestoreHandler {
+    async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
+        let request = match serde_json::from_slice::<StandardHistoryRestoreRequest>(request.body())
+        {
+            Ok(request) => request,
+            Err(err) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_standard_history_request",
+                    format!("request body must be JSON: {err}"),
+                );
+            }
+        };
+        match history_entry(self.controller.config_path(), &request.id) {
+            Ok(Some(entry)) => json_ok(
+                StatusCode::OK,
+                &StandardHistoryRestoreResponse { ok: true, entry },
+            ),
+            Ok(None) => json_error(
+                StatusCode::NOT_FOUND,
+                "standard_history_not_found",
+                "Standard Mode history entry does not exist",
+            ),
+            Err(message) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "standard_history_read_failed",
+                message,
+            ),
+        }
+    }
+}
+
 pub fn register_builtin_routes(
     register: &ApiRegister,
     controller: Arc<AppController>,
@@ -275,7 +382,19 @@ pub fn register_builtin_routes(
     )?;
     register.register_get(
         "/standard/apply/status",
-        Arc::new(StandardTransactionStatusHandler { controller }),
+        Arc::new(StandardTransactionStatusHandler {
+            controller: controller.clone(),
+        }),
+    )?;
+    register.register_get(
+        "/standard/history",
+        Arc::new(StandardHistoryListHandler {
+            controller: controller.clone(),
+        }),
+    )?;
+    register.register_post(
+        "/standard/history/restore",
+        Arc::new(StandardHistoryRestoreHandler { controller }),
     )?;
     Ok(())
 }
@@ -667,6 +786,7 @@ pub(crate) fn finalize_pending_transaction(config_path: &Path) -> Result<bool> {
         transaction_record(&journal, StandardTransactionStatus::Succeeded, None),
     )
     .map_err(DnsError::runtime)?;
+    append_history_entry(config_path, &journal).map_err(DnsError::runtime)?;
     remove_pending_journal(config_path).map_err(DnsError::runtime)?;
     Ok(true)
 }
@@ -711,6 +831,7 @@ fn rollback_journal(
     error: &str,
 ) -> std::result::Result<(), String> {
     restore_previous_state(config_path, journal)?;
+    remove_history_entry(config_path, &journal.transaction_id)?;
     write_transaction_record(
         config_path,
         transaction_record(
@@ -800,6 +921,10 @@ fn transaction_record_path(config_path: &Path) -> PathBuf {
     append_path_suffix(config_path, ".standard-transaction.last.json")
 }
 
+fn history_path(config_path: &Path) -> PathBuf {
+    append_path_suffix(config_path, ".standard-history.json")
+}
+
 fn append_path_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut value = path.as_os_str().to_owned();
     value.push(suffix);
@@ -818,6 +943,132 @@ fn write_transaction_record(
     record: StandardTransactionRecord,
 ) -> std::result::Result<(), String> {
     write_bounded_json(&transaction_record_path(config_path), &record)
+}
+
+fn append_history_entry(
+    config_path: &Path,
+    journal: &StandardApplyJournal,
+) -> std::result::Result<(), String> {
+    let settings = journal
+        .candidate_standard
+        .pointer("/standard/settings")
+        .cloned()
+        .ok_or_else(|| "candidate Standard state has no settings".to_string())?;
+    let mut history = read_history(config_path)?;
+    history
+        .entries
+        .retain(|entry| entry.transaction_id != journal.transaction_id);
+    history.entries.insert(
+        0,
+        StandardHistoryEntry {
+            id: journal.transaction_id.clone(),
+            created_at_ms: unix_time_ms(),
+            transaction_id: journal.transaction_id.clone(),
+            config_version: journal.candidate_config_version.clone(),
+            standard_version: journal.candidate_standard_version.clone(),
+            settings,
+        },
+    );
+    history.entries.truncate(STANDARD_HISTORY_MAX_ENTRIES);
+    write_history(config_path, history)
+}
+
+fn remove_history_entry(
+    config_path: &Path,
+    transaction_id: &str,
+) -> std::result::Result<(), String> {
+    let mut history = read_history(config_path)?;
+    let previous_len = history.entries.len();
+    history
+        .entries
+        .retain(|entry| entry.transaction_id != transaction_id);
+    if history.entries.len() != previous_len {
+        write_history(config_path, history)?;
+    }
+    Ok(())
+}
+
+fn list_history(config_path: &Path) -> std::result::Result<Vec<StandardHistoryItem>, String> {
+    let _guard = config_mutation_guard()?;
+    Ok(read_history(config_path)?
+        .entries
+        .into_iter()
+        .map(|entry| {
+            let settings_schema = entry.settings.get("schema").and_then(Value::as_u64);
+            let upstream_group_count = entry
+                .settings
+                .get("upstreamGroups")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            let path_count = entry
+                .settings
+                .get("paths")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            StandardHistoryItem {
+                id: entry.id,
+                created_at_ms: entry.created_at_ms,
+                transaction_id: entry.transaction_id,
+                config_version: entry.config_version,
+                standard_version: entry.standard_version,
+                settings_schema,
+                upstream_group_count,
+                path_count,
+            }
+        })
+        .collect())
+}
+
+fn history_entry(
+    config_path: &Path,
+    id: &str,
+) -> std::result::Result<Option<StandardHistoryEntry>, String> {
+    let _guard = config_mutation_guard()?;
+    Ok(read_history(config_path)?
+        .entries
+        .into_iter()
+        .find(|entry| entry.id == id))
+}
+
+fn read_history(config_path: &Path) -> std::result::Result<StandardHistoryStore, String> {
+    let history = read_bounded_json::<StandardHistoryStore>(
+        &history_path(config_path),
+        "Standard Mode history",
+    )?
+    .unwrap_or_else(|| StandardHistoryStore {
+        schema: STANDARD_HISTORY_SCHEMA,
+        entries: Vec::new(),
+    });
+    if history.schema != STANDARD_HISTORY_SCHEMA {
+        return Err(format!(
+            "unsupported Standard Mode history schema {}",
+            history.schema
+        ));
+    }
+    Ok(history)
+}
+
+fn write_history(
+    config_path: &Path,
+    mut history: StandardHistoryStore,
+) -> std::result::Result<(), String> {
+    history.schema = STANDARD_HISTORY_SCHEMA;
+    loop {
+        let mut bytes = serde_json::to_vec_pretty(&history)
+            .map_err(|err| format!("failed to serialize Standard Mode history: {err}"))?;
+        bytes.push(b'\n');
+        if bytes.len() <= STANDARD_TRANSACTION_MAX_BYTES {
+            return atomic_replace(&history_path(config_path), &bytes, true);
+        }
+        if history.entries.len() <= 1 {
+            return Err(format!(
+                "Standard Mode history entry is too large: {} bytes > {} bytes",
+                bytes.len(),
+                STANDARD_TRANSACTION_MAX_BYTES
+            ));
+        }
+        history.entries.pop();
+    }
 }
 
 fn write_bounded_json(path: &Path, value: &impl Serialize) -> std::result::Result<(), String> {
@@ -1174,7 +1425,10 @@ mod tests {
         assert!(!has_pending_transaction(controller.config_path()));
         let standard = load_webui_config(controller.config_path()).expect("load finalized state");
         assert_eq!(standard.config["mode"], "standard");
-        assert_eq!(standard.config["standard"]["settings"]["schema"], 3);
+        assert_eq!(
+            standard.config["standard"]["settings"]["schema"],
+            crate::config::standard_mode::CURRENT_STANDARD_SCHEMA
+        );
         assert_eq!(
             classify_ownership(
                 &standard,
@@ -1190,6 +1444,49 @@ mod tests {
                 .expect("last transaction")
                 .status,
             StandardTransactionStatus::Succeeded
+        );
+        let history = list_history(controller.config_path()).expect("list history");
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            history[0].config_version,
+            accepted_target_version(&standard)
+        );
+        let restored = history_entry(controller.config_path(), &history[0].id)
+            .expect("read history entry")
+            .expect("history entry");
+        assert_eq!(
+            restored.settings["schema"],
+            crate::config::standard_mode::CURRENT_STANDARD_SCHEMA
+        );
+
+        let list_response = StandardHistoryListHandler {
+            controller: controller.clone(),
+        }
+        .handle(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/standard/history")
+                .body(Bytes::new())
+                .expect("request"),
+        )
+        .await;
+        let list_body = response_json(list_response).await;
+        assert!(list_body["entries"][0].get("settings").is_none());
+
+        let restore_response = StandardHistoryRestoreHandler {
+            controller: controller.clone(),
+        }
+        .handle(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/standard/history/restore")
+                .body(Bytes::from(json!({ "id": history[0].id }).to_string()))
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(
+            response_json(restore_response).await["entry"]["settings"]["schema"],
+            crate::config::standard_mode::CURRENT_STANDARD_SCHEMA
         );
     }
 
@@ -1227,6 +1524,11 @@ mod tests {
             .expect("last transaction");
         assert_eq!(record.status, StandardTransactionStatus::Failed);
         assert_eq!(record.error.as_deref(), Some("injected assembly failure"));
+        assert!(
+            list_history(controller.config_path())
+                .expect("list history")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -1437,5 +1739,44 @@ mod tests {
             previous
         );
         assert!(pending_transaction_path(controller.config_path()).exists());
+    }
+
+    #[test]
+    fn history_is_bounded_and_latest_entry_can_be_restored() {
+        let (controller, _dir) = controller();
+        let mut history = StandardHistoryStore {
+            schema: STANDARD_HISTORY_SCHEMA,
+            entries: Vec::new(),
+        };
+        for index in 0..(STANDARD_HISTORY_MAX_ENTRIES + 5) {
+            history.entries.insert(
+                0,
+                StandardHistoryEntry {
+                    id: format!("history-{index}"),
+                    created_at_ms: index as u64,
+                    transaction_id: format!("transaction-{index}"),
+                    config_version: format!("config-{index}"),
+                    standard_version: format!("standard-{index}"),
+                    settings: json!({ "schema": 4, "upstreamGroups": [], "paths": [] }),
+                },
+            );
+            history.entries.truncate(STANDARD_HISTORY_MAX_ENTRIES);
+        }
+        write_history(controller.config_path(), history).expect("write history");
+
+        let entries = list_history(controller.config_path()).expect("list history");
+        assert_eq!(entries.len(), STANDARD_HISTORY_MAX_ENTRIES);
+        assert_eq!(entries[0].id, "history-24");
+        let restored = history_entry(controller.config_path(), "history-24")
+            .expect("read history")
+            .expect("history entry");
+        assert_eq!(restored.settings["schema"], 4);
+    }
+
+    fn accepted_target_version(standard: &LoadedWebUiConfig) -> String {
+        standard.config["standard"]["meta"]["lastGenerated"]["configVersion"]
+            .as_str()
+            .expect("generated config version")
+            .to_string()
     }
 }

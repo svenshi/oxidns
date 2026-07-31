@@ -4,6 +4,8 @@ import type {
   StandardDeviceProfile,
   StandardExceptionRule,
   StandardFilteringSettings,
+  StandardFilterFile,
+  StandardLocalSettings,
   StandardModeSettings,
   StandardResolutionPath,
   StandardRoutingRule,
@@ -17,9 +19,16 @@ export interface StandardDnsValidationIssue {
   field: string;
   code:
     | "listen_required"
+    | "group_required"
+    | "group_name_required"
+    | "default_group_invalid"
     | "upstream_required"
     | "upstream_address_required"
+    | "upstream_timeout_invalid"
+    | "upstream_pool_invalid"
+    | "upstream_pipeline_invalid"
     | "protocol_unsupported";
+  groupId?: string;
   protocol?: StandardUpstreamProtocol;
   requiredFeatures?: string[];
 }
@@ -42,7 +51,9 @@ export interface StandardFilteringValidationIssue {
     | "subscription_name_required"
     | "subscription_url_required"
     | "subscription_url_invalid"
-    | "subscription_interval_invalid";
+    | "subscription_interval_invalid"
+    | "filter_file_name_required"
+    | "filter_file_path_required";
   subscriptionId?: string;
 }
 
@@ -157,6 +168,8 @@ export function normalizeStandardDnsSettings(
     },
     upstreamGroups: settings.upstreamGroups.map((group) => ({
       ...group,
+      name: group.name.trim() || group.id,
+      description: group.description?.trim() || undefined,
       upstreams: group.upstreams.map(normalizeStandardUpstream),
     })),
     cache: {
@@ -207,6 +220,20 @@ export function normalizeStandardUpstream(
     ...(upstream.dialAddress?.trim()
       ? { dialAddress: upstream.dialAddress.trim() }
       : { dialAddress: undefined }),
+    ...(upstream.outbound?.trim()
+      ? { outbound: upstream.outbound.trim() }
+      : { outbound: undefined }),
+    ...(upstream.socks5?.trim()
+      ? { socks5: upstream.socks5.trim() }
+      : { socks5: undefined }),
+    timeoutSeconds: normalizeOptionalInteger(upstream.timeoutSeconds, 1),
+    idleTimeoutSeconds: normalizeOptionalInteger(
+      upstream.idleTimeoutSeconds,
+      1,
+    ),
+    maxConns: normalizeOptionalInteger(upstream.maxConns, 1),
+    minConns: normalizeOptionalInteger(upstream.minConns, 0),
+    enablePipeline: upstream.enablePipeline ?? false,
     tlsVerify: upstream.tlsVerify ?? true,
     ...(usesHttpDns
       ? { dohPath: dohPath || "/dns-query" }
@@ -224,37 +251,79 @@ export function validateStandardDnsSettings(
     issues.push({ field: "listen", code: "listen_required" });
   }
 
-  const defaultGroup =
-    settings.upstreamGroups.find((group) => group.isDefault) ??
-    settings.upstreamGroups[0];
-  const enabledUpstreams =
-    defaultGroup?.upstreams.filter((item) => item.enabled) ?? [];
-  const usableUpstreamCount = enabledUpstreams.filter((item) =>
-    item.address.trim(),
-  ).length;
-
-  if (usableUpstreamCount === 0) {
-    issues.push({ field: "upstreams", code: "upstream_required" });
+  if (settings.upstreamGroups.length === 0) {
+    issues.push({ field: "upstreamGroups", code: "group_required" });
+  }
+  if (settings.upstreamGroups.filter((group) => group.isDefault).length !== 1) {
+    issues.push({ field: "upstreamGroups", code: "default_group_invalid" });
   }
 
-  for (const upstream of enabledUpstreams) {
-    const field = `upstream.${upstream.id}`;
-    if (!upstream.address.trim()) {
-      issues.push({ field, code: "upstream_address_required" });
-    }
-    if (!isStandardUpstreamProtocolSupported(upstream.protocol, buildInfo)) {
+  for (const group of settings.upstreamGroups) {
+    if (!group.name.trim()) {
       issues.push({
-        field,
-        code: "protocol_unsupported",
-        protocol: upstream.protocol,
-        requiredFeatures: [
-          ...requiredStandardUpstreamProtocolFeatures(upstream.protocol),
-        ],
+        field: `group.${group.id}`,
+        code: "group_name_required",
+        groupId: group.id,
       });
+    }
+    const enabledUpstreams = group.upstreams.filter((item) => item.enabled);
+    if (!enabledUpstreams.some((item) => item.address.trim())) {
+      issues.push({
+        field: `group.${group.id}.upstreams`,
+        code: "upstream_required",
+        groupId: group.id,
+      });
+    }
+
+    for (const upstream of enabledUpstreams) {
+      const field = `group.${group.id}.upstream.${upstream.id}`;
+      if (!upstream.address.trim()) {
+        issues.push({ field, code: "upstream_address_required" });
+      }
+      if (upstream.timeoutSeconds === 0 || upstream.idleTimeoutSeconds === 0) {
+        issues.push({ field, code: "upstream_timeout_invalid" });
+      }
+      if (
+        upstream.maxConns === 0 ||
+        (upstream.maxConns != null && upstream.maxConns > 4096) ||
+        (upstream.minConns != null && upstream.minConns > 4096) ||
+        (upstream.maxConns != null &&
+          upstream.minConns != null &&
+          upstream.minConns > upstream.maxConns)
+      ) {
+        issues.push({ field, code: "upstream_pool_invalid" });
+      }
+      if (
+        upstream.enablePipeline &&
+        upstream.protocol !== "auto" &&
+        upstream.protocol !== "tcp" &&
+        upstream.protocol !== "dot"
+      ) {
+        issues.push({ field, code: "upstream_pipeline_invalid" });
+      }
+      if (!isStandardUpstreamProtocolSupported(upstream.protocol, buildInfo)) {
+        issues.push({
+          field,
+          code: "protocol_unsupported",
+          protocol: upstream.protocol,
+          requiredFeatures: [
+            ...requiredStandardUpstreamProtocolFeatures(upstream.protocol),
+          ],
+        });
+      }
     }
   }
 
   return issues;
+}
+
+function normalizeOptionalInteger(
+  value: number | undefined,
+  minimum: number,
+): number | undefined {
+  if (value == null || !Number.isFinite(value)) return undefined;
+  const normalized = Math.trunc(value);
+  return normalized >= minimum ? normalized : undefined;
 }
 
 export function standardFilteringCapabilityMap(
@@ -298,15 +367,25 @@ function normalizeFiltering(
   return {
     ...filtering,
     subscriptions: filtering.subscriptions.map(normalizeSubscription),
+    localFiles: filtering.localFiles.map(normalizeFilterFile),
     blockRules: uniqueLines(filtering.blockRules),
     allowRules: uniqueLines(filtering.allowRules).map(
       normalizeAdGuardAllowRule,
     ),
     blockResponse:
       filtering.blockResponse === "nxdomain" ||
+      filtering.blockResponse === "nodata" ||
       filtering.blockResponse === "refused"
         ? filtering.blockResponse
         : "null_ip",
+  };
+}
+
+function normalizeFilterFile(file: StandardFilterFile): StandardFilterFile {
+  return {
+    ...file,
+    name: file.name.trim(),
+    path: file.path.trim(),
   };
 }
 
@@ -352,7 +431,12 @@ export function validateStandardFilteringSettings(
   const enabledSubscriptions = filtering.subscriptions.filter(
     (subscription) => subscription.enabled,
   );
-  if (filtering.blockRules.length === 0 && enabledSubscriptions.length === 0) {
+  const enabledLocalFiles = filtering.localFiles.filter((file) => file.enabled);
+  if (
+    filtering.blockRules.length === 0 &&
+    enabledSubscriptions.length === 0 &&
+    enabledLocalFiles.length === 0
+  ) {
     issues.push({ field: "filtering", code: "rule_source_required" });
   }
 
@@ -400,7 +484,149 @@ export function validateStandardFilteringSettings(
       });
     }
   }
+  for (const file of enabledLocalFiles) {
+    const field = `filterFile.${file.id}`;
+    if (!file.name.trim()) {
+      issues.push({ field, code: "filter_file_name_required" });
+    }
+    if (!file.path.trim()) {
+      issues.push({ field, code: "filter_file_path_required" });
+    }
+  }
 
+  return issues;
+}
+
+export interface StandardLocalValidationIssue {
+  field: string;
+  code:
+    | "capability_required"
+    | "ttl_required"
+    | "ttl_range_invalid"
+    | "qtype_required"
+    | "ddns_domain_required"
+    | "ddns_path_required"
+    | "ddns_ttl_invalid";
+}
+
+export function normalizeStandardLocalSettings(
+  settings: StandardModeSettings,
+): StandardModeSettings {
+  const local = settings.local;
+  return {
+    ...settings,
+    local: {
+      hosts: {
+        entries: uniqueLines(local.hosts.entries),
+        files: uniqueLines(local.hosts.files),
+      },
+      redirects: {
+        rules: uniqueLines(local.redirects.rules),
+        files: uniqueLines(local.redirects.files),
+      },
+      records: {
+        rules: uniqueLines(local.records.rules),
+        files: uniqueLines(local.records.files),
+      },
+      responseTtl: {
+        enabled: local.responseTtl.enabled,
+        min: normalizeOptionalInteger(local.responseTtl.min, 0),
+        max: normalizeOptionalInteger(local.responseTtl.max, 0),
+      },
+      qtypePolicy: {
+        enabled: local.qtypePolicy.enabled,
+        qtypes: uniqueLines(local.qtypePolicy.qtypes).map((value) =>
+          value.toUpperCase(),
+        ),
+        response: local.qtypePolicy.response,
+      },
+      ddns: {
+        enabled: local.ddns.enabled,
+        domains: uniqueLines(local.ddns.domains).map((domain) =>
+          domain
+            .replace(/^full:/i, "")
+            .replace(/\.$/, "")
+            .toLowerCase(),
+        ),
+        pathId: local.ddns.pathId?.trim() || undefined,
+        ttl: Math.max(1, Math.trunc(local.ddns.ttl) || 30),
+      },
+    },
+  };
+}
+
+export function validateStandardLocalSettings(
+  settings: StandardModeSettings,
+  buildInfo: BuildInfo | null,
+): StandardLocalValidationIssue[] {
+  const local: StandardLocalSettings = settings.local;
+  const issues: StandardLocalValidationIssue[] = [];
+  const requireExecutor = (active: boolean, kind: string, field: string) => {
+    if (active && !isPluginKindSupported(buildInfo, "executor", kind)) {
+      issues.push({ field, code: "capability_required" });
+    }
+  };
+  requireExecutor(
+    local.hosts.entries.length > 0 || local.hosts.files.length > 0,
+    "hosts",
+    "local.hosts",
+  );
+  requireExecutor(
+    local.redirects.rules.length > 0 || local.redirects.files.length > 0,
+    "redirect",
+    "local.redirects",
+  );
+  requireExecutor(
+    local.records.rules.length > 0 || local.records.files.length > 0,
+    "arbitrary",
+    "local.records",
+  );
+  if (local.responseTtl.enabled) {
+    requireExecutor(true, "ttl", "local.responseTtl");
+    if (local.responseTtl.min == null && local.responseTtl.max == null) {
+      issues.push({ field: "local.responseTtl", code: "ttl_required" });
+    } else if (
+      local.responseTtl.min != null &&
+      local.responseTtl.max != null &&
+      local.responseTtl.min > local.responseTtl.max
+    ) {
+      issues.push({ field: "local.responseTtl", code: "ttl_range_invalid" });
+    }
+  }
+  if (local.qtypePolicy.enabled) {
+    if (local.qtypePolicy.qtypes.length === 0) {
+      issues.push({ field: "local.qtypePolicy", code: "qtype_required" });
+    }
+    if (
+      !isPluginKindSupported(buildInfo, "matcher", "qtype") ||
+      !isPluginKindSupported(buildInfo, "executor", "black_hole")
+    ) {
+      issues.push({ field: "local.qtypePolicy", code: "capability_required" });
+    }
+  }
+  if (local.ddns.enabled) {
+    if (local.ddns.domains.length === 0) {
+      issues.push({
+        field: "local.ddns.domains",
+        code: "ddns_domain_required",
+      });
+    }
+    if (
+      local.ddns.pathId &&
+      !settings.paths.some((path) => path.id === local.ddns.pathId)
+    ) {
+      issues.push({ field: "local.ddns.pathId", code: "ddns_path_required" });
+    }
+    if (!Number.isFinite(local.ddns.ttl) || local.ddns.ttl < 1) {
+      issues.push({ field: "local.ddns.ttl", code: "ddns_ttl_invalid" });
+    }
+    if (
+      !isPluginKindSupported(buildInfo, "matcher", "qname") ||
+      !isPluginKindSupported(buildInfo, "executor", "ttl")
+    ) {
+      issues.push({ field: "local.ddns", code: "capability_required" });
+    }
+  }
   return issues;
 }
 
@@ -462,6 +688,9 @@ export function validateStandardDeviceSettings(
     const enabledSubscriptions = filtering.subscriptions.filter(
       (subscription) => subscription.enabled,
     );
+    const enabledLocalFiles = filtering.localFiles.filter(
+      (file) => file.enabled,
+    );
     if (!filteringCapabilities.adRules || !filteringCapabilities.blackHole) {
       issues.push({
         field: "devices.filtering",
@@ -470,7 +699,8 @@ export function validateStandardDeviceSettings(
     }
     if (
       filtering.blockRules.length === 0 &&
-      enabledSubscriptions.length === 0
+      enabledSubscriptions.length === 0 &&
+      enabledLocalFiles.length === 0
     ) {
       issues.push({
         field: "devices.filtering",

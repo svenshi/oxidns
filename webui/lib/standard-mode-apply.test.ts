@@ -69,6 +69,7 @@ function plan(
           routingRuleCount: 0,
           exceptionRuleCount: 0,
           deviceCount: 0,
+          localPolicyCount: 0,
         },
       },
       canApply: true,
@@ -95,6 +96,8 @@ describe("Standard Mode transactional apply", () => {
       webUiConfigVersion: "standard-v1",
       configPath: "/etc/oxidns/config.yaml",
       isOfflineMode: false,
+      webUiMode: "expert",
+      historyOpen: false,
       standardApplyConfirmation: null,
       loadConfig: vi.fn().mockImplementation(async () => {
         useAppStore.setState({ configVersion: "config-v2" });
@@ -156,5 +159,16 @@ describe("Standard Mode transactional apply", () => {
     useAppStore.getState().cancelStandardApply();
     await expect(saving).rejects.toThrow();
     expect(apiMocks.applyStandardMode).not.toHaveBeenCalled();
+  });
+
+  it("keeps Expert raw-YAML history inaccessible in Standard Mode", () => {
+    useAppStore.setState({ isOfflineMode: true });
+    useAppStore.getState().setHistoryOpen(true);
+    expect(useAppStore.getState().historyOpen).toBe(true);
+
+    useAppStore.getState().setWebUiMode("standard");
+    expect(useAppStore.getState().historyOpen).toBe(false);
+    useAppStore.getState().setHistoryOpen(true);
+    expect(useAppStore.getState().historyOpen).toBe(false);
   });
 });

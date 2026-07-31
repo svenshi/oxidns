@@ -64,6 +64,8 @@ struct DownloadConfig {
     outbound: Option<String>,
     socks5: Option<String>,
     startup_if_missing: Option<bool>,
+    #[serde(default)]
+    fail_on_error: bool,
     downloads: Vec<DownloadItemConfig>,
 }
 
@@ -372,6 +374,7 @@ impl DownloadRuntimeState {
 #[derive(Debug)]
 struct DownloadExecutor {
     state: Arc<DownloadRuntimeState>,
+    fail_on_error: bool,
 }
 
 #[async_trait]
@@ -396,7 +399,13 @@ impl Plugin for DownloadExecutor {
 impl Executor for DownloadExecutor {
     #[hotpath::measure]
     async fn execute(&self, _context: &mut DnsContext) -> Result<ExecStep> {
-        self.state.run_batch().await;
+        let result = self.state.run_batch().await;
+        if self.fail_on_error && !result.ok {
+            return Err(DnsError::plugin(format!(
+                "download batch failed for {} of {} target(s)",
+                result.failure_count, result.total
+            )));
+        }
         Ok(ExecStep::Next)
     }
 }
@@ -443,6 +452,7 @@ impl PluginFactory for DownloadFactory {
                     runtime.raw_socks5,
                     Arc::new(DownloadMetrics::new(plugin_tag.clone())),
                 )),
+                fail_on_error: runtime.fail_on_error,
             };
 
             info!(
@@ -503,6 +513,7 @@ impl PluginFactory for DownloadFactory {
                 runtime.raw_socks5,
                 metrics,
             )),
+            fail_on_error: runtime.fail_on_error,
         })))
     }
 
@@ -535,6 +546,7 @@ impl PluginFactory for DownloadFactory {
                 None,
                 Arc::new(DownloadMetrics::new(tag.to_string())),
             )),
+            fail_on_error: false,
         })))
     }
 }
@@ -544,6 +556,7 @@ struct DownloadRuntimeConfig {
     downloads: Vec<DownloadTarget>,
     insecure_skip_verify: bool,
     startup_if_missing: bool,
+    fail_on_error: bool,
     raw_socks5: Option<String>,
     http_options: HttpClientOptions,
 }
@@ -568,6 +581,7 @@ fn build_download_runtime_config(plugin_config: &PluginConfig) -> Result<Downloa
         downloads: resolve_download_targets(&plugin_config.tag, cfg.downloads)?,
         insecure_skip_verify,
         startup_if_missing: cfg.startup_if_missing.unwrap_or(true),
+        fail_on_error: cfg.fail_on_error,
         raw_socks5: cfg.socks5,
         http_options,
     })
@@ -845,6 +859,7 @@ mod tests {
                 None,
                 Arc::new(DownloadMetrics::new("download".to_string())),
             )),
+            fail_on_error: false,
         };
         let mut ctx = test_context();
         let step = plugin
@@ -852,6 +867,35 @@ mod tests {
             .await
             .expect("execute should not fail");
         assert!(matches!(step, ExecStep::Next));
+    }
+
+    #[tokio::test]
+    async fn test_download_executor_can_fail_batch_for_dependent_chains() {
+        AppClock::start();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let plugin = DownloadExecutor {
+            state: Arc::new(DownloadRuntimeState::new(
+                "download".to_string(),
+                HttpClient::new(HttpClientOptions::new(false, None)),
+                Duration::from_millis(10),
+                vec![DownloadTarget {
+                    url: "http://127.0.0.1:9/missing.txt".to_string(),
+                    dir: temp.path().to_path_buf(),
+                    filename: "missing.txt".to_string(),
+                    path: temp.path().join("missing.txt"),
+                }],
+                false,
+                None,
+                Arc::new(DownloadMetrics::new("download".to_string())),
+            )),
+            fail_on_error: true,
+        };
+
+        let error = plugin
+            .execute(&mut test_context())
+            .await
+            .expect_err("dependent chain must observe download failure");
+        assert!(error.to_string().contains("download batch failed"));
     }
 
     #[tokio::test]

@@ -43,7 +43,7 @@ export function createDefaultResolutionPath(): StandardResolutionPath {
 
 export function createDefaultStandardSettings(): StandardModeSettings {
   return {
-    schema: 3,
+    schema: 4,
     listen: {
       address: "0.0.0.0:5335",
       udp: true,
@@ -54,9 +54,18 @@ export function createDefaultStandardSettings(): StandardModeSettings {
     filtering: {
       enabled: false,
       subscriptions: [],
+      localFiles: [],
       blockRules: [],
       allowRules: [],
       blockResponse: "null_ip",
+    },
+    local: {
+      hosts: { entries: [], files: [] },
+      redirects: { rules: [], files: [] },
+      records: { rules: [], files: [] },
+      responseTtl: { enabled: false, min: 30, max: 86400 },
+      qtypePolicy: { enabled: false, qtypes: [], response: "nodata" },
+      ddns: { enabled: false, domains: [], ttl: 30 },
     },
     cache: {
       enabled: true,
