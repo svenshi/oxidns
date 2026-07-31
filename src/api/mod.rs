@@ -37,6 +37,7 @@ mod response;
 mod route;
 mod runtime_control;
 mod server;
+pub(crate) mod standard_mode;
 #[cfg(feature = "webui")]
 mod static_files;
 #[cfg(feature = "plugin-upgrade")]
@@ -90,7 +91,8 @@ pub fn register_control_routes(
 ) -> Result<()> {
     if let Some(register) = global_api_register() {
         control::register_builtin_routes(&register, controller.clone())?;
-        webui_config::register_builtin_routes(&register, controller)?;
+        webui_config::register_builtin_routes(&register, controller.clone())?;
+        standard_mode::register_builtin_routes(&register, controller)?;
     }
     Ok(())
 }

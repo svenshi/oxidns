@@ -69,23 +69,24 @@ struct DeleteWebUiConfigRequest {
 }
 
 #[derive(Debug)]
-enum WebUiConfigError {
+pub(super) enum WebUiConfigError {
     InvalidRequest(String),
     InvalidConfig(String),
     Conflict,
+    StandardTransactionBusy,
     TooLarge { actual: usize, max: usize },
     Io(String),
 }
 
 #[derive(Debug)]
-struct LoadedWebUiConfig {
-    path: PathBuf,
-    config: Value,
-    version: String,
-    updated_at_ms: Option<u64>,
-    defaulted: bool,
-    recovered: bool,
-    backup_path: Option<PathBuf>,
+pub(super) struct LoadedWebUiConfig {
+    pub(super) path: PathBuf,
+    pub(super) config: Value,
+    pub(super) version: String,
+    pub(super) updated_at_ms: Option<u64>,
+    pub(super) defaulted: bool,
+    pub(super) recovered: bool,
+    pub(super) backup_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -245,7 +246,7 @@ fn default_webui_config() -> Value {
     })
 }
 
-fn webui_config_path(config_path: &Path) -> PathBuf {
+pub(super) fn webui_config_path(config_path: &Path) -> PathBuf {
     let mut value = config_path.as_os_str().to_owned();
     value.push(".webui.json");
     PathBuf::from(value)
@@ -264,7 +265,7 @@ fn response_from_loaded(loaded: LoadedWebUiConfig) -> WebUiConfigResponse {
     }
 }
 
-fn load_webui_config(
+pub(super) fn load_webui_config(
     config_path: &Path,
 ) -> std::result::Result<LoadedWebUiConfig, WebUiConfigError> {
     load_webui_config_from_path(&webui_config_path(config_path))
@@ -345,6 +346,7 @@ fn replace_webui_config(
     config: Value,
     base_version: Option<&str>,
 ) -> std::result::Result<LoadedWebUiConfig, WebUiConfigError> {
+    let _guard = standard_mutation_guard(config_path)?;
     let path = webui_config_path(config_path);
     assert_current_version(&path, base_version)?;
     let config = validate_config_value(config)?;
@@ -356,6 +358,7 @@ fn patch_webui_config(
     patch: Value,
     base_version: Option<&str>,
 ) -> std::result::Result<LoadedWebUiConfig, WebUiConfigError> {
+    let _guard = standard_mutation_guard(config_path)?;
     let path = webui_config_path(config_path);
     let mut loaded = load_webui_config_from_path(&path)?;
     if let Some(base_version) = base_version
@@ -372,6 +375,7 @@ fn delete_webui_config(
     config_path: &Path,
     base_version: Option<&str>,
 ) -> std::result::Result<LoadedWebUiConfig, WebUiConfigError> {
+    let _guard = standard_mutation_guard(config_path)?;
     let path = webui_config_path(config_path);
     assert_current_version(&path, base_version)?;
     match fs::remove_file(&path) {
@@ -402,7 +406,17 @@ fn assert_current_version(
     }
 }
 
-fn write_config_value(
+fn standard_mutation_guard(
+    config_path: &Path,
+) -> std::result::Result<std::sync::MutexGuard<'static, ()>, WebUiConfigError> {
+    let guard = crate::api::standard_mode::config_mutation_guard().map_err(WebUiConfigError::Io)?;
+    if crate::api::standard_mode::has_pending_transaction(config_path) {
+        return Err(WebUiConfigError::StandardTransactionBusy);
+    }
+    Ok(guard)
+}
+
+pub(super) fn write_config_value(
     path: &Path,
     config: &Value,
 ) -> std::result::Result<LoadedWebUiConfig, WebUiConfigError> {
@@ -425,7 +439,7 @@ fn write_config_value(
     })
 }
 
-fn serialize_config(config: &Value) -> std::result::Result<String, WebUiConfigError> {
+pub(super) fn serialize_config(config: &Value) -> std::result::Result<String, WebUiConfigError> {
     serde_json::to_string_pretty(config).map_err(|err| {
         WebUiConfigError::InvalidConfig(format!("failed to serialize WebUI config: {err}"))
     })
@@ -499,7 +513,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::result::Result<(), WebUiConfi
         })?;
     }
 
-    fs::rename(&temp_path, path).map_err(|err| {
+    replace_file(&temp_path, path).map_err(|err| {
         let _ = fs::remove_file(&temp_path);
         WebUiConfigError::Io(format!(
             "failed to replace WebUI config {}: {err}",
@@ -512,6 +526,40 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::result::Result<(), WebUiConfi
     }
 
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::rename(from, to)
+}
+
+#[cfg(windows)]
+fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+    use windows::core::PCWSTR;
+
+    let from = from
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let to = to
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    unsafe {
+        MoveFileExW(
+            PCWSTR(from.as_ptr()),
+            PCWSTR(to.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    }
+    .map_err(std::io::Error::other)
 }
 
 fn corrupt_backup_path(path: &Path) -> PathBuf {
@@ -571,6 +619,11 @@ fn error_response(err: WebUiConfigError) -> crate::api::ApiResponse {
             StatusCode::CONFLICT,
             "webui_config_conflict",
             "WebUI config changed since it was loaded",
+        ),
+        WebUiConfigError::StandardTransactionBusy => json_error(
+            StatusCode::CONFLICT,
+            "standard_transaction_busy",
+            "a Standard Mode transaction is pending; WebUI state writes are temporarily blocked",
         ),
         WebUiConfigError::TooLarge { actual, max } => json_error(
             StatusCode::PAYLOAD_TOO_LARGE,

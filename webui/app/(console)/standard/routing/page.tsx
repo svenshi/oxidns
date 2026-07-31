@@ -1,15 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import {
-  GitBranch,
-  Loader2,
-  Plus,
-  Route,
-  Save,
-  Sparkles,
-  Trash2,
-} from "lucide-react";
+import { GitBranch, Loader2, Plus, Route, Save, Trash2 } from "lucide-react";
 import { AppHeader } from "@/components/shell/app-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,7 +23,6 @@ import type {
   StandardModeSettings,
   StandardResolutionPath,
   StandardRoutingRule,
-  StandardScenario,
 } from "@/lib/standard-mode/types";
 import {
   isPathReferencedByRouting,
@@ -63,13 +54,6 @@ const policyLabelKeys: Record<PathPolicy, string> = {
   disabled: WEBUI.standardRouting.policyDisabled,
 };
 
-const scenarioLabelKeys: Record<StandardScenario["kind"], string> = {
-  privacy: WEBUI.standardRouting.scenarioPrivacy,
-  gaming: WEBUI.standardRouting.scenarioGaming,
-  child_protection: WEBUI.standardRouting.scenarioChildProtection,
-  domestic_optimization: WEBUI.standardRouting.scenarioDomesticOptimization,
-};
-
 const conditionPlaceholders: Record<RoutingConditionType, string> = {
   domain: "example.com",
   suffix: "example.com",
@@ -77,13 +61,6 @@ const conditionPlaceholders: Record<RoutingConditionType, string> = {
   client_cidr: "192.168.1.0/24",
   qtype: "A\nAAAA",
 };
-
-const scenarioKinds: StandardScenario["kind"][] = [
-  "privacy",
-  "gaming",
-  "child_protection",
-  "domestic_optimization",
-];
 
 function lines(value: string) {
   const seen = new Set<string>();
@@ -109,7 +86,10 @@ function nextId(prefix: string, existing: string[]) {
 }
 
 function createPath(paths: StandardResolutionPath[]): StandardResolutionPath {
-  const id = nextId("path", paths.map((path) => path.id));
+  const id = nextId(
+    "path",
+    paths.map((path) => path.id),
+  );
   return {
     id,
     name: id,
@@ -124,7 +104,10 @@ function createPath(paths: StandardResolutionPath[]): StandardResolutionPath {
 }
 
 function createRule(settings: StandardModeSettings): StandardRoutingRule {
-  const id = nextId("rule", settings.routing.rules.map((rule) => rule.id));
+  const id = nextId(
+    "rule",
+    settings.routing.rules.map((rule) => rule.id),
+  );
   return {
     id,
     name: id,
@@ -136,35 +119,6 @@ function createRule(settings: StandardModeSettings): StandardRoutingRule {
     },
     source: "manual",
   };
-}
-
-function scenarioPath(
-  kind: StandardScenario["kind"],
-  settings: StandardModeSettings,
-  name: string,
-) {
-  const idBase = kind.replace(/_/g, "-");
-  const id = nextId(idBase, settings.paths.map((path) => path.id));
-  const path: StandardResolutionPath = {
-    ...createPath(settings.paths),
-    id,
-    name,
-    description: name,
-    upstreamGroupId: settings.upstreamGroups[0]?.id ?? "default",
-    filtering: kind === "child_protection" ? "enabled" : "inherit",
-    cache: "inherit",
-    queryLog: kind === "privacy" ? "disabled" : "inherit",
-    dualStack: "inherit",
-    ipSelection: kind === "gaming" ? "enabled" : "inherit",
-    ecs: kind === "privacy" ? "disabled" : "inherit",
-  };
-  const scenario: StandardScenario = {
-    id,
-    name,
-    enabled: true,
-    kind,
-  };
-  return { path, scenario };
 }
 
 export default function StandardRoutingPage() {
@@ -203,7 +157,10 @@ export default function StandardRoutingPage() {
     setPartial({ routing: { ...settings.routing, ...patch } });
   };
 
-  const updatePath = (pathId: string, patch: Partial<StandardResolutionPath>) => {
+  const updatePath = (
+    pathId: string,
+    patch: Partial<StandardResolutionPath>,
+  ) => {
     setPartial({
       paths: settings.paths.map((path) =>
         path.id === pathId ? { ...path, ...patch } : path,
@@ -223,10 +180,7 @@ export default function StandardRoutingPage() {
     });
   };
 
-  const updateRule = (
-    ruleId: string,
-    patch: Partial<StandardRoutingRule>,
-  ) => {
+  const updateRule = (ruleId: string, patch: Partial<StandardRoutingRule>) => {
     setRouting({
       rules: settings.routing.rules.map((rule) =>
         rule.id === ruleId ? { ...rule, ...patch } : rule,
@@ -237,17 +191,6 @@ export default function StandardRoutingPage() {
   const removeRule = (ruleId: string) => {
     setRouting({
       rules: settings.routing.rules.filter((rule) => rule.id !== ruleId),
-    });
-  };
-
-  const addScenario = (kind: StandardScenario["kind"]) => {
-    const next = scenarioPath(kind, settings, t(scenarioLabelKeys[kind]));
-    setPartial({
-      paths: [...settings.paths, next.path],
-      routing: {
-        ...settings.routing,
-        scenarios: [...settings.routing.scenarios, next.scenario],
-      },
     });
   };
 
@@ -326,37 +269,11 @@ export default function StandardRoutingPage() {
                 {t(WEBUI.standardRouting.enabled)}
                 <Switch
                   checked={settings.routing.enabled}
-                  onCheckedChange={(checked) => setRouting({ enabled: checked })}
+                  onCheckedChange={(checked) =>
+                    setRouting({ enabled: checked })
+                  }
                 />
               </Label>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
-              <div>
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <Sparkles className="size-4" />
-                  {t(WEBUI.standardRouting.scenariosTitle)}
-                </CardTitle>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {t(WEBUI.standardRouting.scenariosDescription)}
-                </p>
-              </div>
-            </CardHeader>
-            <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              {scenarioKinds.map((kind) => (
-                <Button
-                  key={kind}
-                  type="button"
-                  variant="outline"
-                  className="justify-start"
-                  onClick={() => addScenario(kind)}
-                >
-                  <Plus className="size-4" />
-                  {t(scenarioLabelKeys[kind])}
-                </Button>
-              ))}
             </CardContent>
           </Card>
 
@@ -376,7 +293,9 @@ export default function StandardRoutingPage() {
                 variant="outline"
                 size="sm"
                 onClick={() =>
-                  setPartial({ paths: [...settings.paths, createPath(settings.paths)] })
+                  setPartial({
+                    paths: [...settings.paths, createPath(settings.paths)],
+                  })
                 }
               >
                 <Plus className="size-4" />
@@ -390,7 +309,8 @@ export default function StandardRoutingPage() {
                   path={path}
                   isDefault={index === 0}
                   canRemove={
-                    index > 0 && !isPathReferencedByRouting(path.id, settings.routing)
+                    index > 0 &&
+                    !isPathReferencedByRouting(path.id, settings.routing)
                   }
                   settings={settings}
                   onChange={(patch) => updatePath(path.id, patch)}
@@ -579,7 +499,10 @@ function PolicySelect({
   return (
     <div className="space-y-2">
       <Label htmlFor={id}>{label}</Label>
-      <Select value={value} onValueChange={(next) => onChange(next as PathPolicy)}>
+      <Select
+        value={value}
+        onValueChange={(next) => onChange(next as PathPolicy)}
+      >
         <SelectTrigger id={id} className="w-full">
           <SelectValue />
         </SelectTrigger>
@@ -622,7 +545,7 @@ function RuleEditor({
   const targetPathId =
     rule.action.type === "use_path"
       ? rule.action.pathId
-      : settings.paths[0]?.id ?? "default";
+      : (settings.paths[0]?.id ?? "default");
 
   return (
     <div className="rounded-lg border bg-card/40 p-4">
@@ -752,7 +675,9 @@ function ValidationPanel({
   const { t } = useI18n();
   return (
     <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm">
-      <div className="font-medium">{t(WEBUI.standardRouting.validationTitle)}</div>
+      <div className="font-medium">
+        {t(WEBUI.standardRouting.validationTitle)}
+      </div>
       <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
         {issues.map((issue, index) => (
           <li key={`${issue.field}-${issue.code}-${index}`}>

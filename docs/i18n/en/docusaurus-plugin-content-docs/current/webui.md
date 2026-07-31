@@ -10,6 +10,14 @@ The OxiDNS WebUI is a separately built static frontend. It is not compiled into 
 
 In both modes, the WebUI defaults to the relative backend URL `/api`. When the WebUI page and `/api/*` share the same browser origin, no CORS setup is needed.
 
+## Standard and Expert Modes
+
+- Expert Mode manages complete YAML and plugin graphs. Existing configurations open in Expert Mode by default.
+- Standard Mode manages native OxiDNS DNS intent. It does not operate OpenWrt/UCI, OS DNS, firewalls, or third-party proxy systems.
+- Before saving, the Rust backend builds a Plan that exposes diagnostics, configuration ownership, and plugin changes. Unmanaged or modified configurations require explicit takeover confirmation.
+- After confirmation, Standard state, generated metadata, DNS YAML, and runtime reload are applied as one recoverable transaction. Failure restores the previous files and runtime.
+- Switching the WebUI view alone does not rewrite DNS YAML. See [Standard Mode Plan/Apply](api/standard-mode.mdx) for the API contract.
+
 ## Use The WebUI Included In Release Packages
 
 Official release archives include a prebuilt `webui/` directory:

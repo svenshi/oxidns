@@ -48,7 +48,7 @@ interface StandardQueryIndexes {
   routingRulesByMatcherTag: Map<string, StandardRoutingRule>;
   exceptionRulesByMatcherTag: Map<string, StandardExceptionRule>;
   filteringTags: Set<string>;
-  cacheTag?: string;
+  cacheTags: Set<string>;
   queryLogTag?: string;
 }
 
@@ -73,17 +73,22 @@ export function explainStandardQueryRecord(
   const filteringChecked =
     hasTag(steps, "standard_ad_rules") ||
     steps.some((step) => step.tag && indexes.filteringTags.has(step.tag));
-  const cacheChecked = indexes.cacheTag
-    ? hasTag(steps, indexes.cacheTag)
-    : hasTag(steps, "standard_cache");
+  const cacheChecked =
+    indexes.cacheTags.size > 0
+      ? steps.some((step) => step.tag && indexes.cacheTags.has(step.tag))
+      : hasTag(steps, "standard_cache");
   const queryLogRecorded = indexes.queryLogTag
     ? hasTag(steps, indexes.queryLogTag)
     : hasTag(steps, "standard_recorder");
 
   return {
     path: path ? pathRef(path, metadata) : undefined,
-    upstreamGroup: upstreamGroup ? upstreamGroupRef(upstreamGroup, metadata) : undefined,
-    routingRule: matchedRouting ? ruleRef(matchedRouting.rule, matchedRouting.tag) : undefined,
+    upstreamGroup: upstreamGroup
+      ? upstreamGroupRef(upstreamGroup, metadata)
+      : undefined,
+    routingRule: matchedRouting
+      ? ruleRef(matchedRouting.rule, matchedRouting.tag)
+      : undefined,
     exceptionRule: matchedException
       ? ruleRef(matchedException.rule, matchedException.tag)
       : undefined,
@@ -111,11 +116,15 @@ function queryRecordSteps(
     : [];
 }
 
-export function queryRecordDomain(record: QueryRecordRow | QueryRecordDetail): string {
+export function queryRecordDomain(
+  record: QueryRecordRow | QueryRecordDetail,
+): string {
   return cleanDomain(record.questions_json[0]?.name ?? "");
 }
 
-export function queryRecordQtype(record: QueryRecordRow | QueryRecordDetail): string {
+export function queryRecordQtype(
+  record: QueryRecordRow | QueryRecordDetail,
+): string {
   return record.questions_json[0]?.qtype ?? "-";
 }
 
@@ -167,7 +176,10 @@ function buildStandardQueryIndexes(
     routingRulesByMatcherTag,
     exceptionRulesByMatcherTag,
     filteringTags: new Set(tagMap?.filtering ?? []),
-    cacheTag: tagMap?.cache,
+    cacheTags: new Set([
+      ...Object.values(tagMap?.caches ?? {}),
+      ...(tagMap?.cache ? [tagMap.cache] : []),
+    ]),
     queryLogTag: tagMap?.queryLog,
   };
 }
@@ -206,7 +218,10 @@ function hasTag(steps: QueryRecorderStep[], tag: string): boolean {
 
 function hasExecutedTag(steps: QueryRecorderStep[], tag: string): boolean {
   return steps.some(
-    (step) => step.kind === "executor" && step.tag === tag && step.outcome === "entered",
+    (step) =>
+      step.kind === "executor" &&
+      step.tag === tag &&
+      step.outcome === "entered",
   );
 }
 
@@ -222,7 +237,8 @@ function deriveOutcome(
 ): StandardQueryOutcome {
   if (record.error) return "error";
   if (facts.blocked) return "blocked";
-  if (facts.cacheChecked && record.has_response && !facts.upstreamGroup) return "cache";
+  if (facts.cacheChecked && record.has_response && !facts.upstreamGroup)
+    return "cache";
   if (facts.matchedException) return "exception";
   if (facts.matchedRouting) return "routing";
   if (record.has_response) return "resolved";
@@ -258,7 +274,9 @@ function ruleRef(
 function formatRawEvent(step: QueryRecorderStep): string {
   const target = step.tag ? `${step.kind}:${step.tag}` : step.kind;
   const node =
-    typeof step.node_index === "number" ? `#${step.node_index}` : `#${step.event_index}`;
+    typeof step.node_index === "number"
+      ? `#${step.node_index}`
+      : `#${step.event_index}`;
   return `${node} ${step.sequence_tag} ${target} ${step.outcome}`;
 }
 

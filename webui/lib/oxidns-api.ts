@@ -3,6 +3,12 @@
 import { useAuthStore } from "./auth-store";
 import { WEBUI, tClient } from "./i18n";
 import type { MatcherRuntimeMode } from "./matcher-control";
+import type {
+  StandardApplyResponse,
+  StandardModeSettings,
+  StandardPlanResponse,
+  StandardTransactionStatusResponse,
+} from "./standard-mode/types";
 
 export interface ConfigFileResponse {
   ok: boolean;
@@ -77,6 +83,28 @@ export interface PatchWebUiConfigOptions {
 
 export interface DeleteWebUiConfigOptions {
   baseVersion?: string | null;
+}
+
+export interface StandardPlanOptions {
+  intent: StandardModeSettings;
+  baseConfigVersion?: string | null;
+  baseStandardVersion?: string | null;
+  takeover?: boolean;
+}
+
+export interface StandardApplyOptions {
+  intent: StandardModeSettings;
+  baseConfigVersion: string;
+  baseStandardVersion: string;
+  plannedConfigVersion: string;
+  takeover?: boolean;
+}
+
+export class StandardPlanConflictError extends Error {
+  constructor(public readonly plan: StandardPlanResponse) {
+    super("Standard Mode state changed; review the refreshed plan");
+    this.name = "StandardPlanConflictError";
+  }
 }
 
 export interface HealthResponse {
@@ -678,6 +706,69 @@ export async function fetchWebUiOptions(): Promise<WebUiOptionsResponse> {
     headers: apiHeaders(),
   });
   return readJsonResponse<WebUiOptionsResponse>(response);
+}
+
+export async function planStandardMode({
+  intent,
+  baseConfigVersion,
+  baseStandardVersion,
+  takeover = false,
+}: StandardPlanOptions): Promise<StandardPlanResponse> {
+  const response = await fetch(apiUrl("/standard/plan"), {
+    method: "POST",
+    headers: {
+      ...apiHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      intent,
+      base_config_version: baseConfigVersion ?? undefined,
+      base_standard_version: baseStandardVersion ?? undefined,
+      takeover,
+    }),
+  });
+  return readJsonResponse<StandardPlanResponse>(response);
+}
+
+export async function applyStandardMode({
+  intent,
+  baseConfigVersion,
+  baseStandardVersion,
+  plannedConfigVersion,
+  takeover = false,
+}: StandardApplyOptions): Promise<StandardApplyResponse> {
+  const response = await fetch(apiUrl("/standard/apply"), {
+    method: "POST",
+    headers: {
+      ...apiHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      intent,
+      base_config_version: baseConfigVersion,
+      base_standard_version: baseStandardVersion,
+      planned_config_version: plannedConfigVersion,
+      takeover,
+    }),
+  });
+  if (response.status === 409) {
+    const body = (await response
+      .json()
+      .catch(() => null)) as StandardPlanResponse | null;
+    if (body?.plan && Array.isArray(body.blockers)) {
+      throw new StandardPlanConflictError(body);
+    }
+    throw new Error(tClient(WEBUI.storeErrors.standardPlanRejected));
+  }
+  return readJsonResponse<StandardApplyResponse>(response);
+}
+
+export async function fetchStandardTransactionStatus(): Promise<StandardTransactionStatusResponse> {
+  const response = await fetch(apiUrl("/standard/apply/status"), {
+    method: "GET",
+    headers: apiHeaders(),
+  });
+  return readJsonResponse<StandardTransactionStatusResponse>(response);
 }
 
 export async function fetchHealth(): Promise<HealthResponse> {

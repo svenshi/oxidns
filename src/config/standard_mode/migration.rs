@@ -1,0 +1,229 @@
+// SPDX-FileCopyrightText: 2025 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+use std::fmt::{Display, Formatter};
+
+use serde_json::{Map, Value, json};
+
+use super::model::{
+    CURRENT_STANDARD_SCHEMA, StandardDiagnostic, StandardIntent, StandardMigration,
+};
+
+#[derive(Debug)]
+pub enum StandardIntentDecodeError {
+    InvalidRoot,
+    UnsupportedSchema(u32),
+    InvalidIntent(String),
+}
+
+impl Display for StandardIntentDecodeError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidRoot => write!(f, "Standard Mode intent must be a JSON object"),
+            Self::UnsupportedSchema(schema) => {
+                write!(f, "unsupported Standard Mode schema {schema}")
+            }
+            Self::InvalidIntent(message) => write!(f, "invalid Standard Mode intent: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for StandardIntentDecodeError {}
+
+pub fn decode_standard_intent(
+    value: Value,
+) -> Result<(StandardIntent, Option<StandardMigration>), StandardIntentDecodeError> {
+    let source = value
+        .as_object()
+        .ok_or(StandardIntentDecodeError::InvalidRoot)?;
+    let schema = source
+        .get("schema")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(1);
+
+    let (value, migration) = match schema {
+        CURRENT_STANDARD_SCHEMA => (value, None),
+        2 => migrate_v2(value),
+        1 => {
+            let (value, v1_migration) = migrate_v1(value);
+            let (value, v2_migration) = migrate_v2(value);
+            let mut diagnostics = v1_migration
+                .map(|migration| migration.diagnostics)
+                .unwrap_or_default();
+            diagnostics.extend(
+                v2_migration
+                    .map(|migration| migration.diagnostics)
+                    .unwrap_or_default(),
+            );
+            (
+                value,
+                Some(StandardMigration {
+                    from_schema: 1,
+                    to_schema: CURRENT_STANDARD_SCHEMA,
+                    diagnostics,
+                }),
+            )
+        }
+        other => return Err(StandardIntentDecodeError::UnsupportedSchema(other)),
+    };
+
+    serde_json::from_value(value)
+        .map(|intent| (intent, migration))
+        .map_err(|err| StandardIntentDecodeError::InvalidIntent(err.to_string()))
+}
+
+fn migrate_v2(mut value: Value) -> (Value, Option<StandardMigration>) {
+    let mut diagnostics = Vec::new();
+    let root = value
+        .as_object_mut()
+        .expect("v2 migration input was checked as an object");
+    root.insert("schema".to_string(), Value::from(CURRENT_STANDARD_SCHEMA));
+
+    if let Some(groups) = root.get_mut("upstreamGroups").and_then(Value::as_array_mut) {
+        for (index, group) in groups.iter_mut().enumerate() {
+            let Some(group) = group.as_object_mut() else {
+                continue;
+            };
+            let strategy = group.get("strategy").and_then(Value::as_str);
+            match strategy {
+                Some("parallel") | None => {
+                    group.insert("strategy".to_string(), Value::from("balanced"));
+                }
+                Some("sequential") => {
+                    group.insert("strategy".to_string(), Value::from("balanced"));
+                    diagnostics.push(StandardDiagnostic::warning(
+                        "strategy_sequential_migrated",
+                        format!("upstreamGroups[{index}].strategy"),
+                        "legacy sequential did not implement ordered fallback and was migrated to balanced selection",
+                    ));
+                }
+                Some("fastest") => {}
+                Some(_) => {}
+            }
+        }
+    }
+
+    if let Some(cache) = root.get_mut("cache").and_then(Value::as_object_mut) {
+        rename_key(cache, "minTtl", "minPositiveTtl");
+        rename_key(cache, "maxTtl", "maxPositiveTtl");
+        if let Some(negative_ttl) = cache.remove("negativeTtl") {
+            cache
+                .entry("maxNegativeTtl".to_string())
+                .or_insert_with(|| negative_ttl.clone());
+            cache
+                .entry("negativeTtlWithoutSoa".to_string())
+                .or_insert(negative_ttl);
+        }
+    }
+
+    (
+        value,
+        Some(StandardMigration {
+            from_schema: 2,
+            to_schema: CURRENT_STANDARD_SCHEMA,
+            diagnostics,
+        }),
+    )
+}
+
+fn migrate_v1(value: Value) -> (Value, Option<StandardMigration>) {
+    let source = value.as_object().cloned().unwrap_or_default();
+    let defaults = StandardIntent::default();
+    let default_value = serde_json::to_value(&defaults).expect("default intent should serialize");
+    let mut target = default_value.as_object().cloned().unwrap_or_default();
+
+    if let Some(listen) = source.get("listen") {
+        target.insert("listen".to_string(), listen.clone());
+    }
+    if let Some(cache) = source.get("cache") {
+        target.insert("cache".to_string(), cache.clone());
+    }
+    if let Some(query_log) = source.get("queryLog") {
+        target.insert("queryLog".to_string(), query_log.clone());
+    }
+    if let Some(system) = source.get("system") {
+        target.insert("system".to_string(), system.clone());
+    }
+
+    let default_group = target
+        .get("upstreamGroups")
+        .and_then(Value::as_array)
+        .and_then(|groups| groups.first())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let mut groups = vec![default_group];
+    if let Some(upstreams) = source.get("upstreams").and_then(Value::as_array)
+        && let Some(group) = groups.first_mut().and_then(Value::as_object_mut)
+    {
+        group.insert("upstreams".to_string(), upstreams.clone().into());
+    }
+
+    let mut paths = target
+        .get("paths")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(domestic_upstreams) = source
+        .get("split")
+        .and_then(Value::as_object)
+        .and_then(|split| split.get("domesticUpstreams"))
+        .and_then(Value::as_array)
+        && !domestic_upstreams.is_empty()
+    {
+        groups.push(json!({
+            "id": "domestic",
+            "name": "Domestic upstream group",
+            "strategy": "parallel",
+            "upstreams": domestic_upstreams,
+        }));
+        paths.push(json!({
+            "id": "domestic",
+            "name": "Domestic path",
+            "upstreamGroupId": "domestic",
+            "filtering": "inherit",
+            "cache": "inherit",
+            "queryLog": "inherit",
+            "dualStack": "inherit",
+            "ipSelection": "inherit",
+            "ecs": "inherit",
+        }));
+    }
+    target.insert("upstreamGroups".to_string(), Value::Array(groups));
+    target.insert("paths".to_string(), Value::Array(paths));
+
+    if let Some(ad_block) = source.get("adBlock").and_then(Value::as_object) {
+        let mut filtering = target
+            .get("filtering")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(enabled) = ad_block.get("enabled") {
+            filtering.insert("enabled".to_string(), enabled.clone());
+        }
+        if let Some(rules) = ad_block.get("inlineRules") {
+            filtering.insert("blockRules".to_string(), rules.clone());
+        }
+        target.insert("filtering".to_string(), Value::Object(filtering));
+    }
+
+    target.insert("schema".to_string(), Value::from(2));
+    (
+        Value::Object(target),
+        Some(StandardMigration {
+            from_schema: 1,
+            to_schema: 2,
+            diagnostics: vec![StandardDiagnostic::warning(
+                "schema_v1_migrated",
+                "schema",
+                "legacy Standard Mode schema was migrated",
+            )],
+        }),
+    )
+}
+
+fn rename_key(map: &mut Map<String, Value>, from: &str, to: &str) {
+    if let Some(value) = map.remove(from) {
+        map.entry(to.to_string()).or_insert(value);
+    }
+}

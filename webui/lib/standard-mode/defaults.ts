@@ -18,7 +18,7 @@ export function createDefaultUpstreamGroup(): StandardUpstreamGroup {
   return {
     id: "default",
     name: "Default upstream group",
-    strategy: "parallel",
+    strategy: "balanced",
     upstreams: [
       upstream("alidns", "AliDNS", "223.5.5.5:53"),
       upstream("cloudflare", "Cloudflare", "1.1.1.1:53"),
@@ -43,7 +43,7 @@ export function createDefaultResolutionPath(): StandardResolutionPath {
 
 export function createDefaultStandardSettings(): StandardModeSettings {
   return {
-    schema: 2,
+    schema: 3,
     listen: {
       address: "0.0.0.0:5335",
       udp: true,
@@ -61,9 +61,10 @@ export function createDefaultStandardSettings(): StandardModeSettings {
     cache: {
       enabled: true,
       size: 8192,
-      minTtl: 60,
-      maxTtl: 86400,
-      negativeTtl: 300,
+      minPositiveTtl: 60,
+      maxPositiveTtl: 86400,
+      maxNegativeTtl: 300,
+      negativeTtlWithoutSoa: 300,
     },
     queryLog: {
       enabled: true,

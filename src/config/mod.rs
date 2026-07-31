@@ -24,6 +24,7 @@ use crate::plugin::DependencyGraphReport;
 
 pub mod diagnostic;
 pub mod env_expand;
+pub mod standard_mode;
 pub mod types;
 
 const MAX_INCLUDE_DEPTH: usize = 8;

@@ -1,0 +1,967 @@
+// SPDX-FileCopyrightText: 2025 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::net::IpAddr;
+
+use super::compiler::StandardCapabilities;
+use super::model::{
+    CURRENT_STANDARD_SCHEMA, StandardDiagnostic, StandardDualStackPolicy, StandardIntent,
+    StandardPolicySwitch, StandardRuleAction, StandardRuleCondition, StandardUpstreamProtocol,
+    StandardUpstreamStrategy,
+};
+
+pub fn normalize_standard_intent(mut intent: StandardIntent) -> StandardIntent {
+    intent.schema = CURRENT_STANDARD_SCHEMA;
+    intent.listen.address = intent.listen.address.trim().to_string();
+
+    for group in &mut intent.upstream_groups {
+        group.id = normalize_id(&group.id);
+        group.name = group.name.trim().to_string();
+        group.description = trimmed_option(group.description.take());
+        for upstream in &mut group.upstreams {
+            upstream.id = normalize_id(&upstream.id);
+            upstream.name = upstream.name.trim().to_string();
+            upstream.address = upstream.address.trim().to_string();
+            upstream.bootstrap = trimmed_option(upstream.bootstrap.take());
+            upstream.dial_address = trimmed_option(upstream.dial_address.take());
+            upstream.doh_path = trimmed_option(upstream.doh_path.take());
+            if matches!(
+                upstream.protocol,
+                StandardUpstreamProtocol::Doh | StandardUpstreamProtocol::Doh3
+            ) && upstream.doh_path.is_none()
+            {
+                upstream.doh_path = Some("/dns-query".to_string());
+            }
+            upstream.enable_http3 = matches!(upstream.protocol, StandardUpstreamProtocol::Doh3);
+        }
+    }
+
+    for path in &mut intent.paths {
+        path.id = normalize_id(&path.id);
+        path.name = path.name.trim().to_string();
+        path.description = trimmed_option(path.description.take());
+        path.upstream_group_id = normalize_id(&path.upstream_group_id);
+    }
+
+    normalize_lines(&mut intent.filtering.block_rules, false);
+    normalize_lines(&mut intent.filtering.allow_rules, true);
+    for subscription in &mut intent.filtering.subscriptions {
+        subscription.id = normalize_id(&subscription.id);
+        subscription.name = subscription.name.trim().to_string();
+        subscription.url = subscription.url.trim().to_string();
+    }
+
+    for rule in &mut intent.routing.rules {
+        rule.id = normalize_id(&rule.id);
+        rule.name = rule.name.trim().to_string();
+        rule.note = trimmed_option(rule.note.take());
+        normalize_condition(&mut rule.condition);
+        normalize_action(&mut rule.action);
+    }
+    for scenario in &mut intent.routing.scenarios {
+        scenario.id = normalize_id(&scenario.id);
+        scenario.name = scenario.name.trim().to_string();
+    }
+    for rule in &mut intent.exceptions {
+        rule.id = normalize_id(&rule.id);
+        rule.name = rule.name.trim().to_string();
+        rule.note = trimmed_option(rule.note.take());
+        normalize_condition(&mut rule.condition);
+        normalize_action(&mut rule.action);
+    }
+    for device in &mut intent.devices {
+        device.id = normalize_id(&device.id);
+        device.name = device.name.trim().to_string();
+        normalize_lines(&mut device.addresses, false);
+        device.assigned_path_id = device
+            .assigned_path_id
+            .take()
+            .map(|path_id| normalize_id(&path_id))
+            .filter(|path_id| !path_id.is_empty());
+    }
+
+    intent
+}
+
+pub fn validate_standard_intent(
+    intent: &StandardIntent,
+    capabilities: &StandardCapabilities,
+) -> Vec<StandardDiagnostic> {
+    let mut diagnostics = Vec::new();
+    if intent.schema != CURRENT_STANDARD_SCHEMA {
+        diagnostics.push(StandardDiagnostic::error(
+            "schema_unsupported",
+            "schema",
+            format!(
+                "expected Standard Mode schema {CURRENT_STANDARD_SCHEMA}, got {}",
+                intent.schema
+            ),
+        ));
+    }
+
+    validate_listeners(intent, capabilities, &mut diagnostics);
+    validate_identifiers(intent, &mut diagnostics);
+    validate_upstreams(intent, capabilities, &mut diagnostics);
+    validate_cache(intent, capabilities, &mut diagnostics);
+    validate_filtering(intent, capabilities, &mut diagnostics);
+    validate_paths(intent, capabilities, &mut diagnostics);
+    validate_rules(intent, capabilities, &mut diagnostics);
+    validate_devices(intent, capabilities, &mut diagnostics);
+    validate_system(intent, &mut diagnostics);
+
+    if !capabilities.executor("metrics_collector") {
+        diagnostics.push(StandardDiagnostic::warning(
+            "optional_metrics_unavailable",
+            "capabilities.executors.metrics_collector",
+            "metrics_collector is unavailable; DNS behavior is unchanged but Standard Mode metrics are reduced",
+        ));
+    }
+
+    diagnostics
+}
+
+fn validate_listeners(
+    intent: &StandardIntent,
+    capabilities: &StandardCapabilities,
+    diagnostics: &mut Vec<StandardDiagnostic>,
+) {
+    if !intent.listen.udp && !intent.listen.tcp {
+        diagnostics.push(StandardDiagnostic::error(
+            "listener_required",
+            "listen",
+            "at least one UDP or TCP listener must be enabled",
+        ));
+    }
+    if intent
+        .listen
+        .address
+        .parse::<std::net::SocketAddr>()
+        .is_err()
+    {
+        diagnostics.push(StandardDiagnostic::error(
+            "listener_address_invalid",
+            "listen.address",
+            "listener address must be an IP socket address such as 0.0.0.0:5335",
+        ));
+    }
+    if intent.listen.udp && !capabilities.server("udp_server") {
+        diagnostics.push(missing_plugin("listen.udp", "server", "udp_server"));
+    }
+    if intent.listen.tcp && !capabilities.server("tcp_server") {
+        diagnostics.push(missing_plugin("listen.tcp", "server", "tcp_server"));
+    }
+    if !capabilities.executor("sequence") {
+        diagnostics.push(missing_plugin(
+            "capabilities.executors.sequence",
+            "executor",
+            "sequence",
+        ));
+    }
+    if !capabilities.executor("forward") {
+        diagnostics.push(missing_plugin(
+            "capabilities.executors.forward",
+            "executor",
+            "forward",
+        ));
+    }
+}
+
+fn validate_identifiers(intent: &StandardIntent, diagnostics: &mut Vec<StandardDiagnostic>) {
+    validate_unique_objects(
+        intent
+            .upstream_groups
+            .iter()
+            .enumerate()
+            .map(|(index, group)| (index, group.id.as_str(), group.name.as_str())),
+        "upstreamGroups",
+        diagnostics,
+    );
+    validate_unique_objects(
+        intent
+            .paths
+            .iter()
+            .enumerate()
+            .map(|(index, path)| (index, path.id.as_str(), path.name.as_str())),
+        "paths",
+        diagnostics,
+    );
+    validate_unique_objects(
+        intent
+            .filtering
+            .subscriptions
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (index, item.id.as_str(), item.name.as_str())),
+        "filtering.subscriptions",
+        diagnostics,
+    );
+    validate_unique_objects(
+        intent
+            .routing
+            .rules
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (index, item.id.as_str(), item.name.as_str())),
+        "routing.rules",
+        diagnostics,
+    );
+    validate_unique_objects(
+        intent
+            .exceptions
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (index, item.id.as_str(), item.name.as_str())),
+        "exceptions",
+        diagnostics,
+    );
+    validate_unique_objects(
+        intent
+            .devices
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (index, item.id.as_str(), item.name.as_str())),
+        "devices",
+        diagnostics,
+    );
+
+    let mut tags = BTreeMap::<String, String>::new();
+    for (path, tag) in generated_user_tags(intent) {
+        if let Some(first_path) = tags.insert(tag.clone(), path.clone()) {
+            diagnostics.push(StandardDiagnostic::error(
+                "generated_tag_duplicate",
+                path,
+                format!("generated tag '{tag}' collides with {first_path}"),
+            ));
+        }
+    }
+
+    let mut filenames = BTreeMap::<String, String>::new();
+    for (index, subscription) in intent.filtering.subscriptions.iter().enumerate() {
+        let filename = format!("{}.txt", safe_tag_component(&subscription.id));
+        let path = format!("filtering.subscriptions[{index}].id");
+        if let Some(first_path) = filenames.insert(filename.clone(), path.clone()) {
+            diagnostics.push(StandardDiagnostic::error(
+                "subscription_filename_duplicate",
+                path,
+                format!("generated filename '{filename}' collides with {first_path}"),
+            ));
+        }
+    }
+}
+
+fn validate_upstreams(
+    intent: &StandardIntent,
+    capabilities: &StandardCapabilities,
+    diagnostics: &mut Vec<StandardDiagnostic>,
+) {
+    if intent.upstream_groups.is_empty() {
+        diagnostics.push(StandardDiagnostic::error(
+            "upstream_group_required",
+            "upstreamGroups",
+            "at least one upstream group is required",
+        ));
+        return;
+    }
+    let default_count = intent
+        .upstream_groups
+        .iter()
+        .filter(|group| group.is_default)
+        .count();
+    if default_count != 1 {
+        diagnostics.push(StandardDiagnostic::error(
+            "default_upstream_group_invalid",
+            "upstreamGroups",
+            "exactly one upstream group must be marked as default",
+        ));
+    }
+
+    for (group_index, group) in intent.upstream_groups.iter().enumerate() {
+        let group_path = format!("upstreamGroups[{group_index}]");
+        if matches!(group.strategy, StandardUpstreamStrategy::OrderedFallback) {
+            diagnostics.push(StandardDiagnostic::error(
+                "ordered_fallback_not_available",
+                format!("{group_path}.strategy"),
+                "ordered fallback requires an explicit fallback model and is not available in Phase 0",
+            ));
+        }
+        let enabled = group.upstreams.iter().filter(|item| item.enabled).count();
+        if enabled == 0 {
+            diagnostics.push(StandardDiagnostic::error(
+                "enabled_upstream_required",
+                format!("{group_path}.upstreams"),
+                "an upstream group must contain at least one enabled upstream",
+            ));
+        }
+        let mut upstream_ids = BTreeSet::new();
+        for (upstream_index, upstream) in group.upstreams.iter().enumerate() {
+            let path = format!("{group_path}.upstreams[{upstream_index}]");
+            if normalize_id(&upstream.id).is_empty() {
+                diagnostics.push(StandardDiagnostic::error(
+                    "id_required",
+                    format!("{path}.id"),
+                    "upstream ID is required",
+                ));
+            } else if !upstream_ids.insert(normalize_id(&upstream.id)) {
+                diagnostics.push(StandardDiagnostic::error(
+                    "id_duplicate",
+                    format!("{path}.id"),
+                    "upstream IDs must be unique within their group",
+                ));
+            }
+            if upstream.name.trim().is_empty() {
+                diagnostics.push(StandardDiagnostic::error(
+                    "name_required",
+                    format!("{path}.name"),
+                    "upstream name is required",
+                ));
+            }
+            if upstream.enabled && upstream.address.trim().is_empty() {
+                diagnostics.push(StandardDiagnostic::error(
+                    "upstream_address_required",
+                    format!("{path}.address"),
+                    "enabled upstream address is required",
+                ));
+            }
+            for feature in protocol_features(upstream.protocol) {
+                if !capabilities.feature(feature) {
+                    diagnostics.push(StandardDiagnostic::error(
+                        "upstream_protocol_unavailable",
+                        format!("{path}.protocol"),
+                        format!("upstream protocol requires build feature '{feature}'"),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn validate_cache(
+    intent: &StandardIntent,
+    capabilities: &StandardCapabilities,
+    diagnostics: &mut Vec<StandardDiagnostic>,
+) {
+    if intent.cache.size < 128 {
+        diagnostics.push(StandardDiagnostic::error(
+            "cache_size_invalid",
+            "cache.size",
+            "cache size must be at least 128",
+        ));
+    }
+    if intent.cache.min_positive_ttl > intent.cache.max_positive_ttl {
+        diagnostics.push(StandardDiagnostic::error(
+            "cache_positive_ttl_range_invalid",
+            "cache",
+            "minPositiveTtl must not exceed maxPositiveTtl",
+        ));
+    }
+    if intent.cache.negative_ttl_without_soa > intent.cache.max_negative_ttl {
+        diagnostics.push(StandardDiagnostic::error(
+            "cache_negative_ttl_range_invalid",
+            "cache",
+            "negativeTtlWithoutSoa must not exceed maxNegativeTtl",
+        ));
+    }
+    if effective_cache_paths(intent) > 0 && !capabilities.executor("cache") {
+        diagnostics.push(missing_plugin("cache", "executor", "cache"));
+    }
+}
+
+fn validate_filtering(
+    intent: &StandardIntent,
+    capabilities: &StandardCapabilities,
+    diagnostics: &mut Vec<StandardDiagnostic>,
+) {
+    let filtering_used = effective_filtering_used(intent);
+    let enabled_subscriptions: Vec<_> = intent
+        .filtering
+        .subscriptions
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item.enabled)
+        .collect();
+    if filtering_used
+        && intent.filtering.block_rules.is_empty()
+        && enabled_subscriptions.is_empty()
+        && !intent
+            .exceptions
+            .iter()
+            .any(|rule| rule.enabled && matches!(rule.action, StandardRuleAction::Block))
+    {
+        diagnostics.push(StandardDiagnostic::error(
+            "filter_rule_source_required",
+            "filtering",
+            "enabled filtering requires a block rule or subscription",
+        ));
+    }
+    if filtering_used && !capabilities.provider("adguard_rule") {
+        diagnostics.push(missing_plugin("filtering", "provider", "adguard_rule"));
+    }
+    if filtering_used && !capabilities.executor("black_hole") {
+        diagnostics.push(missing_plugin("filtering", "executor", "black_hole"));
+    }
+    if !enabled_subscriptions.is_empty() {
+        for kind in ["download", "reload_provider", "cron"] {
+            if !capabilities.executor(kind) {
+                diagnostics.push(missing_plugin("filtering.subscriptions", "executor", kind));
+            }
+        }
+    }
+    for (index, subscription) in enabled_subscriptions {
+        let path = format!("filtering.subscriptions[{index}]");
+        if subscription.name.trim().is_empty() {
+            diagnostics.push(StandardDiagnostic::error(
+                "subscription_name_required",
+                format!("{path}.name"),
+                "subscription name is required",
+            ));
+        }
+        if !valid_http_url(&subscription.url) {
+            diagnostics.push(StandardDiagnostic::error(
+                "subscription_url_invalid",
+                format!("{path}.url"),
+                "subscription URL must use http or https",
+            ));
+        }
+        if subscription.update_interval_hours == 0 {
+            diagnostics.push(StandardDiagnostic::error(
+                "subscription_interval_invalid",
+                format!("{path}.updateIntervalHours"),
+                "subscription update interval must be at least one hour",
+            ));
+        }
+    }
+}
+
+fn validate_paths(
+    intent: &StandardIntent,
+    capabilities: &StandardCapabilities,
+    diagnostics: &mut Vec<StandardDiagnostic>,
+) {
+    if intent.paths.is_empty() {
+        diagnostics.push(StandardDiagnostic::error(
+            "resolution_path_required",
+            "paths",
+            "at least one resolution path is required",
+        ));
+        return;
+    }
+    let group_ids: BTreeSet<_> = intent
+        .upstream_groups
+        .iter()
+        .map(|group| normalize_id(&group.id))
+        .collect();
+    for (index, path) in intent.paths.iter().enumerate() {
+        let base = format!("paths[{index}]");
+        if !group_ids.contains(&normalize_id(&path.upstream_group_id)) {
+            diagnostics.push(StandardDiagnostic::error(
+                "path_upstream_group_missing",
+                format!("{base}.upstreamGroupId"),
+                format!(
+                    "resolution path references missing upstream group '{}'",
+                    path.upstream_group_id
+                ),
+            ));
+        }
+        if !matches!(path.dual_stack, StandardDualStackPolicy::Inherit) {
+            diagnostics.push(StandardDiagnostic::error(
+                "dual_stack_not_available",
+                format!("{base}.dualStack"),
+                "dual-stack policy is not compiled in Phase 0",
+            ));
+        }
+        if !matches!(path.ip_selection, StandardPolicySwitch::Inherit) {
+            diagnostics.push(StandardDiagnostic::error(
+                "ip_selection_not_available",
+                format!("{base}.ipSelection"),
+                "IP selection is not compiled in Phase 0",
+            ));
+        }
+        if !matches!(path.ecs, StandardPolicySwitch::Inherit) {
+            diagnostics.push(StandardDiagnostic::error(
+                "ecs_not_available",
+                format!("{base}.ecs"),
+                "ECS is not compiled in Phase 0",
+            ));
+        }
+    }
+    if effective_query_log_used(intent) && !capabilities.executor("query_recorder") {
+        diagnostics.push(missing_plugin("queryLog", "executor", "query_recorder"));
+    }
+    if (intent.query_log.sample_rate - 1.0).abs() > f64::EPSILON {
+        diagnostics.push(StandardDiagnostic::error(
+            "query_log_sampling_not_available",
+            "queryLog.sampleRate",
+            "query log sampling is not compiled in Phase 0; sampleRate must be 1",
+        ));
+    }
+}
+
+fn validate_rules(
+    intent: &StandardIntent,
+    capabilities: &StandardCapabilities,
+    diagnostics: &mut Vec<StandardDiagnostic>,
+) {
+    let path_ids: BTreeSet<_> = intent
+        .paths
+        .iter()
+        .map(|path| normalize_id(&path.id))
+        .collect();
+    if intent
+        .routing
+        .scenarios
+        .iter()
+        .any(|scenario| scenario.enabled)
+    {
+        diagnostics.push(StandardDiagnostic::error(
+            "scenario_not_available",
+            "routing.scenarios",
+            "scenario templates are not compiled in Phase 0",
+        ));
+    }
+    if intent.routing.enabled {
+        for (index, rule) in intent
+            .routing
+            .rules
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.enabled)
+        {
+            validate_rule_condition(
+                &rule.condition,
+                capabilities,
+                &format!("routing.rules[{index}].condition"),
+                diagnostics,
+            );
+            match &rule.action {
+                StandardRuleAction::UsePath { path_id } => {
+                    if !path_ids.contains(&normalize_id(path_id)) {
+                        diagnostics.push(StandardDiagnostic::error(
+                            "rule_path_missing",
+                            format!("routing.rules[{index}].action.pathId"),
+                            format!("routing rule references missing path '{path_id}'"),
+                        ));
+                    }
+                }
+                StandardRuleAction::UseDefaultPath => {}
+                _ => diagnostics.push(StandardDiagnostic::error(
+                    "routing_action_unsupported",
+                    format!("routing.rules[{index}].action"),
+                    "routing rules may only select a path in Phase 0",
+                )),
+            }
+        }
+    }
+
+    for (index, rule) in intent
+        .exceptions
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.enabled)
+    {
+        validate_rule_condition(
+            &rule.condition,
+            capabilities,
+            &format!("exceptions[{index}].condition"),
+            diagnostics,
+        );
+        match &rule.action {
+            StandardRuleAction::UsePath { path_id } => {
+                if !path_ids.contains(&normalize_id(path_id)) {
+                    diagnostics.push(StandardDiagnostic::error(
+                        "exception_path_missing",
+                        format!("exceptions[{index}].action.pathId"),
+                        format!("exception references missing path '{path_id}'"),
+                    ));
+                }
+            }
+            StandardRuleAction::Block if !capabilities.executor("black_hole") => {
+                diagnostics.push(missing_plugin(
+                    format!("exceptions[{index}].action"),
+                    "executor",
+                    "black_hole",
+                ));
+            }
+            StandardRuleAction::PreferIpv4 if !capabilities.executor("prefer_ipv4") => {
+                diagnostics.push(missing_plugin(
+                    format!("exceptions[{index}].action"),
+                    "executor",
+                    "prefer_ipv4",
+                ));
+            }
+            StandardRuleAction::PreferIpv6 if !capabilities.executor("prefer_ipv6") => {
+                diagnostics.push(missing_plugin(
+                    format!("exceptions[{index}].action"),
+                    "executor",
+                    "prefer_ipv6",
+                ));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn validate_devices(
+    intent: &StandardIntent,
+    capabilities: &StandardCapabilities,
+    diagnostics: &mut Vec<StandardDiagnostic>,
+) {
+    let path_ids: BTreeSet<_> = intent
+        .paths
+        .iter()
+        .map(|path| normalize_id(&path.id))
+        .collect();
+    let mut claimed_addresses = BTreeMap::<String, String>::new();
+    for (index, device) in intent.devices.iter().enumerate() {
+        let path = format!("devices[{index}]");
+        if device.addresses.is_empty() {
+            diagnostics.push(StandardDiagnostic::error(
+                "device_address_required",
+                format!("{path}.addresses"),
+                "device requires at least one IP address or CIDR",
+            ));
+        }
+        for (address_index, address) in device.addresses.iter().enumerate() {
+            if !valid_client_address(address) {
+                diagnostics.push(StandardDiagnostic::error(
+                    "device_address_invalid",
+                    format!("{path}.addresses[{address_index}]"),
+                    format!("'{address}' is not a valid IP address or CIDR"),
+                ));
+            }
+            if let Some(first_path) = claimed_addresses.insert(address.clone(), path.clone()) {
+                diagnostics.push(StandardDiagnostic::error(
+                    "device_address_duplicate",
+                    format!("{path}.addresses[{address_index}]"),
+                    format!("device address '{address}' is already owned by {first_path}"),
+                ));
+            }
+        }
+        if let Some(path_id) = &device.assigned_path_id
+            && !path_ids.contains(&normalize_id(path_id))
+        {
+            diagnostics.push(StandardDiagnostic::error(
+                "device_path_missing",
+                format!("{path}.assignedPathId"),
+                format!("device references missing path '{path_id}'"),
+            ));
+        }
+        if device_has_policy(device) && !capabilities.matcher("client_ip") {
+            diagnostics.push(missing_plugin(
+                format!("{path}.addresses"),
+                "matcher",
+                "client_ip",
+            ));
+        }
+    }
+}
+
+fn validate_system(intent: &StandardIntent, diagnostics: &mut Vec<StandardDiagnostic>) {
+    if matches!(intent.system.threads, Some(0)) {
+        diagnostics.push(StandardDiagnostic::error(
+            "runtime_worker_threads_invalid",
+            "system.threads",
+            "worker thread count must be greater than zero",
+        ));
+    }
+}
+
+fn validate_rule_condition(
+    condition: &StandardRuleCondition,
+    capabilities: &StandardCapabilities,
+    path: &str,
+    diagnostics: &mut Vec<StandardDiagnostic>,
+) {
+    let (values, matcher) = match condition {
+        StandardRuleCondition::Domain { values }
+        | StandardRuleCondition::Suffix { values }
+        | StandardRuleCondition::Keyword { values } => (Some(values), Some("qname")),
+        StandardRuleCondition::ClientCidr { values } => (Some(values), Some("client_ip")),
+        StandardRuleCondition::Qtype { values } => (Some(values), Some("qtype")),
+        StandardRuleCondition::ClientName { .. } => {
+            diagnostics.push(StandardDiagnostic::error(
+                "condition_client_name_not_available",
+                path,
+                "client-name matching requires an external device source and is outside Standard Mode",
+            ));
+            (None, None)
+        }
+        StandardRuleCondition::Subscription { .. } => {
+            diagnostics.push(StandardDiagnostic::error(
+                "condition_subscription_not_available",
+                path,
+                "subscription-backed routing rules are not compiled in Phase 0",
+            ));
+            (None, None)
+        }
+    };
+    if matches!(values, Some(values) if values.is_empty()) {
+        diagnostics.push(StandardDiagnostic::error(
+            "condition_values_required",
+            path,
+            "rule condition requires at least one value",
+        ));
+    }
+    if let Some(matcher) = matcher
+        && !capabilities.matcher(matcher)
+    {
+        diagnostics.push(missing_plugin(path, "matcher", matcher));
+    }
+}
+
+fn validate_unique_objects<'a>(
+    values: impl Iterator<Item = (usize, &'a str, &'a str)>,
+    base: &str,
+    diagnostics: &mut Vec<StandardDiagnostic>,
+) {
+    let mut ids = BTreeMap::<String, usize>::new();
+    let mut names = BTreeMap::<String, usize>::new();
+    for (index, id, name) in values {
+        let normalized_id = normalize_id(id);
+        if normalized_id.is_empty() {
+            diagnostics.push(StandardDiagnostic::error(
+                "id_required",
+                format!("{base}[{index}].id"),
+                "ID is required",
+            ));
+        } else if let Some(first_index) = ids.insert(normalized_id.clone(), index) {
+            diagnostics.push(StandardDiagnostic::error(
+                "id_duplicate",
+                format!("{base}[{index}].id"),
+                format!("ID '{normalized_id}' duplicates {base}[{first_index}]"),
+            ));
+        }
+        let normalized_name = name.trim().to_lowercase();
+        if normalized_name.is_empty() {
+            diagnostics.push(StandardDiagnostic::error(
+                "name_required",
+                format!("{base}[{index}].name"),
+                "name is required",
+            ));
+        } else if let Some(first_index) = names.insert(normalized_name, index) {
+            diagnostics.push(StandardDiagnostic::error(
+                "name_duplicate",
+                format!("{base}[{index}].name"),
+                format!("name duplicates {base}[{first_index}]"),
+            ));
+        }
+    }
+}
+
+fn generated_user_tags(intent: &StandardIntent) -> Vec<(String, String)> {
+    let mut tags = Vec::new();
+    for (index, group) in intent.upstream_groups.iter().enumerate() {
+        tags.push((
+            format!("upstreamGroups[{index}].id"),
+            standard_tag("forward", &group.id),
+        ));
+    }
+    for (index, path) in intent.paths.iter().enumerate() {
+        tags.push((format!("paths[{index}].id"), standard_tag("path", &path.id)));
+        tags.push((
+            format!("paths[{index}].id"),
+            standard_tag("cache", &path.id),
+        ));
+    }
+    for (index, rule) in intent.routing.rules.iter().enumerate() {
+        tags.push((
+            format!("routing.rules[{index}].id"),
+            standard_tag("route_match", &rule.id),
+        ));
+    }
+    for (index, rule) in intent.exceptions.iter().enumerate() {
+        tags.push((
+            format!("exceptions[{index}].id"),
+            standard_tag("exception_match", &rule.id),
+        ));
+        tags.push((
+            format!("exceptions[{index}].id"),
+            standard_tag("exception_action", &rule.id),
+        ));
+    }
+    for (index, device) in intent.devices.iter().enumerate() {
+        tags.push((
+            format!("devices[{index}].id"),
+            standard_tag("device_match", &device.id),
+        ));
+        tags.push((
+            format!("devices[{index}].id"),
+            standard_tag("device_action", &device.id),
+        ));
+    }
+    tags
+}
+
+pub(super) fn standard_tag(prefix: &str, id: &str) -> String {
+    format!("standard_{prefix}_{}", safe_tag_component(id))
+}
+
+pub(super) fn safe_tag_component(value: &str) -> String {
+    let value = normalize_id(value);
+    if value.is_empty() {
+        "default".to_string()
+    } else {
+        value
+    }
+}
+
+fn normalize_id(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    let mut previous_underscore = false;
+    for character in value.trim().chars().flat_map(char::to_lowercase) {
+        let character = if character.is_ascii_alphanumeric() || character == '-' {
+            character
+        } else {
+            '_'
+        };
+        if character == '_' {
+            if previous_underscore || normalized.is_empty() {
+                continue;
+            }
+            previous_underscore = true;
+        } else {
+            previous_underscore = false;
+        }
+        normalized.push(character);
+    }
+    while normalized.ends_with('_') {
+        normalized.pop();
+    }
+    normalized
+}
+
+fn trimmed_option(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_lines(lines: &mut Vec<String>, adguard_allow: bool) {
+    let mut seen = BTreeSet::new();
+    lines.retain_mut(|line| {
+        *line = line.trim().to_string();
+        if adguard_allow && !line.is_empty() && !line.starts_with("@@") {
+            *line = format!("@@{line}");
+        }
+        !line.is_empty() && seen.insert(line.clone())
+    });
+}
+
+fn normalize_condition(condition: &mut StandardRuleCondition) {
+    match condition {
+        StandardRuleCondition::Domain { values }
+        | StandardRuleCondition::Keyword { values }
+        | StandardRuleCondition::ClientCidr { values }
+        | StandardRuleCondition::ClientName { values } => normalize_lines(values, false),
+        StandardRuleCondition::Suffix { values } => {
+            normalize_lines(values, false);
+            for value in values {
+                *value = value.trim_start_matches('.').to_string();
+            }
+        }
+        StandardRuleCondition::Qtype { values } => {
+            normalize_lines(values, false);
+            for value in values {
+                value.make_ascii_uppercase();
+            }
+        }
+        StandardRuleCondition::Subscription { subscription_id } => {
+            *subscription_id = normalize_id(subscription_id);
+        }
+    }
+}
+
+fn normalize_action(action: &mut StandardRuleAction) {
+    if let StandardRuleAction::UsePath { path_id } = action {
+        *path_id = normalize_id(path_id);
+    }
+}
+
+fn protocol_features(protocol: StandardUpstreamProtocol) -> &'static [&'static str] {
+    match protocol {
+        StandardUpstreamProtocol::Auto
+        | StandardUpstreamProtocol::Udp
+        | StandardUpstreamProtocol::Tcp => &[],
+        StandardUpstreamProtocol::Dot => &["upstream-dot"],
+        StandardUpstreamProtocol::Doh => &["upstream-doh"],
+        StandardUpstreamProtocol::Doh3 => &["upstream-doh", "upstream-doh3"],
+        StandardUpstreamProtocol::Doq => &["upstream-doq"],
+    }
+}
+
+fn effective_cache_paths(intent: &StandardIntent) -> usize {
+    intent
+        .paths
+        .iter()
+        .filter(|path| {
+            matches!(path.cache, StandardPolicySwitch::Enabled)
+                || (matches!(path.cache, StandardPolicySwitch::Inherit) && intent.cache.enabled)
+        })
+        .count()
+}
+
+pub(super) fn effective_filtering_used(intent: &StandardIntent) -> bool {
+    intent.paths.iter().any(|path| {
+        matches!(path.filtering, StandardPolicySwitch::Enabled)
+            || (matches!(path.filtering, StandardPolicySwitch::Inherit) && intent.filtering.enabled)
+    }) || intent
+        .devices
+        .iter()
+        .any(|device| matches!(device.filtering, Some(StandardPolicySwitch::Enabled)))
+}
+
+pub(super) fn effective_query_log_used(intent: &StandardIntent) -> bool {
+    intent.paths.iter().any(|path| {
+        matches!(path.query_log, StandardPolicySwitch::Enabled)
+            || (matches!(path.query_log, StandardPolicySwitch::Inherit) && intent.query_log.enabled)
+    }) || intent
+        .devices
+        .iter()
+        .any(|device| matches!(device.query_log, Some(StandardPolicySwitch::Enabled)))
+}
+
+pub(super) fn device_has_policy(device: &super::model::StandardDeviceProfile) -> bool {
+    device.assigned_path_id.is_some()
+        || matches!(
+            device.filtering,
+            Some(StandardPolicySwitch::Enabled | StandardPolicySwitch::Disabled)
+        )
+        || matches!(
+            device.query_log,
+            Some(StandardPolicySwitch::Enabled | StandardPolicySwitch::Disabled)
+        )
+}
+
+fn missing_plugin(path: impl Into<String>, category: &str, kind: &str) -> StandardDiagnostic {
+    StandardDiagnostic::error(
+        "required_capability_missing",
+        path,
+        format!("required {category} plugin '{kind}' is not available in this build"),
+    )
+}
+
+fn valid_http_url(value: &str) -> bool {
+    let value = value.trim();
+    (value.starts_with("http://") || value.starts_with("https://"))
+        && !value.chars().any(char::is_whitespace)
+        && value
+            .split_once("://")
+            .is_some_and(|(_, rest)| !rest.is_empty())
+}
+
+fn valid_client_address(value: &str) -> bool {
+    let value = value.trim();
+    if let Some((address, prefix)) = value.split_once('/') {
+        if prefix.contains('/') {
+            return false;
+        }
+        let Ok(address) = address.parse::<IpAddr>() else {
+            return false;
+        };
+        let Ok(prefix) = prefix.parse::<u8>() else {
+            return false;
+        };
+        return prefix <= if address.is_ipv4() { 32 } else { 128 };
+    }
+    value.parse::<IpAddr>().is_ok()
+}

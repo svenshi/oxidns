@@ -127,12 +127,12 @@ export default function StandardDnsPage() {
   const [draftSettings, setDraftSettings] =
     useState<StandardModeSettings | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [testResults, setTestResults] = useState<Record<string, UpstreamTestResult>>(
-    {},
-  );
-  const [testingUpstreams, setTestingUpstreams] = useState<Record<string, boolean>>(
-    {},
-  );
+  const [testResults, setTestResults] = useState<
+    Record<string, UpstreamTestResult>
+  >({});
+  const [testingUpstreams, setTestingUpstreams] = useState<
+    Record<string, boolean>
+  >({});
   const [groupTestSummary, setGroupTestSummary] = useState<string | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
   const settings = draftSettings ?? storeSettings;
@@ -160,7 +160,8 @@ export default function StandardDnsPage() {
     const defaultGroupId = defaultGroup.id;
     setPartial({
       upstreamGroups: settings.upstreamGroups.map((group, index) =>
-        group.id === defaultGroupId || (index === 0 && defaultGroupId === group.id)
+        group.id === defaultGroupId ||
+        (index === 0 && defaultGroupId === group.id)
           ? { ...group, upstreams }
           : group,
       ),
@@ -221,7 +222,11 @@ export default function StandardDnsPage() {
       });
       setTestResults((current) => ({
         ...current,
-        [upstream.id]: { ...response.result, id: upstream.id, name: upstream.name },
+        [upstream.id]: {
+          ...response.result,
+          id: upstream.id,
+          name: upstream.name,
+        },
       }));
     } catch (error) {
       setTestResults((current) => ({
@@ -479,13 +484,13 @@ export default function StandardDnsPage() {
                   id="standard-cache-min-ttl"
                   label={t(WEBUI.standardDns.minTtl)}
                   min={0}
-                  value={settings.cache.minTtl}
+                  value={settings.cache.minPositiveTtl}
                   disabled={!settings.cache.enabled || !capabilities.cache}
                   onChange={(value) =>
                     setPartial({
                       cache: {
                         ...settings.cache,
-                        minTtl: Math.max(0, Math.trunc(value)),
+                        minPositiveTtl: Math.max(0, Math.trunc(value)),
                       },
                     })
                   }
@@ -494,13 +499,13 @@ export default function StandardDnsPage() {
                   id="standard-cache-max-ttl"
                   label={t(WEBUI.standardDns.maxTtl)}
                   min={0}
-                  value={settings.cache.maxTtl}
+                  value={settings.cache.maxPositiveTtl}
                   disabled={!settings.cache.enabled || !capabilities.cache}
                   onChange={(value) =>
                     setPartial({
                       cache: {
                         ...settings.cache,
-                        maxTtl: Math.max(0, Math.trunc(value)),
+                        maxPositiveTtl: Math.max(0, Math.trunc(value)),
                       },
                     })
                   }
@@ -509,13 +514,28 @@ export default function StandardDnsPage() {
                   id="standard-cache-negative-ttl"
                   label={t(WEBUI.standardDns.negativeTtl)}
                   min={0}
-                  value={settings.cache.negativeTtl}
+                  value={settings.cache.maxNegativeTtl}
                   disabled={!settings.cache.enabled || !capabilities.cache}
                   onChange={(value) =>
                     setPartial({
                       cache: {
                         ...settings.cache,
-                        negativeTtl: Math.max(0, Math.trunc(value)),
+                        maxNegativeTtl: Math.max(0, Math.trunc(value)),
+                      },
+                    })
+                  }
+                />
+                <NumberField
+                  id="standard-cache-negative-ttl-without-soa"
+                  label={t(WEBUI.standardDns.negativeTtlWithoutSoa)}
+                  min={0}
+                  value={settings.cache.negativeTtlWithoutSoa}
+                  disabled={!settings.cache.enabled || !capabilities.cache}
+                  onChange={(value) =>
+                    setPartial({
+                      cache: {
+                        ...settings.cache,
+                        negativeTtlWithoutSoa: Math.max(0, Math.trunc(value)),
                       },
                     })
                   }
@@ -567,25 +587,6 @@ export default function StandardDnsPage() {
                     })
                   }
                 />
-                <NumberField
-                  id="standard-query-log-sample-rate"
-                  label={t(WEBUI.standardDns.sampleRate)}
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  value={settings.queryLog.sampleRate}
-                  disabled={
-                    !settings.queryLog.enabled || !capabilities.queryRecorder
-                  }
-                  onChange={(value) =>
-                    setPartial({
-                      queryLog: {
-                        ...settings.queryLog,
-                        sampleRate: Math.min(1, Math.max(0, value)),
-                      },
-                    })
-                  }
-                />
               </CardContent>
             </Card>
           </div>
@@ -614,7 +615,8 @@ function UpstreamEditor({
 }) {
   const buildInfo = useAppStore((s) => s.buildInfo);
   const { t } = useI18n();
-  const usesHttpDns = upstream.protocol === "doh" || upstream.protocol === "doh3";
+  const usesHttpDns =
+    upstream.protocol === "doh" || upstream.protocol === "doh3";
   const usesTls =
     upstream.protocol === "dot" ||
     upstream.protocol === "doh" ||
@@ -625,7 +627,10 @@ function UpstreamEditor({
     buildInfo,
   );
   const canTest =
-    upstream.enabled && upstream.address.trim() && protocolSupported && !testing;
+    upstream.enabled &&
+    upstream.address.trim() &&
+    protocolSupported &&
+    !testing;
 
   return (
     <div className="rounded-lg border bg-card/40 p-4">
@@ -737,9 +742,7 @@ function UpstreamEditor({
             id={`${upstream.id}-address`}
             value={upstream.address}
             onChange={(event) => onChange({ address: event.target.value })}
-            placeholder={
-              usesHttpDns ? "dns.example/dns-query" : "1.1.1.1:53"
-            }
+            placeholder={usesHttpDns ? "dns.example/dns-query" : "1.1.1.1:53"}
           />
         </div>
         <OptionalTextField

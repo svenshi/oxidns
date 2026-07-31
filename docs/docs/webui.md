@@ -10,6 +10,14 @@ OxiDNS WebUI 是独立构建的前端静态产物，不会编译进 Rust 后端�
 
 无论哪种方式，WebUI 默认使用相对后端地址 `/api`。只要 WebUI 页面和 `/api/*` 位于同一个站点 origin 下，浏览器就不需要跨域配置。
 
+## 标准模式与专家模式
+
+- 专家模式直接管理完整 YAML 和插件图，已有配置默认按专家模式打开。
+- 标准模式管理 OxiDNS 原生 DNS 意图，不执行 OpenWrt/UCI、系统 DNS、防火墙或第三方代理操作。
+- 标准模式保存前由 Rust 后端生成 Plan，显示诊断、配置所有权和插件差异；未托管或被修改的配置必须显式确认接管。
+- 确认后，标准状态、生成元数据、DNS YAML 和运行时 reload 作为一个可恢复事务应用。失败会恢复旧文件和旧运行时。
+- 只切换 WebUI 视图不会重写 DNS YAML。标准模式应用接口见[标准模式 Plan/Apply](api/standard-mode.mdx)。
+
 ## 使用 Release 包内置 WebUI
 
 官方 release 压缩包会包含已经构建好的 `webui/` 目录：

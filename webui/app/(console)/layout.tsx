@@ -20,6 +20,7 @@ import {
 import { RestartingOverlay } from "@/components/shell/restarting-overlay";
 import { UpgradeOverlay } from "@/components/shell/upgrade-overlay";
 import { ModeSelection } from "@/components/standard/mode-selection";
+import { StandardApplyReview } from "@/components/standard/standard-apply-review";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
@@ -229,6 +230,7 @@ export default function ConsoleLayout({
         <ConfigHistorySheet open={historyOpen} onOpenChange={setHistoryOpen} />
         <RestartingOverlay />
         <UpgradeOverlay />
+        <StandardApplyReview />
       </SidebarProvider>
     </TooltipProvider>
   );

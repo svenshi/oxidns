@@ -329,6 +329,11 @@ impl ApiHandler for ConfigSaveHandler {
                 "reload_busy",
                 "configuration was saved, but reload is already pending or in progress",
             ),
+            Err(ConfigSaveError::StandardTransactionBusy) => json_error(
+                StatusCode::CONFLICT,
+                "standard_transaction_busy",
+                "a Standard Mode transaction is pending; Expert configuration writes are temporarily blocked",
+            ),
             Err(ConfigSaveError::Io(message) | ConfigSaveError::Reload(message)) => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "config_save_failed",
@@ -460,6 +465,7 @@ enum ConfigSaveError {
     Validation(String),
     Io(String),
     ReloadBusy,
+    StandardTransactionBusy,
     Reload(String),
 }
 
@@ -505,6 +511,10 @@ fn save_config_file(
     controller: Arc<AppController>,
     request: ConfigSaveRequest,
 ) -> std::result::Result<ConfigSaveResponse, ConfigSaveError> {
+    let _guard = crate::api::standard_mode::config_mutation_guard().map_err(ConfigSaveError::Io)?;
+    if crate::api::standard_mode::has_pending_transaction(controller.config_path()) {
+        return Err(ConfigSaveError::StandardTransactionBusy);
+    }
     let format = request.format.as_deref().unwrap_or("yaml");
     if format != "yaml" {
         return Err(ConfigSaveError::InvalidFormat(format.to_string()));

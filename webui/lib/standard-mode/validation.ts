@@ -126,15 +126,8 @@ const protocolFeatureRequirements: Record<
   doq: ["upstream-doq"],
 };
 
-export const STANDARD_UPSTREAM_PROTOCOLS: readonly StandardUpstreamProtocol[] = [
-  "auto",
-  "udp",
-  "tcp",
-  "dot",
-  "doh",
-  "doh3",
-  "doq",
-] as const;
+export const STANDARD_UPSTREAM_PROTOCOLS: readonly StandardUpstreamProtocol[] =
+  ["auto", "udp", "tcp", "dot", "doh", "doh3", "doq"] as const;
 
 export function requiredStandardUpstreamProtocolFeatures(
   protocol: StandardUpstreamProtocol,
@@ -169,9 +162,22 @@ export function normalizeStandardDnsSettings(
     cache: {
       ...settings.cache,
       size: Math.max(128, Math.trunc(settings.cache.size) || 8192),
-      minTtl: Math.max(0, Math.trunc(settings.cache.minTtl) || 0),
-      maxTtl: Math.max(0, Math.trunc(settings.cache.maxTtl) || 0),
-      negativeTtl: Math.max(0, Math.trunc(settings.cache.negativeTtl) || 0),
+      minPositiveTtl: Math.max(
+        0,
+        Math.trunc(settings.cache.minPositiveTtl) || 0,
+      ),
+      maxPositiveTtl: Math.max(
+        0,
+        Math.trunc(settings.cache.maxPositiveTtl) || 0,
+      ),
+      maxNegativeTtl: Math.max(
+        0,
+        Math.trunc(settings.cache.maxNegativeTtl) || 0,
+      ),
+      negativeTtlWithoutSoa: Math.max(
+        0,
+        Math.trunc(settings.cache.negativeTtlWithoutSoa) || 0,
+      ),
     },
     queryLog: {
       ...settings.queryLog,
@@ -179,9 +185,7 @@ export function normalizeStandardDnsSettings(
         1,
         Math.trunc(settings.queryLog.retentionDays) || 1,
       ),
-      sampleRate: Number.isFinite(sampleRate)
-        ? Math.min(1, Math.max(0, sampleRate))
-        : 1,
+      sampleRate: Number.isFinite(sampleRate) ? sampleRate : 1,
     },
   };
 }
@@ -204,7 +208,9 @@ export function normalizeStandardUpstream(
       ? { dialAddress: upstream.dialAddress.trim() }
       : { dialAddress: undefined }),
     tlsVerify: upstream.tlsVerify ?? true,
-    ...(usesHttpDns ? { dohPath: dohPath || "/dns-query" } : { dohPath: undefined }),
+    ...(usesHttpDns
+      ? { dohPath: dohPath || "/dns-query" }
+      : { dohPath: undefined }),
     enableHttp3: upstream.protocol === "doh3",
   };
 }
@@ -218,9 +224,11 @@ export function validateStandardDnsSettings(
     issues.push({ field: "listen", code: "listen_required" });
   }
 
-  const defaultGroup = settings.upstreamGroups.find((group) => group.isDefault)
-    ?? settings.upstreamGroups[0];
-  const enabledUpstreams = defaultGroup?.upstreams.filter((item) => item.enabled) ?? [];
+  const defaultGroup =
+    settings.upstreamGroups.find((group) => group.isDefault) ??
+    settings.upstreamGroups[0];
+  const enabledUpstreams =
+    defaultGroup?.upstreams.filter((item) => item.enabled) ?? [];
   const usableUpstreamCount = enabledUpstreams.filter((item) =>
     item.address.trim(),
   ).length;
@@ -239,7 +247,9 @@ export function validateStandardDnsSettings(
         field,
         code: "protocol_unsupported",
         protocol: upstream.protocol,
-        requiredFeatures: [...requiredStandardUpstreamProtocolFeatures(upstream.protocol)],
+        requiredFeatures: [
+          ...requiredStandardUpstreamProtocolFeatures(upstream.protocol),
+        ],
       });
     }
   }
@@ -289,7 +299,9 @@ function normalizeFiltering(
     ...filtering,
     subscriptions: filtering.subscriptions.map(normalizeSubscription),
     blockRules: uniqueLines(filtering.blockRules),
-    allowRules: uniqueLines(filtering.allowRules).map(normalizeAdGuardAllowRule),
+    allowRules: uniqueLines(filtering.allowRules).map(
+      normalizeAdGuardAllowRule,
+    ),
     blockResponse:
       filtering.blockResponse === "nxdomain" ||
       filtering.blockResponse === "refused"
@@ -400,7 +412,11 @@ export function standardDeviceCapabilityMap(
     clientIp: isPluginKindSupported(buildInfo, "matcher", "client_ip"),
     adRules: isPluginKindSupported(buildInfo, "provider", "adguard_rule"),
     blackHole: isPluginKindSupported(buildInfo, "executor", "black_hole"),
-    queryRecorder: isPluginKindSupported(buildInfo, "executor", "query_recorder"),
+    queryRecorder: isPluginKindSupported(
+      buildInfo,
+      "executor",
+      "query_recorder",
+    ),
   };
 }
 
@@ -434,7 +450,10 @@ export function validateStandardDeviceSettings(
     (device) => device.queryLog === "enabled",
   );
 
-  if (activeDevices.length > 0 && (!capabilities.sequence || !capabilities.clientIp)) {
+  if (
+    activeDevices.length > 0 &&
+    (!capabilities.sequence || !capabilities.clientIp)
+  ) {
     issues.push({ field: "devices", code: "capability_required" });
   }
 
@@ -449,7 +468,10 @@ export function validateStandardDeviceSettings(
         code: "filtering_capability_required",
       });
     }
-    if (filtering.blockRules.length === 0 && enabledSubscriptions.length === 0) {
+    if (
+      filtering.blockRules.length === 0 &&
+      enabledSubscriptions.length === 0
+    ) {
       issues.push({
         field: "devices.filtering",
         code: "filtering_rule_source_required",
@@ -531,7 +553,11 @@ function normalizeDeviceProfile(
     name: device.name.trim(),
     addresses: uniqueLines(device.addresses),
     ...(assignedPathId
-      ? { assignedPathId: pathIds.has(assignedPathId) ? assignedPathId : defaultPathId }
+      ? {
+          assignedPathId: pathIds.has(assignedPathId)
+            ? assignedPathId
+            : defaultPathId,
+        }
       : { assignedPathId: undefined }),
     filtering: normalizePolicy(device.filtering),
     queryLog: normalizePolicy(device.queryLog),
@@ -548,10 +574,10 @@ function normalizePolicy(
 function deviceHasPolicy(device: StandardDeviceProfile): boolean {
   return Boolean(
     device.assignedPathId ||
-      device.filtering === "enabled" ||
-      device.filtering === "disabled" ||
-      device.queryLog === "enabled" ||
-      device.queryLog === "disabled",
+    device.filtering === "enabled" ||
+    device.filtering === "disabled" ||
+    device.queryLog === "enabled" ||
+    device.queryLog === "disabled",
   );
 }
 
@@ -563,7 +589,8 @@ function isClientAddress(value: string): boolean {
   if (prefix !== undefined) {
     const parsed = Number(prefix);
     const maxPrefix = address.includes(":") ? 128 : 32;
-    if (!Number.isInteger(parsed) || parsed < 0 || parsed > maxPrefix) return false;
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed > maxPrefix)
+      return false;
   }
   if (address.includes(":")) return /^[0-9a-f:.]+$/i.test(address);
   const octets = address.split(".");
@@ -613,9 +640,10 @@ export function normalizeStandardRoutingSettings(
     ipSelection: "inherit",
     ecs: "inherit",
   };
-  const paths = settings.paths.length > 0
-    ? settings.paths.map(normalizePath)
-    : [fallbackPath];
+  const paths =
+    settings.paths.length > 0
+      ? settings.paths.map(normalizePath)
+      : [fallbackPath];
   const normalizedPaths = paths.map((path, index) => ({
     ...path,
     id: index === 0 ? "default" : path.id,
@@ -706,7 +734,10 @@ export function validateStandardRoutingSettings(
         code: "rule_action_unsupported",
         ruleId: rule.id,
       });
-    } else if (rule.action.type === "use_path" && !pathIds.has(rule.action.pathId)) {
+    } else if (
+      rule.action.type === "use_path" &&
+      !pathIds.has(rule.action.pathId)
+    ) {
       issues.push({
         field,
         code: "rule_action_required",
@@ -736,11 +767,16 @@ export function validateStandardExceptionSettings(
   const pathIds = new Set(normalized.paths.map((path) => path.id));
   const issues: StandardExceptionValidationIssue[] = [];
 
-  if (!capabilities.sequence && normalized.exceptions.some((item) => item.enabled)) {
+  if (
+    !capabilities.sequence &&
+    normalized.exceptions.some((item) => item.enabled)
+  ) {
     issues.push({ field: "exceptions", code: "capability_required" });
   }
 
-  for (const exception of normalized.exceptions.filter((item) => item.enabled)) {
+  for (const exception of normalized.exceptions.filter(
+    (item) => item.enabled,
+  )) {
     const field = `exception.${exception.id}`;
     if (!exception.name.trim()) {
       issues.push({
@@ -828,7 +864,9 @@ function normalizeRouting(
 ): StandardRoutingSettings {
   return {
     ...routing,
-    rules: routing.rules.map((rule) => normalizeRoutingRule(rule, pathIds, defaultPathId)),
+    rules: routing.rules.map((rule) =>
+      normalizeRoutingRule(rule, pathIds, defaultPathId),
+    ),
     scenarios: routing.scenarios.map((scenario) => ({
       ...scenario,
       id: cleanId(scenario.id, "scenario"),

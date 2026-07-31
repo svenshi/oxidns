@@ -1,0 +1,91 @@
+---
+title: 标准模式 Plan/Apply
+---
+
+标准模式 API 把用户意图编译为完整 OxiDNS YAML，并以可恢复事务应用。它只管理 OxiDNS 自身配置，不修改操作系统 DNS、防火墙、OpenWrt/UCI 或第三方代理系统。
+
+所有路由都位于管理 API 的 `/api` 前缀下，并遵循相同的 TLS、Basic Auth 和 CORS 规则。
+
+## `POST /api/standard/plan`
+
+只读地执行 schema 迁移、规范化、语义和编译能力校验、YAML 生成、后端配置预检、所有权分析与接管差异计算。Plan 不写文件，也不触发 reload。
+
+```json
+{
+  "intent": { "schema": 3, "listen": {}, "upstreamGroups": [] },
+  "base_config_version": "sha256-hex",
+  "base_standard_version": "sha256-hex",
+  "takeover": false
+}
+```
+
+`base_config_version` 和 `base_standard_version` 在预览时可省略；传入后若已过期，会在 `blockers` 中返回冲突。`takeover` 仅用于确认接管，不改变 Plan 的只读性质。
+
+关键返回字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `ownership` | `managed`、`modified` 或 `unmanaged` |
+| `semantic_diff` | 保留的顶层字段及将生成、替换、移除的插件 tag |
+| `blockers` | 版本冲突或需要显式接管等控制面阻断项 |
+| `plan.normalizedIntent` | 后端迁移和规范化后的 schema v3 意图 |
+| `plan.diagnostics` | 带稳定 `severity`、`code`、`path` 的语义诊断 |
+| `plan.generated` | 候选 YAML、版本、tag map 和摘要；有错误时不存在 |
+| `can_apply` | Plan 与控制面阻断项均通过时为 `true` |
+
+缺少必需插件、无效引用、重复 ID/tag、错误 TTL 区间，以及当前阶段尚不支持的活动 ECS、双栈选择、IP 选择、日志采样或场景值都会阻止应用。可选指标插件缺失只产生 warning。
+
+## `POST /api/standard/apply`
+
+Apply 会重新执行完整 Plan，检查两个基础版本和已审阅的候选版本，然后写入恢复日志、暂存候选 DNS YAML 并请求运行时 reload。
+
+```json
+{
+  "intent": { "schema": 3, "listen": {}, "upstreamGroups": [] },
+  "base_config_version": "plan-response-config-version",
+  "base_standard_version": "plan-response-standard-version",
+  "planned_config_version": "plan-generated-config-version",
+  "takeover": true
+}
+```
+
+返回 `202 Accepted`：
+
+```json
+{
+  "ok": true,
+  "transaction_id": "standard-...",
+  "status": "pending",
+  "target_config_version": "sha256-hex"
+}
+```
+
+调用方必须轮询事务状态。只有候选运行时成功组装后，后端才提交标准模式状态和生成元数据；组装失败会恢复旧 DNS 文件、旧标准状态和旧运行时。进程在事务中断时，下次启动会在加载普通配置前恢复旧的完整状态。
+
+返回状态：
+
+* `400 Bad Request`：请求或标准意图无法解码。
+* `409 Conflict`：基础版本过期、候选版本与已审阅 Plan 不同、需要接管确认、已有事务或 reload 正在执行。
+* `500 Internal Server Error`：能力快照、文件暂存或 reload 请求失败。
+
+事务日志可能包含配置中的敏感字段，后端会限制大小并在 Unix 上以 `0600` 权限写入配置文件旁；不要把日志文件复制到公开诊断包。
+
+## `GET /api/standard/apply/status`
+
+返回当前 pending 事务；没有 pending 事务时返回最近一次完成记录：
+
+```json
+{
+  "ok": true,
+  "transaction": {
+    "schema": 1,
+    "transaction_id": "standard-...",
+    "status": "succeeded",
+    "completed_at_ms": 1760000000000,
+    "previous_config_version": "sha256-hex",
+    "candidate_config_version": "sha256-hex"
+  }
+}
+```
+
+`status` 为 `pending`、`succeeded`、`failed` 或 `recovered`。失败信息经过长度限制，不返回候选 YAML 或标准意图。

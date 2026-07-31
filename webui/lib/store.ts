@@ -13,6 +13,7 @@ import {
   type OxiDnsConfig,
 } from "./oxidns-config";
 import {
+  applyStandardMode,
   fetchBuildInfo,
   fetchConfigFile,
   fetchHealth,
@@ -20,8 +21,10 @@ import {
   fetchPrometheusMetrics,
   fetchReloadStatus,
   fetchSystem,
+  fetchStandardTransactionStatus,
   fetchWebUiConfig,
   patchWebUiConfig,
+  planStandardMode,
   requestReload,
   requestRestart,
   reloadProvider as requestProviderReload,
@@ -99,16 +102,15 @@ import {
   type WebUiMode,
 } from "./webui-config-header";
 import { createDefaultStandardSettings } from "./standard-mode/defaults";
-import { generateStandardConfig } from "./standard-mode/generator";
 import {
-  buildStandardGeneratedMetadata,
-  computeStandardSettingsRevision,
   normalizeStandardSettings,
   type StandardSettingsNotice,
 } from "./standard-mode/schema";
 import type {
   StandardGeneratedMetadata,
   StandardModeSettings,
+  StandardPlanResponse,
+  StandardTransactionRecord,
 } from "./standard-mode/types";
 
 type StoreSet = (
@@ -177,6 +179,7 @@ interface AppState {
   standardSettingsNotice: StandardSettingsNotice;
   standardLastGenerated: StandardGeneratedMetadata | null;
   standardConfigOutOfSync: boolean;
+  standardApplyConfirmation: StandardPlanResponse | null;
   selectedPlugin: PluginInstance | null;
   detailOpen: boolean;
   editorMode: boolean;
@@ -231,6 +234,8 @@ interface AppState {
     settings?: StandardModeSettings,
     options?: SaveStandardSettingsOptions,
   ) => Promise<void>;
+  confirmStandardApply: () => void;
+  cancelStandardApply: () => void;
   saveConfig: (options?: SaveConfigOptions) => Promise<void>;
   applyConfig: () => Promise<void>;
   restartApp: () => Promise<void>;
@@ -289,6 +294,7 @@ function isCurrentBackend(backendKey: string): boolean {
 }
 let queuedWebUiConfigSave: Promise<void> = Promise.resolve();
 let pendingWebUiConfigSaveCount = 0;
+let pendingStandardApplyReview: ((confirmed: boolean) => void) | null = null;
 
 interface SaveConfigOptions {
   source?: ConfigSnapshotSource;
@@ -368,6 +374,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   standardSettingsNotice: null,
   standardLastGenerated: null,
   standardConfigOutOfSync: false,
+  standardApplyConfirmation: null,
   selectedPlugin: null,
   detailOpen: false,
   editorMode: false,
@@ -409,7 +416,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       modeSelectionDismissed,
       standardConfigOutOfSync:
         mode === "standard"
-          ? isStandardConfigOutOfSync(state.standardLastGenerated, state.configVersion)
+          ? isStandardConfigOutOfSync(
+              state.standardLastGenerated,
+              state.configVersion,
+            )
           : false,
     }));
     if (!get().isOfflineMode) {
@@ -427,80 +437,99 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
   updateStandardSettings: (settings) => set({ standardSettings: settings }),
-  saveStandardSettings: async (settings, options) => {
-    const state = get();
-    const nextSettings = settings ?? state.standardSettings;
-    const settingsRevision = computeStandardSettingsRevision(nextSettings);
-    const settingsPatch: JsonObject = {
-      mode: "standard",
-      standard: {
-        settings: nextSettings as unknown as JsonValue,
-        meta: {
-          settingsRevision,
-        },
-      },
-      ui: { modeSelectionDismissed: true },
-    };
-    set((current) => ({
-      webUiMode: "standard",
-      webUiConfig: applyWebUiConfigPatch(current.webUiConfig, settingsPatch),
-      modeSelectionDismissed: true,
-      standardSettings: nextSettings,
-      standardSettingsNotice: null,
-      standardConfigOutOfSync: false,
-      editorMode: false,
-    }));
-    if (!state.isOfflineMode) {
-      await persistWebUiConfigPatch(set, get, settingsPatch);
-    }
+  saveStandardSettings: (settings, options) =>
+    enqueueConfigSave(set, async () => {
+      const backendKey = currentBackendKey();
+      const state = get();
+      if (state.isOfflineMode) {
+        throw new Error(tClient(WEBUI.storeErrors.standardRequiresBackend));
+      }
+      if (options?.apply === false) {
+        throw new Error(tClient(WEBUI.storeErrors.standardApplyIsAtomic));
+      }
+      if (!state.configVersion || !state.webUiConfigVersion) {
+        throw new Error(tClient(WEBUI.storeErrors.standardStateNotLoaded));
+      }
+      const nextSettings = settings ?? state.standardSettings;
+      set({ isApplying: true });
+      try {
+        const plan = await planStandardMode({
+          intent: nextSettings,
+          baseConfigVersion: state.configVersion,
+          baseStandardVersion: state.webUiConfigVersion,
+        });
+        if (!isCurrentBackend(backendKey)) return;
+        const nonTakeoverBlockers = plan.blockers.filter(
+          (blocker) => blocker.code !== "takeover_confirmation_required",
+        );
+        if (!plan.plan.canApply || nonTakeoverBlockers.length > 0) {
+          throw new Error(standardPlanFailureMessage(plan));
+        }
 
-    const generated = generateStandardConfig(
-      nextSettings,
-      state.buildInfo,
-      state.configModel,
-    );
-    const generatedText = stringifyOxiDnsConfig(generated.config);
-    const content = writeWebUiConfigHeader(generatedText, {
-      mode: "standard",
-      modeHeaderPresent: true,
-    });
-    get().setYamlConfig(content);
-    set({
-      webUiMode: "standard",
-      modeHeaderPresent: true,
-      modeSelectionDismissed: true,
-      standardSettings: nextSettings,
-      standardSettingsNotice: null,
-      standardConfigOutOfSync: false,
-      editorMode: false,
-    });
-    await get().saveConfig({
-      source: "standard-settings",
-    });
-    if (!get().isOfflineMode) {
-      const metadata = buildStandardGeneratedMetadata(
-        nextSettings,
-        generated,
-        get().configVersion,
-      );
-      const metadataPatch: JsonObject = {
-        standard: {
-          meta: {
-            settingsRevision,
-            lastGenerated: metadata as unknown as JsonValue,
-          },
-        },
-      };
-      set((current) => ({
-        webUiConfig: applyWebUiConfigPatch(current.webUiConfig, metadataPatch),
-        standardLastGenerated: metadata,
-        standardConfigOutOfSync: false,
-      }));
-      await persistWebUiConfigPatch(set, get, metadataPatch);
-    }
-    if (options?.apply) {
-      await get().applyConfig();
-    }
+        const confirmed = await requestStandardApplyReview(set, plan);
+        if (!confirmed) {
+          throw new Error(tClient(WEBUI.storeErrors.standardApplyCancelled));
+        }
+        if (!isCurrentBackend(backendKey)) return;
+        const generated = plan.plan.generated;
+        if (!generated) {
+          throw new Error(tClient(WEBUI.storeErrors.standardPlanMissingConfig));
+        }
+        const takeover = plan.ownership !== "managed";
+        const accepted = await applyStandardMode({
+          intent: plan.plan.normalizedIntent,
+          baseConfigVersion: plan.config_version,
+          baseStandardVersion: plan.standard_version,
+          plannedConfigVersion: generated.configVersion,
+          takeover,
+        });
+        const transaction = await pollStandardTransaction(
+          accepted.transaction_id,
+        );
+        if (!isCurrentBackend(backendKey)) return;
+        await get().loadConfig();
+        if (!isCurrentBackend(backendKey)) return;
+        if (get().configVersion !== generated.configVersion) {
+          throw new Error(
+            tClient(WEBUI.storeErrors.standardApplyRefreshMismatch),
+          );
+        }
+
+        const scope = getScopeKey(get().configPath);
+        recordSnapshot(scope, {
+          id: createSnapshotId(),
+          content: generated.yaml,
+          version: generated.configVersion,
+          source: "standard-settings",
+          pluginCount: generated.pluginCount,
+          applyStatus: "applied",
+          mode: "standard",
+        });
+        set({
+          webUiMode: "standard",
+          modeSelectionDismissed: true,
+          standardSettings: plan.plan.normalizedIntent,
+          standardSettingsNotice: null,
+          standardConfigOutOfSync: false,
+          editorMode: false,
+          configHistory: listSnapshots(scope),
+          runningVersion: transaction.candidate_config_version,
+        });
+      } finally {
+        set({ isApplying: false });
+      }
+    }),
+  confirmStandardApply: () => {
+    const resolve = pendingStandardApplyReview;
+    pendingStandardApplyReview = null;
+    set({ standardApplyConfirmation: null });
+    resolve?.(true);
+  },
+  cancelStandardApply: () => {
+    const resolve = pendingStandardApplyReview;
+    pendingStandardApplyReview = null;
+    set({ standardApplyConfirmation: null });
+    resolve?.(false);
   },
   setYamlConfig: (config) => {
     const parsed = parseOxiDnsYaml(config);
@@ -1563,10 +1592,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 }));
 
-function applyConfigFileResponse(
-  response: ConfigFileResponse,
-  set: StoreSet,
-) {
+function applyConfigFileResponse(response: ConfigFileResponse, set: StoreSet) {
   const parsed = parseOxiDnsYaml(response.content);
   const headerState = headerStateFromText(response.content);
   if (!parsed.config) {
@@ -1657,7 +1683,8 @@ function applyWebUiConfigResponse(
 ) {
   const webUiConfig = normalizeWebUiConfig(response.config);
   const standardSettings = loadStandardSettingsFromWebUiConfig(webUiConfig);
-  const standardLastGenerated = standardLastGeneratedFromWebUiConfig(webUiConfig);
+  const standardLastGenerated =
+    standardLastGeneratedFromWebUiConfig(webUiConfig);
   set((state) => ({
     webUiConfig,
     webUiConfigVersion: response.version,
@@ -1729,9 +1756,10 @@ async function persistWebUiConfigPatch(
   });
 }
 
-function loadStandardSettingsFromWebUiConfig(
-  config: WebUiConfigDocument,
-): { settings: StandardModeSettings; notice: StandardSettingsNotice } {
+function loadStandardSettingsFromWebUiConfig(config: WebUiConfigDocument): {
+  settings: StandardModeSettings;
+  notice: StandardSettingsNotice;
+} {
   const settings = config.standard.settings;
   if (settings === undefined) {
     return { settings: createDefaultStandardSettings(), notice: null };
@@ -1762,6 +1790,9 @@ function standardLastGeneratedFromWebUiConfig(
     tagMap: value.tagMap as unknown as StandardGeneratedMetadata["tagMap"],
     summary: value.summary as unknown as StandardGeneratedMetadata["summary"],
     generatedAtMs: value.generatedAtMs,
+    ...(typeof value.transactionId === "string"
+      ? { transactionId: value.transactionId }
+      : {}),
   };
 }
 
@@ -1771,8 +1802,8 @@ function isStandardConfigOutOfSync(
 ): boolean {
   return Boolean(
     lastGenerated?.configVersion &&
-      configVersion &&
-      lastGenerated.configVersion !== configVersion,
+    configVersion &&
+    lastGenerated.configVersion !== configVersion,
   );
 }
 
@@ -1967,6 +1998,63 @@ function pluginCountOf(text: string): number {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function requestStandardApplyReview(
+  set: StoreSet,
+  plan: StandardPlanResponse,
+): Promise<boolean> {
+  pendingStandardApplyReview?.(false);
+  set({ standardApplyConfirmation: plan });
+  return new Promise((resolve) => {
+    pendingStandardApplyReview = resolve;
+  });
+}
+
+function standardPlanFailureMessage(plan: StandardPlanResponse): string {
+  const diagnostics = plan.plan.diagnostics
+    .filter((diagnostic) => diagnostic.severity === "error")
+    .map((diagnostic) => `${diagnostic.path}: ${diagnostic.message}`);
+  const blockers = plan.blockers
+    .filter((blocker) => blocker.code !== "takeover_confirmation_required")
+    .map((blocker) => `${blocker.path}: ${blocker.message}`);
+  const details = [...blockers, ...diagnostics];
+  return details.length > 0
+    ? details.slice(0, 6).join("\n")
+    : tClient(WEBUI.storeErrors.standardPlanRejected);
+}
+
+async function pollStandardTransaction(
+  transactionId: string,
+): Promise<StandardTransactionRecord> {
+  const deadline = Date.now() + 45_000;
+  let lastError: unknown = null;
+  while (Date.now() < deadline) {
+    let transaction: StandardTransactionRecord | undefined;
+    try {
+      const response = await fetchStandardTransactionStatus();
+      transaction = response.transaction;
+    } catch (error) {
+      lastError = error;
+    }
+    if (transaction?.transaction_id === transactionId) {
+      if (transaction.status === "succeeded") return transaction;
+      if (
+        transaction.status === "failed" ||
+        transaction.status === "recovered"
+      ) {
+        throw new Error(
+          transaction.error || tClient(WEBUI.storeErrors.standardApplyFailed),
+        );
+      }
+    }
+    await delay(500);
+  }
+  throw new Error(
+    lastError instanceof Error
+      ? lastError.message
+      : tClient(WEBUI.storeErrors.standardApplyTimedOut),
+  );
 }
 
 // Wait for positive evidence that the backend instance changed after a restart

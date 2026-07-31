@@ -4,8 +4,6 @@ import type {
   StandardDeviceProfile,
   StandardExceptionRule,
   StandardFilteringSettings,
-  StandardGeneratedMetadata,
-  StandardGenerationResult,
   StandardModeSettings,
   StandardQueryLogSettings,
   StandardResolutionPath,
@@ -74,22 +72,12 @@ function cleanId(value: unknown, fallback: string): string {
     : fallback;
 }
 
-function uniqueById<T extends { id: string }>(items: T[]): T[] {
-  const seen = new Set<string>();
-  const rows: T[] = [];
-  for (const item of items) {
-    if (seen.has(item.id)) continue;
-    seen.add(item.id);
-    rows.push(item);
-  }
-  return rows;
-}
-
-function normalizeUpstream(value: unknown, index: number): StandardUpstream | null {
+function normalizeUpstream(value: unknown, index: number): StandardUpstream {
   const source = asRecord(value);
   const address = asString(source.address ?? source.addr).trim();
-  if (!address) return null;
-  const protocol = upstreamProtocols.has(source.protocol as StandardUpstreamProtocol)
+  const protocol = upstreamProtocols.has(
+    source.protocol as StandardUpstreamProtocol,
+  )
     ? (source.protocol as StandardUpstreamProtocol)
     : "auto";
   const id = cleanId(source.id ?? source.tag, `upstream_${index + 1}`);
@@ -125,17 +113,18 @@ function normalizeUpstreamGroup(
   const source = asRecord(value);
   const id = cleanId(source.id, index === 0 ? "default" : `group_${index + 1}`);
   const upstreams = Array.isArray(source.upstreams)
-    ? uniqueById(
-        source.upstreams
-          .map((item, upstreamIndex) => normalizeUpstream(item, upstreamIndex))
-          .filter((item): item is StandardUpstream => item !== null),
+    ? source.upstreams.map((item, upstreamIndex) =>
+        normalizeUpstream(item, upstreamIndex),
       )
     : [];
-  if (upstreams.length === 0 && id !== "default") return null;
   const strategy =
-    source.strategy === "sequential" || source.strategy === "fastest"
+    source.strategy === "fastest" ||
+    source.strategy === "balanced" ||
+    source.strategy === "prefer_positive" ||
+    source.strategy === "consensus" ||
+    source.strategy === "ordered_fallback"
       ? source.strategy
-      : "parallel";
+      : "balanced";
   return {
     id,
     name: asString(
@@ -146,12 +135,20 @@ function normalizeUpstreamGroup(
       ? { description: asString(source.description).trim() }
       : {}),
     strategy,
-    upstreams: upstreams.length > 0 ? upstreams : defaults.upstreamGroups[0].upstreams,
-    ...(source.isDefault === true || id === "default" ? { isDefault: true } : {}),
+    upstreams:
+      upstreams.length > 0 || id !== "default"
+        ? upstreams
+        : defaults.upstreamGroups[0].upstreams,
+    ...(source.isDefault === true || id === "default"
+      ? { isDefault: true }
+      : {}),
   };
 }
 
-function normalizePath(value: unknown, index: number): StandardResolutionPath | null {
+function normalizePath(
+  value: unknown,
+  index: number,
+): StandardResolutionPath | null {
   const defaults = createDefaultStandardSettings();
   const source = asRecord(value);
   const id = cleanId(source.id, index === 0 ? "default" : `path_${index + 1}`);
@@ -160,7 +157,9 @@ function normalizePath(value: unknown, index: number): StandardResolutionPath | 
       ? source.filtering
       : "inherit";
   const cache =
-    source.cache === "enabled" || source.cache === "disabled" ? source.cache : "inherit";
+    source.cache === "enabled" || source.cache === "disabled"
+      ? source.cache
+      : "inherit";
   const queryLog =
     source.queryLog === "enabled" || source.queryLog === "disabled"
       ? source.queryLog
@@ -178,14 +177,16 @@ function normalizePath(value: unknown, index: number): StandardResolutionPath | 
       ? source.ipSelection
       : "inherit";
   const ecs =
-    source.ecs === "enabled" || source.ecs === "disabled" ? source.ecs : "inherit";
+    source.ecs === "enabled" || source.ecs === "disabled"
+      ? source.ecs
+      : "inherit";
   return {
     id,
     name: asString(source.name, id === "default" ? defaults.paths[0].name : id),
     ...(asString(source.description).trim()
       ? { description: asString(source.description).trim() }
       : {}),
-    upstreamGroupId: cleanId(source.upstreamGroupId, "default"),
+    upstreamGroupId: asString(source.upstreamGroupId).trim(),
     filtering,
     cache,
     queryLog,
@@ -201,9 +202,28 @@ function normalizeCache(value: unknown): StandardCacheSettings {
   return {
     enabled: asBoolean(source.enabled, defaults.enabled),
     size: Math.max(128, asNumber(source.size, defaults.size)),
-    minTtl: Math.max(0, asNumber(source.minTtl, defaults.minTtl)),
-    maxTtl: Math.max(0, asNumber(source.maxTtl, defaults.maxTtl)),
-    negativeTtl: Math.max(0, asNumber(source.negativeTtl, defaults.negativeTtl)),
+    minPositiveTtl: Math.max(
+      0,
+      asNumber(source.minPositiveTtl ?? source.minTtl, defaults.minPositiveTtl),
+    ),
+    maxPositiveTtl: Math.max(
+      0,
+      asNumber(source.maxPositiveTtl ?? source.maxTtl, defaults.maxPositiveTtl),
+    ),
+    maxNegativeTtl: Math.max(
+      0,
+      asNumber(
+        source.maxNegativeTtl ?? source.negativeTtl,
+        defaults.maxNegativeTtl,
+      ),
+    ),
+    negativeTtlWithoutSoa: Math.max(
+      0,
+      asNumber(
+        source.negativeTtlWithoutSoa ?? source.negativeTtl,
+        defaults.negativeTtlWithoutSoa,
+      ),
+    ),
   };
 }
 
@@ -212,7 +232,10 @@ function normalizeQueryLog(value: unknown): StandardQueryLogSettings {
   const source = asRecord(value);
   return {
     enabled: asBoolean(source.enabled, defaults.enabled),
-    retentionDays: Math.max(1, asNumber(source.retentionDays, defaults.retentionDays)),
+    retentionDays: Math.max(
+      1,
+      asNumber(source.retentionDays, defaults.retentionDays),
+    ),
     sampleRate: Math.min(
       1,
       Math.max(0, asNumber(source.sampleRate, defaults.sampleRate)),
@@ -271,7 +294,10 @@ function normalizeRouting(value: unknown): StandardRoutingSettings {
   };
 }
 
-function normalizeRoutingRule(value: unknown, index: number): StandardRoutingRule | null {
+function normalizeRoutingRule(
+  value: unknown,
+  index: number,
+): StandardRoutingRule | null {
   const source = asRecord(value);
   const condition = normalizeRuleCondition(source.condition);
   const action = normalizeRuleAction(source.action);
@@ -286,7 +312,9 @@ function normalizeRoutingRule(value: unknown, index: number): StandardRoutingRul
       source.source === "scenario" || source.source === "subscription"
         ? source.source
         : "manual",
-    ...(asString(source.note).trim() ? { note: asString(source.note).trim() } : {}),
+    ...(asString(source.note).trim()
+      ? { note: asString(source.note).trim() }
+      : {}),
   };
 }
 
@@ -312,10 +340,12 @@ function normalizeRuleCondition(
   return null;
 }
 
-function normalizeRuleAction(value: unknown): StandardRoutingRule["action"] | null {
+function normalizeRuleAction(
+  value: unknown,
+): StandardRoutingRule["action"] | null {
   const source = asRecord(value);
   if (source.type === "use_path") {
-    return { type: "use_path", pathId: cleanId(source.pathId, "default") };
+    return { type: "use_path", pathId: asString(source.pathId).trim() };
   }
   if (
     source.type === "use_default_path" ||
@@ -331,7 +361,10 @@ function normalizeRuleAction(value: unknown): StandardRoutingRule["action"] | nu
   return null;
 }
 
-function normalizeScenario(value: unknown, index: number): StandardScenario | null {
+function normalizeScenario(
+  value: unknown,
+  index: number,
+): StandardScenario | null {
   const source = asRecord(value);
   if (
     source.kind !== "privacy" &&
@@ -363,11 +396,16 @@ function normalizeException(
     enabled: asBoolean(source.enabled, true),
     condition,
     action,
-    ...(asString(source.note).trim() ? { note: asString(source.note).trim() } : {}),
+    ...(asString(source.note).trim()
+      ? { note: asString(source.note).trim() }
+      : {}),
   };
 }
 
-function normalizeDevice(value: unknown, index: number): StandardDeviceProfile | null {
+function normalizeDevice(
+  value: unknown,
+  index: number,
+): StandardDeviceProfile | null {
   const source = asRecord(value);
   const addresses = asStringArray(source.addresses);
   if (addresses.length === 0) return null;
@@ -388,7 +426,7 @@ function normalizeDevice(value: unknown, index: number): StandardDeviceProfile |
     name: asString(source.name, `Device ${index + 1}`),
     addresses,
     ...(asString(source.assignedPathId).trim()
-      ? { assignedPathId: cleanId(source.assignedPathId, "default") }
+      ? { assignedPathId: asString(source.assignedPathId).trim() }
       : {}),
     ...(filtering ? { filtering } : {}),
     ...(queryLog ? { queryLog } : {}),
@@ -414,57 +452,79 @@ function normalizeSystem(value: unknown): StandardSystemSettings {
   };
 }
 
-export function normalizeStandardSettings(value: unknown): StandardSettingsLoadResult {
+export function normalizeStandardSettings(
+  value: unknown,
+): StandardSettingsLoadResult {
   const source = asRecord(value);
   if (source.schema === 1) {
-    return { settings: migrateLegacyStandardSettings(source), notice: "legacy_migrated" };
+    return {
+      settings: migrateLegacyStandardSettings(source),
+      notice: "legacy_migrated",
+    };
   }
-  if (source.schema !== 2) {
-    return { settings: createDefaultStandardSettings(), notice: "invalid_fallback" };
+  if (source.schema !== 2 && source.schema !== 3) {
+    return {
+      settings: createDefaultStandardSettings(),
+      notice: "invalid_fallback",
+    };
   }
 
   const upstreamGroups = Array.isArray(source.upstreamGroups)
-    ? uniqueById(
-        source.upstreamGroups
-          .map(normalizeUpstreamGroup)
-          .filter((item): item is StandardUpstreamGroup => item !== null),
-      )
+    ? source.upstreamGroups
+        .map(normalizeUpstreamGroup)
+        .filter((item): item is StandardUpstreamGroup => item !== null)
     : [];
   const paths = Array.isArray(source.paths)
-    ? uniqueById(
-        source.paths
-          .map(normalizePath)
-          .filter((item): item is StandardResolutionPath => item !== null),
-      )
+    ? source.paths
+        .map(normalizePath)
+        .filter((item): item is StandardResolutionPath => item !== null)
     : [];
   if (upstreamGroups.length === 0 || paths.length === 0) {
-    return { settings: createDefaultStandardSettings(), notice: "invalid_fallback" };
+    return {
+      settings: createDefaultStandardSettings(),
+      notice: "invalid_fallback",
+    };
   }
 
-  const groupIds = new Set(upstreamGroups.map((item) => item.id));
-  const normalizedPaths = paths.map((path) => ({
-    ...path,
-    upstreamGroupId: groupIds.has(path.upstreamGroupId)
-      ? path.upstreamGroupId
-      : upstreamGroups[0].id,
-  }));
+  const migratedFromV2 = source.schema === 2;
+  const defaultGroupIndex = migratedFromV2
+    ? Math.max(
+        0,
+        upstreamGroups.findIndex(
+          (group) => group.isDefault || group.id === "default",
+        ),
+      )
+    : -1;
   return {
     settings: {
-      schema: 2,
+      schema: 3,
       listen: {
         address: asString(asRecord(source.listen).address, "0.0.0.0:5335"),
         udp: asBoolean(asRecord(source.listen).udp, true),
         tcp: asBoolean(asRecord(source.listen).tcp, true),
       },
-      upstreamGroups: upstreamGroups.map((group, index) => ({
-        ...group,
-        isDefault: index === 0 || group.id === "default" ? true : group.isDefault,
-      })),
-      paths: normalizedPaths,
+      upstreamGroups: migratedFromV2
+        ? upstreamGroups.map((group, index) => ({
+            ...group,
+            isDefault: index === defaultGroupIndex,
+          }))
+        : upstreamGroups,
+      paths: migratedFromV2
+        ? paths.map((path) => ({
+            ...path,
+            dualStack: "inherit",
+            ipSelection: "inherit",
+            ecs: "inherit",
+          }))
+        : paths,
       filtering: normalizeFiltering(source.filtering),
       cache: normalizeCache(source.cache),
-      queryLog: normalizeQueryLog(source.queryLog),
-      routing: normalizeRouting(source.routing),
+      queryLog: migratedFromV2
+        ? { ...normalizeQueryLog(source.queryLog), sampleRate: 1 }
+        : normalizeQueryLog(source.queryLog),
+      routing: migratedFromV2
+        ? { ...normalizeRouting(source.routing), scenarios: [] }
+        : normalizeRouting(source.routing),
       exceptions: Array.isArray(source.exceptions)
         ? source.exceptions
             .map(normalizeException)
@@ -477,11 +537,13 @@ export function normalizeStandardSettings(value: unknown): StandardSettingsLoadR
         : [],
       system: normalizeSystem(source.system),
     },
-    notice: null,
+    notice: migratedFromV2 ? "legacy_migrated" : null,
   };
 }
 
-export function migrateLegacyStandardSettings(value: unknown): StandardModeSettings {
+export function migrateLegacyStandardSettings(
+  value: unknown,
+): StandardModeSettings {
   const defaults = createDefaultStandardSettings();
   const source = asRecord(value);
   const legacyUpstreams = Array.isArray(source.upstreams)
@@ -499,7 +561,10 @@ export function migrateLegacyStandardSettings(value: unknown): StandardModeSetti
   const upstreamGroups: StandardUpstreamGroup[] = [
     {
       ...defaults.upstreamGroups[0],
-      upstreams: legacyUpstreams.length > 0 ? legacyUpstreams : defaults.upstreamGroups[0].upstreams,
+      upstreams:
+        legacyUpstreams.length > 0
+          ? legacyUpstreams
+          : defaults.upstreamGroups[0].upstreams,
     },
   ];
   const paths: StandardResolutionPath[] = [defaults.paths[0]];
@@ -507,7 +572,7 @@ export function migrateLegacyStandardSettings(value: unknown): StandardModeSetti
     upstreamGroups.push({
       id: "domestic",
       name: "Domestic upstream group",
-      strategy: "parallel",
+      strategy: "balanced",
       upstreams: domesticUpstreams,
     });
     paths.push({
@@ -528,7 +593,10 @@ export function migrateLegacyStandardSettings(value: unknown): StandardModeSetti
   return {
     ...defaults,
     listen: {
-      address: asString(asRecord(source.listen).address, defaults.listen.address),
+      address: asString(
+        asRecord(source.listen).address,
+        defaults.listen.address,
+      ),
       udp: asBoolean(asRecord(source.listen).udp, defaults.listen.udp),
       tcp: asBoolean(asRecord(source.listen).tcp, defaults.listen.tcp),
     },
@@ -561,37 +629,6 @@ function normalizeLegacyUpstream(
       : {}),
     tlsVerify: true,
   };
-}
-
-export function computeStandardSettingsRevision(
-  settings: StandardModeSettings,
-): string {
-  return hashString(stableStringify(settings));
-}
-
-export function buildStandardGeneratedMetadata(
-  settings: StandardModeSettings,
-  result: StandardGenerationResult,
-  configVersion: string | null,
-): StandardGeneratedMetadata {
-  return {
-    configVersion,
-    settingsRevision: computeStandardSettingsRevision(settings),
-    generatedTags: result.generatedTags,
-    tagMap: result.tagMap,
-    summary: result.summary,
-    generatedAtMs: Date.now(),
-  };
-}
-
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
-    .join(",")}}`;
 }
 
 function hashString(value: string): string {

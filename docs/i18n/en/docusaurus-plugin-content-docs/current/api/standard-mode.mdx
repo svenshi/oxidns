@@ -1,0 +1,91 @@
+---
+title: Standard Mode Plan/Apply
+---
+
+The Standard Mode API compiles user intent into complete OxiDNS YAML and applies it as a recoverable transaction. It only manages OxiDNS configuration; it does not modify OS DNS, firewalls, OpenWrt/UCI, or third-party proxy systems.
+
+All routes use the management API `/api` prefix and inherit its TLS, Basic Auth, and CORS policy.
+
+## `POST /api/standard/plan`
+
+This read-only endpoint performs schema migration, normalization, semantic and capability validation, YAML generation, backend configuration preflight, ownership analysis, and takeover diff calculation. It does not write files or trigger reload.
+
+```json
+{
+  "intent": { "schema": 3, "listen": {}, "upstreamGroups": [] },
+  "base_config_version": "sha256-hex",
+  "base_standard_version": "sha256-hex",
+  "takeover": false
+}
+```
+
+The two base versions are optional for preview. When supplied and stale, they appear as conflicts in `blockers`. `takeover` acknowledges ownership only and does not make Plan mutate state.
+
+Important response fields:
+
+| Field | Meaning |
+| --- | --- |
+| `ownership` | `managed`, `modified`, or `unmanaged` |
+| `semantic_diff` | Preserved top-level fields and generated, replaced, or removed plugin tags |
+| `blockers` | Control-plane blockers such as version conflicts or required takeover |
+| `plan.normalizedIntent` | Backend-migrated and normalized schema v3 intent |
+| `plan.diagnostics` | Semantic diagnostics with stable `severity`, `code`, and `path` |
+| `plan.generated` | Candidate YAML, version, tag map, and summary; absent on errors |
+| `can_apply` | `true` only when both the plan and control-plane checks pass |
+
+Missing required plugins, invalid references, duplicate IDs/tags, invalid TTL ranges, and active ECS, dual-stack selection, IP selection, log sampling, or scenario values that are not available in this phase block apply. Missing optional metrics support only produces a warning.
+
+## `POST /api/standard/apply`
+
+Apply reruns the complete plan, verifies both base versions and the reviewed candidate version, writes a recovery journal, stages candidate DNS YAML, and requests a runtime reload.
+
+```json
+{
+  "intent": { "schema": 3, "listen": {}, "upstreamGroups": [] },
+  "base_config_version": "plan-response-config-version",
+  "base_standard_version": "plan-response-standard-version",
+  "planned_config_version": "plan-generated-config-version",
+  "takeover": true
+}
+```
+
+A successful request returns `202 Accepted`:
+
+```json
+{
+  "ok": true,
+  "transaction_id": "standard-...",
+  "status": "pending",
+  "target_config_version": "sha256-hex"
+}
+```
+
+Clients must poll transaction status. Standard state and generated metadata are committed only after the candidate runtime assembles successfully. Assembly failure restores the previous DNS file, Standard state, and runtime. If the process is interrupted, the next startup restores the complete old state before normal configuration loading.
+
+Status codes:
+
+* `400 Bad Request`: the request or Standard intent cannot be decoded.
+* `409 Conflict`: a base version is stale, the candidate differs from the reviewed plan, takeover confirmation is missing, or another transaction/reload is active.
+* `500 Internal Server Error`: capability discovery, file staging, or the reload request failed.
+
+The journal may contain sensitive configuration fields. OxiDNS bounds its size and writes it with mode `0600` on Unix beside the configuration file. Do not include the journal in public diagnostic bundles.
+
+## `GET /api/standard/apply/status`
+
+Returns the current pending transaction, or the most recent completed record when none is pending:
+
+```json
+{
+  "ok": true,
+  "transaction": {
+    "schema": 1,
+    "transaction_id": "standard-...",
+    "status": "succeeded",
+    "completed_at_ms": 1760000000000,
+    "previous_config_version": "sha256-hex",
+    "candidate_config_version": "sha256-hex"
+  }
+}
+```
+
+`status` is `pending`, `succeeded`, `failed`, or `recovered`. Failure text is bounded; candidate YAML and Standard intent are never returned by this endpoint.

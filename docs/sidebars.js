@@ -103,6 +103,7 @@ const sidebars = {
             'api/conventions',
             'api/control',
             'api/configuration',
+            'api/standard-mode',
             'api/plugins',
             'api/metrics',
           ],

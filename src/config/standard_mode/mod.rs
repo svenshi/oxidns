@@ -1,0 +1,24 @@
+// SPDX-FileCopyrightText: 2025 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Canonical Standard Mode intent, validation, and configuration compilation.
+//!
+//! Standard Mode is a control-plane compiler. It never participates in the DNS
+//! request path and does not perform filesystem or runtime lifecycle work.
+
+mod compiler;
+mod migration;
+mod model;
+mod validation;
+
+pub use compiler::{StandardCapabilities, compile_standard_intent};
+pub use migration::{StandardIntentDecodeError, decode_standard_intent};
+pub use model::{
+    CURRENT_STANDARD_SCHEMA, StandardDiagnostic, StandardDiagnosticSeverity,
+    StandardGeneratedConfig, StandardGenerationSummary, StandardIntent, StandardMigration,
+    StandardPlan, StandardTagMap,
+};
+pub use validation::{normalize_standard_intent, validate_standard_intent};
+
+#[cfg(test)]
+mod tests;

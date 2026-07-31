@@ -122,6 +122,37 @@ export const enUSWebui = {
     devicesMetric: "Devices",
     assignedDevicesMetric: "Assigned paths",
   },
+  standardSystem: {
+    title: "Standard Mode system settings",
+    description:
+      "This page only controls OxiDNS logging and worker threads. It does not modify OS DNS, firewalls, or third-party services.",
+    saveApply: "Save and apply",
+    savingApplying: "Saving and applying",
+    runtimeTitle: "OxiDNS runtime",
+    logLevel: "Log level",
+    workerThreads: "Worker threads",
+    workerThreadsAuto: "Auto",
+    workerThreadsHint:
+      "Leave empty to let OxiDNS choose from the available CPUs.",
+  },
+  standardApplyReview: {
+    title: "Review Standard Mode apply plan",
+    managedDescription:
+      "Backend semantic validation passed. Confirm to update the files and reload the runtime as one transaction.",
+    takeoverDescription:
+      "The current configuration is not fully managed by Standard Mode. Continuing takes ownership of plugin orchestration and replaces the listed plugins.",
+    ownership: "Configuration ownership",
+    ownershipManaged: "Managed by Standard Mode",
+    ownershipModified: "Managed, then modified",
+    ownershipUnmanaged: "Unmanaged",
+    generated: "Generate {count} plugins",
+    replaced: "Replace {count} matching tags",
+    removed: "Remove {count} existing plugins",
+    preserved: "Preserve: {items}",
+    diagnostics: "Backend diagnostics",
+    apply: "Confirm and apply",
+    takeover: "Confirm takeover and apply",
+  },
   standardDns: {
     title: "DNS & Upstreams",
     description:
@@ -135,7 +166,8 @@ export const enUSWebui = {
     udp: "UDP",
     tcp: "TCP",
     upstreamsTitle: "Default upstream group",
-    upstreamsDescription: "The default resolution path uses the enabled upstreams here.",
+    upstreamsDescription:
+      "The default resolution path uses the enabled upstreams here.",
     addUpstream: "Add upstream",
     removeUpstream: "Remove upstream",
     upstreamName: "Name",
@@ -178,11 +210,11 @@ export const enUSWebui = {
     minTtl: "Minimum TTL",
     maxTtl: "Maximum TTL",
     negativeTtl: "Negative TTL",
+    negativeTtlWithoutSoa: "Negative TTL without SOA",
     queryLogTitle: "Query log",
     queryLogUnsupported: "This build does not support query_recorder",
     queryLogEnabled: "Enable query log",
     retentionDays: "Retention days",
-    sampleRate: "Sample rate",
     validationTitle: "Before saving",
     validationListenRequired: "Enable at least UDP or TCP listener.",
     validationUpstreamRequired:
@@ -325,8 +357,7 @@ export const enUSWebui = {
     validationRuleNameRequired: "Enabled rules need a name.",
     validationRuleConditionRequired:
       "Enabled rules need at least one condition value.",
-    validationRuleActionRequired:
-      "Enabled rules need an existing target path.",
+    validationRuleActionRequired: "Enabled rules need an existing target path.",
     validationRuleActionUnsupported:
       "This rule action belongs to a later phase and cannot be saved as runtime config yet.",
     validationRuleConditionUnsupported:
@@ -1256,6 +1287,21 @@ export const enUSWebui = {
     unnamedOfflineConfig: "Unnamed config (offline)",
     readConfigFailed: "Failed to read config file",
     saveConfigFailed: "Failed to save config file",
+    standardRequiresBackend:
+      "Standard Mode requires a connected OxiDNS backend",
+    standardApplyIsAtomic:
+      "Standard Mode settings and runtime configuration must be applied atomically",
+    standardStateNotLoaded:
+      "Standard Mode state is not loaded; refresh and retry",
+    standardApplyCancelled: "Standard Mode apply was cancelled",
+    standardPlanMissingConfig:
+      "The Standard Mode plan has no generated configuration",
+    standardPlanRejected: "The Standard Mode plan failed backend validation",
+    standardApplyFailed: "The Standard Mode transaction failed",
+    standardApplyTimedOut:
+      "Timed out waiting for the Standard Mode transaction",
+    standardApplyRefreshMismatch:
+      "The transaction completed, but the WebUI did not load the target version. Refresh and check runtime status.",
     hotReloadTriggerFailed: "Apply failed: unable to trigger hot reload",
     hotReloadNotSuccessful: "Apply failed: hot reload did not complete",
     restartFailed: "Restart failed",

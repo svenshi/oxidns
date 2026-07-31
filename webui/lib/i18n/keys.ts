@@ -103,13 +103,41 @@ export const WEBUI = {
     enabledRulesMetric: "webui.standardShell.enabledRulesMetric",
     exceptionsDescription: "webui.standardShell.exceptionsDescription",
     exceptionsEmptyTitle: "webui.standardShell.exceptionsEmptyTitle",
-    exceptionsEmptyDescription: "webui.standardShell.exceptionsEmptyDescription",
+    exceptionsEmptyDescription:
+      "webui.standardShell.exceptionsEmptyDescription",
     exceptionsMetric: "webui.standardShell.exceptionsMetric",
     devicesDescription: "webui.standardShell.devicesDescription",
     devicesEmptyTitle: "webui.standardShell.devicesEmptyTitle",
     devicesEmptyDescription: "webui.standardShell.devicesEmptyDescription",
     devicesMetric: "webui.standardShell.devicesMetric",
     assignedDevicesMetric: "webui.standardShell.assignedDevicesMetric",
+  },
+  standardSystem: {
+    title: "webui.standardSystem.title",
+    description: "webui.standardSystem.description",
+    saveApply: "webui.standardSystem.saveApply",
+    savingApplying: "webui.standardSystem.savingApplying",
+    runtimeTitle: "webui.standardSystem.runtimeTitle",
+    logLevel: "webui.standardSystem.logLevel",
+    workerThreads: "webui.standardSystem.workerThreads",
+    workerThreadsAuto: "webui.standardSystem.workerThreadsAuto",
+    workerThreadsHint: "webui.standardSystem.workerThreadsHint",
+  },
+  standardApplyReview: {
+    title: "webui.standardApplyReview.title",
+    managedDescription: "webui.standardApplyReview.managedDescription",
+    takeoverDescription: "webui.standardApplyReview.takeoverDescription",
+    ownership: "webui.standardApplyReview.ownership",
+    ownershipManaged: "webui.standardApplyReview.ownershipManaged",
+    ownershipModified: "webui.standardApplyReview.ownershipModified",
+    ownershipUnmanaged: "webui.standardApplyReview.ownershipUnmanaged",
+    generated: "webui.standardApplyReview.generated",
+    replaced: "webui.standardApplyReview.replaced",
+    removed: "webui.standardApplyReview.removed",
+    preserved: "webui.standardApplyReview.preserved",
+    diagnostics: "webui.standardApplyReview.diagnostics",
+    apply: "webui.standardApplyReview.apply",
+    takeover: "webui.standardApplyReview.takeover",
   },
   standardDns: {
     title: "webui.standardDns.title",
@@ -164,11 +192,11 @@ export const WEBUI = {
     minTtl: "webui.standardDns.minTtl",
     maxTtl: "webui.standardDns.maxTtl",
     negativeTtl: "webui.standardDns.negativeTtl",
+    negativeTtlWithoutSoa: "webui.standardDns.negativeTtlWithoutSoa",
     queryLogTitle: "webui.standardDns.queryLogTitle",
     queryLogUnsupported: "webui.standardDns.queryLogUnsupported",
     queryLogEnabled: "webui.standardDns.queryLogEnabled",
     retentionDays: "webui.standardDns.retentionDays",
-    sampleRate: "webui.standardDns.sampleRate",
     validationTitle: "webui.standardDns.validationTitle",
     validationListenRequired: "webui.standardDns.validationListenRequired",
     validationUpstreamRequired: "webui.standardDns.validationUpstreamRequired",
@@ -205,8 +233,7 @@ export const WEBUI = {
     subscriptionUrl: "webui.standardFiltering.subscriptionUrl",
     subscriptionInterval: "webui.standardFiltering.subscriptionInterval",
     refreshSubscriptions: "webui.standardFiltering.refreshSubscriptions",
-    subscriptionStatusTitle:
-      "webui.standardFiltering.subscriptionStatusTitle",
+    subscriptionStatusTitle: "webui.standardFiltering.subscriptionStatusTitle",
     subscriptionStatusDescription:
       "webui.standardFiltering.subscriptionStatusDescription",
     subscriptionRuntimeNotApplied:
@@ -216,20 +243,16 @@ export const WEBUI = {
     subscriptionRefreshFailed:
       "webui.standardFiltering.subscriptionRefreshFailed",
     subscriptionFile: "webui.standardFiltering.subscriptionFile",
-    subscriptionFileMissing:
-      "webui.standardFiltering.subscriptionFileMissing",
+    subscriptionFileMissing: "webui.standardFiltering.subscriptionFileMissing",
     subscriptionFileSize: "webui.standardFiltering.subscriptionFileSize",
     subscriptionFileModified:
       "webui.standardFiltering.subscriptionFileModified",
-    subscriptionLastSuccess:
-      "webui.standardFiltering.subscriptionLastSuccess",
+    subscriptionLastSuccess: "webui.standardFiltering.subscriptionLastSuccess",
     subscriptionLastError: "webui.standardFiltering.subscriptionLastError",
     providerTotalRules: "webui.standardFiltering.providerTotalRules",
-    providerSupportedRules:
-      "webui.standardFiltering.providerSupportedRules",
+    providerSupportedRules: "webui.standardFiltering.providerSupportedRules",
     providerSkippedRules: "webui.standardFiltering.providerSkippedRules",
-    providerExceptionRules:
-      "webui.standardFiltering.providerExceptionRules",
+    providerExceptionRules: "webui.standardFiltering.providerExceptionRules",
     cronNextRun: "webui.standardFiltering.cronNextRun",
     cronLastSuccess: "webui.standardFiltering.cronLastSuccess",
     statsTitle: "webui.standardFiltering.statsTitle",
@@ -268,8 +291,7 @@ export const WEBUI = {
     scenariosDescription: "webui.standardRouting.scenariosDescription",
     scenarioPrivacy: "webui.standardRouting.scenarioPrivacy",
     scenarioGaming: "webui.standardRouting.scenarioGaming",
-    scenarioChildProtection:
-      "webui.standardRouting.scenarioChildProtection",
+    scenarioChildProtection: "webui.standardRouting.scenarioChildProtection",
     scenarioDomesticOptimization:
       "webui.standardRouting.scenarioDomesticOptimization",
     pathsTitle: "webui.standardRouting.pathsTitle",
@@ -375,8 +397,7 @@ export const WEBUI = {
     validationTitle: "webui.standardExceptions.validationTitle",
     validationCapabilityRequired:
       "webui.standardExceptions.validationCapabilityRequired",
-    validationNameRequired:
-      "webui.standardExceptions.validationNameRequired",
+    validationNameRequired: "webui.standardExceptions.validationNameRequired",
     validationConditionRequired:
       "webui.standardExceptions.validationConditionRequired",
     validationActionRequired:
@@ -491,7 +512,8 @@ export const WEBUI = {
     validationCapabilityRequired:
       "webui.standardDevices.validationCapabilityRequired",
     validationNameRequired: "webui.standardDevices.validationNameRequired",
-    validationAddressRequired: "webui.standardDevices.validationAddressRequired",
+    validationAddressRequired:
+      "webui.standardDevices.validationAddressRequired",
     validationAddressInvalid: "webui.standardDevices.validationAddressInvalid",
     validationPathRequired: "webui.standardDevices.validationPathRequired",
     validationFilteringCapabilityRequired:
@@ -1276,6 +1298,16 @@ export const WEBUI = {
     unnamedOfflineConfig: "webui.storeErrors.unnamedOfflineConfig",
     readConfigFailed: "webui.storeErrors.readConfigFailed",
     saveConfigFailed: "webui.storeErrors.saveConfigFailed",
+    standardRequiresBackend: "webui.storeErrors.standardRequiresBackend",
+    standardApplyIsAtomic: "webui.storeErrors.standardApplyIsAtomic",
+    standardStateNotLoaded: "webui.storeErrors.standardStateNotLoaded",
+    standardApplyCancelled: "webui.storeErrors.standardApplyCancelled",
+    standardPlanMissingConfig: "webui.storeErrors.standardPlanMissingConfig",
+    standardPlanRejected: "webui.storeErrors.standardPlanRejected",
+    standardApplyFailed: "webui.storeErrors.standardApplyFailed",
+    standardApplyTimedOut: "webui.storeErrors.standardApplyTimedOut",
+    standardApplyRefreshMismatch:
+      "webui.storeErrors.standardApplyRefreshMismatch",
     hotReloadTriggerFailed: "webui.storeErrors.hotReloadTriggerFailed",
     hotReloadNotSuccessful: "webui.storeErrors.hotReloadNotSuccessful",
     restartFailed: "webui.storeErrors.restartFailed",

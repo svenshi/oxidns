@@ -1,5 +1,3 @@
-import type { OxiDnsConfig } from "../oxidns-config";
-
 export type StandardUpstreamProtocol =
   | "auto"
   | "udp"
@@ -19,7 +17,12 @@ export interface StandardUpstreamGroup {
   id: string;
   name: string;
   description?: string;
-  strategy: "parallel" | "sequential" | "fastest";
+  strategy:
+    | "fastest"
+    | "balanced"
+    | "prefer_positive"
+    | "consensus"
+    | "ordered_fallback";
   upstreams: StandardUpstream[];
   isDefault?: boolean;
 }
@@ -59,9 +62,10 @@ export interface StandardResolutionPath {
 export interface StandardCacheSettings {
   enabled: boolean;
   size: number;
-  minTtl: number;
-  maxTtl: number;
-  negativeTtl: number;
+  minPositiveTtl: number;
+  maxPositiveTtl: number;
+  maxNegativeTtl: number;
+  negativeTtlWithoutSoa: number;
 }
 
 export interface StandardQueryLogSettings {
@@ -152,7 +156,7 @@ export interface StandardSystemSettings {
 }
 
 export interface StandardModeSettings {
-  schema: 2;
+  schema: 3;
   listen: StandardListenSettings;
   upstreamGroups: StandardUpstreamGroup[];
   paths: StandardResolutionPath[];
@@ -167,6 +171,8 @@ export interface StandardModeSettings {
 
 export interface StandardTagMap {
   system: string[];
+  caches?: Record<string, string>;
+  /** Legacy frontend-generated metadata, readable during the v2 transition. */
   cache?: string;
   queryLog?: string;
   filtering?: string[];
@@ -196,12 +202,90 @@ export interface StandardGeneratedMetadata {
   tagMap: StandardTagMap;
   summary: StandardGenerationSummary;
   generatedAtMs: number;
+  transactionId?: string;
 }
 
-export interface StandardGenerationResult {
-  config: OxiDnsConfig;
-  skippedCapabilities: string[];
+export type StandardDiagnosticSeverity = "error" | "warning" | "suggestion";
+
+export interface StandardDiagnostic {
+  severity: StandardDiagnosticSeverity;
+  code: string;
+  path: string;
+  message: string;
+}
+
+export type StandardOwnership = "managed" | "modified" | "unmanaged";
+
+export interface StandardSemanticDiff {
+  preserved_top_level: string[];
+  generated_plugin_tags: string[];
+  replaced_plugin_tags: string[];
+  removed_plugin_tags: string[];
+}
+
+export interface StandardApplyBlocker {
+  code: string;
+  path: string;
+  message: string;
+}
+
+export interface StandardGeneratedPlan {
+  yaml: string;
+  configVersion: string;
+  pluginCount: number;
   generatedTags: string[];
   tagMap: StandardTagMap;
   summary: StandardGenerationSummary;
+}
+
+export interface StandardPolicyPlan {
+  normalizedIntent: StandardModeSettings;
+  diagnostics: StandardDiagnostic[];
+  generated?: StandardGeneratedPlan;
+  canApply: boolean;
+  migration?: {
+    from_schema: number;
+    to_schema: number;
+    diagnostics: StandardDiagnostic[];
+  };
+  details: Record<string, unknown>;
+}
+
+export interface StandardPlanResponse {
+  ok: boolean;
+  config_version: string;
+  standard_version: string;
+  ownership: StandardOwnership;
+  semantic_diff: StandardSemanticDiff;
+  blockers: StandardApplyBlocker[];
+  can_apply: boolean;
+  plan: StandardPolicyPlan;
+}
+
+export type StandardTransactionStatus =
+  | "pending"
+  | "succeeded"
+  | "failed"
+  | "recovered";
+
+export interface StandardApplyResponse {
+  ok: boolean;
+  transaction_id: string;
+  status: StandardTransactionStatus;
+  target_config_version: string;
+}
+
+export interface StandardTransactionRecord {
+  schema: number;
+  transaction_id: string;
+  status: StandardTransactionStatus;
+  completed_at_ms: number;
+  previous_config_version: string;
+  candidate_config_version: string;
+  error?: string;
+}
+
+export interface StandardTransactionStatusResponse {
+  ok: boolean;
+  transaction?: StandardTransactionRecord;
 }
