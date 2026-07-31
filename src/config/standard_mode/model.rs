@@ -1293,6 +1293,8 @@ pub struct StandardTagMap {
     pub filter_subscriptions: BTreeMap<String, StandardSubscriptionTagMap>,
     pub local: BTreeMap<String, String>,
     pub upstream_groups: BTreeMap<String, String>,
+    #[serde(default)]
+    pub upstream_members: BTreeMap<String, BTreeMap<String, String>>,
     pub paths: BTreeMap<String, String>,
     pub routing_rules: BTreeMap<String, String>,
     pub exception_rules: BTreeMap<String, String>,
@@ -1303,6 +1305,72 @@ pub struct StandardTagMap {
     pub dedicated_groups: BTreeMap<String, StandardDedicatedTagMap>,
     pub dynamic_learning: BTreeMap<String, StandardDynamicLearningTagMap>,
     pub advanced_rules: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardIntentMapping {
+    pub intent_path: String,
+    pub category: String,
+    pub stable_id: String,
+    pub generated_tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardPriorityRow {
+    pub ordinal: usize,
+    pub slot: u8,
+    pub category: String,
+    pub stable_id: String,
+    pub phase: String,
+    pub matcher_tags: Vec<String>,
+    pub action_tag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_path_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardPathBoundary {
+    pub path_id: String,
+    pub path_tag: String,
+    pub upstream_group_id: String,
+    pub upstream_group_tag: String,
+    pub upstream_member_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_tag: Option<String>,
+    pub cache_namespace: String,
+    pub cache_enabled: bool,
+    pub ecs_mode: String,
+    pub ecs_in_key: bool,
+    pub filtering_enabled: bool,
+    pub query_log_enabled: bool,
+    pub dual_stack: String,
+    pub ip_selection_enabled: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardCapabilityExplanation {
+    pub features: Vec<String>,
+    pub servers: Vec<String>,
+    pub executors: Vec<String>,
+    pub matchers: Vec<String>,
+    pub providers: Vec<String>,
+    pub missing_optional: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandardCompilationExplanation {
+    pub schema: u8,
+    pub intent_revision: String,
+    pub mappings: Vec<StandardIntentMapping>,
+    pub final_priority: Vec<StandardPriorityRow>,
+    pub path_boundaries: Vec<StandardPathBoundary>,
+    pub generated_tags: Vec<String>,
+    pub capabilities: StandardCapabilityExplanation,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1369,6 +1437,7 @@ pub struct StandardGeneratedConfig {
     pub generated_tags: Vec<String>,
     pub tag_map: StandardTagMap,
     pub summary: StandardGenerationSummary,
+    pub explanation: StandardCompilationExplanation,
     #[serde(default)]
     pub managed_files: Vec<String>,
 }

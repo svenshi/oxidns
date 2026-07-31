@@ -123,6 +123,14 @@ export const enUSWebui = {
     remove: "Remove",
     previewObjects: "Objects added",
     nativeBoundary: "These policies only generate native OxiDNS configuration and never modify OpenWrt, system DNS, DHCP, firewall, or third-party controllers.",
+    saveTemplateLocal: "Save template locally",
+    savedAssetBoundary:
+      "Saved assets are local, versioned, bounded, and never sent to a template service.",
+    encryptedUpstreamUrl: "Encrypted upstream URL",
+    savedTemplates: "Saved templates",
+    loadTemplate: "Load",
+    duplicateTemplate: "Duplicate",
+    deleteTemplate: "Delete",
   },
   standardLocal: {
     title: "Local DNS Policies",
@@ -226,6 +234,24 @@ export const enUSWebui = {
     historyRestoreSuccess: "Historical configuration restored transactionally.",
     historyEmpty:
       "No successfully applied Standard Mode history snapshots yet.",
+    assetsTitle: "Standard intent assets and Expert bridge",
+    assetsDescription:
+      "Import is migrated and planned before Apply. Expert copy and analysis are detached, read-only operations and never control the host system.",
+    exportIntent: "Export intent",
+    importPlan: "Import and Plan",
+    copyExpert: "Copy as Expert YAML",
+    analyzeExpert: "Analyze Expert YAML",
+    exportSuccess: "Standard intent exported with its stable revision.",
+    importSuccess: "Imported intent passed migration and Plan; review before Apply.",
+    expertCopySuccess:
+      "Detached Expert YAML downloaded; Standard ownership was not changed.",
+    expertAnalysisSuccess:
+      "Expert configuration analyzed read-only; no configuration was changed.",
+    intentRevision: "Intent revision:",
+    explanationSummary:
+      "{mappings} intent mappings · {rules} priority rules · {tags} generated tags",
+    expertSummary: "{plugins} plugins · {objects} Expert-only objects",
+    systemIntegrations: "System integrations detected (analysis only): {items}",
   },
   standardShell: {
     phase3SkeletonBadge: "Phase 3 shell",
@@ -285,6 +311,12 @@ export const enUSWebui = {
     overriddenBy: "Overridden by {id}",
     apply: "Confirm and apply",
     takeover: "Confirm takeover and apply",
+    semanticImpact: "Semantic impact",
+    compiledExplanation: "Compiled policy explanation",
+    cacheOff: "off",
+    isolatedKey: " (isolated key)",
+    missingOptional: "Missing optional capabilities: {items}",
+    yamlGraph: "Read-only YAML and dependency graph",
   },
   standardDns: {
     title: "DNS & Upstreams",
@@ -762,6 +794,15 @@ export const enUSWebui = {
     initialPath: "Initial path",
     finalPath: "Final path",
     responseValidation: "Response validation",
+    backendDiagnosis: "Backend diagnosis · schema {schema}",
+    noIntentRevision: "no intent revision",
+    revisionUnavailable:
+      "The matching Standard explanation is unavailable; raw bounded facts are shown without remapping to a newer intent.",
+    defaultPathReason: "Default path: {reason}",
+    notObserved: "not observed",
+    traceTruncated:
+      "Trace truncated; {count} events were dropped at the per-query hard limit.",
+    diagnosticFacts: "Recorded diagnostic facts",
     fallbackDecision: "Fallback decision",
     semanticRoleLabel: "Semantic role: {name}",
   },

@@ -95,7 +95,7 @@ plugins:
 
 完整的内置组件和配置字段见[插件参考](https://oxidns.org/plugin-reference/overview)。
 
-内置标准模式可把上游组、独立解析路径、智能分流、专属解析组、有界动态学习、高级请求/响应规则与场景模板编译为纯 OxiDNS 原生插件图；它不控制 OpenWrt、系统 DNS、DHCP、防火墙或第三方代理。详见[标准模式高级策略](https://oxidns.org/standard-mode-advanced)。
+内置标准模式可把上游组、独立解析路径、智能分流、专属解析组、有界动态学习、高级规则与场景模板编译为纯 OxiDNS 原生插件图，并提供编译解释、有界单查询诊断、语义 Diff、意图资产和安全回滚；它不控制 OpenWrt、系统 DNS、DHCP、防火墙或第三方代理。详见[标准模式运维解释](https://oxidns.org/standard-mode-operations)。
 
 ---
 

@@ -121,6 +121,8 @@ export interface StandardHistoryItem {
   settings_schema?: number | null;
   upstream_group_count: number;
   path_count: number;
+  intent_revision?: string;
+  summary?: unknown;
 }
 
 export interface StandardHistoryListResponse {
@@ -131,6 +133,36 @@ export interface StandardHistoryListResponse {
 export interface StandardHistoryRestoreResponse {
   ok: boolean;
   entry: StandardHistoryItem & { settings: StandardModeSettings };
+}
+
+export interface StandardAssetEnvelope {
+  assetSchema: number;
+  kind: "oxidns_standard_intent";
+  oxidnsVersion: string;
+  bundle: string;
+  intentSchema: number;
+  intentRevision: string;
+  intent: StandardModeSettings;
+  exportedAtMs: number;
+  name?: string;
+  description?: string;
+}
+
+export interface StandardSavedTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  kind: StandardTemplateKind;
+  parameters: StandardTemplateParameters;
+  sourceIntentSchema: number;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface StandardAssetStore {
+  schema: number;
+  version: string;
+  templates: StandardSavedTemplate[];
 }
 
 export class StandardPlanConflictError extends Error {
@@ -377,6 +409,9 @@ export interface QueryRecorderStep {
   kind: string;
   tag?: string;
   outcome: string;
+  offset_us?: number;
+  duration_us?: number;
+  detail?: Record<string, string>;
 }
 
 export interface QueryRecordRow {
@@ -401,6 +436,20 @@ export interface QueryRecordRow {
 
 export interface QueryRecordDetail extends QueryRecordRow {
   steps: QueryRecorderStep[];
+  diagnosis?: {
+    schema: number;
+    intentRevision?: string;
+    firstRuleMiss?: unknown;
+    defaultPathReason?: string;
+    fallback?: unknown;
+    cache?: unknown;
+    upstream?: unknown;
+    upstreamFailures?: unknown[];
+    final?: unknown;
+    stepsTruncated?: boolean;
+    droppedStepCount?: number;
+    explanationUnavailable?: boolean;
+  };
 }
 
 export interface QueryRecordsResponse {
@@ -855,6 +904,111 @@ export async function fetchStandardHistoryRestore(
     body: JSON.stringify({ id }),
   });
   return readJsonResponse<StandardHistoryRestoreResponse>(response);
+}
+
+export async function exportStandardAsset(): Promise<{
+  ok: boolean;
+  asset: StandardAssetEnvelope;
+}> {
+  const response = await fetch(apiUrl("/standard/assets/export"), {
+    method: "GET",
+    headers: apiHeaders(),
+  });
+  return readJsonResponse(response);
+}
+
+export async function importStandardAsset(
+  asset: StandardAssetEnvelope,
+  takeover = false,
+): Promise<{ ok: boolean; plan: StandardPlanResponse; intent_revision: string }> {
+  const response = await fetch(apiUrl("/standard/assets/import"), {
+    method: "POST",
+    headers: { ...apiHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ asset, takeover }),
+  });
+  return readJsonResponse(response);
+}
+
+export async function copyStandardToExpert(intent: StandardModeSettings): Promise<{
+  ok: boolean;
+  detached: boolean;
+  yaml: string;
+  configVersion: string;
+  intentRevision: string;
+  dependencyGraph: DependencyGraphReport;
+}> {
+  const response = await fetch(apiUrl("/standard/assets/expert-copy"), {
+    method: "POST",
+    headers: { ...apiHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ intent }),
+  });
+  return readJsonResponse(response);
+}
+
+export async function analyzeExpertConfig(yaml: string): Promise<{
+  ok: boolean;
+  readOnly: boolean;
+  pluginCount: number;
+  dependencyGraph: DependencyGraphReport;
+  expertOnlyObjects: Array<{ tag: string; pluginType: string; kind: string }>;
+  systemIntegrations: string[];
+  reverseConversion: { available: false; reason: string };
+}> {
+  const response = await fetch(apiUrl("/standard/assets/expert-analysis"), {
+    method: "POST",
+    headers: { ...apiHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ yaml }),
+  });
+  return readJsonResponse(response);
+}
+
+export async function fetchSavedStandardTemplates(): Promise<{
+  ok: boolean;
+  store: StandardAssetStore;
+}> {
+  const response = await fetch(apiUrl("/standard/assets/templates"), {
+    method: "GET",
+    headers: apiHeaders(),
+  });
+  return readJsonResponse(response);
+}
+
+export async function saveStandardTemplate(
+  template: StandardSavedTemplate,
+  expectedVersion?: string,
+): Promise<{ ok: boolean; store: StandardAssetStore }> {
+  const response = await fetch(apiUrl("/standard/assets/templates"), {
+    method: "POST",
+    headers: { ...apiHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ expectedVersion, template }),
+  });
+  return readJsonResponse(response);
+}
+
+export async function duplicateStandardTemplate(
+  id: string,
+  newId: string,
+  newName: string,
+  expectedVersion?: string,
+): Promise<{ ok: boolean; store: StandardAssetStore }> {
+  const response = await fetch(apiUrl("/standard/assets/templates/duplicate"), {
+    method: "POST",
+    headers: { ...apiHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ expectedVersion, id, newId, newName }),
+  });
+  return readJsonResponse(response);
+}
+
+export async function deleteStandardTemplate(
+  id: string,
+  expectedVersion?: string,
+): Promise<{ ok: boolean; store: StandardAssetStore }> {
+  const response = await fetch(apiUrl("/standard/assets/templates"), {
+    method: "DELETE",
+    headers: { ...apiHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ expectedVersion, id }),
+  });
+  return readJsonResponse(response);
 }
 
 export async function fetchHealth(): Promise<HealthResponse> {

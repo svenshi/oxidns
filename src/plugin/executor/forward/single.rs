@@ -8,7 +8,8 @@ use tracing::{info, warn};
 
 use super::is_timeout_error;
 use super::metrics::ForwardMetrics;
-use crate::core::context::DnsContext;
+use crate::core::context::{DnsContext, ExecutionPathEvent};
+use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::network::upstream::Upstream;
 use crate::infra::observability::metrics::{register_metric_source, unregister_metric_source};
@@ -57,16 +58,34 @@ impl Executor for SingleDnsForwarder {
     async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
         let start_ms = self.metrics.record_query_start();
         self.metrics.record_upstream_start(0);
+        let diagnostic_start = AppClock::elapsed_millis();
+        let member_tag = self
+            .upstream
+            .connection_info()
+            .tag
+            .clone()
+            .unwrap_or_else(|| "index:0".to_string());
         match self.upstream.query(context.request.clone()).await {
             Ok(res) => {
                 context.set_response(res);
                 self.metrics.record_success(start_ms);
                 self.metrics.record_upstream_success(0, start_ms);
+                self.record_attempt(context, member_tag, "selected", diagnostic_start);
             }
             Err(e) => {
                 let timeout = is_timeout_error(&e);
                 self.metrics.record_error(start_ms, timeout);
                 self.metrics.record_upstream_error(0, start_ms, timeout);
+                self.record_attempt(
+                    context,
+                    member_tag,
+                    if timeout {
+                        "timeout"
+                    } else {
+                        "transport_error"
+                    },
+                    diagnostic_start,
+                );
                 warn!(
                     "DNS query failed - source: {}, queries: {:?}, id: {}, reason: {}",
                     context.peer_addr(),
@@ -85,6 +104,36 @@ impl Executor for SingleDnsForwarder {
 }
 
 impl SingleDnsForwarder {
+    fn record_attempt(
+        &self,
+        context: &mut DnsContext,
+        member_tag: String,
+        outcome: &'static str,
+        started_ms: u64,
+    ) {
+        if !context.execution_path_enabled() {
+            return;
+        }
+        context.push_execution_path_event(
+            ExecutionPathEvent::new(
+                self.tag.clone(),
+                None,
+                "upstream",
+                Some(member_tag),
+                outcome,
+            )
+            .with_timing(
+                None,
+                Some(
+                    AppClock::elapsed_millis()
+                        .saturating_sub(started_ms)
+                        .saturating_mul(1000),
+                ),
+            )
+            .with_detail([("index", "0")]),
+        );
+    }
+
     #[inline]
     fn completion_step(&self) -> ExecStep {
         if self.short_circuit {

@@ -967,7 +967,7 @@ function RecordDetailDialog({
           ? [
               {
                 title: t(WEBUI.standardQueries.explanationTitle),
-                children: <ExplanationSummary explanation={explanation} />,
+                children: <ExplanationSummary explanation={explanation} diagnosis={record.diagnosis} />,
               },
               {
                 title: t(WEBUI.standardQueries.quickActionsTitle),
@@ -1039,12 +1039,33 @@ function RecordDetailDialog({
 
 function ExplanationSummary({
   explanation,
+  diagnosis,
 }: {
   explanation: StandardQueryExplanation;
+  diagnosis?: QueryRecordDetail["diagnosis"];
 }) {
   const { t } = useI18n();
   return (
     <div className="space-y-3">
+      {diagnosis ? (
+        <div className="rounded-lg border bg-muted/20 p-3 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-medium">{t(WEBUI.standardQueries.backendDiagnosis, { schema: diagnosis.schema })}</span>
+            <code>{diagnosis.intentRevision ?? t(WEBUI.standardQueries.noIntentRevision)}</code>
+          </div>
+          {diagnosis.explanationUnavailable ? (
+            <p className="mt-2 text-warning-foreground">{t(WEBUI.standardQueries.revisionUnavailable)}</p>
+          ) : null}
+          <p className="mt-2 text-muted-foreground">{t(WEBUI.standardQueries.defaultPathReason, { reason: diagnosis.defaultPathReason ?? t(WEBUI.standardQueries.notObserved) })}</p>
+          {diagnosis.stepsTruncated ? (
+            <p className="mt-1 text-warning-foreground">{t(WEBUI.standardQueries.traceTruncated, { count: diagnosis.droppedStepCount ?? 0 })}</p>
+          ) : null}
+          <details className="mt-2">
+            <summary className="cursor-pointer font-medium">{t(WEBUI.standardQueries.diagnosticFacts)}</summary>
+            <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 text-[10px]">{JSON.stringify(diagnosis, null, 2)}</pre>
+          </details>
+        </div>
+      ) : null}
       {!explanation.hasTagMap || !explanation.hasSteps ? (
         <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
           {t(WEBUI.standardQueries.rawOnlyNotice)}

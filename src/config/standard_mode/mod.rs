@@ -12,12 +12,13 @@ mod model;
 mod template;
 mod validation;
 
-pub use compiler::{StandardCapabilities, compile_standard_intent};
+pub use compiler::{StandardCapabilities, compile_standard_intent, standard_intent_revision};
 pub use migration::{StandardIntentDecodeError, decode_standard_intent};
 pub use model::{
-    CURRENT_STANDARD_SCHEMA, StandardDiagnostic, StandardDiagnosticSeverity,
-    StandardGeneratedConfig, StandardGenerationSummary, StandardIntent, StandardMigration,
-    StandardPlan, StandardTagMap,
+    CURRENT_STANDARD_SCHEMA, StandardCapabilityExplanation, StandardCompilationExplanation,
+    StandardDiagnostic, StandardDiagnosticSeverity, StandardGeneratedConfig,
+    StandardGenerationSummary, StandardIntent, StandardIntentMapping, StandardMigration,
+    StandardPathBoundary, StandardPlan, StandardPriorityRow, StandardTagMap,
 };
 pub use template::{
     StandardTemplateExpansion, StandardTemplateKind, StandardTemplateParameters,

@@ -30,6 +30,7 @@ function metadata(): StandardGeneratedMetadata {
   return {
     configVersion: "config",
     settingsRevision: "settings",
+    intentRevision: "sha256:current",
     generatedTags: [],
     tagMap: {
       system: [],
@@ -224,5 +225,41 @@ describe("Standard query explanation", () => {
       fallbackBranch: "secondary",
       fallbackReason: "domestic_ip_mismatch",
     });
+  });
+
+  it("does not apply current object mappings to a record from another intent revision", () => {
+    const settings = createDefaultStandardSettings();
+    settings.upstreamGroups[0].id = "private";
+    settings.paths[0] = {
+      ...settings.paths[0],
+      id: "private",
+      name: "Current private path",
+      upstreamGroupId: "private",
+    };
+    const historical = record([
+      {
+        event_index: 1,
+        sequence_tag: "standard_main_sequence",
+        kind: "executor",
+        tag: "standard_path_private",
+        outcome: "entered",
+      },
+    ]);
+    historical.diagnosis = {
+      schema: 1,
+      intentRevision: "sha256:historical",
+      explanationUnavailable: true,
+    };
+
+    const explanation = explainStandardQueryRecord(
+      historical,
+      settings,
+      metadata(),
+    );
+
+    expect(explanation.hasTagMap).toBe(false);
+    expect(explanation.path).toBeUndefined();
+    expect(explanation.upstreamGroup).toBeUndefined();
+    expect(explanation.rawEvents).toHaveLength(1);
   });
 });

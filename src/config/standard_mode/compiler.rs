@@ -8,12 +8,14 @@ use serde_json::{Value as JsonValue, json};
 use serde_yaml_ng::{Mapping, Value as YamlValue};
 
 use super::model::{
-    StandardBlockResponse, StandardDedicatedTagMap, StandardDiagnostic, StandardDiagnosticSeverity,
+    StandardBlockResponse, StandardCapabilityExplanation, StandardCompilationExplanation,
+    StandardDedicatedTagMap, StandardDiagnostic, StandardDiagnosticSeverity,
     StandardDualStackPolicy, StandardDynamicLearningTagMap, StandardEcsPolicy,
-    StandardGeneratedConfig, StandardGenerationSummary, StandardIntent, StandardMigration,
-    StandardPlan, StandardPolicySwitch, StandardResolutionPath, StandardRuleAction,
-    StandardRuleCondition, StandardRuleDataSource, StandardSubscriptionTagMap, StandardTagMap,
-    StandardUnknownMode, StandardUpstream, StandardUpstreamProtocol, StandardUpstreamStrategy,
+    StandardGeneratedConfig, StandardGenerationSummary, StandardIntent, StandardIntentMapping,
+    StandardMigration, StandardPathBoundary, StandardPlan, StandardPolicySwitch,
+    StandardPriorityRow, StandardResolutionPath, StandardRuleAction, StandardRuleCondition,
+    StandardRuleDataSource, StandardSubscriptionTagMap, StandardTagMap, StandardUnknownMode,
+    StandardUpstream, StandardUpstreamProtocol, StandardUpstreamStrategy,
 };
 use super::validation::{
     device_has_policy, effective_filtering_used, effective_query_log_used,
@@ -35,6 +37,13 @@ pub struct StandardCapabilities {
     pub(super) executors: BTreeSet<String>,
     pub(super) matchers: BTreeSet<String>,
     pub(super) providers: BTreeSet<String>,
+}
+
+pub fn standard_intent_revision(intent: &StandardIntent) -> String {
+    let normalized = normalize_standard_intent(intent.clone());
+    let canonical = serde_json::to_string(&normalized)
+        .expect("normalized Standard intent should always serialize");
+    format!("sha256:{}", config_version(&canonical))
 }
 
 impl StandardCapabilities {
@@ -179,7 +188,24 @@ pub fn compile_standard_intent(
             }
         }
     };
+    details["intentRevision"] = JsonValue::String(standard_intent_revision(&normalized_intent));
     let can_apply = generated.is_some() && !has_errors(&diagnostics);
+    details["capabilityAnalysis"] = json!({
+        "features": capabilities.features,
+        "servers": capabilities.servers,
+        "executors": capabilities.executors,
+        "matchers": capabilities.matchers,
+        "providers": capabilities.providers,
+        "missing": diagnostics.iter().filter(|diagnostic| {
+            matches!(diagnostic.code.as_str(),
+                "required_capability_missing" | "upstream_protocol_unavailable" | "optional_metrics_unavailable")
+        }).map(|diagnostic| json!({
+            "severity": diagnostic.severity,
+            "code": diagnostic.code,
+            "path": diagnostic.path,
+            "message": diagnostic.message,
+        })).collect::<Vec<_>>(),
+    });
 
     StandardPlan {
         normalized_intent,
@@ -344,6 +370,13 @@ fn compile_config(
                 "memory_tail": 1024,
                 "retention_days": intent.query_log.retention_days.max(1),
                 "cleanup_interval_hours": 1,
+                "reader_concurrency": 2,
+                "max_steps": 512,
+                "context": {
+                    "schema": "standard-query-diagnostic:1",
+                    "intentRevision": standard_intent_revision(intent),
+                    "role": "standard",
+                },
                 "include_marks": if intent.query_log.enabled {
                     Vec::<u32>::new()
                 } else {
@@ -395,6 +428,13 @@ fn compile_config(
             .filter(|upstream| upstream.enabled)
             .collect();
         let tag = standard_tag("forward", &group.id);
+        tag_map.upstream_members.insert(
+            group.id.clone(),
+            enabled_upstreams
+                .iter()
+                .map(|upstream| (upstream.id.clone(), upstream.id.clone()))
+                .collect(),
+        );
         if matches!(group.strategy, StandardUpstreamStrategy::OrderedFallback)
             && enabled_upstreams.len() > 1
         {
@@ -792,9 +832,10 @@ fn compile_config(
     }
 
     let yaml = serialize_generated_config(intent, base, &plugins)?;
-    let generated_tags = plugins.iter().map(|plugin| plugin.tag.clone()).collect();
+    let generated_tags: Vec<String> = plugins.iter().map(|plugin| plugin.tag.clone()).collect();
     let summary = summarize(intent);
     let plugin_count = plugins.len();
+    let explanation = compilation_explanation(intent, capabilities, &tag_map, &generated_tags);
     let _ = filtering;
     Ok(StandardGeneratedConfig {
         config_version: config_version(&yaml),
@@ -803,8 +844,481 @@ fn compile_config(
         generated_tags,
         tag_map,
         summary,
+        explanation,
         managed_files: learning.managed_files,
     })
+}
+
+fn compilation_explanation(
+    intent: &StandardIntent,
+    capabilities: &StandardCapabilities,
+    tag_map: &StandardTagMap,
+    generated_tags: &[String],
+) -> StandardCompilationExplanation {
+    let mut mappings = Vec::new();
+    for (id, tag) in &tag_map.upstream_groups {
+        mappings.push(StandardIntentMapping {
+            intent_path: format!("upstreamGroups.{id}"),
+            category: "upstream_group".to_string(),
+            stable_id: id.clone(),
+            generated_tags: std::iter::once(tag.clone())
+                .chain(
+                    tag_map
+                        .upstream_members
+                        .get(id)
+                        .into_iter()
+                        .flat_map(|members| members.values().cloned()),
+                )
+                .collect(),
+        });
+    }
+    for (id, tag) in &tag_map.paths {
+        mappings.push(StandardIntentMapping {
+            intent_path: format!("paths.{id}"),
+            category: "path".to_string(),
+            stable_id: id.clone(),
+            generated_tags: std::iter::once(tag.clone())
+                .chain(tag_map.caches.get(id).cloned())
+                .collect(),
+        });
+    }
+    for (id, tag) in &tag_map.routing_rules {
+        mappings.push(StandardIntentMapping {
+            intent_path: format!("routing.rules.{id}"),
+            category: "routing_rule".to_string(),
+            stable_id: id.clone(),
+            generated_tags: vec![tag.clone()],
+        });
+    }
+    for (id, tag) in &tag_map.exception_rules {
+        mappings.push(StandardIntentMapping {
+            intent_path: format!("exceptions.{id}"),
+            category: "exception".to_string(),
+            stable_id: id.clone(),
+            generated_tags: vec![tag.clone()],
+        });
+    }
+    for (id, tag) in &tag_map.devices {
+        mappings.push(StandardIntentMapping {
+            intent_path: format!("devices.{id}"),
+            category: "device".to_string(),
+            stable_id: id.clone(),
+            generated_tags: vec![tag.clone(), standard_tag("device_action", id)],
+        });
+    }
+    for (id, tag) in &tag_map.rule_data {
+        mappings.push(StandardIntentMapping {
+            intent_path: format!("ruleData.{id}"),
+            category: "rule_data".to_string(),
+            stable_id: id.clone(),
+            generated_tags: vec![tag.clone()],
+        });
+    }
+    if !tag_map.smart_routing.is_empty() {
+        mappings.push(StandardIntentMapping {
+            intent_path: "smartRouting".to_string(),
+            category: "smart_routing".to_string(),
+            stable_id: "$".to_string(),
+            generated_tags: tag_map.smart_routing.values().cloned().collect(),
+        });
+    }
+    for (id, tags) in &tag_map.dedicated_groups {
+        mappings.push(StandardIntentMapping {
+            intent_path: format!("dedicatedGroups.{id}"),
+            category: "dedicated_group".to_string(),
+            stable_id: id.clone(),
+            generated_tags: [
+                Some(tags.provider.clone()),
+                Some(tags.matcher.clone()),
+                Some(tags.upstream_group.clone()),
+                Some(tags.path.clone()),
+                Some(tags.entry.clone()),
+                tags.cache.clone(),
+                tags.udp_listener.clone(),
+                tags.tcp_listener.clone(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        });
+    }
+    for (id, tags) in &tag_map.dynamic_learning {
+        mappings.push(StandardIntentMapping {
+            intent_path: format!("dynamicLearning.profiles.{id}"),
+            category: "dynamic_learning".to_string(),
+            stable_id: id.clone(),
+            generated_tags: vec![
+                tags.provider.clone(),
+                tags.learner.clone(),
+                tags.matcher.clone(),
+                tags.action.clone(),
+            ],
+        });
+    }
+    for (id, tag) in &tag_map.advanced_rules {
+        mappings.push(StandardIntentMapping {
+            intent_path: format!("advancedRules.{id}"),
+            category: "advanced_rule".to_string(),
+            stable_id: id.clone(),
+            generated_tags: vec![tag.clone()],
+        });
+    }
+    mappings.sort_by(|left, right| left.intent_path.cmp(&right.intent_path));
+
+    let default_path = intent.paths.first().map(|path| path.id.clone());
+    let mut priority = Vec::<(u8, u32, usize, StandardPriorityRow)>::new();
+    for (index, rule) in intent
+        .exceptions
+        .iter()
+        .filter(|rule| rule.enabled)
+        .enumerate()
+    {
+        let slot = match rule.action {
+            StandardRuleAction::Block => 2,
+            StandardRuleAction::Allow | StandardRuleAction::SkipFiltering => 3,
+            _ => 7,
+        };
+        let selected_path_id = match &rule.action {
+            StandardRuleAction::UsePath { path_id } => Some(path_id.clone()),
+            StandardRuleAction::UseDefaultPath => default_path.clone(),
+            _ => None,
+        };
+        priority.push((
+            slot,
+            0,
+            index,
+            StandardPriorityRow {
+                ordinal: 0,
+                slot,
+                category: "exception".to_string(),
+                stable_id: rule.id.clone(),
+                phase: "request".to_string(),
+                matcher_tags: tag_map
+                    .exception_rules
+                    .get(&rule.id)
+                    .cloned()
+                    .into_iter()
+                    .collect(),
+                action_tag: selected_path_id
+                    .as_ref()
+                    .and_then(|id| tag_map.paths.get(id))
+                    .cloned()
+                    .unwrap_or_else(|| standard_tag("exception_action", &rule.id)),
+                selected_path_id,
+            },
+        ));
+    }
+    for (index, group) in intent
+        .dedicated_groups
+        .iter()
+        .filter(|item| item.enabled)
+        .enumerate()
+    {
+        if let Some(tags) = tag_map.dedicated_groups.get(&group.id) {
+            priority.push((
+                6,
+                group.priority,
+                index,
+                StandardPriorityRow {
+                    ordinal: 0,
+                    slot: 6,
+                    category: "dedicated_group".to_string(),
+                    stable_id: group.id.clone(),
+                    phase: "request".to_string(),
+                    matcher_tags: vec![tags.matcher.clone()],
+                    action_tag: tags.path.clone(),
+                    selected_path_id: Some(format!("dedicated:{}", group.id)),
+                },
+            ));
+        }
+    }
+    for (index, device) in intent
+        .devices
+        .iter()
+        .filter(|device| device_has_policy(device))
+        .enumerate()
+    {
+        let selected_path_id = device
+            .assigned_path_id
+            .clone()
+            .or_else(|| default_path.clone());
+        priority.push((
+            5,
+            0,
+            index,
+            StandardPriorityRow {
+                ordinal: 0,
+                slot: 5,
+                category: "device".to_string(),
+                stable_id: device.id.clone(),
+                phase: "request".to_string(),
+                matcher_tags: tag_map
+                    .devices
+                    .get(&device.id)
+                    .cloned()
+                    .into_iter()
+                    .collect(),
+                action_tag: standard_tag("device_action", &device.id),
+                selected_path_id,
+            },
+        ));
+    }
+    for (index, rule) in intent
+        .routing
+        .rules
+        .iter()
+        .filter(|item| item.enabled)
+        .enumerate()
+    {
+        let selected_path_id = match &rule.action {
+            StandardRuleAction::UsePath { path_id } => Some(path_id.clone()),
+            StandardRuleAction::UseDefaultPath => default_path.clone(),
+            _ => None,
+        };
+        if let Some(action_tag) = selected_path_id
+            .as_ref()
+            .and_then(|id| tag_map.paths.get(id))
+        {
+            priority.push((
+                7,
+                0,
+                index,
+                StandardPriorityRow {
+                    ordinal: 0,
+                    slot: 7,
+                    category: "routing_rule".to_string(),
+                    stable_id: rule.id.clone(),
+                    phase: "request".to_string(),
+                    matcher_tags: tag_map
+                        .routing_rules
+                        .get(&rule.id)
+                        .cloned()
+                        .into_iter()
+                        .collect(),
+                    action_tag: action_tag.clone(),
+                    selected_path_id,
+                },
+            ));
+        }
+    }
+    for (index, profile) in intent
+        .dynamic_learning
+        .profiles
+        .iter()
+        .filter(|item| item.enabled)
+        .enumerate()
+    {
+        if let Some(tags) = tag_map.dynamic_learning.get(&profile.id) {
+            priority.push((
+                8,
+                profile.priority,
+                index,
+                StandardPriorityRow {
+                    ordinal: 0,
+                    slot: 8,
+                    category: "dynamic_learning".to_string(),
+                    stable_id: profile.id.clone(),
+                    phase: "request".to_string(),
+                    matcher_tags: vec![tags.matcher.clone()],
+                    action_tag: tags.action.clone(),
+                    selected_path_id: Some(profile.target_path_id.clone()),
+                },
+            ));
+        }
+    }
+    if intent.smart_routing.enabled {
+        priority.push((
+            9,
+            0,
+            0,
+            StandardPriorityRow {
+                ordinal: 0,
+                slot: 9,
+                category: "smart_routing".to_string(),
+                stable_id: "$".to_string(),
+                phase: "request_response".to_string(),
+                matcher_tags: tag_map
+                    .smart_routing
+                    .iter()
+                    .filter(|(key, _)| key.to_ascii_lowercase().contains("matcher"))
+                    .map(|(_, value)| value.clone())
+                    .collect(),
+                action_tag: tag_map
+                    .smart_routing
+                    .get("unknownAction")
+                    .cloned()
+                    .unwrap_or_else(|| "standard_smart_unknown".to_string()),
+                selected_path_id: None,
+            },
+        ));
+    } else if let Some(path_id) = default_path.as_ref()
+        && let Some(action_tag) = tag_map.paths.get(path_id)
+    {
+        priority.push((
+            10,
+            0,
+            0,
+            StandardPriorityRow {
+                ordinal: 0,
+                slot: 10,
+                category: "default_path".to_string(),
+                stable_id: path_id.clone(),
+                phase: "request".to_string(),
+                matcher_tags: Vec::new(),
+                action_tag: action_tag.clone(),
+                selected_path_id: Some(path_id.clone()),
+            },
+        ));
+    }
+    for (index, rule) in intent
+        .advanced_rules
+        .iter()
+        .filter(|item| item.enabled)
+        .enumerate()
+    {
+        if let Some(action_tag) = tag_map.advanced_rules.get(&rule.id) {
+            let phase = format!("{:?}", rule.phase).to_ascii_lowercase();
+            let selected_path_id = match &rule.action {
+                super::model::StandardAdvancedAction::UsePath { path_id } => Some(path_id.clone()),
+                super::model::StandardAdvancedAction::Block { .. } => None,
+            };
+            priority.push((
+                7,
+                rule.priority,
+                index,
+                StandardPriorityRow {
+                    ordinal: 0,
+                    slot: 7,
+                    category: "advanced_rule".to_string(),
+                    stable_id: rule.id.clone(),
+                    phase,
+                    matcher_tags: Vec::new(),
+                    action_tag: action_tag.clone(),
+                    selected_path_id,
+                },
+            ));
+        }
+    }
+    priority.sort_by_key(|(slot, explicit, index, _)| (*slot, *explicit, *index));
+    let final_priority = priority
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, (_, _, _, mut row))| {
+            row.ordinal = ordinal + 1;
+            row
+        })
+        .collect();
+
+    let mut path_boundaries: Vec<StandardPathBoundary> = intent
+        .paths
+        .iter()
+        .filter_map(|path| {
+            let group = intent
+                .upstream_groups
+                .iter()
+                .find(|group| group.id == path.upstream_group_id)?;
+            let cache_enabled = path_cache_enabled(path, intent);
+            Some(StandardPathBoundary {
+                path_id: path.id.clone(),
+                path_tag: tag_map.paths.get(&path.id)?.clone(),
+                upstream_group_id: group.id.clone(),
+                upstream_group_tag: tag_map.upstream_groups.get(&group.id)?.clone(),
+                upstream_member_ids: group
+                    .upstreams
+                    .iter()
+                    .filter(|item| item.enabled)
+                    .map(|item| item.id.clone())
+                    .collect(),
+                cache_tag: tag_map.caches.get(&path.id).cloned(),
+                cache_namespace: if cache_enabled {
+                    format!("path:{}", path.id)
+                } else {
+                    "none".to_string()
+                },
+                cache_enabled,
+                ecs_mode: serde_json::to_value(&path.ecs)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("mode")
+                            .and_then(JsonValue::as_str)
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_else(|| "inherit".to_string()),
+                ecs_in_key: path.ecs.affects_cache_key(),
+                filtering_enabled: path_filtering_enabled(path, intent),
+                query_log_enabled: path_query_log_enabled(path, intent),
+                dual_stack: format!("{:?}", path.dual_stack).to_ascii_lowercase(),
+                ip_selection_enabled: path.ip_selection.enabled,
+            })
+        })
+        .collect();
+    for group in intent.dedicated_groups.iter().filter(|group| group.enabled) {
+        let Some(tags) = tag_map.dedicated_groups.get(&group.id) else {
+            continue;
+        };
+        let cache_enabled = matches!(group.path.cache, StandardPolicySwitch::Enabled)
+            || (matches!(group.path.cache, StandardPolicySwitch::Inherit) && intent.cache.enabled);
+        let filtering_enabled = matches!(group.path.filtering, StandardPolicySwitch::Enabled)
+            || (matches!(group.path.filtering, StandardPolicySwitch::Inherit)
+                && intent.filtering.enabled);
+        let query_log_enabled = matches!(group.path.query_log, StandardPolicySwitch::Enabled)
+            || (matches!(group.path.query_log, StandardPolicySwitch::Inherit)
+                && intent.query_log.enabled);
+        path_boundaries.push(StandardPathBoundary {
+            path_id: format!("dedicated:{}", group.id),
+            path_tag: tags.path.clone(),
+            upstream_group_id: format!("dedicated:{}", group.id),
+            upstream_group_tag: tags.upstream_group.clone(),
+            upstream_member_ids: group
+                .upstreams
+                .iter()
+                .filter(|item| item.enabled)
+                .map(|item| item.id.clone())
+                .collect(),
+            cache_tag: tags.cache.clone(),
+            cache_namespace: if cache_enabled {
+                format!("dedicated:{}", group.id)
+            } else {
+                "none".to_string()
+            },
+            cache_enabled,
+            ecs_mode: serde_json::to_value(&group.path.ecs)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("mode")
+                        .and_then(JsonValue::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| "inherit".to_string()),
+            ecs_in_key: group.path.ecs.affects_cache_key(),
+            filtering_enabled,
+            query_log_enabled,
+            dual_stack: format!("{:?}", group.path.dual_stack).to_ascii_lowercase(),
+            ip_selection_enabled: group.path.ip_selection.enabled,
+        });
+    }
+
+    StandardCompilationExplanation {
+        schema: 1,
+        intent_revision: standard_intent_revision(intent),
+        mappings,
+        final_priority,
+        path_boundaries,
+        generated_tags: generated_tags.to_vec(),
+        capabilities: StandardCapabilityExplanation {
+            features: capabilities.features.iter().cloned().collect(),
+            servers: capabilities.servers.iter().cloned().collect(),
+            executors: capabilities.executors.iter().cloned().collect(),
+            matchers: capabilities.matchers.iter().cloned().collect(),
+            providers: capabilities.providers.iter().cloned().collect(),
+            missing_optional: (!capabilities.executor("metrics_collector"))
+                .then(|| "executor:metrics_collector".to_string())
+                .into_iter()
+                .collect(),
+        },
+    }
 }
 
 fn compile_filtering(
@@ -1333,6 +1847,15 @@ fn compile_dedicated_groups(
             json!([format!("${provider_tag}")]),
         ));
         compile_embedded_forward(&forward_tag, group.strategy, &group.upstreams, plugins);
+        tag_map.upstream_members.insert(
+            format!("dedicated:{}", group.id),
+            group
+                .upstreams
+                .iter()
+                .filter(|upstream| upstream.enabled)
+                .map(|upstream| (upstream.id.clone(), upstream.id.clone()))
+                .collect(),
+        );
 
         let path = StandardResolutionPath {
             id: format!("dedicated_{}", group.id),
@@ -2648,6 +3171,16 @@ fn summarize(intent: &StandardIntent) -> StandardGenerationSummary {
 fn path_cache_enabled(path: &StandardResolutionPath, intent: &StandardIntent) -> bool {
     matches!(path.cache, StandardPolicySwitch::Enabled)
         || (matches!(path.cache, StandardPolicySwitch::Inherit) && intent.cache.enabled)
+}
+
+fn path_filtering_enabled(path: &StandardResolutionPath, intent: &StandardIntent) -> bool {
+    matches!(path.filtering, StandardPolicySwitch::Enabled)
+        || (matches!(path.filtering, StandardPolicySwitch::Inherit) && intent.filtering.enabled)
+}
+
+fn path_query_log_enabled(path: &StandardResolutionPath, intent: &StandardIntent) -> bool {
+    matches!(path.query_log, StandardPolicySwitch::Enabled)
+        || (matches!(path.query_log, StandardPolicySwitch::Inherit) && intent.query_log.enabled)
 }
 
 fn subscription_filename(id: &str) -> String {

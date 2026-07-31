@@ -26,11 +26,12 @@ Important response fields:
 | Field | Meaning |
 | --- | --- |
 | `ownership` | `managed`, `modified`, or `unmanaged` |
-| `semantic_diff` | Preserved top-level fields and generated, replaced, or removed plugin tags |
+| `semantic_diff` | Schema-1 stable-object Diff, affected paths/rules/caches/listeners/groups/files, plus compatible tag Diff |
+| `dependency_graph` | Read-only generated plugin nodes, edges, initialization order, and sequence flows |
 | `blockers` | Control-plane blockers such as version conflicts or required takeover |
 | `plan.normalizedIntent` | Backend-migrated and normalized schema v6 intent |
 | `plan.diagnostics` | Semantic diagnostics with stable `severity`, `code`, and `path` |
-| `plan.generated` | Candidate YAML, version, tag map, and summary; absent on errors |
+| `plan.generated` | Candidate YAML, version, tag map, summary, and schema-1 compilation explanation; absent on errors |
 | `can_apply` | `true` only when both the plan and control-plane checks pass |
 
 Missing required plugins, invalid references, duplicate IDs/tags, invalid TTL ranges, missing local semantic data files, invalid ECS/IP-selection parameters, and unsupported log sampling or scenario values block apply. Duplicate, overridden, and unreachable rules are also included in `plan.details.ruleAnalysis`. Missing optional metrics support only produces a warning.
@@ -109,6 +110,19 @@ Returns the stored Standard Mode intent only after an operator explicitly select
 ## `POST /api/standard/templates/preview`
 
 Accepts `base_intent`, a `kind` (`low_latency`, `privacy_dns`, `internal_domains`, or `regional_upstream`), and parameters, then expands a complete schema-v6 draft without side effects. It returns `expansion.proposedIntent`, added/modified objects, explanation tags, and the normal Plan response. Namespace collisions are rejected. Accepting a preview still requires exact-version Plan/Apply.
+
+## Explanation and asset APIs
+
+- `GET /api/standard/assets/export`: export current normalized intent in asset schema 1.
+- `POST /api/standard/assets/import`: read-only import, migration, validation, and Plan, limited to 2 MiB; it never applies.
+- `POST /api/standard/assets/expert-copy`: return detached Expert YAML, version, capabilities, and graph without writing configuration.
+- `POST /api/standard/assets/expert-analysis`: validate up to 2 MiB of Expert YAML read-only and return its graph, Expert-only objects, and system-integration notices; never execute or reverse-convert it.
+- `GET/POST/PATCH/DELETE /api/standard/assets/templates`: list, create, update, or exactly delete local saved templates.
+- `POST /api/standard/assets/templates/duplicate`: copy a template under a new stable ID.
+
+The template asset store is limited to 64 entries and 2 MiB, lives beside the config, is atomically written with mode `0600` on Unix, and supports optimistic `expectedVersion`. Saving never changes Standard intent; actual use still passes through template preview and Plan/Apply.
+
+The Standard-generated `query_recorder` adds schema-1 `diagnosis`, `intentRevision`, cache/upstream/fallback facts, and stage timing to record details. A query defaults to 512 events (Expert accepts 32–4096); overflow returns `stepsTruncated` and `droppedStepCount`. Old rows without a revision return `explanationUnavailable` instead of being mapped to current intent.
 
 ## Schema v6 Runtime Semantics
 

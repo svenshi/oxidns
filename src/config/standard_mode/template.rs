@@ -20,7 +20,7 @@ pub enum StandardTemplateKind {
     RegionalUpstream,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StandardTemplateParameters {
     pub namespace: String,

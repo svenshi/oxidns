@@ -24,6 +24,7 @@ export function StandardApplyReview() {
   const cancel = useAppStore((state) => state.cancelStandardApply);
   const takeover = plan?.ownership !== "managed";
   const diff = plan?.semantic_diff;
+  const explanation = plan?.plan.generated?.explanation;
   const diagnostics = plan?.plan.diagnostics ?? [];
   const ruleAnalysis = standardRuleAnalysis(plan?.plan.details.ruleAnalysis);
   const ownershipKey =
@@ -98,6 +99,68 @@ export function StandardApplyReview() {
                 items: diff?.preserved_top_level.join(", ") ?? "-",
               })}
             </p>
+
+            {diff?.affected ? (
+              <div className="space-y-2 rounded-lg border p-3">
+                <p className="font-medium">{t(WEBUI.standardApplyReview.semanticImpact)}</p>
+                <div className="flex flex-wrap gap-2">
+                  {Object.entries(diff.affected).flatMap(([category, values]) =>
+                    values.map((value) => (
+                      <Badge key={`${category}:${value}`} variant="outline">
+                        {category}: {value}
+                      </Badge>
+                    )),
+                  )}
+                </div>
+                {diff.summary?.map((item) => (
+                  <p key={item} className="text-xs text-muted-foreground">{item}</p>
+                ))}
+              </div>
+            ) : null}
+
+            {explanation ? (
+              <div className="space-y-3 rounded-lg border p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-medium">{t(WEBUI.standardApplyReview.compiledExplanation)}</p>
+                  <code className="text-[11px] text-muted-foreground">
+                    {explanation.intentRevision}
+                  </code>
+                </div>
+                <div className="space-y-1">
+                  {explanation.finalPriority.map((row) => (
+                    <div key={`${row.category}:${row.stableId}`} className="flex flex-wrap gap-2 text-xs">
+                      <Badge variant="secondary">#{row.ordinal} · slot {row.slot}</Badge>
+                      <code>{row.category}:{row.stableId}</code>
+                      <span className="text-muted-foreground">→ {row.selectedPathId ?? row.actionTag}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {explanation.pathBoundaries.map((path) => (
+                    <div key={path.pathId} className="rounded-md bg-muted p-2 text-xs">
+                      <p className="font-medium">{path.pathId} → {path.upstreamGroupId}</p>
+                      <p className="text-muted-foreground">
+                        cache {path.cacheEnabled ? path.cacheNamespace : t(WEBUI.standardApplyReview.cacheOff)} · ECS {path.ecsMode}
+                        {path.ecsInKey ? t(WEBUI.standardApplyReview.isolatedKey) : ""}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+                {explanation.capabilities.missingOptional.length > 0 ? (
+                  <p className="text-xs text-warning-foreground">
+                    {t(WEBUI.standardApplyReview.missingOptional, { items: explanation.capabilities.missingOptional.join(", ") })}
+                  </p>
+                ) : null}
+                <details>
+                  <summary className="cursor-pointer text-xs font-medium">{t(WEBUI.standardApplyReview.yamlGraph)}</summary>
+                  <pre className="mt-2 max-h-60 overflow-auto rounded-md bg-muted p-2 text-[10px]">
+                    {plan.plan.generated?.yaml}
+                    {"\n\n# dependency graph\n"}
+                    {JSON.stringify(plan.dependency_graph ?? {}, null, 2)}
+                  </pre>
+                </details>
+              </div>
+            ) : null}
 
             {diagnostics.length > 0 ? (
               <div className="space-y-2">

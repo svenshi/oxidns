@@ -4,6 +4,7 @@
 //! DNS request/response context management.
 
 use std::any::Any;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -142,6 +143,9 @@ pub struct ExecutionPathEvent {
     pub kind: String,
     pub tag: Option<String>,
     pub outcome: String,
+    pub offset_us: Option<u64>,
+    pub duration_us: Option<u64>,
+    pub detail: BTreeMap<String, String>,
 }
 
 impl ExecutionPathEvent {
@@ -159,20 +163,79 @@ impl ExecutionPathEvent {
             kind: kind.into(),
             tag: tag.map(Into::into),
             outcome: outcome.into(),
+            offset_us: None,
+            duration_us: None,
+            detail: BTreeMap::new(),
         }
+    }
+
+    #[inline]
+    pub fn with_timing(mut self, offset_us: Option<u64>, duration_us: Option<u64>) -> Self {
+        self.offset_us = offset_us;
+        self.duration_us = duration_us;
+        self
+    }
+
+    #[inline]
+    pub fn with_detail(
+        mut self,
+        detail: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        self.detail = detail
+            .into_iter()
+            .take(16)
+            .map(|(key, value)| {
+                let key = key.into();
+                let value = value.into();
+                (
+                    key.chars().take(64).collect(),
+                    value.chars().take(256).collect(),
+                )
+            })
+            .collect();
+        self
     }
 }
 
 /// Request-local execution path recording state.
-#[derive(Debug, Clone, Default, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ExecutionPath {
     enabled: bool,
     events: Vec<Arc<ExecutionPathEvent>>,
+    max_events: usize,
+    dropped_events: usize,
+}
+
+/// Position within an execution path, including its truncation counter.
+///
+/// Branching executors use this to merge only the events and dropped-event
+/// delta produced by a cloned subquery context.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct ExecutionPathCheckpoint {
+    event_index: usize,
+    dropped_events: usize,
+}
+
+impl Default for ExecutionPath {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            events: Vec::new(),
+            max_events: 512,
+            dropped_events: 0,
+        }
+    }
 }
 
 impl ExecutionPath {
     #[inline]
     pub fn enable(&mut self) {
+        self.enabled = true;
+    }
+
+    #[inline]
+    pub fn enable_with_limit(&mut self, max_events: usize) {
+        self.max_events = max_events.clamp(32, 4096);
         self.enabled = true;
     }
 
@@ -192,9 +255,21 @@ impl ExecutionPath {
     }
 
     #[inline]
+    pub fn dropped_events(&self) -> usize {
+        self.dropped_events
+    }
+
+    #[inline]
+    pub fn truncated(&self) -> bool {
+        self.dropped_events > 0
+    }
+
+    #[inline]
     pub fn push(&mut self, event: ExecutionPathEvent) {
-        if self.enabled {
+        if self.enabled && self.events.len() < self.max_events {
             self.events.push(Arc::new(event));
+        } else if self.enabled {
+            self.dropped_events = self.dropped_events.saturating_add(1);
         }
     }
 
@@ -208,14 +283,41 @@ impl ExecutionPath {
         self.events.get(start..).unwrap_or(&[])
     }
 
+    #[inline]
+    pub fn checkpoint(&self) -> ExecutionPathCheckpoint {
+        ExecutionPathCheckpoint {
+            event_index: self.events.len(),
+            dropped_events: self.dropped_events,
+        }
+    }
+
+    #[inline]
+    pub fn events_from_checkpoint(
+        &self,
+        checkpoint: ExecutionPathCheckpoint,
+    ) -> &[Arc<ExecutionPathEvent>] {
+        self.events_from(checkpoint.event_index)
+    }
+
     /// Append recorded events from another request-local execution path.
     ///
     /// Subquery executors use this to retain the observable decisions made by a
     /// failed primary branch before a successful fallback branch is applied.
     #[inline]
-    pub fn append_from(&mut self, other: &Self, start: usize) {
+    pub fn append_from(&mut self, other: &Self, checkpoint: ExecutionPathCheckpoint) {
         if self.enabled {
-            self.events.extend_from_slice(other.events_from(start));
+            for event in other.events_from_checkpoint(checkpoint) {
+                if self.events.len() >= self.max_events {
+                    self.dropped_events = self.dropped_events.saturating_add(1);
+                } else {
+                    self.events.push(event.clone());
+                }
+            }
+            self.dropped_events = self.dropped_events.saturating_add(
+                other
+                    .dropped_events
+                    .saturating_sub(checkpoint.dropped_events),
+            );
         }
     }
 }
@@ -353,6 +455,11 @@ impl DnsContext {
     #[inline]
     pub fn enable_execution_path(&mut self) {
         self.execution_path.enable();
+    }
+
+    #[inline]
+    pub fn enable_execution_path_with_limit(&mut self, max_events: usize) {
+        self.execution_path.enable_with_limit(max_events);
     }
 
     #[inline]
@@ -506,6 +613,55 @@ mod tests {
             "matched",
         ));
         assert_eq!(ctx.execution_path_len(), 1);
+    }
+
+    #[test]
+    fn execution_path_enforces_hard_limit_and_reports_dropped_events() {
+        let mut ctx = make_context();
+        ctx.enable_execution_path_with_limit(32);
+        for index in 0..40 {
+            ctx.push_execution_path_event(ExecutionPathEvent::new(
+                "main",
+                Some(index),
+                "matcher",
+                Some("bounded"),
+                "matched",
+            ));
+        }
+        assert_eq!(ctx.execution_path_len(), 32);
+        assert!(ctx.execution_path.truncated());
+        assert_eq!(ctx.execution_path.dropped_events(), 8);
+    }
+
+    #[test]
+    fn execution_path_merge_counts_only_branch_dropped_event_delta() {
+        let mut parent = ExecutionPath::default();
+        parent.enable_with_limit(32);
+        for index in 0..34 {
+            parent.push(ExecutionPathEvent::new(
+                "main",
+                Some(index),
+                "matcher",
+                Some("bounded"),
+                "matched",
+            ));
+        }
+        let checkpoint = parent.checkpoint();
+        let mut branch = parent.clone();
+        for index in 34..37 {
+            branch.push(ExecutionPathEvent::new(
+                "branch",
+                Some(index),
+                "executor",
+                Some("fallback"),
+                "entered",
+            ));
+        }
+
+        parent.append_from(&branch, checkpoint);
+
+        assert_eq!(parent.len(), 32);
+        assert_eq!(parent.dropped_events(), 5);
     }
 
     #[test]

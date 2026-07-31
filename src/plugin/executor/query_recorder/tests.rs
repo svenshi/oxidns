@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::Ordering;
 
@@ -38,6 +39,8 @@ fn recorder_config(path: &str) -> serde_yaml_ng::Value {
         retention_days: Some(7),
         cleanup_interval_hours: Some(1),
         reader_concurrency: Some(2),
+        max_steps: Some(512),
+        context: BTreeMap::new(),
         include_marks: Vec::new(),
         exclude_marks: Vec::new(),
     })
@@ -54,6 +57,8 @@ fn recorder_space_config(path: &str) -> serde_yaml_ng::Value {
         retention_days: Some(7),
         cleanup_interval_hours: Some(1),
         reader_concurrency: Some(2),
+        max_steps: Some(512),
+        context: BTreeMap::new(),
         include_marks: Vec::new(),
         exclude_marks: Vec::new(),
     })
@@ -184,6 +189,7 @@ fn pending_record(
         0,
         ctx.peer_addr(),
         error.map(ToString::to_string),
+        BTreeMap::new(),
     )
 }
 
@@ -270,6 +276,7 @@ fn test_record_capture_without_response_uses_empty_sections() {
         0,
         ctx.peer_addr(),
         Some(DnsError::plugin("boom").to_string()),
+        BTreeMap::new(),
     );
     let (record, steps) = pending.take_to_record();
 
@@ -321,6 +328,7 @@ fn test_record_capture_with_structured_response() {
         0,
         ctx.peer_addr(),
         None,
+        BTreeMap::new(),
     );
     let (record, _) = pending.take_to_record();
 
@@ -346,6 +354,14 @@ async fn test_query_recorder_execute_enqueues_record() {
             retention_days: Some(7),
             cleanup_interval_hours: Some(1),
             reader_concurrency: Some(2),
+            max_steps: Some(512),
+            context: BTreeMap::from([
+                (
+                    "schema".to_string(),
+                    "standard-query-diagnostic:1".to_string(),
+                ),
+                ("intentRevision".to_string(), "sha256:test".to_string()),
+            ]),
             include_marks: Vec::new(),
             exclude_marks: Vec::new(),
         })
@@ -382,6 +398,14 @@ async fn test_query_recorder_execute_enqueues_record() {
     .unwrap()
     .0;
     assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0]
+            .diagnostic_context
+            .get("intentRevision")
+            .map(String::as_str),
+        Some("sha256:test")
+    );
+    assert!(!records[0].steps_truncated);
 
     plugin.destroy().await.unwrap();
 }
@@ -401,6 +425,8 @@ async fn test_query_recorder_list_cursor_only_when_more_records_exist() {
             retention_days: Some(7),
             cleanup_interval_hours: Some(1),
             reader_concurrency: Some(2),
+            max_steps: Some(512),
+            context: BTreeMap::new(),
             include_marks: Vec::new(),
             exclude_marks: Vec::new(),
         })
@@ -816,6 +842,8 @@ async fn test_query_recorder_cleanup_is_not_skipped_when_record_queue_is_full() 
             retention_days: Some(7),
             cleanup_interval_hours: Some(1),
             reader_concurrency: Some(2),
+            max_steps: Some(512),
+            context: BTreeMap::new(),
             include_marks: Vec::new(),
             exclude_marks: Vec::new(),
         })
@@ -1392,6 +1420,8 @@ async fn test_load_top_clients_allows_limit_above_200() {
             retention_days: Some(7),
             cleanup_interval_hours: Some(1),
             reader_concurrency: Some(2),
+            max_steps: Some(512),
+            context: BTreeMap::new(),
             include_marks: Vec::new(),
             exclude_marks: Vec::new(),
         })
@@ -1638,6 +1668,8 @@ fn test_resolve_config_rejects_zero_limits() {
         retention_days: Some(1),
         cleanup_interval_hours: Some(1),
         reader_concurrency: Some(2),
+        max_steps: Some(512),
+        context: BTreeMap::new(),
         include_marks: Vec::new(),
         exclude_marks: Vec::new(),
     })

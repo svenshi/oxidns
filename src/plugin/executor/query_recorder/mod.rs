@@ -54,6 +54,7 @@ const DEFAULT_MEMORY_TAIL: usize = 1_024;
 const DEFAULT_RETENTION_DAYS: u64 = 7;
 const DEFAULT_CLEANUP_INTERVAL_HOURS: u64 = 1;
 const DEFAULT_READER_CONCURRENCY: usize = 2;
+const DEFAULT_MAX_STEPS: usize = 512;
 const ONE_DAY_MS: u64 = 24 * 60 * 60 * 1000;
 
 #[derive(Debug)]
@@ -143,7 +144,7 @@ impl Executor for QueryRecorder {
         };
 
         let request = context.request.clone();
-        context.enable_execution_path();
+        context.enable_execution_path_with_limit(self.config.max_steps);
         let step_start_index = context.execution_path_len();
         let instant = AppClock::now();
         let timestamp = Timestamp::now();
@@ -160,6 +161,7 @@ impl Executor for QueryRecorder {
             step_start_index,
             context.peer_addr(),
             result.as_ref().err().map(ToString::to_string),
+            self.config.context.clone(),
         );
         backend.enqueue(pending_record);
         result
@@ -212,6 +214,7 @@ fn resolve_config(args: Option<YamlValue>) -> Result<ResolvedRecorderConfig> {
     let reader_concurrency = parsed
         .reader_concurrency
         .unwrap_or(DEFAULT_READER_CONCURRENCY);
+    let max_steps = parsed.max_steps.unwrap_or(DEFAULT_MAX_STEPS);
 
     if queue_size == 0 {
         return Err(DnsError::plugin(
@@ -248,6 +251,22 @@ fn resolve_config(args: Option<YamlValue>) -> Result<ResolvedRecorderConfig> {
             "query_recorder reader_concurrency must be greater than 0",
         ));
     }
+    if !(32..=4096).contains(&max_steps) {
+        return Err(DnsError::plugin(
+            "query_recorder max_steps must be between 32 and 4096",
+        ));
+    }
+    if parsed.context.len() > 16
+        || parsed
+            .context
+            .iter()
+            .any(|(key, value)| key.len() > 64 || value.len() > 256)
+        || serde_json::to_vec(&parsed.context).is_ok_and(|value| value.len() > 4096)
+    {
+        return Err(DnsError::plugin(
+            "query_recorder context exceeds bounded key, value, entry, or byte limits",
+        ));
+    }
 
     Ok(ResolvedRecorderConfig {
         path: PathBuf::from(path),
@@ -258,6 +277,8 @@ fn resolve_config(args: Option<YamlValue>) -> Result<ResolvedRecorderConfig> {
         retention_days,
         cleanup_interval_hours,
         reader_concurrency,
+        max_steps,
+        context: parsed.context,
         include_marks: parsed.include_marks,
         exclude_marks: parsed.exclude_marks,
     })

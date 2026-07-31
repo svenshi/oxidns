@@ -31,7 +31,10 @@ use tokio::task::JoinSet;
 use tracing::debug;
 
 use crate::config::types::PluginConfig;
-use crate::core::context::{DnsContext, ExecutionPath, ExecutionPathEvent};
+use crate::core::context::{
+    DnsContext, ExecutionPath, ExecutionPathCheckpoint, ExecutionPathEvent,
+};
+use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::observability::metrics::{
     MetricLabel, MetricSample, MetricSink, MetricSource, register_metric_source,
@@ -157,6 +160,14 @@ enum PrimaryState {
     FailedBlocked,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FallbackSelectionDiagnostic<'a> {
+    source: &'a str,
+    reason: &'a str,
+    started_at: std::time::Instant,
+    branch_checkpoint: ExecutionPathCheckpoint,
+}
+
 #[async_trait]
 impl Plugin for FallbackExecutor {
     fn tag(&self) -> &str {
@@ -177,9 +188,10 @@ impl Plugin for FallbackExecutor {
 impl Executor for FallbackExecutor {
     #[hotpath::measure]
     async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
+        let started_at = AppClock::now();
         let mut join_set = JoinSet::new();
         let (primary_state_tx, primary_state_rx) = watch::channel(PrimaryState::Running);
-        let branch_event_start = context.execution_path_len();
+        let branch_checkpoint = context.execution_path.checkpoint();
 
         let primary = self.primary.clone();
         let primary_ctx = context.copy_for_subquery();
@@ -190,7 +202,7 @@ impl Executor for FallbackExecutor {
             primary_metrics
                 .primary_total
                 .fetch_add(1, Ordering::Relaxed);
-            let outcome = run_executor(primary, primary_ctx, "primary", branch_event_start).await;
+            let outcome = run_executor(primary, primary_ctx, "primary", branch_checkpoint).await;
             let state = if outcome.context.is_some() {
                 PrimaryState::Success
             } else if (outcome.no_response && fallback_on_no_response)
@@ -257,7 +269,7 @@ impl Executor for FallbackExecutor {
             secondary_metrics
                 .secondary_total
                 .fetch_add(1, Ordering::Relaxed);
-            run_executor(secondary, secondary_ctx, "secondary", branch_event_start).await
+            run_executor(secondary, secondary_ctx, "secondary", branch_checkpoint).await
         });
 
         let mut last_err = String::new();
@@ -279,12 +291,15 @@ impl Executor for FallbackExecutor {
                             context,
                             secondary_ctx,
                             failed_primary_path.as_ref(),
-                            branch_event_start,
-                            "secondary",
-                            if primary_completed {
-                                primary_failure_reason.as_deref().unwrap_or("no_response")
-                            } else {
-                                "timeout"
+                            FallbackSelectionDiagnostic {
+                                source: "secondary",
+                                reason: if primary_completed {
+                                    primary_failure_reason.as_deref().unwrap_or("no_response")
+                                } else {
+                                    "timeout"
+                                },
+                                started_at,
+                                branch_checkpoint,
                             },
                         );
                         join_set.abort_all();
@@ -311,9 +326,12 @@ impl Executor for FallbackExecutor {
                                     context,
                                     primary_ctx,
                                     None,
-                                    branch_event_start,
-                                    "primary",
-                                    "success",
+                                    FallbackSelectionDiagnostic {
+                                        source: "primary",
+                                        reason: "success",
+                                        started_at,
+                                        branch_checkpoint,
+                                    },
                                 );
                                 join_set.abort_all();
                                 return Ok(self.completion_step());
@@ -331,7 +349,7 @@ impl Executor for FallbackExecutor {
                                 {
                                     context
                                         .execution_path
-                                        .append_from(primary_path, branch_event_start);
+                                        .append_from(primary_path, branch_checkpoint);
                                 }
                                 join_set.abort_all();
                                 if outcome.no_response {
@@ -349,9 +367,14 @@ impl Executor for FallbackExecutor {
                                     context,
                                     secondary_ctx,
                                     failed_primary_path.as_ref(),
-                                    branch_event_start,
-                                    "secondary",
-                                    primary_failure_reason.as_deref().unwrap_or("no_response"),
+                                    FallbackSelectionDiagnostic {
+                                        source: "secondary",
+                                        reason: primary_failure_reason
+                                            .as_deref()
+                                            .unwrap_or("no_response"),
+                                        started_at,
+                                        branch_checkpoint,
+                                    },
                                 );
                                 join_set.abort_all();
                                 return Ok(self.completion_step());
@@ -367,14 +390,17 @@ impl Executor for FallbackExecutor {
                                         context,
                                         secondary_ctx,
                                         failed_primary_path.as_ref(),
-                                        branch_event_start,
-                                        "secondary",
-                                        if primary_completed {
-                                            primary_failure_reason
-                                                .as_deref()
-                                                .unwrap_or("no_response")
-                                        } else {
-                                            "timeout"
+                                        FallbackSelectionDiagnostic {
+                                            source: "secondary",
+                                            reason: if primary_completed {
+                                                primary_failure_reason
+                                                    .as_deref()
+                                                    .unwrap_or("no_response")
+                                            } else {
+                                                "timeout"
+                                            },
+                                            started_at,
+                                            branch_checkpoint,
                                         },
                                     );
                                     join_set.abort_all();
@@ -425,28 +451,38 @@ impl FallbackExecutor {
         context: &mut DnsContext,
         mut selected: DnsContext,
         failed_primary_path: Option<&ExecutionPath>,
-        branch_event_start: usize,
-        source: &str,
-        reason: &str,
+        diagnostic: FallbackSelectionDiagnostic<'_>,
     ) {
-        if source == "secondary"
+        if diagnostic.source == "secondary"
             && context.execution_path_enabled()
             && let Some(primary_path) = failed_primary_path
         {
             let mut merged = context.execution_path.clone();
-            merged.append_from(primary_path, branch_event_start);
-            merged.append_from(&selected.execution_path, branch_event_start);
+            merged.append_from(primary_path, diagnostic.branch_checkpoint);
+            merged.append_from(&selected.execution_path, diagnostic.branch_checkpoint);
             selected.execution_path = merged;
         }
         context.apply_subquery_result(selected);
         if context.execution_path_enabled() {
-            context.push_execution_path_event(ExecutionPathEvent::new(
-                self.tag.as_str(),
-                None,
-                "fallback",
-                Some(self.tag.as_str()),
-                format!("{source}_{reason}"),
-            ));
+            context.push_execution_path_event(
+                ExecutionPathEvent::new(
+                    self.tag.as_str(),
+                    None,
+                    "fallback",
+                    Some(self.tag.as_str()),
+                    format!("{}_{}", diagnostic.source, diagnostic.reason),
+                )
+                .with_timing(
+                    None,
+                    Some(
+                        diagnostic
+                            .started_at
+                            .elapsed()
+                            .as_micros()
+                            .min(u128::from(u64::MAX)) as u64,
+                    ),
+                ),
+            );
         }
     }
 }
@@ -522,7 +558,7 @@ async fn run_executor(
     executor: Arc<dyn Executor>,
     mut context: DnsContext,
     source: &'static str,
-    branch_event_start: usize,
+    branch_checkpoint: ExecutionPathCheckpoint,
 ) -> Outcome {
     if context.execution_path_enabled() {
         context.push_execution_path_event(ExecutionPathEvent::new(
@@ -541,7 +577,7 @@ async fn run_executor(
                 None
             } else {
                 execution_path
-                    .events_from(branch_event_start)
+                    .events_from_checkpoint(branch_checkpoint)
                     .iter()
                     .rev()
                     .find(|event| event.kind == "decision")
@@ -653,7 +689,7 @@ mod tests {
             }),
             test_context(),
             "primary",
-            0,
+            ExecutionPath::default().checkpoint(),
         )
         .await;
         assert!(success.context.is_some());
@@ -668,7 +704,7 @@ mod tests {
             }),
             test_context(),
             "secondary",
-            0,
+            ExecutionPath::default().checkpoint(),
         )
         .await;
         assert!(no_response.context.is_none());
@@ -688,7 +724,7 @@ mod tests {
             }),
             test_context(),
             "primary",
-            0,
+            ExecutionPath::default().checkpoint(),
         )
         .await;
         assert!(failed.context.is_none());
@@ -711,7 +747,7 @@ mod tests {
             }),
             test_context(),
             "primary",
-            0,
+            ExecutionPath::default().checkpoint(),
         )
         .await;
 
@@ -990,7 +1026,7 @@ short_circuit: true
             context
                 .execution_path_events()
                 .iter()
-                .any(|event| event.outcome == "secondary_timeout")
+                .any(|event| event.outcome == "secondary_timeout" && event.duration_us.is_some())
         );
     }
 

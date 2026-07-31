@@ -7,7 +7,7 @@
 //! the control-plane adapter around current files, versions, and application
 //! lifecycle state; it never participates in DNS request execution.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -25,9 +25,10 @@ use crate::api::webui_config::{
 };
 use crate::api::{ApiHandler, ApiRegister, json_error, json_ok, json_response};
 use crate::config::standard_mode::{
-    StandardCapabilities, StandardDiagnostic, StandardDiagnosticSeverity, StandardPlan,
-    StandardTemplateExpansion, StandardTemplateKind, StandardTemplateParameters,
+    StandardCapabilities, StandardDiagnostic, StandardDiagnosticSeverity, StandardIntent,
+    StandardPlan, StandardTemplateExpansion, StandardTemplateKind, StandardTemplateParameters,
     compile_standard_intent, decode_standard_intent, expand_standard_template,
+    standard_intent_revision,
 };
 use crate::infra::control::{AppController, ControlRequestError, config_version};
 use crate::infra::error::{DnsError, Result};
@@ -36,6 +37,8 @@ const STANDARD_TRANSACTION_SCHEMA: u8 = 1;
 const STANDARD_TRANSACTION_MAX_BYTES: usize = 2 * 1024 * 1024;
 const STANDARD_HISTORY_SCHEMA: u8 = 1;
 const STANDARD_HISTORY_MAX_ENTRIES: usize = 20;
+const STANDARD_ASSET_STORE_SCHEMA: u8 = 1;
+const STANDARD_ASSET_STORE_MAX_ENTRIES: usize = 64;
 static STANDARD_APPLY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,10 +88,33 @@ enum StandardOwnership {
 
 #[derive(Debug, Serialize)]
 struct StandardSemanticDiff {
+    schema: u8,
+    baseline: &'static str,
     preserved_top_level: Vec<String>,
     generated_plugin_tags: Vec<String>,
     replaced_plugin_tags: Vec<String>,
     removed_plugin_tags: Vec<String>,
+    objects: Vec<StandardSemanticObjectDiff>,
+    affected: StandardSemanticImpact,
+    summary: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct StandardSemanticObjectDiff {
+    category: String,
+    stable_id: String,
+    change: &'static str,
+    changed_fields: Vec<String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct StandardSemanticImpact {
+    paths: BTreeSet<String>,
+    rules: BTreeSet<String>,
+    caches: BTreeSet<String>,
+    listeners: BTreeSet<String>,
+    upstream_groups: BTreeSet<String>,
+    managed_files: BTreeSet<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -105,6 +131,8 @@ struct StandardPlanResponse {
     standard_version: String,
     ownership: StandardOwnership,
     semantic_diff: StandardSemanticDiff,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dependency_graph: Option<crate::plugin::DependencyGraphReport>,
     blockers: Vec<StandardApplyBlocker>,
     can_apply: bool,
     plan: StandardPlan,
@@ -171,6 +199,10 @@ struct StandardHistoryEntry {
     config_version: String,
     standard_version: String,
     settings: Value,
+    #[serde(default)]
+    intent_revision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    summary: Option<crate::config::standard_mode::StandardGenerationSummary>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -189,6 +221,8 @@ struct StandardHistoryItem {
     settings_schema: Option<u64>,
     upstream_group_count: usize,
     path_count: usize,
+    intent_revision: String,
+    summary: Option<crate::config::standard_mode::StandardGenerationSummary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -206,6 +240,96 @@ struct StandardHistoryRestoreRequest {
 struct StandardHistoryRestoreResponse {
     ok: bool,
     entry: StandardHistoryEntry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StandardAssetEnvelope {
+    asset_schema: u8,
+    kind: String,
+    oxidns_version: String,
+    bundle: String,
+    intent_schema: u32,
+    intent_revision: String,
+    intent: Value,
+    exported_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StandardAssetImportRequest {
+    asset: Value,
+    base_config_version: Option<String>,
+    base_standard_version: Option<String>,
+    #[serde(default)]
+    takeover: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct StandardAssetImportResponse {
+    ok: bool,
+    asset_schema: u8,
+    source_intent_schema: u32,
+    intent_revision: String,
+    plan: StandardPlanResponse,
+}
+
+#[derive(Debug, Deserialize)]
+struct StandardExpertCopyRequest {
+    intent: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct StandardExpertAnalysisRequest {
+    yaml: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StandardSavedTemplate {
+    id: String,
+    name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    kind: StandardTemplateKind,
+    parameters: StandardTemplateParameters,
+    source_intent_schema: u32,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StandardAssetStore {
+    schema: u8,
+    version: String,
+    templates: Vec<StandardSavedTemplate>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StandardSavedTemplateWriteRequest {
+    expected_version: Option<String>,
+    template: StandardSavedTemplate,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StandardSavedTemplateDeleteRequest {
+    expected_version: Option<String>,
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StandardSavedTemplateDuplicateRequest {
+    expected_version: Option<String>,
+    id: String,
+    new_id: String,
+    new_name: String,
 }
 
 #[derive(Debug)]
@@ -235,6 +359,32 @@ struct StandardHistoryListHandler {
 
 #[derive(Debug)]
 struct StandardHistoryRestoreHandler {
+    controller: Arc<AppController>,
+}
+
+#[derive(Debug)]
+struct StandardAssetExportHandler {
+    controller: Arc<AppController>,
+}
+
+#[derive(Debug)]
+struct StandardAssetImportHandler {
+    controller: Arc<AppController>,
+}
+
+#[derive(Debug)]
+struct StandardExpertCopyHandler;
+
+#[derive(Debug)]
+struct StandardExpertAnalysisHandler;
+
+#[derive(Debug)]
+struct StandardSavedTemplateHandler {
+    controller: Arc<AppController>,
+}
+
+#[derive(Debug)]
+struct StandardSavedTemplateDuplicateHandler {
     controller: Arc<AppController>,
 }
 
@@ -452,6 +602,407 @@ impl ApiHandler for StandardHistoryRestoreHandler {
     }
 }
 
+#[async_trait]
+impl ApiHandler for StandardAssetExportHandler {
+    async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
+        let loaded = match load_webui_config(self.controller.config_path()) {
+            Ok(value) => value,
+            Err(err) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "standard_asset_export_failed",
+                    format!("failed to read Standard state: {err:?}"),
+                );
+            }
+        };
+        let Some(settings) = loaded.config.pointer("/standard/settings").cloned() else {
+            return json_error(
+                StatusCode::NOT_FOUND,
+                "standard_asset_not_found",
+                "no applied Standard intent is available to export",
+            );
+        };
+        let (intent, _) = match decode_standard_intent(settings) {
+            Ok(value) => value,
+            Err(err) => {
+                return json_error(
+                    StatusCode::CONFLICT,
+                    "standard_asset_invalid_state",
+                    err.to_string(),
+                );
+            }
+        };
+        let build = match crate::build_info::snapshot() {
+            Ok(value) => value,
+            Err(err) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "standard_capabilities_unavailable",
+                    err.to_string(),
+                );
+            }
+        };
+        let intent_value = serde_json::to_value(&intent).expect("Standard intent should serialize");
+        json_ok(
+            StatusCode::OK,
+            &json!({
+                "ok": true,
+                "asset": StandardAssetEnvelope {
+                    asset_schema: 1,
+                    kind: "oxidns_standard_intent".to_string(),
+                    oxidns_version: build.version.to_string(),
+                    bundle: build.bundle.to_string(),
+                    intent_schema: intent.schema,
+                    intent_revision: standard_intent_revision(&intent),
+                    intent: intent_value,
+                    exported_at_ms: unix_time_ms(),
+                    name: None,
+                    description: None,
+                }
+            }),
+        )
+    }
+}
+
+#[async_trait]
+impl ApiHandler for StandardAssetImportHandler {
+    async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
+        if request.body().len() > STANDARD_TRANSACTION_MAX_BYTES {
+            return json_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "standard_asset_too_large",
+                "Standard asset exceeds the 2 MiB limit",
+            );
+        }
+        let request = match serde_json::from_slice::<StandardAssetImportRequest>(request.body()) {
+            Ok(value) => value,
+            Err(err) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_standard_asset_request",
+                    format!("request body must be JSON: {err}"),
+                );
+            }
+        };
+        let asset = match serde_json::from_value::<StandardAssetEnvelope>(request.asset) {
+            Ok(value) if value.asset_schema == 1 && value.kind == "oxidns_standard_intent" => value,
+            Ok(value) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "unsupported_standard_asset",
+                    format!(
+                        "unsupported asset schema {} or kind '{}'",
+                        value.asset_schema, value.kind
+                    ),
+                );
+            }
+            Err(err) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_standard_asset",
+                    err.to_string(),
+                );
+            }
+        };
+        let (intent, _) = match decode_standard_intent(asset.intent.clone()) {
+            Ok(value) => value,
+            Err(err) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_standard_intent",
+                    err.to_string(),
+                );
+            }
+        };
+        let intent_revision = standard_intent_revision(&intent);
+        match build_plan_response(
+            self.controller.config_path(),
+            StandardPlanRequest {
+                intent: asset.intent,
+                base_config_version: request.base_config_version,
+                base_standard_version: request.base_standard_version,
+                takeover: request.takeover,
+            },
+        ) {
+            Ok(plan) => json_ok(
+                StatusCode::OK,
+                &StandardAssetImportResponse {
+                    ok: true,
+                    asset_schema: asset.asset_schema,
+                    source_intent_schema: asset.intent_schema,
+                    intent_revision,
+                    plan,
+                },
+            ),
+            Err(StandardPlanError::InvalidIntent(message)) => {
+                json_error(StatusCode::BAD_REQUEST, "invalid_standard_intent", message)
+            }
+            Err(StandardPlanError::BuildInfo(message)) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "standard_capabilities_unavailable",
+                message,
+            ),
+            Err(StandardPlanError::Io(message)) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "standard_asset_import_failed",
+                message,
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl ApiHandler for StandardExpertCopyHandler {
+    async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
+        let request = match serde_json::from_slice::<StandardExpertCopyRequest>(request.body()) {
+            Ok(value) => value,
+            Err(err) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_standard_expert_copy_request",
+                    err.to_string(),
+                );
+            }
+        };
+        let (intent, migration) = match decode_standard_intent(request.intent) {
+            Ok(value) => value,
+            Err(err) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_standard_intent",
+                    err.to_string(),
+                );
+            }
+        };
+        let build = match crate::build_info::snapshot() {
+            Ok(value) => value,
+            Err(err) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "standard_capabilities_unavailable",
+                    err.to_string(),
+                );
+            }
+        };
+        let capabilities = StandardCapabilities::from_build(
+            build.enabled_features.iter().copied(),
+            &build.supported_plugins,
+        );
+        let plan = compile_standard_intent(intent, &capabilities, None, migration);
+        let Some(generated) = plan.generated else {
+            return json_response(StatusCode::UNPROCESSABLE_ENTITY, &plan);
+        };
+        let validation = match crate::config::validate_text(&generated.yaml) {
+            Ok(value) => value,
+            Err(err) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "standard_expert_copy_invalid",
+                    err.to_string(),
+                );
+            }
+        };
+        json_ok(
+            StatusCode::OK,
+            &json!({
+                "ok": true,
+                "detached": true,
+                "ownership": "expert_unmanaged",
+                "banner": "Detached Expert snapshot; future edits and applies are not owned by Standard Mode.",
+                "yaml": generated.yaml,
+                "configVersion": generated.config_version,
+                "intentRevision": generated.explanation.intent_revision,
+                "dependencyGraph": validation.dependency_graph,
+                "capabilities": generated.explanation.capabilities,
+            }),
+        )
+    }
+}
+
+#[async_trait]
+impl ApiHandler for StandardExpertAnalysisHandler {
+    async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
+        if request.body().len() > STANDARD_TRANSACTION_MAX_BYTES {
+            return json_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "expert_config_too_large",
+                "Expert configuration exceeds the 2 MiB limit",
+            );
+        }
+        let request = match serde_json::from_slice::<StandardExpertAnalysisRequest>(request.body())
+        {
+            Ok(value) => value,
+            Err(err) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_expert_analysis_request",
+                    err.to_string(),
+                );
+            }
+        };
+        let validation = match crate::config::validate_text(&request.yaml) {
+            Ok(value) => value,
+            Err(err) => {
+                return json_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "expert_config_invalid",
+                    err.to_string(),
+                );
+            }
+        };
+        let system_integrations: BTreeSet<_> = validation
+            .dependency_graph
+            .nodes
+            .iter()
+            .filter(|node| {
+                matches!(
+                    node.plugin_type.as_str(),
+                    "ipset" | "nftset" | "mikrotik" | "ros_address_list"
+                )
+            })
+            .map(|node| node.plugin_type.clone())
+            .collect();
+        let expert_only: Vec<_> = validation
+            .dependency_graph
+            .nodes
+            .iter()
+            .filter(|node| !node.tag.starts_with("standard_"))
+            .map(|node| json!({ "tag": node.tag, "pluginType": node.plugin_type, "kind": node.kind }))
+            .collect();
+        json_ok(
+            StatusCode::OK,
+            &json!({
+                "ok": true,
+                "readOnly": true,
+                "pluginCount": validation.plugin_count,
+                "dependencyGraph": validation.dependency_graph,
+                "nativeCapabilityFamilies": ["server", "executor", "matcher", "provider"],
+                "expertOnlyObjects": expert_only,
+                "systemIntegrations": system_integrations,
+                "reverseConversion": {
+                    "available": false,
+                    "reason": "Arbitrary plugin graphs cannot be losslessly reverse-compiled into Standard intent; analysis never mutates configuration."
+                }
+            }),
+        )
+    }
+}
+
+#[async_trait]
+impl ApiHandler for StandardSavedTemplateHandler {
+    async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
+        match *request.method() {
+            Method::GET => match read_asset_store(self.controller.config_path()) {
+                Ok(store) => json_ok(StatusCode::OK, &json!({ "ok": true, "store": store })),
+                Err(message) => json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "standard_asset_store_read_failed",
+                    message,
+                ),
+            },
+            Method::POST | Method::PATCH => {
+                let update = request.method() == Method::PATCH;
+                let payload = match serde_json::from_slice::<StandardSavedTemplateWriteRequest>(
+                    request.body(),
+                ) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return json_error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_saved_template_request",
+                            err.to_string(),
+                        );
+                    }
+                };
+                match save_template(self.controller.config_path(), payload, update) {
+                    Ok(store) => json_ok(StatusCode::OK, &json!({ "ok": true, "store": store })),
+                    Err(AssetStoreError::Conflict(message)) => json_error(
+                        StatusCode::CONFLICT,
+                        "standard_asset_store_conflict",
+                        message,
+                    ),
+                    Err(AssetStoreError::Invalid(message)) => {
+                        json_error(StatusCode::BAD_REQUEST, "invalid_saved_template", message)
+                    }
+                    Err(AssetStoreError::Io(message)) => json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "standard_asset_store_write_failed",
+                        message,
+                    ),
+                }
+            }
+            Method::DELETE => {
+                let payload = match serde_json::from_slice::<StandardSavedTemplateDeleteRequest>(
+                    request.body(),
+                ) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return json_error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_saved_template_request",
+                            err.to_string(),
+                        );
+                    }
+                };
+                match delete_template(self.controller.config_path(), payload) {
+                    Ok(store) => json_ok(StatusCode::OK, &json!({ "ok": true, "store": store })),
+                    Err(AssetStoreError::Conflict(message)) => json_error(
+                        StatusCode::CONFLICT,
+                        "standard_asset_store_conflict",
+                        message,
+                    ),
+                    Err(AssetStoreError::Invalid(message)) => {
+                        json_error(StatusCode::BAD_REQUEST, "invalid_saved_template", message)
+                    }
+                    Err(AssetStoreError::Io(message)) => json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "standard_asset_store_write_failed",
+                        message,
+                    ),
+                }
+            }
+            _ => json_error(
+                StatusCode::METHOD_NOT_ALLOWED,
+                "method_not_allowed",
+                "unsupported saved-template operation",
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl ApiHandler for StandardSavedTemplateDuplicateHandler {
+    async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
+        let payload =
+            match serde_json::from_slice::<StandardSavedTemplateDuplicateRequest>(request.body()) {
+                Ok(value) => value,
+                Err(err) => {
+                    return json_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_saved_template_request",
+                        err.to_string(),
+                    );
+                }
+            };
+        match duplicate_template(self.controller.config_path(), payload) {
+            Ok(store) => json_ok(StatusCode::OK, &json!({ "ok": true, "store": store })),
+            Err(AssetStoreError::Conflict(message)) => json_error(
+                StatusCode::CONFLICT,
+                "standard_asset_store_conflict",
+                message,
+            ),
+            Err(AssetStoreError::Invalid(message)) => {
+                json_error(StatusCode::BAD_REQUEST, "invalid_saved_template", message)
+            }
+            Err(AssetStoreError::Io(message)) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "standard_asset_store_write_failed",
+                message,
+            ),
+        }
+    }
+}
+
 pub fn register_builtin_routes(
     register: &ApiRegister,
     controller: Arc<AppController>,
@@ -491,7 +1042,42 @@ pub fn register_builtin_routes(
     )?;
     register.register_post(
         "/standard/history/restore",
-        Arc::new(StandardHistoryRestoreHandler { controller }),
+        Arc::new(StandardHistoryRestoreHandler {
+            controller: controller.clone(),
+        }),
+    )?;
+    register.register_get(
+        "/standard/assets/export",
+        Arc::new(StandardAssetExportHandler {
+            controller: controller.clone(),
+        }),
+    )?;
+    register.register_post(
+        "/standard/assets/import",
+        Arc::new(StandardAssetImportHandler {
+            controller: controller.clone(),
+        }),
+    )?;
+    register.register_post(
+        "/standard/assets/expert-copy",
+        Arc::new(StandardExpertCopyHandler),
+    )?;
+    register.register_post(
+        "/standard/assets/expert-analysis",
+        Arc::new(StandardExpertAnalysisHandler),
+    )?;
+    for method in [Method::GET, Method::POST, Method::PATCH, Method::DELETE] {
+        register.register_route(
+            method,
+            "/standard/assets/templates",
+            Arc::new(StandardSavedTemplateHandler {
+                controller: controller.clone(),
+            }),
+        )?;
+    }
+    register.register_post(
+        "/standard/assets/templates/duplicate",
+        Arc::new(StandardSavedTemplateDuplicateHandler { controller }),
     )?;
     Ok(())
 }
@@ -519,17 +1105,23 @@ fn build_plan_response(
         &build.supported_plugins,
     );
     let mut plan = compile_standard_intent(intent, &capabilities, Some(&current_config), migration);
-    if let Some(generated) = plan.generated.as_ref()
-        && let Err(message) = preflight_candidate(config_path, &generated.yaml)
-    {
-        plan.diagnostics.push(StandardDiagnostic {
-            severity: StandardDiagnosticSeverity::Error,
-            code: "generated_config_invalid".to_string(),
-            path: "generated.yaml".to_string(),
-            message,
-        });
-        plan.can_apply = false;
-    }
+    let dependency_graph = if let Some(generated) = plan.generated.as_ref() {
+        match preflight_candidate(config_path, &generated.yaml) {
+            Ok(summary) => Some(summary.dependency_graph),
+            Err(message) => {
+                plan.diagnostics.push(StandardDiagnostic {
+                    severity: StandardDiagnosticSeverity::Error,
+                    code: "generated_config_invalid".to_string(),
+                    path: "generated.yaml".to_string(),
+                    message,
+                });
+                plan.can_apply = false;
+                None
+            }
+        }
+    } else {
+        None
+    };
     let previous_files = managed_files_from_state(&standard.config);
     let candidate_files: BTreeSet<_> = plan
         .generated
@@ -542,7 +1134,18 @@ fn build_plan_response(
         "retained": candidate_files.intersection(&previous_files).collect::<Vec<_>>(),
         "orphaned": previous_files.difference(&candidate_files).collect::<Vec<_>>(),
     });
-    let semantic_diff = semantic_diff(&current_config, &plan);
+    let previous_intent = standard
+        .config
+        .pointer("/standard/settings")
+        .cloned()
+        .and_then(|value| decode_standard_intent(value).ok().map(|(intent, _)| intent));
+    let semantic_diff = semantic_diff(
+        &current_config,
+        previous_intent
+            .as_ref()
+            .filter(|_| ownership == StandardOwnership::Managed),
+        &plan,
+    );
     let mut blockers = Vec::new();
     if request
         .base_config_version
@@ -588,6 +1191,7 @@ fn build_plan_response(
         standard_version: standard.version,
         ownership,
         semantic_diff,
+        dependency_graph,
         blockers,
         can_apply,
         plan,
@@ -633,14 +1237,73 @@ fn classify_ownership(
     }
 }
 
-fn semantic_diff(current_config: &str, plan: &StandardPlan) -> StandardSemanticDiff {
+fn semantic_diff(
+    current_config: &str,
+    previous_intent: Option<&StandardIntent>,
+    plan: &StandardPlan,
+) -> StandardSemanticDiff {
     let current_tags = plugin_tags(current_config);
     let generated_tags: BTreeSet<String> = plan
         .generated
         .as_ref()
         .map(|generated| generated.generated_tags.iter().cloned().collect())
         .unwrap_or_default();
+    let candidate = &plan.normalized_intent;
+    let previous_objects = previous_intent.map(intent_objects).unwrap_or_default();
+    let candidate_objects = intent_objects(candidate);
+    let keys: BTreeSet<_> = previous_objects
+        .keys()
+        .chain(candidate_objects.keys())
+        .cloned()
+        .collect();
+    let mut objects = Vec::new();
+    let mut affected = StandardSemanticImpact::default();
+    for (category, stable_id) in keys {
+        let previous = previous_objects.get(&(category.clone(), stable_id.clone()));
+        let next = candidate_objects.get(&(category.clone(), stable_id.clone()));
+        let (change, changed_fields) = match (previous, next) {
+            (None, Some(_)) => ("added", Vec::new()),
+            (Some(_), None) => ("removed", Vec::new()),
+            (Some(previous), Some(next)) if previous != next => {
+                let mut fields = Vec::new();
+                changed_json_fields(previous, next, "", &mut fields);
+                ("modified", fields)
+            }
+            (Some(_), Some(_)) => ("unchanged", Vec::new()),
+            (None, None) => continue,
+        };
+        if change != "unchanged" {
+            add_semantic_impact(
+                &mut affected,
+                &category,
+                &stable_id,
+                candidate,
+                previous_intent,
+            );
+        }
+        objects.push(StandardSemanticObjectDiff {
+            category,
+            stable_id,
+            change,
+            changed_fields,
+        });
+    }
+    let changed = objects
+        .iter()
+        .filter(|item| item.change != "unchanged")
+        .count();
+    let mut summary = vec![format!("{changed} Standard intent object(s) changed")];
+    if previous_intent.is_none() {
+        summary
+            .push("No trusted managed Standard baseline; impact is a takeover preview".to_string());
+    }
     StandardSemanticDiff {
+        schema: 1,
+        baseline: if previous_intent.is_some() {
+            "managed"
+        } else {
+            "takeover"
+        },
         preserved_top_level: vec![
             "include".to_string(),
             "api".to_string(),
@@ -653,6 +1316,135 @@ fn semantic_diff(current_config: &str, plan: &StandardPlan) -> StandardSemanticD
             .cloned()
             .collect(),
         removed_plugin_tags: current_tags.difference(&generated_tags).cloned().collect(),
+        objects,
+        affected,
+        summary,
+    }
+}
+
+fn intent_objects(intent: &StandardIntent) -> BTreeMap<(String, String), Value> {
+    let value = serde_json::to_value(intent).expect("Standard intent should serialize");
+    let mut result = BTreeMap::new();
+    for (category, pointer) in [
+        ("upstream_group", "/upstreamGroups"),
+        ("path", "/paths"),
+        ("routing_rule", "/routing/rules"),
+        ("exception", "/exceptions"),
+        ("device", "/devices"),
+        ("dedicated_group", "/dedicatedGroups"),
+        ("dynamic_learning", "/dynamicLearning/profiles"),
+        ("advanced_rule", "/advancedRules"),
+        ("filter_subscription", "/filtering/subscriptions"),
+    ] {
+        for item in value
+            .pointer(pointer)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(id) = item.get("id").and_then(Value::as_str) {
+                result.insert((category.to_string(), id.to_string()), item.clone());
+            }
+        }
+    }
+    for (category, pointer) in [
+        ("listen", "/listen"),
+        ("cache", "/cache"),
+        ("filtering", "/filtering"),
+        ("local", "/local"),
+        ("rule_data", "/ruleData"),
+        ("smart_routing", "/smartRouting"),
+        ("query_log", "/queryLog"),
+        ("system", "/system"),
+    ] {
+        if let Some(item) = value.pointer(pointer) {
+            result.insert((category.to_string(), "$".to_string()), item.clone());
+        }
+    }
+    result
+}
+
+fn changed_json_fields(previous: &Value, next: &Value, prefix: &str, fields: &mut Vec<String>) {
+    match (previous, next) {
+        (Value::Object(previous), Value::Object(next)) => {
+            let keys: BTreeSet<_> = previous.keys().chain(next.keys()).cloned().collect();
+            for key in keys {
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                match (previous.get(&key), next.get(&key)) {
+                    (Some(left), Some(right)) => changed_json_fields(left, right, &path, fields),
+                    _ => fields.push(path),
+                }
+            }
+        }
+        _ if previous != next => fields.push(prefix.to_string()),
+        _ => {}
+    }
+}
+
+fn add_semantic_impact(
+    impact: &mut StandardSemanticImpact,
+    category: &str,
+    stable_id: &str,
+    candidate: &StandardIntent,
+    previous: Option<&StandardIntent>,
+) {
+    match category {
+        "path" => {
+            impact.paths.insert(stable_id.to_string());
+            impact.caches.insert(stable_id.to_string());
+        }
+        "upstream_group" => {
+            impact.upstream_groups.insert(stable_id.to_string());
+            for path in candidate
+                .paths
+                .iter()
+                .chain(previous.into_iter().flat_map(|item| &item.paths))
+                .filter(|path| path.upstream_group_id == stable_id)
+            {
+                impact.paths.insert(path.id.clone());
+                impact.caches.insert(path.id.clone());
+            }
+        }
+        "routing_rule" | "exception" | "advanced_rule" | "dynamic_learning" => {
+            impact.rules.insert(format!("{category}:{stable_id}"));
+        }
+        "dedicated_group" => {
+            impact.paths.insert(format!("dedicated:{stable_id}"));
+            impact.caches.insert(format!("dedicated:{stable_id}"));
+            impact.listeners.insert(format!("dedicated:{stable_id}"));
+        }
+        "listen" => {
+            impact.listeners.insert("main".to_string());
+        }
+        "cache" => {
+            impact
+                .caches
+                .extend(candidate.paths.iter().map(|path| path.id.clone()));
+        }
+        "filtering"
+        | "filter_subscription"
+        | "local"
+        | "rule_data"
+        | "smart_routing"
+        | "query_log"
+        | "system" => {
+            impact
+                .paths
+                .extend(candidate.paths.iter().map(|path| path.id.clone()));
+        }
+        _ => {}
+    }
+    if category == "dynamic_learning" {
+        impact.managed_files.insert(format!(
+            "./data/standard-dynamic-learning/{stable_id}.rules"
+        ));
+        impact.managed_files.insert(format!(
+            "./data/standard-dynamic-learning/{stable_id}.meta.json"
+        ));
     }
 }
 
@@ -857,9 +1649,11 @@ fn candidate_standard_state(
         json!({
             "configVersion": generated.config_version,
             "settingsRevision": revision,
+            "intentRevision": standard_intent_revision(&plan.normalized_intent),
             "generatedTags": generated.generated_tags,
             "tagMap": generated.tag_map,
             "summary": generated.summary,
+            "explanation": generated.explanation,
             "managedFiles": generated.managed_files,
             "generatedAtMs": unix_time_ms(),
             "transactionId": transaction_id,
@@ -868,11 +1662,13 @@ fn candidate_standard_state(
     Ok(state)
 }
 
-fn preflight_candidate(config_path: &Path, yaml: &str) -> std::result::Result<(), String> {
+fn preflight_candidate(
+    config_path: &Path,
+    yaml: &str,
+) -> std::result::Result<crate::config::ConfigValidationSummary, String> {
     let temp_path = adjacent_temp_path(config_path, "standard-preflight");
     atomic_replace(&temp_path, yaml.as_bytes(), true)?;
     let result = crate::config::validate_file(&temp_path)
-        .map(|_| ())
         .map_err(|err| format!("generated configuration failed backend validation: {err}"));
     let _ = fs::remove_file(&temp_path);
     result
@@ -1100,6 +1896,198 @@ fn history_path(config_path: &Path) -> PathBuf {
     append_path_suffix(config_path, ".standard-history.json")
 }
 
+fn asset_store_path(config_path: &Path) -> PathBuf {
+    append_path_suffix(config_path, ".standard-assets.json")
+}
+
+#[derive(Debug)]
+enum AssetStoreError {
+    Conflict(String),
+    Invalid(String),
+    Io(String),
+}
+
+fn read_asset_store(config_path: &Path) -> std::result::Result<StandardAssetStore, String> {
+    let mut store = read_bounded_json::<StandardAssetStore>(
+        &asset_store_path(config_path),
+        "Standard Mode asset store",
+    )?
+    .unwrap_or_else(|| StandardAssetStore {
+        schema: STANDARD_ASSET_STORE_SCHEMA,
+        version: String::new(),
+        templates: Vec::new(),
+    });
+    if store.schema != STANDARD_ASSET_STORE_SCHEMA {
+        return Err(format!(
+            "unsupported Standard asset-store schema {}",
+            store.schema
+        ));
+    }
+    if store.templates.len() > STANDARD_ASSET_STORE_MAX_ENTRIES {
+        return Err("Standard asset store exceeds 64 templates".to_string());
+    }
+    let computed = asset_store_version(&store.templates)?;
+    if store.version.is_empty() {
+        store.version = computed;
+    } else if store.version != computed {
+        return Err("Standard asset store version does not match its contents".to_string());
+    }
+    Ok(store)
+}
+
+fn asset_store_version(templates: &[StandardSavedTemplate]) -> std::result::Result<String, String> {
+    serde_json::to_string(templates)
+        .map(|value| format!("sha256:{}", config_version(&value)))
+        .map_err(|err| format!("failed to serialize Standard assets: {err}"))
+}
+
+fn validate_saved_template(template: &StandardSavedTemplate) -> std::result::Result<(), String> {
+    if template.id.is_empty()
+        || template.id.len() > 64
+        || !template
+            .id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err("saved-template id must be 1-64 ASCII letters, digits, '-' or '_'".to_string());
+    }
+    if template.name.trim().is_empty() || template.name.len() > 128 {
+        return Err("saved-template name must be 1-128 characters".to_string());
+    }
+    if template
+        .description
+        .as_ref()
+        .is_some_and(|value| value.len() > 1024)
+    {
+        return Err("saved-template description exceeds 1024 characters".to_string());
+    }
+    expand_standard_template(
+        StandardIntent::default(),
+        template.kind,
+        template.parameters.clone(),
+    )
+    .map(|_| ())
+    .map_err(|message| format!("saved-template parameters are invalid: {message}"))
+}
+
+fn check_asset_store_version(
+    store: &StandardAssetStore,
+    expected: Option<&str>,
+) -> std::result::Result<(), AssetStoreError> {
+    if expected.is_some_and(|value| value != store.version) {
+        return Err(AssetStoreError::Conflict(
+            "Standard asset store changed after it was loaded".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn write_asset_store(
+    config_path: &Path,
+    mut store: StandardAssetStore,
+) -> std::result::Result<StandardAssetStore, AssetStoreError> {
+    store.schema = STANDARD_ASSET_STORE_SCHEMA;
+    store
+        .templates
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    store.version = asset_store_version(&store.templates).map_err(AssetStoreError::Io)?;
+    write_bounded_json(&asset_store_path(config_path), &store).map_err(AssetStoreError::Io)?;
+    Ok(store)
+}
+
+fn save_template(
+    config_path: &Path,
+    request: StandardSavedTemplateWriteRequest,
+    update: bool,
+) -> std::result::Result<StandardAssetStore, AssetStoreError> {
+    let _guard = config_mutation_guard().map_err(AssetStoreError::Io)?;
+    let mut store = read_asset_store(config_path).map_err(AssetStoreError::Io)?;
+    check_asset_store_version(&store, request.expected_version.as_deref())?;
+    validate_saved_template(&request.template).map_err(AssetStoreError::Invalid)?;
+    let position = store
+        .templates
+        .iter()
+        .position(|item| item.id == request.template.id);
+    if update && position.is_none() {
+        return Err(AssetStoreError::Invalid(
+            "saved template does not exist".to_string(),
+        ));
+    }
+    if !update && position.is_some() {
+        return Err(AssetStoreError::Conflict(
+            "saved-template id already exists".to_string(),
+        ));
+    }
+    let now = unix_time_ms();
+    let mut template = request.template;
+    template.updated_at_ms = now;
+    if let Some(position) = position {
+        template.created_at_ms = store.templates[position].created_at_ms;
+        store.templates[position] = template;
+    } else {
+        if store.templates.len() >= STANDARD_ASSET_STORE_MAX_ENTRIES {
+            return Err(AssetStoreError::Invalid(
+                "saved-template limit of 64 reached".to_string(),
+            ));
+        }
+        template.created_at_ms = now;
+        store.templates.push(template);
+    }
+    write_asset_store(config_path, store)
+}
+
+fn delete_template(
+    config_path: &Path,
+    request: StandardSavedTemplateDeleteRequest,
+) -> std::result::Result<StandardAssetStore, AssetStoreError> {
+    let _guard = config_mutation_guard().map_err(AssetStoreError::Io)?;
+    let mut store = read_asset_store(config_path).map_err(AssetStoreError::Io)?;
+    check_asset_store_version(&store, request.expected_version.as_deref())?;
+    let previous_len = store.templates.len();
+    store.templates.retain(|item| item.id != request.id);
+    if store.templates.len() == previous_len {
+        return Err(AssetStoreError::Invalid(
+            "saved template does not exist".to_string(),
+        ));
+    }
+    write_asset_store(config_path, store)
+}
+
+fn duplicate_template(
+    config_path: &Path,
+    request: StandardSavedTemplateDuplicateRequest,
+) -> std::result::Result<StandardAssetStore, AssetStoreError> {
+    let _guard = config_mutation_guard().map_err(AssetStoreError::Io)?;
+    let mut store = read_asset_store(config_path).map_err(AssetStoreError::Io)?;
+    check_asset_store_version(&store, request.expected_version.as_deref())?;
+    if store.templates.len() >= STANDARD_ASSET_STORE_MAX_ENTRIES {
+        return Err(AssetStoreError::Invalid(
+            "saved-template limit of 64 reached".to_string(),
+        ));
+    }
+    if store.templates.iter().any(|item| item.id == request.new_id) {
+        return Err(AssetStoreError::Conflict(
+            "saved-template id already exists".to_string(),
+        ));
+    }
+    let mut copy = store
+        .templates
+        .iter()
+        .find(|item| item.id == request.id)
+        .cloned()
+        .ok_or_else(|| AssetStoreError::Invalid("saved template does not exist".to_string()))?;
+    copy.id = request.new_id;
+    copy.name = request.new_name;
+    copy.parameters.namespace = copy.id.clone();
+    copy.parameters.name = copy.name.clone();
+    let now = unix_time_ms();
+    copy.created_at_ms = now;
+    copy.updated_at_ms = now;
+    validate_saved_template(&copy).map_err(AssetStoreError::Invalid)?;
+    store.templates.push(copy);
+    write_asset_store(config_path, store)
+}
+
 fn append_path_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut value = path.as_os_str().to_owned();
     value.push(suffix);
@@ -1142,6 +2130,17 @@ fn append_history_entry(
             config_version: journal.candidate_config_version.clone(),
             standard_version: journal.candidate_standard_version.clone(),
             settings,
+            intent_revision: journal
+                .candidate_standard
+                .pointer("/standard/meta/lastGenerated/intentRevision")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_default(),
+            summary: journal
+                .candidate_standard
+                .pointer("/standard/meta/lastGenerated/summary")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok()),
         },
     );
     history.entries.truncate(STANDARD_HISTORY_MAX_ENTRIES);
@@ -1189,6 +2188,15 @@ fn list_history(config_path: &Path) -> std::result::Result<Vec<StandardHistoryIt
                 settings_schema,
                 upstream_group_count,
                 path_count,
+                intent_revision: if entry.intent_revision.is_empty() {
+                    decode_standard_intent(entry.settings.clone())
+                        .ok()
+                        .map(|(intent, _)| standard_intent_revision(&intent))
+                        .unwrap_or_default()
+                } else {
+                    entry.intent_revision
+                },
+                summary: entry.summary,
             }
         })
         .collect())
@@ -1564,7 +2572,164 @@ mod tests {
         let body = response_json(response).await;
         assert_eq!(body["can_apply"], true);
         assert_eq!(body["semantic_diff"]["removed_plugin_tags"][0], "existing");
+        assert_eq!(body["semantic_diff"]["schema"], 1);
+        assert_eq!(body["semantic_diff"]["baseline"], "takeover");
+        assert!(body["semantic_diff"]["affected"]["paths"].is_array());
         assert!(body["plan"]["generated"]["yaml"].is_string());
+        assert_eq!(body["plan"]["generated"]["explanation"]["schema"], 1);
+        assert!(body["dependency_graph"]["nodes"].is_array());
+    }
+
+    #[tokio::test]
+    async fn standard_assets_round_trip_current_and_migrate_legacy_without_writes() {
+        let (controller, mut receiver, _dir) = controller_with_receiver();
+        let apply = StandardApplyHandler {
+            controller: controller.clone(),
+        }
+        .handle(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/standard/apply")
+                .body(Bytes::from(apply_body(&controller).to_string()))
+                .expect("apply request"),
+        )
+        .await;
+        assert_eq!(apply.status(), StatusCode::ACCEPTED);
+        assert!(receiver.try_recv().is_ok());
+        assert!(finalize_pending_transaction(controller.config_path()).expect("finalize"));
+
+        let exported = response_json(
+            StandardAssetExportHandler {
+                controller: controller.clone(),
+            }
+            .handle(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/standard/assets/export")
+                    .body(Bytes::new())
+                    .expect("export request"),
+            )
+            .await,
+        )
+        .await;
+        let config_before_import =
+            fs::read(controller.config_path()).expect("read config before import");
+        let current_import = response_json(
+            StandardAssetImportHandler {
+                controller: controller.clone(),
+            }
+            .handle(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/standard/assets/import")
+                    .body(Bytes::from(
+                        json!({ "asset": exported["asset"], "takeover": true }).to_string(),
+                    ))
+                    .expect("current import request"),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(current_import["ok"], true);
+        assert_eq!(
+            current_import["intent_revision"],
+            exported["asset"]["intentRevision"]
+        );
+        assert_eq!(current_import["plan"]["can_apply"], true);
+
+        let legacy_asset = json!({
+            "assetSchema": 1,
+            "kind": "oxidns_standard_intent",
+            "oxidnsVersion": "legacy",
+            "bundle": "standard",
+            "intentSchema": 1,
+            "intentRevision": "legacy-untrusted",
+            "intent": {
+                "schema": 1,
+                "listen": { "address": "127.0.0.1:5533", "udp": true, "tcp": true },
+                "upstreams": [{
+                    "id": "local",
+                    "name": "本地上游",
+                    "address": "127.0.0.1:5353",
+                    "enabled": true
+                }]
+            },
+            "exportedAtMs": 1
+        });
+        let legacy_import = response_json(
+            StandardAssetImportHandler {
+                controller: controller.clone(),
+            }
+            .handle(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/standard/assets/import")
+                    .body(Bytes::from(
+                        json!({ "asset": legacy_asset, "takeover": true }).to_string(),
+                    ))
+                    .expect("legacy import request"),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(legacy_import["ok"], true);
+        assert_eq!(legacy_import["source_intent_schema"], 1);
+        assert_eq!(
+            legacy_import["plan"]["plan"]["normalizedIntent"]["schema"],
+            6
+        );
+        assert_eq!(
+            fs::read(controller.config_path()).expect("read config after import"),
+            config_before_import,
+            "asset import must remain a read-only Plan operation"
+        );
+    }
+
+    #[test]
+    fn saved_templates_are_versioned_bounded_and_duplicated_without_external_state() {
+        let (controller, _dir) = controller();
+        let intent = StandardIntent::default();
+        let store = read_asset_store(controller.config_path()).expect("empty asset store");
+        let template = StandardSavedTemplate {
+            id: "local_template".to_string(),
+            name: "Local template".to_string(),
+            description: Some("stored beside the OxiDNS config".to_string()),
+            kind: StandardTemplateKind::LowLatency,
+            parameters: StandardTemplateParameters {
+                namespace: "local_template".to_string(),
+                name: "Local template".to_string(),
+                description: None,
+                domains: vec!["domain:example.com".to_string()],
+                upstreams: intent.upstream_groups[0].upstreams.clone(),
+                listener_address: None,
+            },
+            source_intent_schema: intent.schema,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        let saved = save_template(
+            controller.config_path(),
+            StandardSavedTemplateWriteRequest {
+                expected_version: Some(store.version),
+                template,
+            },
+            false,
+        )
+        .expect("save template");
+        assert_eq!(saved.templates.len(), 1);
+        let duplicated = duplicate_template(
+            controller.config_path(),
+            StandardSavedTemplateDuplicateRequest {
+                expected_version: Some(saved.version),
+                id: "local_template".to_string(),
+                new_id: "local_template_copy".to_string(),
+                new_name: "Local template copy".to_string(),
+            },
+        )
+        .expect("duplicate template");
+        assert_eq!(duplicated.templates.len(), 2);
+        assert_ne!(duplicated.templates[0].id, duplicated.templates[1].id);
+        assert!(asset_store_path(controller.config_path()).exists());
     }
 
     #[tokio::test]
@@ -1933,6 +3098,8 @@ mod tests {
                     config_version: format!("config-{index}"),
                     standard_version: format!("standard-{index}"),
                     settings: json!({ "schema": 4, "upstreamGroups": [], "paths": [] }),
+                    intent_revision: String::new(),
+                    summary: None,
                 },
             );
             history.entries.truncate(STANDARD_HISTORY_MAX_ENTRIES);

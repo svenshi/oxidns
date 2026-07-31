@@ -405,6 +405,7 @@ export interface StandardTagMap {
   filterSubscriptions?: Record<string, StandardSubscriptionTagMap>;
   local?: Record<string, string>;
   upstreamGroups: Record<string, string>;
+  upstreamMembers?: Record<string, Record<string, string>>;
   paths: Record<string, string>;
   routingRules: Record<string, string>;
   exceptionRules: Record<string, string>;
@@ -464,12 +465,14 @@ export interface StandardGenerationSummary {
 export interface StandardGeneratedMetadata {
   configVersion: string | null;
   settingsRevision: string;
+  intentRevision?: string;
   generatedTags: string[];
   tagMap: StandardTagMap;
   summary: StandardGenerationSummary;
   managedFiles?: string[];
   generatedAtMs: number;
   transactionId?: string;
+  explanation?: StandardCompilationExplanation;
 }
 
 export type StandardDiagnosticSeverity = "error" | "warning" | "suggestion";
@@ -484,10 +487,73 @@ export interface StandardDiagnostic {
 export type StandardOwnership = "managed" | "modified" | "unmanaged";
 
 export interface StandardSemanticDiff {
+  schema?: number;
+  baseline?: "managed" | "takeover";
   preserved_top_level: string[];
   generated_plugin_tags: string[];
   replaced_plugin_tags: string[];
   removed_plugin_tags: string[];
+  objects?: Array<{
+    category: string;
+    stable_id: string;
+    change: "added" | "removed" | "modified" | "unchanged";
+    changed_fields: string[];
+  }>;
+  affected?: {
+    paths: string[];
+    rules: string[];
+    caches: string[];
+    listeners: string[];
+    upstream_groups: string[];
+    managed_files: string[];
+  };
+  summary?: string[];
+}
+
+export interface StandardCompilationExplanation {
+  schema: number;
+  intentRevision: string;
+  mappings: Array<{
+    intentPath: string;
+    category: string;
+    stableId: string;
+    generatedTags: string[];
+  }>;
+  finalPriority: Array<{
+    ordinal: number;
+    slot: number;
+    category: string;
+    stableId: string;
+    phase: string;
+    matcherTags: string[];
+    actionTag: string;
+    selectedPathId?: string;
+  }>;
+  pathBoundaries: Array<{
+    pathId: string;
+    pathTag: string;
+    upstreamGroupId: string;
+    upstreamGroupTag: string;
+    upstreamMemberIds: string[];
+    cacheTag?: string;
+    cacheNamespace: string;
+    cacheEnabled: boolean;
+    ecsMode: string;
+    ecsInKey: boolean;
+    filteringEnabled: boolean;
+    queryLogEnabled: boolean;
+    dualStack: string;
+    ipSelectionEnabled: boolean;
+  }>;
+  generatedTags: string[];
+  capabilities: {
+    features: string[];
+    servers: string[];
+    executors: string[];
+    matchers: string[];
+    providers: string[];
+    missingOptional: string[];
+  };
 }
 
 export interface StandardApplyBlocker {
@@ -504,6 +570,7 @@ export interface StandardGeneratedPlan {
   tagMap: StandardTagMap;
   summary: StandardGenerationSummary;
   managedFiles?: string[];
+  explanation?: StandardCompilationExplanation;
 }
 
 export interface StandardPolicyPlan {
@@ -525,6 +592,7 @@ export interface StandardPlanResponse {
   standard_version: string;
   ownership: StandardOwnership;
   semantic_diff: StandardSemanticDiff;
+  dependency_graph?: unknown;
   blockers: StandardApplyBlocker[];
   can_apply: boolean;
   plan: StandardPolicyPlan;

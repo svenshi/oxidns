@@ -18,11 +18,16 @@ import {
   appendDynamicDomainRules,
   clearDynamicDomainRules,
   fetchDynamicDomainStatus,
+  fetchSavedStandardTemplates,
+  saveStandardTemplate,
+  duplicateStandardTemplate,
+  deleteStandardTemplate,
   listDynamicDomainRules,
   previewStandardTemplate,
   removeDynamicDomainRules,
   setLearnDomainPaused,
   type DynamicDomainStatusResponse,
+  type StandardAssetStore,
 } from "@/lib/oxidns-api";
 import type {
   StandardAdvancedCondition,
@@ -143,6 +148,7 @@ export default function StandardAdvancedPage() {
   const [preview, setPreview] = useState<StandardTemplatePreviewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
+  const [assetStore, setAssetStore] = useState<StandardAssetStore | null>(null);
   const settings = draft ?? stored;
   const busy = isConfigSaving || isApplying;
   const baseUpstreams = useMemo(() => {
@@ -158,6 +164,19 @@ export default function StandardAdvancedPage() {
     }
     return values;
   }, [encryptedAddress, kind, settings.upstreamGroups]);
+  const templateParameters = useMemo(() => ({
+    namespace,
+    name: namespace,
+    domains: rows(domains),
+    upstreams: baseUpstreams,
+    ...(kind === "internal_domains" ? { listenerAddress: "127.0.0.1:5539" } : {}),
+  }), [baseUpstreams, domains, kind, namespace]);
+
+  useEffect(() => {
+    void fetchSavedStandardTemplates()
+      .then((response) => setAssetStore(response.store))
+      .catch(() => undefined);
+  }, []);
 
   const runPreview = async () => {
     setPreviewing(true);
@@ -166,13 +185,7 @@ export default function StandardAdvancedPage() {
       setPreview(await previewStandardTemplate({
         baseIntent: settings,
         kind,
-        parameters: {
-          namespace,
-          name: namespace,
-          domains: rows(domains),
-          upstreams: baseUpstreams,
-          ...(kind === "internal_domains" ? { listenerAddress: "127.0.0.1:5539" } : {}),
-        },
+        parameters: templateParameters,
         takeover: true,
       }));
     } catch (cause) {
@@ -180,6 +193,33 @@ export default function StandardAdvancedPage() {
     } finally {
       setPreviewing(false);
     }
+  };
+
+  const saveTemplateAsset = async () => {
+    setError(null);
+    try {
+      const response = await saveStandardTemplate({
+        id: namespace,
+        name: namespace,
+        kind,
+        parameters: templateParameters,
+        sourceIntentSchema: settings.schema,
+        createdAtMs: 0,
+        updatedAtMs: 0,
+      }, assetStore?.version);
+      setAssetStore(response.store);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  const loadSavedTemplate = (id: string) => {
+    const item = assetStore?.templates.find((template) => template.id === id);
+    if (!item) return;
+    setKind(item.kind);
+    setNamespace(item.parameters.namespace);
+    setDomains(item.parameters.domains.join("\n"));
+    setPreview(null);
   };
 
   const save = async () => {
@@ -229,8 +269,14 @@ export default function StandardAdvancedPage() {
                 {t(WEBUI.standardAdvanced.preview)}
               </Button>
             </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" variant="outline" onClick={() => void saveTemplateAsset()} disabled={previewing || templateParameters.upstreams.length === 0}>
+                <Save className="size-4" /> {t(WEBUI.standardAdvanced.saveTemplateLocal)}
+              </Button>
+              <span className="text-xs text-muted-foreground">{t(WEBUI.standardAdvanced.savedAssetBoundary)}</span>
+            </div>
             <div><Label>{t(WEBUI.standardAdvanced.domains)}</Label><Textarea className="mt-2" value={domains} onChange={(event) => setDomains(event.target.value)} /></div>
-            {kind === "privacy_dns" ? <div><Label>Encrypted upstream URL</Label><Input className="mt-2" value={encryptedAddress} onChange={(event) => setEncryptedAddress(event.target.value)} placeholder="https://resolver.example/dns-query" /></div> : null}
+            {kind === "privacy_dns" ? <div><Label>{t(WEBUI.standardAdvanced.encryptedUpstreamUrl)}</Label><Input className="mt-2" value={encryptedAddress} onChange={(event) => setEncryptedAddress(event.target.value)} placeholder="https://resolver.example/dns-query" /></div> : null}
             {preview ? <div className="rounded-lg border p-3 text-sm">
               <div className="flex flex-wrap items-center gap-2">
                 <span>{t(WEBUI.standardAdvanced.previewObjects)}:</span>
@@ -240,6 +286,15 @@ export default function StandardAdvancedPage() {
                 </Button>
               </div>
               {preview.plan.plan.diagnostics.map((item) => <p key={`${item.code}:${item.path}`} className="mt-2 text-muted-foreground">{item.code}: {item.message}</p>)}
+            </div> : null}
+            {assetStore?.templates.length ? <div className="space-y-2 rounded-lg border p-3">
+              <p className="text-sm font-medium">{t(WEBUI.standardAdvanced.savedTemplates)}</p>
+              {assetStore.templates.map((item) => <div key={item.id} className="flex flex-wrap items-center gap-2 text-xs">
+                <Badge variant="outline">{item.kind}</Badge><code>{item.id}</code>
+                <Button size="sm" variant="ghost" onClick={() => loadSavedTemplate(item.id)}>{t(WEBUI.standardAdvanced.loadTemplate)}</Button>
+                <Button size="sm" variant="ghost" onClick={() => void duplicateStandardTemplate(item.id, `${item.id}_copy`, `${item.name} copy`, assetStore.version).then((response) => setAssetStore(response.store)).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))}>{t(WEBUI.standardAdvanced.duplicateTemplate)}</Button>
+                <Button size="sm" variant="ghost" onClick={() => void deleteStandardTemplate(item.id, assetStore.version).then((response) => setAssetStore(response.store)).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))}><Trash2 className="size-3" />{t(WEBUI.standardAdvanced.deleteTemplate)}</Button>
+              </div>)}
             </div> : null}
           </CardContent>
         </Card>

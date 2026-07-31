@@ -32,6 +32,33 @@ fn default_intent_compiles_deterministically_with_path_scoped_cache() {
 }
 
 #[test]
+fn phase_four_explanation_is_deterministic_and_maps_runtime_boundaries() {
+    let intent = StandardIntent::default();
+    let expected_revision = standard_intent_revision(&intent);
+    let plan = compile_standard_intent(intent, &StandardCapabilities::for_tests(), None, None);
+    let generated = plan.generated.expect("default intent should compile");
+    assert_eq!(generated.explanation.schema, 1);
+    assert_eq!(generated.explanation.intent_revision, expected_revision);
+    assert_eq!(plan.details["intentRevision"], expected_revision);
+    let boundary = generated
+        .explanation
+        .path_boundaries
+        .iter()
+        .find(|item| item.path_id == "default")
+        .expect("default path explanation");
+    assert!(boundary.cache_enabled);
+    assert_eq!(boundary.cache_namespace, "path:default");
+    assert_eq!(boundary.upstream_group_id, "default");
+    assert_eq!(boundary.upstream_member_ids, ["alidns", "cloudflare"]);
+    assert_eq!(
+        generated.tag_map.upstream_members["default"]["alidns"],
+        "alidns"
+    );
+    assert!(generated.yaml.contains("max_steps: 512"));
+    assert!(generated.yaml.contains(expected_revision.as_str()));
+}
+
+#[test]
 fn dedicated_group_compiles_complete_native_bundle_and_deletes_without_residue() {
     use super::model::{
         StandardDedicatedGroup, StandardDedicatedListener, StandardDedicatedPathPolicy,

@@ -71,7 +71,16 @@ export function explainStandardQueryRecord(
   metadata: StandardGeneratedMetadata | null,
 ): StandardQueryExplanation {
   const steps = queryRecordSteps(record);
-  const indexes = buildStandardQueryIndexes(settings, metadata);
+  const recordedIntentRevision = (record as Partial<QueryRecordDetail>).diagnosis
+    ?.intentRevision;
+  const activeIntentRevision =
+    metadata?.intentRevision ?? metadata?.explanation?.intentRevision;
+  const canUseCurrentExplanation =
+    !recordedIntentRevision ||
+    (Boolean(activeIntentRevision) &&
+      recordedIntentRevision === activeIntentRevision);
+  const trustedMetadata = canUseCurrentExplanation ? metadata : null;
+  const indexes = buildStandardQueryIndexes(settings, trustedMetadata);
   const matchedRouting = lastMatchedRule(
     steps,
     indexes.routingRulesByMatcherTag,
@@ -97,7 +106,7 @@ export function explainStandardQueryRecord(
     .find((step) => step.kind === "decision" && step.outcome);
   const fallbackMatch = fallback?.outcome.match(/^(primary|secondary)_(.+)$/);
   const validationResult = decision?.outcome ??
-    (steps.some(
+    (canUseCurrentExplanation && steps.some(
       (step) =>
         step.kind === "matcher" &&
         step.tag === "standard_smart_domestic_response_ip" &&
@@ -105,7 +114,8 @@ export function explainStandardQueryRecord(
     )
       ? "domestic_ip_valid"
       : undefined);
-  const blocked = hasExecutedTag(steps, "standard_blocked");
+  const blocked =
+    canUseCurrentExplanation && hasExecutedTag(steps, "standard_blocked");
   const filteringChecked =
     hasTag(steps, "standard_ad_rules") ||
     steps.some((step) => step.tag && indexes.filteringTags.has(step.tag));
@@ -118,11 +128,11 @@ export function explainStandardQueryRecord(
     : hasTag(steps, "standard_recorder");
 
   return {
-    initialPath: initialPath ? pathRef(initialPath, metadata) : undefined,
-    finalPath: path ? pathRef(path, metadata) : undefined,
-    path: path ? pathRef(path, metadata) : undefined,
+    initialPath: initialPath ? pathRef(initialPath, trustedMetadata) : undefined,
+    finalPath: path ? pathRef(path, trustedMetadata) : undefined,
+    path: path ? pathRef(path, trustedMetadata) : undefined,
     upstreamGroup: upstreamGroup
-      ? upstreamGroupRef(upstreamGroup, metadata)
+      ? upstreamGroupRef(upstreamGroup, trustedMetadata)
       : undefined,
     routingRule: matchedRouting
       ? ruleRef(matchedRouting.rule, matchedRouting.tag)
@@ -152,7 +162,7 @@ export function explainStandardQueryRecord(
     queryLog: queryLogRecorded ? "recorded" : "unknown",
     rawEvents: steps.map(formatRawEvent),
     hasSteps: steps.length > 0,
-    hasTagMap: Boolean(metadata?.tagMap),
+    hasTagMap: canUseCurrentExplanation && Boolean(metadata?.tagMap),
   };
 }
 

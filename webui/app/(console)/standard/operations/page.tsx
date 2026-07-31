@@ -36,14 +36,19 @@ import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
 import {
   deleteCacheEntry,
+  analyzeExpertConfig,
+  copyStandardToExpert,
+  exportStandardAsset,
   fetchCacheDump,
   fetchCacheEntries,
   fetchStandardHistory,
   fetchStandardHistoryRestore,
+  importStandardAsset,
   flushCache,
   loadCacheDump,
   type CacheEntryRow,
   type StandardHistoryItem,
+  type StandardAssetEnvelope,
 } from "@/lib/oxidns-api";
 import { useAppStore } from "@/lib/store";
 
@@ -85,6 +90,15 @@ export default function StandardOperationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const intentInputRef = useRef<HTMLInputElement>(null);
+  const expertInputRef = useRef<HTMLInputElement>(null);
+  const [assetAction, setAssetAction] = useState<string | null>(null);
+  const [expertAnalysis, setExpertAnalysis] = useState<{
+    pluginCount: number;
+    expertOnlyObjects: Array<{ tag: string; pluginType: string }>;
+    systemIntegrations: string[];
+    reason: string;
+  } | null>(null);
 
   const loadCache = useCallback(async () => {
     if (!selectedCache) {
@@ -239,6 +253,87 @@ export default function StandardOperationsPage() {
     }
   };
 
+  const downloadText = (name: string, content: string, type: string) => {
+    const url = URL.createObjectURL(new Blob([content], { type }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = name;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportIntent = async () => {
+    setAssetAction("export");
+    setError(null);
+    try {
+      const response = await exportStandardAsset();
+      downloadText(
+        `oxidns-standard-${response.asset.intentRevision.slice(-12)}.json`,
+        JSON.stringify(response.asset, null, 2),
+        "application/json",
+      );
+      setMessage(t(WEBUI.standardOperations.exportSuccess));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setAssetAction(null);
+    }
+  };
+
+  const importIntent = async (file: File) => {
+    setAssetAction("import");
+    setError(null);
+    try {
+      const asset = JSON.parse(await file.text()) as StandardAssetEnvelope;
+      const response = await importStandardAsset(asset, true);
+      await saveStandardSettings(response.plan.plan.normalizedIntent, {
+        apply: true,
+      });
+      setMessage(t(WEBUI.standardOperations.importSuccess));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setAssetAction(null);
+    }
+  };
+
+  const copyToExpert = async () => {
+    setAssetAction("expert-copy");
+    setError(null);
+    try {
+      const response = await copyStandardToExpert(settings);
+      downloadText(
+        `oxidns-expert-${response.intentRevision.slice(-12)}.yaml`,
+        response.yaml,
+        "application/yaml",
+      );
+      setMessage(t(WEBUI.standardOperations.expertCopySuccess));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setAssetAction(null);
+    }
+  };
+
+  const analyzeExpert = async (file: File) => {
+    setAssetAction("expert-analysis");
+    setError(null);
+    try {
+      const response = await analyzeExpertConfig(await file.text());
+      setExpertAnalysis({
+        pluginCount: response.pluginCount,
+        expertOnlyObjects: response.expertOnlyObjects,
+        systemIntegrations: response.systemIntegrations,
+        reason: response.reverseConversion.reason,
+      });
+      setMessage(t(WEBUI.standardOperations.expertAnalysisSuccess));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setAssetAction(null);
+    }
+  };
+
   return (
     <>
       <AppHeader title={t(WEBUI.standardOperations.title)} />
@@ -263,6 +358,51 @@ export default function StandardOperationsPage() {
               {message}
             </div>
           ) : null}
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <History className="size-4" />
+                {t(WEBUI.standardOperations.assetsTitle)}
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">
+                {t(WEBUI.standardOperations.assetsDescription)}
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" disabled={assetAction !== null} onClick={() => void exportIntent()}>
+                  {assetAction === "export" ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
+                  {t(WEBUI.standardOperations.exportIntent)}
+                </Button>
+                <Button variant="outline" size="sm" disabled={assetAction !== null} onClick={() => intentInputRef.current?.click()}>
+                  {assetAction === "import" ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
+                  {t(WEBUI.standardOperations.importPlan)}
+                </Button>
+                <Button variant="outline" size="sm" disabled={assetAction !== null} onClick={() => void copyToExpert()}>
+                  <Download className="size-4" /> {t(WEBUI.standardOperations.copyExpert)}
+                </Button>
+                <Button variant="outline" size="sm" disabled={assetAction !== null} onClick={() => expertInputRef.current?.click()}>
+                  <Search className="size-4" /> {t(WEBUI.standardOperations.analyzeExpert)}
+                </Button>
+              </div>
+              <input ref={intentInputRef} type="file" accept="application/json,.json" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importIntent(file); event.currentTarget.value = ""; }} />
+              <input ref={expertInputRef} type="file" accept=".yaml,.yml,text/yaml,application/yaml" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; if (file) void analyzeExpert(file); event.currentTarget.value = ""; }} />
+              {lastGenerated?.explanation ? (
+                <div className="rounded-lg bg-muted p-3 text-xs">
+                  <p><span className="font-medium">{t(WEBUI.standardOperations.intentRevision)}</span> {lastGenerated.explanation.intentRevision}</p>
+                  <p className="mt-1 text-muted-foreground">{t(WEBUI.standardOperations.explanationSummary, { mappings: lastGenerated.explanation.mappings.length, rules: lastGenerated.explanation.finalPriority.length, tags: lastGenerated.explanation.generatedTags.length })}</p>
+                </div>
+              ) : null}
+              {expertAnalysis ? (
+                <div className="rounded-lg border p-3 text-xs">
+                  <p>{t(WEBUI.standardOperations.expertSummary, { plugins: expertAnalysis.pluginCount, objects: expertAnalysis.expertOnlyObjects.length })}</p>
+                  {expertAnalysis.systemIntegrations.length > 0 ? <p className="mt-1 text-warning-foreground">{t(WEBUI.standardOperations.systemIntegrations, { items: expertAnalysis.systemIntegrations.join(", ") })}</p> : null}
+                  <p className="mt-1 text-muted-foreground">{expertAnalysis.reason}</p>
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
 
           <Card>
             <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3 space-y-0">

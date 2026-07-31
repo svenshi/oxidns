@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -19,6 +20,9 @@ pub(super) struct QueryRecorderConfig {
     pub(super) retention_days: Option<u64>,
     pub(super) cleanup_interval_hours: Option<u64>,
     pub(super) reader_concurrency: Option<usize>,
+    pub(super) max_steps: Option<usize>,
+    #[serde(default)]
+    pub(super) context: BTreeMap<String, String>,
     #[serde(default)]
     pub(super) include_marks: Vec<u32>,
     #[serde(default)]
@@ -35,6 +39,8 @@ pub(super) struct ResolvedRecorderConfig {
     pub(super) retention_days: u64,
     pub(super) cleanup_interval_hours: u64,
     pub(super) reader_concurrency: usize,
+    pub(super) max_steps: usize,
+    pub(super) context: BTreeMap<String, String>,
     pub(super) include_marks: Vec<u32>,
     pub(super) exclude_marks: Vec<u32>,
 }
@@ -91,6 +97,9 @@ pub(super) struct StepJson {
     pub(super) kind: String,
     pub(super) tag: Option<String>,
     pub(super) outcome: String,
+    pub(super) offset_us: Option<u64>,
+    pub(super) duration_us: Option<u64>,
+    pub(super) detail: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -98,6 +107,9 @@ pub(super) struct RecordRow {
     pub(super) id: i64,
     pub(super) created_at_ms: i64,
     pub(super) elapsed_ms: u64,
+    pub(super) diagnostic_context: BTreeMap<String, String>,
+    pub(super) steps_truncated: bool,
+    pub(super) dropped_step_count: usize,
     pub(super) request_id: u16,
     pub(super) client_ip: String,
     pub(super) questions_json: Vec<QuestionJson>,
@@ -129,6 +141,7 @@ pub(super) struct RecordDetail {
     #[serde(flatten)]
     pub(super) record: RecordRow,
     pub(super) steps: Vec<StepJson>,
+    pub(super) diagnosis: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +154,7 @@ pub(super) struct PendingRecord {
     pub(super) step_start_index: usize,
     pub(super) client_ip: SocketAddr,
     pub(super) error: Option<String>,
+    pub(super) diagnostic_context: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

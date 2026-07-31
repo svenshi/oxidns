@@ -31,10 +31,13 @@ const QUESTIONS_BACKFILL_MARKER: &str = "questions_backfilled";
 const CLEANUP_BATCH_SIZE: usize = 1_000;
 const VACUUM_BATCH_PAGES: u64 = 1_000;
 const PLUGIN_STATS_SAMPLE_LIMIT: usize = 10_000;
-const RECORD_ROW_COLUMNS: [&str; 27] = [
+const RECORD_ROW_COLUMNS: [&str; 30] = [
     "id",
     "created_at_ms",
     "elapsed_ms",
+    "diagnostic_context_json",
+    "steps_truncated",
+    "dropped_step_count",
     "request_id",
     "client_ip",
     "questions_json",
@@ -153,6 +156,9 @@ pub(crate) fn create_schema(conn: &mut Connection, tables: &TableNames) -> rusql
             id INTEGER PRIMARY KEY,
             created_at_ms INTEGER NOT NULL,
             elapsed_ms INTEGER NOT NULL,
+            diagnostic_context_json TEXT NOT NULL DEFAULT '{{}}',
+            steps_truncated INTEGER NOT NULL DEFAULT 0,
+            dropped_step_count INTEGER NOT NULL DEFAULT 0,
             request_id INTEGER NOT NULL,
             client_ip TEXT NOT NULL,
             questions_json TEXT NOT NULL,
@@ -186,6 +192,9 @@ pub(crate) fn create_schema(conn: &mut Connection, tables: &TableNames) -> rusql
             kind TEXT NOT NULL,
             tag TEXT NULL,
             outcome TEXT NOT NULL,
+            offset_us INTEGER NULL,
+            duration_us INTEGER NULL,
+            detail_json TEXT NOT NULL DEFAULT '{{}}',
             PRIMARY KEY (record_id, event_index),
             FOREIGN KEY(record_id) REFERENCES {records}(id) ON DELETE CASCADE
         );
@@ -229,7 +238,51 @@ pub(crate) fn create_schema(conn: &mut Connection, tables: &TableNames) -> rusql
         meta = tables.meta,
         steps = tables.steps,
     ))?;
+    ensure_column(
+        conn,
+        &tables.records,
+        "diagnostic_context_json",
+        "TEXT NOT NULL DEFAULT '{{}}'",
+    )?;
+    ensure_column(
+        conn,
+        &tables.records,
+        "steps_truncated",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        &tables.records,
+        "dropped_step_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(conn, &tables.steps, "offset_us", "INTEGER NULL")?;
+    ensure_column(conn, &tables.steps, "duration_us", "INTEGER NULL")?;
+    ensure_column(
+        conn,
+        &tables.steps,
+        "detail_json",
+        "TEXT NOT NULL DEFAULT '{{}}'",
+    )?;
     backfill_questions_once(conn, tables)
+}
+
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    declaration: &str,
+) -> rusqlite::Result<()> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        if row.get::<_, String>(1)? == column {
+            return Ok(());
+        }
+    }
+    conn.execute_batch(&format!(
+        "ALTER TABLE {table} ADD COLUMN {column} {declaration}"
+    ))
 }
 
 fn backfill_questions_once(conn: &Connection, tables: &TableNames) -> rusqlite::Result<()> {
@@ -479,12 +532,16 @@ fn insert_record(
     let additionals_json = serde_json::to_string(&record.additionals_json)?;
     let signature_json = serde_json::to_string(&record.signature_json)?;
     let resp_edns_json = serialize_optional_json(&record.resp_edns_json)?;
+    let diagnostic_context_json = serde_json::to_string(&record.diagnostic_context)?;
 
     tx.execute(
         &format!(
             "INSERT INTO {} (
                 created_at_ms,
                 elapsed_ms,
+                diagnostic_context_json,
+                steps_truncated,
+                dropped_step_count,
                 request_id,
                 client_ip,
                 questions_json,
@@ -509,12 +566,15 @@ fn insert_record(
                 additionals_json,
                 signature_json,
                 resp_edns_json
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
             tables.records
         ),
         params![
             record.created_at_ms,
             as_i64(record.elapsed_ms)?,
+            diagnostic_context_json,
+            bool_to_i64(record.steps_truncated),
+            as_i64(record.dropped_step_count as u64)?,
             i64::from(record.request_id),
             record.client_ip,
             questions_json,
@@ -566,6 +626,7 @@ fn insert_record(
     }
 
     for step in &steps {
+        let detail_json = serde_json::to_string(&step.detail)?;
         tx.execute(
             &format!(
                 "INSERT INTO {} (
@@ -575,8 +636,11 @@ fn insert_record(
                     node_index,
                     kind,
                     tag,
-                    outcome
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    outcome,
+                    offset_us,
+                    duration_us,
+                    detail_json
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 tables.steps
             ),
             params![
@@ -587,16 +651,21 @@ fn insert_record(
                 step.kind,
                 step.tag,
                 step.outcome,
+                step.offset_us.map(as_i64).transpose()?,
+                step.duration_us.map(as_i64).transpose()?,
+                detail_json,
             ],
         )?;
     }
 
+    let diagnosis = build_diagnosis(&record, &steps);
     Ok(RecordDetail {
         record: RecordRow {
             id: record_id,
             ..record
         },
         steps,
+        diagnosis,
     })
 }
 
@@ -948,7 +1017,92 @@ pub(super) fn load_record_detail(
     };
 
     let steps = load_steps(&conn, &backend.tables, record_id)?;
-    Ok(Some(RecordDetail { record, steps }))
+    let diagnosis = build_diagnosis(&record, &steps);
+    Ok(Some(RecordDetail {
+        record,
+        steps,
+        diagnosis,
+    }))
+}
+
+fn build_diagnosis(record: &RecordRow, steps: &[StepJson]) -> serde_json::Value {
+    let first_rule_miss = steps.iter().find(|step| {
+        step.kind == "matcher"
+            && matches!(
+                step.outcome.as_str(),
+                "not_matched" | "always_true_not_matched" | "always_false_not_matched"
+            )
+    });
+    let cache = steps.iter().find(|step| step.kind == "cache");
+    let fallback = steps.iter().rev().find(|step| step.kind == "fallback");
+    let upstream = steps
+        .iter()
+        .find(|step| step.kind == "upstream" && step.outcome == "selected");
+    let upstream_failures: Vec<_> = steps
+        .iter()
+        .filter(|step| {
+            step.kind == "upstream"
+                && matches!(
+                    step.outcome.as_str(),
+                    "timeout"
+                        | "transport_error"
+                        | "response_not_selected"
+                        | "cancelled_after_selection"
+                )
+        })
+        .map(|step| {
+            serde_json::json!({
+                "memberId": step.tag,
+                "reason": step.outcome,
+                "durationUs": step.duration_us,
+            })
+        })
+        .collect();
+    let timing: Vec<_> = steps
+        .iter()
+        .filter(|step| step.duration_us.is_some())
+        .map(|step| {
+            serde_json::json!({
+                "kind": step.kind,
+                "tag": step.tag,
+                "outcome": step.outcome,
+                "durationUs": step.duration_us,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "schema": 1,
+        "intentRevision": record.diagnostic_context.get("intentRevision"),
+        "context": record.diagnostic_context,
+        "firstRuleMiss": first_rule_miss.map(|step| serde_json::json!({
+            "matcherTag": step.tag,
+            "sequenceTag": step.sequence_tag,
+            "nodeIndex": step.node_index,
+            "reason": step.outcome,
+        })),
+        "defaultPathReason": if first_rule_miss.is_some() { "higher_priority_rules_did_not_return" } else { "not_observed" },
+        "fallback": fallback.map(|step| serde_json::json!({ "tag": step.tag, "reason": step.outcome })),
+        "cache": cache.map(|step| serde_json::json!({
+            "tag": step.tag,
+            "reason": step.outcome,
+            "ecsInKey": step.detail.get("ecsInKey"),
+            "ecsScoped": step.detail.get("ecsScoped"),
+        })),
+        "upstream": upstream.map(|step| serde_json::json!({
+            "memberId": step.tag,
+            "durationUs": step.duration_us,
+        })),
+        "upstreamFailures": upstream_failures,
+        "final": {
+            "rcode": record.rcode,
+            "source": upstream.and_then(|step| step.tag.as_deref()).or_else(|| cache.and_then(|step| (step.outcome.starts_with("hit_")).then_some("cache"))),
+            "elapsedMs": record.elapsed_ms,
+            "stages": timing,
+        },
+        "stepsTruncated": record.steps_truncated,
+        "droppedStepCount": record.dropped_step_count,
+        "explanationUnavailable": !record.diagnostic_context.contains_key("intentRevision"),
+    })
 }
 
 fn load_steps(
@@ -957,7 +1111,8 @@ fn load_steps(
     record_id: i64,
 ) -> std::result::Result<Vec<StepJson>, DnsError> {
     let sql = format!(
-        "SELECT event_index, sequence_tag, node_index, kind, tag, outcome
+        "SELECT event_index, sequence_tag, node_index, kind, tag, outcome,
+                offset_us, duration_us, detail_json
          FROM {steps}
          WHERE record_id = ?1
          ORDER BY event_index ASC",
@@ -980,6 +1135,15 @@ fn load_steps(
             kind: row.get(3)?,
             tag: row.get(4)?,
             outcome: row.get(5)?,
+            offset_us: row
+                .get::<_, Option<i64>>(6)?
+                .map(non_negative_u64)
+                .transpose()?,
+            duration_us: row
+                .get::<_, Option<i64>>(7)?
+                .map(non_negative_u64)
+                .transpose()?,
+            detail: parse_json_column(row.get(8)?)?,
         });
     }
     Ok(steps)
@@ -1753,30 +1917,33 @@ fn read_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecordRow> {
         id: row.get(0)?,
         created_at_ms: row.get::<_, i64>(1)?,
         elapsed_ms: row.get::<_, i64>(2).and_then(non_negative_u64)?,
-        request_id: row.get::<_, i64>(3).and_then(non_negative_u16)?,
-        client_ip: row.get(4)?,
-        questions_json: parse_json_column(row.get(5)?)?,
-        req_rd: read_bool(row, 6)?,
-        req_cd: read_bool(row, 7)?,
-        req_ad: read_bool(row, 8)?,
-        req_opcode: row.get(9)?,
-        req_edns_json: parse_optional_json_column(row.get(10)?)?,
-        error: row.get(11)?,
-        has_response: read_bool(row, 12)?,
-        rcode: row.get(13)?,
-        resp_aa: read_optional_bool(row, 14)?,
-        resp_tc: read_optional_bool(row, 15)?,
-        resp_ra: read_optional_bool(row, 16)?,
-        resp_ad: read_optional_bool(row, 17)?,
-        resp_cd: read_optional_bool(row, 18)?,
-        answer_count: row.get::<_, i64>(19).and_then(non_negative_u32)?,
-        authority_count: row.get::<_, i64>(20).and_then(non_negative_u32)?,
-        additional_count: row.get::<_, i64>(21).and_then(non_negative_u32)?,
-        answers_json: parse_json_column(row.get(22)?)?,
-        authorities_json: parse_json_column(row.get(23)?)?,
-        additionals_json: parse_json_column(row.get(24)?)?,
-        signature_json: parse_json_column(row.get(25)?)?,
-        resp_edns_json: parse_optional_json_column(row.get(26)?)?,
+        diagnostic_context: parse_json_column(row.get(3)?)?,
+        steps_truncated: read_bool(row, 4)?,
+        dropped_step_count: row.get::<_, i64>(5).and_then(non_negative_usize)?,
+        request_id: row.get::<_, i64>(6).and_then(non_negative_u16)?,
+        client_ip: row.get(7)?,
+        questions_json: parse_json_column(row.get(8)?)?,
+        req_rd: read_bool(row, 9)?,
+        req_cd: read_bool(row, 10)?,
+        req_ad: read_bool(row, 11)?,
+        req_opcode: row.get(12)?,
+        req_edns_json: parse_optional_json_column(row.get(13)?)?,
+        error: row.get(14)?,
+        has_response: read_bool(row, 15)?,
+        rcode: row.get(16)?,
+        resp_aa: read_optional_bool(row, 17)?,
+        resp_tc: read_optional_bool(row, 18)?,
+        resp_ra: read_optional_bool(row, 19)?,
+        resp_ad: read_optional_bool(row, 20)?,
+        resp_cd: read_optional_bool(row, 21)?,
+        answer_count: row.get::<_, i64>(22).and_then(non_negative_u32)?,
+        authority_count: row.get::<_, i64>(23).and_then(non_negative_u32)?,
+        additional_count: row.get::<_, i64>(24).and_then(non_negative_u32)?,
+        answers_json: parse_json_column(row.get(25)?)?,
+        authorities_json: parse_json_column(row.get(26)?)?,
+        additionals_json: parse_json_column(row.get(27)?)?,
+        signature_json: parse_json_column(row.get(28)?)?,
+        resp_edns_json: parse_optional_json_column(row.get(29)?)?,
     })
 }
 
@@ -1922,6 +2089,49 @@ mod tests {
     }
 
     #[test]
+    fn test_create_schema_adds_phase_four_diagnostic_columns_to_legacy_tables() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        let tables = TableNames {
+            records: "records".to_string(),
+            steps: "steps".to_string(),
+            questions: "questions".to_string(),
+            meta: "meta".to_string(),
+        };
+        create_schema(&mut conn, &tables).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE records DROP COLUMN diagnostic_context_json;
+             ALTER TABLE records DROP COLUMN steps_truncated;
+             ALTER TABLE records DROP COLUMN dropped_step_count;
+             ALTER TABLE steps DROP COLUMN offset_us;
+             ALTER TABLE steps DROP COLUMN duration_us;
+             ALTER TABLE steps DROP COLUMN detail_json;",
+        )
+        .unwrap();
+
+        create_schema(&mut conn, &tables).unwrap();
+        let record_columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(records)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let step_columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(steps)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(record_columns.contains(&"diagnostic_context_json".to_string()));
+        assert!(record_columns.contains(&"steps_truncated".to_string()));
+        assert!(record_columns.contains(&"dropped_step_count".to_string()));
+        assert!(step_columns.contains(&"offset_us".to_string()));
+        assert!(step_columns.contains(&"duration_us".to_string()));
+        assert!(step_columns.contains(&"detail_json".to_string()));
+    }
+
+    #[test]
     fn test_create_schema_skips_question_backfill_after_marker() {
         let mut conn = Connection::open_in_memory().unwrap();
         let tables = TableNames {
@@ -2033,6 +2243,9 @@ mod tests {
             id: 0,
             created_at_ms: 1_700_000_000_123,
             elapsed_ms: 37,
+            diagnostic_context: Default::default(),
+            steps_truncated: false,
+            dropped_step_count: 0,
             request_id: 42,
             client_ip: "127.0.0.1".to_string(),
             questions_json: vec![question],

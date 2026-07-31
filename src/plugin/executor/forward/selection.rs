@@ -51,6 +51,13 @@ enum NegativeResponseKey {
 pub(super) struct SelectedResponse {
     pub(super) message: Message,
     pub(super) disposition: Option<ResponseDisposition>,
+    pub(super) upstream_index: usize,
+}
+
+#[derive(Debug)]
+pub(super) struct UpstreamAttempt {
+    pub(super) upstream_index: usize,
+    pub(super) result: Result<Message>,
 }
 
 #[derive(Debug)]
@@ -59,10 +66,10 @@ struct SelectionState<'a> {
     completed: usize,
     last_error: Option<String>,
     last_timeout: bool,
-    best_response: Option<Message>,
+    best_response: Option<(usize, Message)>,
     best_response_rank: Option<u8>,
     best_response_disposition: Option<ResponseDisposition>,
-    best_negative_response: Option<Message>,
+    best_negative_response: Option<(usize, Message)>,
     best_negative_disposition: Option<ResponseDisposition>,
     negative_votes: usize,
     nxdomain_votes: usize,
@@ -87,7 +94,7 @@ impl<'a> SelectionState<'a> {
         }
     }
 
-    fn record_response(&mut self, response: Message) -> ResponseClass {
+    fn record_response(&mut self, upstream_index: usize, response: Message) -> ResponseClass {
         let disposition = classify_dns_response(&response, self.question);
         let class = response_class(disposition);
         if class == ResponseClass::Negative {
@@ -95,7 +102,7 @@ impl<'a> SelectionState<'a> {
             if let Some(key) = negative_response_key(disposition) {
                 self.record_negative_vote(key);
             }
-            self.best_negative_response = Some(response);
+            self.best_negative_response = Some((upstream_index, response));
             self.best_negative_disposition = Some(disposition);
             return class;
         }
@@ -104,7 +111,7 @@ impl<'a> SelectionState<'a> {
             .best_response_rank
             .is_none_or(|best_rank| response_rank >= best_rank)
         {
-            self.best_response = Some(response);
+            self.best_response = Some((upstream_index, response));
             self.best_response_rank = Some(response_rank);
             self.best_response_disposition = Some(disposition);
         }
@@ -130,18 +137,22 @@ impl<'a> SelectionState<'a> {
             return Some(selected);
         }
 
-        self.best_response.take().map(|message| SelectedResponse {
-            message,
-            disposition: self.best_response_disposition.take(),
-        })
+        self.best_response
+            .take()
+            .map(|(upstream_index, message)| SelectedResponse {
+                message,
+                disposition: self.best_response_disposition.take(),
+                upstream_index,
+            })
     }
 
     fn take_negative_response(&mut self) -> Option<SelectedResponse> {
         self.best_negative_response
             .take()
-            .map(|message| SelectedResponse {
+            .map(|(upstream_index, message)| SelectedResponse {
                 message,
                 disposition: self.best_negative_disposition.take(),
+                upstream_index,
             })
     }
 
@@ -171,7 +182,7 @@ impl<'a> SelectionState<'a> {
 }
 
 pub(super) async fn select_response(
-    join_set: &mut JoinSet<Result<Message>>,
+    join_set: &mut JoinSet<UpstreamAttempt>,
     active_concurrent: usize,
     question: Option<&Question>,
     mode: ResponseSelectionMode,
@@ -191,23 +202,29 @@ pub(super) async fn select_response(
 }
 
 async fn select_fastest(
-    join_set: &mut JoinSet<Result<Message>>,
+    join_set: &mut JoinSet<UpstreamAttempt>,
 ) -> (Option<SelectedResponse>, Option<String>, bool) {
     let mut state = SelectionState::new(None);
     while let Some(joined) = join_set.join_next().await {
         match joined {
-            Ok(Ok(response)) => {
+            Ok(UpstreamAttempt {
+                upstream_index,
+                result: Ok(response),
+            }) => {
                 join_set.abort_all();
                 return (
                     Some(SelectedResponse {
                         message: response,
                         disposition: None,
+                        upstream_index,
                     }),
                     None,
                     false,
                 );
             }
-            Ok(Err(err)) => state.record_error(err),
+            Ok(UpstreamAttempt {
+                result: Err(err), ..
+            }) => state.record_error(err),
             Err(err) => state.record_join_error(err),
         }
     }
@@ -215,7 +232,7 @@ async fn select_fastest(
 }
 
 async fn select_prefer_positive(
-    join_set: &mut JoinSet<Result<Message>>,
+    join_set: &mut JoinSet<UpstreamAttempt>,
     active_concurrent: usize,
     question: Option<&Question>,
 ) -> (Option<SelectedResponse>, Option<String>, bool) {
@@ -233,7 +250,7 @@ async fn select_prefer_positive(
 }
 
 async fn select_balanced(
-    join_set: &mut JoinSet<Result<Message>>,
+    join_set: &mut JoinSet<UpstreamAttempt>,
     active_concurrent: usize,
     question: Option<&Question>,
 ) -> (Option<SelectedResponse>, Option<String>, bool) {
@@ -282,7 +299,7 @@ async fn select_balanced(
 }
 
 async fn select_consensus(
-    join_set: &mut JoinSet<Result<Message>>,
+    join_set: &mut JoinSet<UpstreamAttempt>,
     active_concurrent: usize,
     question: Option<&Question>,
 ) -> (Option<SelectedResponse>, Option<String>, bool) {
@@ -312,7 +329,7 @@ async fn select_consensus(
 }
 
 async fn next_response_class(
-    join_set: &mut JoinSet<Result<Message>>,
+    join_set: &mut JoinSet<UpstreamAttempt>,
     state: &mut SelectionState<'_>,
 ) -> Option<ResponseClass> {
     loop {
@@ -324,13 +341,18 @@ async fn next_response_class(
 }
 
 fn handle_joined_response(
-    joined: std::result::Result<Result<Message>, JoinError>,
+    joined: std::result::Result<UpstreamAttempt, JoinError>,
     state: &mut SelectionState<'_>,
 ) -> Option<ResponseClass> {
     state.completed += 1;
     match joined {
-        Ok(Ok(response)) => Some(state.record_response(response)),
-        Ok(Err(err)) => {
+        Ok(UpstreamAttempt {
+            upstream_index,
+            result: Ok(response),
+        }) => Some(state.record_response(upstream_index, response)),
+        Ok(UpstreamAttempt {
+            result: Err(err), ..
+        }) => {
             state.record_error(err);
             None
         }

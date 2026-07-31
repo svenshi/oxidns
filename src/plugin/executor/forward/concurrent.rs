@@ -10,9 +10,10 @@ use tracing::{Level, debug, event_enabled, info, warn};
 
 use super::is_timeout_error;
 use super::metrics::ForwardMetrics;
-use super::selection::{ResponseSelectionMode, SelectedResponse, select_response};
-use crate::core::context::DnsContext;
+use super::selection::{ResponseSelectionMode, SelectedResponse, UpstreamAttempt, select_response};
+use crate::core::context::{DnsContext, ExecutionPathEvent};
 use crate::core::response::ResponseDisposition;
+use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::network::upstream::Upstream;
 use crate::infra::observability::metrics::{register_metric_source, unregister_metric_source};
@@ -60,7 +61,19 @@ impl Executor for ConcurrentForwarder {
     #[hotpath::measure]
     async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
         let start_ms = self.metrics.record_query_start();
-        let (response, last_error, timed_out) = self.query_upstreams(context.request.clone()).await;
+        let (response, last_error, timed_out, mut attempts) =
+            self.query_upstreams(context.request.clone()).await;
+        let selected_index = response.as_ref().map(|selected| selected.upstream_index);
+        for attempt in &mut attempts {
+            if attempt.outcome == "response" {
+                attempt.outcome = if Some(attempt.index) == selected_index {
+                    "selected"
+                } else {
+                    "response_not_selected"
+                };
+            }
+            self.record_attempt(context, attempt);
+        }
         if let Some(selected) = response {
             if selected.disposition == Some(ResponseDisposition::IncompleteAlias) {
                 self.metrics.record_incomplete_alias_selected();
@@ -96,22 +109,42 @@ impl ConcurrentForwarder {
     async fn query_upstreams(
         &self,
         request: Message,
-    ) -> (Option<SelectedResponse>, Option<String>, bool) {
+    ) -> (
+        Option<SelectedResponse>,
+        Option<String>,
+        bool,
+        Vec<AttemptTrace>,
+    ) {
         let total_upstreams = self.upstreams.len();
         if total_upstreams == 0 {
-            return (None, Some("no upstream configured".to_string()), false);
+            return (
+                None,
+                Some("no upstream configured".to_string()),
+                false,
+                Vec::new(),
+            );
         }
 
         let mut join_set = JoinSet::new();
+        let (trace_tx, mut trace_rx) = tokio::sync::mpsc::unbounded_channel();
         let start_idx = rand::rng().random_range(0..total_upstreams);
+        let mut attempted = Vec::with_capacity(self.active_concurrent);
 
         for i in 0..self.active_concurrent {
             let selected_idx = (start_idx + i) % total_upstreams;
+            attempted.push(selected_idx);
             let upstream = self.upstreams[selected_idx].clone();
+            let member_tag = upstream
+                .connection_info()
+                .tag
+                .clone()
+                .unwrap_or_else(|| format!("index:{selected_idx}"));
             let message = request.clone();
             let metrics = self.metrics.clone();
+            let trace_tx = trace_tx.clone();
             join_set.spawn(async move {
                 let up_start = metrics.record_upstream_start(selected_idx);
+                let diagnostic_start = AppClock::elapsed_millis();
                 let result: Result<Message> = upstream.query(message).await;
                 match &result {
                     Ok(_) => metrics.record_upstream_success(selected_idx, up_start),
@@ -126,20 +159,88 @@ impl ConcurrentForwarder {
                         upstream.connection_info().raw_addr
                     );
                 }
-                result
+                let outcome = match &result {
+                    Ok(_) => "response",
+                    Err(error) if is_timeout_error(error) => "timeout",
+                    Err(_) => "transport_error",
+                };
+                let _ = trace_tx.send(AttemptTrace {
+                    index: selected_idx,
+                    member_tag,
+                    outcome,
+                    duration_us: AppClock::elapsed_millis()
+                        .saturating_sub(diagnostic_start)
+                        .saturating_mul(1000),
+                });
+                UpstreamAttempt {
+                    upstream_index: selected_idx,
+                    result,
+                }
             });
         }
+        drop(trace_tx);
 
         let question = match self.response_selection {
             ResponseSelectionMode::Fastest => None,
             _ => request.first_question(),
         };
-        select_response(
+        let selected = select_response(
             &mut join_set,
             self.active_concurrent,
             question,
             self.response_selection,
         )
-        .await
+        .await;
+        let mut traces = Vec::with_capacity(attempted.len());
+        while let Ok(trace) = trace_rx.try_recv() {
+            traces.push(trace);
+        }
+        for index in attempted {
+            if traces.iter().all(|trace| trace.index != index) {
+                let member_tag = self.upstreams[index]
+                    .connection_info()
+                    .tag
+                    .clone()
+                    .unwrap_or_else(|| format!("index:{index}"));
+                traces.push(AttemptTrace {
+                    index,
+                    member_tag,
+                    outcome: "cancelled_after_selection",
+                    duration_us: 0,
+                });
+            }
+        }
+        (selected.0, selected.1, selected.2, traces)
     }
+
+    fn record_attempt(&self, context: &mut DnsContext, attempt: &AttemptTrace) {
+        if !context.execution_path_enabled() {
+            return;
+        }
+        context.push_execution_path_event(
+            ExecutionPathEvent::new(
+                self.tag.clone(),
+                None,
+                "upstream",
+                Some(attempt.member_tag.clone()),
+                attempt.outcome,
+            )
+            .with_timing(None, Some(attempt.duration_us))
+            .with_detail([
+                ("index", attempt.index.to_string()),
+                (
+                    "selection",
+                    format!("{:?}", self.response_selection).to_ascii_lowercase(),
+                ),
+            ]),
+        );
+    }
+}
+
+#[derive(Debug)]
+struct AttemptTrace {
+    index: usize,
+    member_tag: String,
+    outcome: &'static str,
+    duration_us: u64,
 }

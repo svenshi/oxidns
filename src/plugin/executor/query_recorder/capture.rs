@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -27,6 +28,7 @@ impl PendingRecord {
         step_start_index: usize,
         client_ip: SocketAddr,
         error: Option<String>,
+        diagnostic_context: BTreeMap<String, String>,
     ) -> Self {
         Self {
             request,
@@ -37,6 +39,7 @@ impl PendingRecord {
             step_start_index,
             client_ip,
             error,
+            diagnostic_context,
         }
     }
 
@@ -50,6 +53,7 @@ impl PendingRecord {
             step_start_index,
             client_ip,
             error,
+            diagnostic_context,
         } = self;
 
         let questions_json = request
@@ -71,6 +75,9 @@ impl PendingRecord {
             id: 0,
             created_at_ms,
             elapsed_ms,
+            diagnostic_context,
+            steps_truncated: exec_path.truncated(),
+            dropped_step_count: exec_path.dropped_events(),
             request_id: request.id(),
             client_ip: client_ip.ip().to_string(),
             questions_json,
@@ -151,6 +158,9 @@ fn step_json((event_index, event): (usize, &Arc<ExecutionPathEvent>)) -> StepJso
         kind: event.kind.clone(),
         tag: event.tag.clone(),
         outcome: event.outcome.clone(),
+        offset_us: event.offset_us,
+        duration_us: event.duration_us,
+        detail: event.detail.clone(),
     }
 }
 

@@ -335,19 +335,29 @@ fn active_concurrent_caps_at_maximum() {
 
 #[tokio::test]
 async fn concurrent_success_sets_response() {
+    let mut upstream = MockUpstream::ok();
+    upstream.connection_info.tag = Some("primary".to_string());
     let forwarder = ConcurrentForwarder {
         tag: "forward-test".to_string(),
         active_concurrent: 1,
-        upstreams: vec![Arc::new(MockUpstream::ok())],
+        upstreams: vec![Arc::new(upstream)],
         short_circuit: false,
         response_selection: ResponseSelectionMode::default(),
         metrics: test_metrics(),
     };
 
     let mut context = make_context();
+    context.enable_execution_path_with_limit(32);
     let step = forwarder.execute(&mut context).await.unwrap();
     assert!(matches!(step, ExecStep::Next));
     assert!(context.response().is_some());
+    let event = context
+        .execution_path_events()
+        .iter()
+        .find(|event| event.kind == "upstream")
+        .expect("upstream diagnostic event");
+    assert_eq!(event.tag.as_deref(), Some("primary"));
+    assert_eq!(event.outcome, "selected");
 }
 
 #[tokio::test]

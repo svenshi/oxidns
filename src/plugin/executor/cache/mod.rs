@@ -21,7 +21,7 @@ use tracing::{Level, debug, event_enabled, warn};
 use self::key::{CacheKey, build_cache_key as build_cache_key_internal};
 use self::persistence::{dump_cache_to_file, load_cache_from_file};
 use crate::config::types::PluginConfig;
-use crate::core::context::DnsContext;
+use crate::core::context::{DnsContext, ExecutionPathEvent};
 use crate::core::response::{ResponseDisposition, classify_response};
 use crate::infra::cache::ttl::{TtlCache, TtlCacheLookup};
 use crate::infra::clock::AppClock;
@@ -199,6 +199,7 @@ struct CacheLookup {
     key: CacheKey,
     hit_kind: Option<CacheHitKind>,
     refresh_entry: Option<CacheEntryIdentity>,
+    outcome: &'static str,
 }
 
 #[derive(Debug, Clone)]
@@ -903,6 +904,7 @@ impl Cache {
                         key,
                         hit_kind: Some(CacheHitKind::Fresh),
                         refresh_entry: None,
+                        outcome: "hit_fresh",
                     });
                 } else if self.config.lazy_cache_ttl.is_some() && now < item.expire_at_ms {
                     let refresh_entry = CacheEntryIdentity {
@@ -931,6 +933,7 @@ impl Cache {
                         key,
                         hit_kind: Some(CacheHitKind::Stale),
                         refresh_entry: Some(refresh_entry),
+                        outcome: "hit_stale",
                     });
                 }
             }
@@ -949,12 +952,13 @@ impl Cache {
                     key,
                     hit_kind: None,
                     refresh_entry: None,
+                    outcome: "expired",
                 });
             }
             None => {}
         }
 
-        if cache_map.remove_if_expired(&key, now) {
+        let outcome = if cache_map.remove_if_expired(&key, now) {
             self.metrics.expired_total.fetch_add(1, Ordering::Relaxed);
             debug!(
                 "cache expired: domain={}, type={:?}, class={:?}, do={}, cd={}, ecs={}",
@@ -965,6 +969,7 @@ impl Cache {
                 key.cd_bit,
                 key.ecs_scope.is_some()
             );
+            "expired"
         } else {
             self.metrics.miss_total.fetch_add(1, Ordering::Relaxed);
             debug!(
@@ -976,12 +981,14 @@ impl Cache {
                 key.cd_bit,
                 key.ecs_scope.is_some()
             );
-        }
+            "miss"
+        };
 
         Some(CacheLookup {
             key,
             hit_kind: None,
             refresh_entry: None,
+            outcome,
         })
     }
 
@@ -1339,11 +1346,21 @@ impl Executor for Cache {
         context: &mut DnsContext,
         next: Option<ExecutorNext>,
     ) -> Result<ExecStep> {
+        let started_ms = AppClock::elapsed_millis();
         let Some(cache_map) = self.cache_map.get() else {
+            self.record_diagnostic(context, "unavailable", false, started_ms);
             return continue_next!(next, context);
         };
 
         let cache_lookup = self.try_cache_hit(context, cache_map);
+        let outcome = cache_lookup
+            .as_ref()
+            .map(|lookup| lookup.outcome)
+            .unwrap_or("uncacheable_request");
+        let ecs_scoped = cache_lookup
+            .as_ref()
+            .is_some_and(|lookup| lookup.key.ecs_scope.is_some());
+        self.record_diagnostic(context, outcome, ecs_scoped, started_ms);
         let cache_hit = cache_lookup
             .as_ref()
             .and_then(|lookup| lookup.hit_kind)
@@ -1403,6 +1420,40 @@ impl Executor for Cache {
             }
         }
         Ok(next_step)
+    }
+}
+
+impl Cache {
+    #[inline]
+    fn record_diagnostic(
+        &self,
+        context: &mut DnsContext,
+        outcome: &'static str,
+        ecs_scoped: bool,
+        started_ms: u64,
+    ) {
+        if !context.execution_path_enabled() {
+            return;
+        }
+        let now_ms = AppClock::elapsed_millis();
+        context.push_execution_path_event(
+            ExecutionPathEvent::new(
+                self.tag.clone(),
+                None,
+                "cache",
+                Some(self.tag.clone()),
+                outcome,
+            )
+            .with_timing(
+                None,
+                Some(now_ms.saturating_sub(started_ms).saturating_mul(1000)),
+            )
+            .with_detail([
+                ("ecsInKey", self.ecs_in_key.to_string()),
+                ("ecsScoped", ecs_scoped.to_string()),
+                ("namespace", self.tag.clone()),
+            ]),
+        );
     }
 }
 
@@ -2823,6 +2874,51 @@ mod tests {
             1
         );
         assert_eq!(cache.metrics.insert_total.load(AtomicOrdering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn cache_diagnostic_records_bounded_hit_and_ecs_key_facts() {
+        AppClock::start();
+        let mut cache = test_cache(default_test_config());
+        let _ = cache.init_for_test().await;
+        let mut request = make_request_with_query("example.com.", false, false);
+        request.set_id(17);
+        let mut context = make_context(request);
+        let key = Cache::build_cache_key(&mut context, false).unwrap();
+        let mut response = Message::new();
+        response.set_rcode(Rcode::NoError);
+        response.add_question(Question::new(
+            Name::from_ascii("example.com.").unwrap(),
+            RecordType::A,
+            DNSClass::IN,
+        ));
+        response.add_answer(Record::from_rdata(
+            Name::from_ascii("example.com.").unwrap(),
+            120,
+            RData::A(crate::proto::rdata::A(Ipv4Addr::new(192, 0, 2, 17))),
+        ));
+        let disposition = response_disposition_for_cache(&response, &key);
+        cache.update_cache_entry(
+            cache.cache_map.get().unwrap(),
+            key,
+            response,
+            120,
+            disposition,
+        );
+
+        context.enable_execution_path_with_limit(32);
+        cache.execute_with_next(&mut context, None).await.unwrap();
+        let event = context
+            .execution_path_events()
+            .iter()
+            .find(|event| event.kind == "cache")
+            .expect("cache diagnostic event");
+        assert_eq!(event.outcome, "hit_fresh");
+        assert_eq!(
+            event.detail.get("ecsInKey").map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(event.tag.as_deref(), Some("cache_test"));
     }
 
     #[tokio::test]

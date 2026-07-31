@@ -26,11 +26,12 @@ title: 标准模式 Plan/Apply
 | 字段 | 含义 |
 | --- | --- |
 | `ownership` | `managed`、`modified` 或 `unmanaged` |
-| `semantic_diff` | 保留的顶层字段及将生成、替换、移除的插件 tag |
+| `semantic_diff` | schema 1 稳定对象 Diff、受影响路径/规则/缓存/监听器/上游组/文件，以及兼容 tag Diff |
+| `dependency_graph` | 生成配置的只读插件节点、依赖边、初始化顺序和 sequence 流程 |
 | `blockers` | 版本冲突或需要显式接管等控制面阻断项 |
 | `plan.normalizedIntent` | 后端迁移和规范化后的 schema v6 意图 |
 | `plan.diagnostics` | 带稳定 `severity`、`code`、`path` 的语义诊断 |
-| `plan.generated` | 候选 YAML、版本、tag map 和摘要；有错误时不存在 |
+| `plan.generated` | 候选 YAML、版本、tag map、摘要和 schema 1 编译解释；有错误时不存在 |
 | `can_apply` | Plan 与控制面阻断项均通过时为 `true` |
 
 缺少必需插件、无效引用、重复 ID/tag、错误 TTL 区间、缺失的本地语义数据文件、无效 ECS/IP 优选参数，以及尚不支持的日志采样或场景值都会阻止应用。重复、被覆盖和不可达规则同时写入 `plan.details.ruleAnalysis`。可选指标插件缺失只产生 warning。
@@ -109,6 +110,19 @@ Apply 会重新执行完整 Plan，检查两个基础版本和已审阅的候选
 ## `POST /api/standard/templates/preview`
 
 以 `base_intent`、`kind`（`low_latency`、`privacy_dns`、`internal_domains`、`regional_upstream`）和参数为输入，只读扩展完整 schema v6 草稿。返回 `expansion.proposedIntent`、新增/修改对象、解释标签及正常 Plan 结果。命名空间冲突直接拒绝；预览不写状态，接受后仍必须走精确版本 Plan/Apply。
+
+## 解释与配置资产接口
+
+- `GET /api/standard/assets/export`：导出 asset schema 1 的当前规范化意图。
+- `POST /api/standard/assets/import`：只读导入、迁移、校验和 Plan；最大 2 MiB，不执行 Apply。
+- `POST /api/standard/assets/expert-copy`：返回分离的 Expert YAML、版本、能力和依赖图，不写配置。
+- `POST /api/standard/assets/expert-analysis`：只读校验最多 2 MiB 的 Expert YAML，返回依赖图、Expert-only 对象和系统集成提示；不执行或反向转换配置。
+- `GET/POST/PATCH/DELETE /api/standard/assets/templates`：列出、新建、更新或精确删除本地保存模板。
+- `POST /api/standard/assets/templates/duplicate`：以新稳定 ID 复制模板。
+
+模板资产库最多 64 条、2 MiB，位于配置文件旁，原子写入并在 Unix 上使用 `0600`。所有修改都可以携带 `expectedVersion` 做乐观并发校验。保存模板不修改标准意图；真正使用时仍调用模板 preview 和 Plan/Apply。
+
+Standard 生成的 `query_recorder` 会在每条详情中返回 schema 1 `diagnosis`、`intentRevision`、缓存/上游/fallback 事实和阶段耗时。单查询默认最多 512 个事件（Expert 可配 32–4096）；截断时返回 `stepsTruncated` 与 `droppedStepCount`。旧记录没有修订号时返回 `explanationUnavailable`，不会映射到当前意图。
 
 ## schema v6 运行语义
 

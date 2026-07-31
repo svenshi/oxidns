@@ -1790,6 +1790,9 @@ function standardLastGeneratedFromWebUiConfig(
     configVersion:
       typeof value.configVersion === "string" ? value.configVersion : null,
     settingsRevision: value.settingsRevision,
+    ...(typeof value.intentRevision === "string"
+      ? { intentRevision: value.intentRevision }
+      : {}),
     generatedTags: value.generatedTags.map(String),
     tagMap: value.tagMap as unknown as StandardGeneratedMetadata["tagMap"],
     summary: value.summary as unknown as StandardGeneratedMetadata["summary"],
@@ -1799,6 +1802,12 @@ function standardLastGeneratedFromWebUiConfig(
     generatedAtMs: value.generatedAtMs,
     ...(typeof value.transactionId === "string"
       ? { transactionId: value.transactionId }
+      : {}),
+    ...(isJsonObject(value.explanation)
+      ? {
+          explanation:
+            value.explanation as unknown as StandardGeneratedMetadata["explanation"],
+        }
       : {}),
   };
 }
