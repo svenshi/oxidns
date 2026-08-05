@@ -11,7 +11,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -25,7 +25,8 @@ use crate::infra::control::{AppController, config_version};
 use crate::infra::error::Result;
 
 const WEBUI_CONFIG_SCHEMA: u8 = 1;
-const WEBUI_CONFIG_MAX_BYTES: usize = 256 * 1024;
+const WEBUI_CONFIG_MAX_BYTES: usize = 2 * 1024 * 1024;
+static WEBUI_CONFIG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Serialize)]
 struct WebUiConfigResponse {
@@ -73,7 +74,6 @@ pub(super) enum WebUiConfigError {
     InvalidRequest(String),
     InvalidConfig(String),
     Conflict,
-    StandardTransactionBusy,
     TooLarge { actual: usize, max: usize },
     Io(String),
 }
@@ -236,14 +236,7 @@ pub fn register_builtin_routes(
 }
 
 fn default_webui_config() -> Value {
-    json!({
-        "schema": WEBUI_CONFIG_SCHEMA,
-        "mode": "expert",
-        "standard": {},
-        "ui": {
-            "modeSelectionDismissed": false
-        }
-    })
+    json!({ "schema": WEBUI_CONFIG_SCHEMA })
 }
 
 pub(super) fn webui_config_path(config_path: &Path) -> PathBuf {
@@ -346,7 +339,7 @@ fn replace_webui_config(
     config: Value,
     base_version: Option<&str>,
 ) -> std::result::Result<LoadedWebUiConfig, WebUiConfigError> {
-    let _guard = standard_mutation_guard(config_path)?;
+    let _guard = webui_mutation_guard()?;
     let path = webui_config_path(config_path);
     assert_current_version(&path, base_version)?;
     let config = validate_config_value(config)?;
@@ -358,7 +351,7 @@ fn patch_webui_config(
     patch: Value,
     base_version: Option<&str>,
 ) -> std::result::Result<LoadedWebUiConfig, WebUiConfigError> {
-    let _guard = standard_mutation_guard(config_path)?;
+    let _guard = webui_mutation_guard()?;
     let path = webui_config_path(config_path);
     let mut loaded = load_webui_config_from_path(&path)?;
     if let Some(base_version) = base_version
@@ -375,7 +368,7 @@ fn delete_webui_config(
     config_path: &Path,
     base_version: Option<&str>,
 ) -> std::result::Result<LoadedWebUiConfig, WebUiConfigError> {
-    let _guard = standard_mutation_guard(config_path)?;
+    let _guard = webui_mutation_guard()?;
     let path = webui_config_path(config_path);
     assert_current_version(&path, base_version)?;
     match fs::remove_file(&path) {
@@ -406,14 +399,12 @@ fn assert_current_version(
     }
 }
 
-fn standard_mutation_guard(
-    config_path: &Path,
-) -> std::result::Result<std::sync::MutexGuard<'static, ()>, WebUiConfigError> {
-    let guard = crate::api::standard_mode::config_mutation_guard().map_err(WebUiConfigError::Io)?;
-    if crate::api::standard_mode::has_pending_transaction(config_path) {
-        return Err(WebUiConfigError::StandardTransactionBusy);
-    }
-    Ok(guard)
+fn webui_mutation_guard()
+-> std::result::Result<std::sync::MutexGuard<'static, ()>, WebUiConfigError> {
+    WEBUI_CONFIG_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| WebUiConfigError::Io("WebUI config lock is poisoned".to_string()))
 }
 
 pub(super) fn write_config_value(
@@ -620,11 +611,6 @@ fn error_response(err: WebUiConfigError) -> crate::api::ApiResponse {
             "webui_config_conflict",
             "WebUI config changed since it was loaded",
         ),
-        WebUiConfigError::StandardTransactionBusy => json_error(
-            StatusCode::CONFLICT,
-            "standard_transaction_busy",
-            "a Standard Mode transaction is pending; WebUI state writes are temporarily blocked",
-        ),
         WebUiConfigError::TooLarge { actual, max } => json_error(
             StatusCode::PAYLOAD_TOO_LARGE,
             "webui_config_too_large",
@@ -684,8 +670,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = json_body(response).await;
         assert_eq!(body["defaulted"], true);
-        assert_eq!(body["config"]["mode"], "expert");
-        assert_eq!(body["config"]["ui"]["modeSelectionDismissed"], false);
+        assert_eq!(body["config"], json!({ "schema": 1 }));
     }
 
     #[tokio::test]
@@ -870,7 +855,7 @@ mod tests {
             .await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = json_body(response).await;
-        assert_eq!(body["config"]["mode"], "expert");
+        assert_eq!(body["config"], json!({ "schema": 1 }));
         assert_eq!(body["defaulted"], true);
     }
 
@@ -888,6 +873,6 @@ mod tests {
         assert_eq!(body["patch"], true);
         assert_eq!(body["reset"], true);
         assert_eq!(body["max_bytes"], WEBUI_CONFIG_MAX_BYTES);
-        assert_eq!(body["default_config"]["mode"], "expert");
+        assert_eq!(body["default_config"], json!({ "schema": 1 }));
     }
 }

@@ -107,6 +107,7 @@ pub(super) struct RecordRow {
     pub(super) id: i64,
     pub(super) created_at_ms: i64,
     pub(super) elapsed_ms: u64,
+    #[serde(rename = "context")]
     pub(super) diagnostic_context: BTreeMap<String, String>,
     pub(super) steps_truncated: bool,
     pub(super) dropped_step_count: usize,
@@ -141,7 +142,6 @@ pub(super) struct RecordDetail {
     #[serde(flatten)]
     pub(super) record: RecordRow,
     pub(super) steps: Vec<StepJson>,
-    pub(super) diagnosis: Value,
 }
 
 #[derive(Debug, Clone)]

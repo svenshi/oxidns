@@ -61,7 +61,7 @@ pub fn run(start: StartConfig) -> Result<()> {
     }
     banner::print_startup_banner()?;
     #[cfg(feature = "api")]
-    crate::api::standard_mode::recover_pending_transaction(&start.config)?;
+    crate::infra::config_transaction::recover_pending(&start.config)?;
     let config = load_config(&start)?;
     init_runtime(start, config)
 }
@@ -318,20 +318,33 @@ async fn run_async_main(options: StartConfig, config: Config) -> Result<Shutdown
     info!(log_level = %effective_log_level, "OxiDNS server initializing");
 
     let mut current_config = config;
-    let mut assembly =
-        match bootstrap::assemble(&current_config, Some(app_controller.clone())).await {
-            Ok(assembly) => {
-                app_controller.set_running_config_version(
+    let mut assembly = match bootstrap::assemble(&current_config, Some(app_controller.clone()))
+        .await
+    {
+        Ok(assembly) => {
+            match std::fs::read_to_string(app_controller.config_path()) {
+                Ok(content) => {
+                    app_controller.set_healthy_config(content.clone());
+                    #[cfg(feature = "api")]
+                    if let Err(err) = crate::infra::config_transaction::record_initial_healthy(
+                        app_controller.config_path(),
+                        &content,
+                    ) {
+                        tracing::warn!(error = %err, "failed to record initial healthy configuration history");
+                    }
+                }
+                Err(_) => app_controller.set_running_config_version(
                     crate::infra::control::config_file_version(app_controller.config_path()),
-                );
-                info!("OxiDNS server started successfully");
-                assembly
+                ),
             }
-            Err(err) => {
-                error!("Plugin initialization failed: {}", err);
-                return Err(err);
-            }
-        };
+            info!("OxiDNS server started successfully");
+            assembly
+        }
+        Err(err) => {
+            error!("Plugin initialization failed: {}", err);
+            return Err(err);
+        }
+    };
 
     let shutdown_signal = wait_for_termination(
         &mut control_rx,
@@ -398,24 +411,27 @@ async fn handle_reload_command(
     controller: std::sync::Arc<AppController>,
 ) -> Result<()> {
     #[cfg(feature = "api")]
-    let standard_transaction_pending =
-        crate::api::standard_mode::has_pending_transaction(controller.config_path());
-    controller.mark_reload_started(crate::infra::control::config_file_version(
-        controller.config_path(),
-    ));
+    let transaction_pending =
+        crate::infra::config_transaction::has_pending(controller.config_path());
+    let candidate_content = std::fs::read_to_string(controller.config_path()).ok();
+    controller.mark_reload_started(
+        candidate_content
+            .as_deref()
+            .map(crate::infra::control::config_version),
+    );
 
     let candidate_config = match load_config_from_path(controller.config_path()) {
         Ok(config) => config,
         Err(err) => {
             #[cfg(feature = "api")]
-            if standard_transaction_pending {
-                let message = match crate::api::standard_mode::rollback_pending_transaction(
+            if transaction_pending {
+                let message = match crate::infra::config_transaction::rollback(
                     controller.config_path(),
                     err.to_string(),
                 ) {
                     Ok(_) => err.to_string(),
                     Err(rollback_err) => {
-                        format!("{err}; Standard Mode file rollback also failed: {rollback_err}")
+                        format!("{err}; configuration file rollback also failed: {rollback_err}")
                     }
                 };
                 controller.mark_reload_failed(message);
@@ -438,15 +454,14 @@ async fn handle_reload_command(
     match bootstrap::assemble(&candidate_config, Some(controller.clone())).await {
         Ok(new_assembly) => {
             #[cfg(feature = "api")]
-            if standard_transaction_pending
-                && let Err(finalize_err) = crate::api::standard_mode::finalize_pending_transaction(
-                    controller.config_path(),
-                )
+            if transaction_pending
+                && let Err(finalize_err) =
+                    crate::infra::config_transaction::finalize(controller.config_path())
             {
-                error!("Standard Mode transaction finalization failed: {finalize_err}");
+                error!("Configuration transaction finalization failed: {finalize_err}");
                 bootstrap::stop(&new_assembly).await;
                 task::stop_all().await;
-                let file_rollback_error = crate::api::standard_mode::rollback_pending_transaction(
+                let file_rollback_error = crate::infra::config_transaction::rollback(
                     controller.config_path(),
                     finalize_err.to_string(),
                 )
@@ -455,7 +470,7 @@ async fn handle_reload_command(
                     Ok(restored_assembly) => {
                         *assembly = restored_assembly;
                         let mut message = format!(
-                            "candidate runtime started but Standard Mode transaction could not be finalized; previous runtime was restored: {finalize_err}"
+                            "candidate runtime started but its configuration transaction could not be finalized; previous runtime was restored: {finalize_err}"
                         );
                         if let Some(rollback_err) = file_rollback_error {
                             message.push_str(&format!(
@@ -467,7 +482,7 @@ async fn handle_reload_command(
                     }
                     Err(rollback_err) => {
                         let mut message = format!(
-                            "Standard Mode finalization failed: {finalize_err}; runtime rollback failed: {rollback_err}"
+                            "configuration transaction finalization failed: {finalize_err}; runtime rollback failed: {rollback_err}"
                         );
                         if let Some(file_rollback_err) = file_rollback_error {
                             message.push_str(&format!(
@@ -481,6 +496,9 @@ async fn handle_reload_command(
             }
             *assembly = new_assembly;
             *current_config = candidate_config;
+            if let Some(content) = candidate_content {
+                controller.set_healthy_config(content);
+            }
             controller.mark_reload_succeeded();
             info!("Configuration reload completed successfully");
             Ok(())
@@ -492,14 +510,14 @@ async fn handle_reload_command(
             #[cfg(not(feature = "api"))]
             let reload_failure = reload_err.to_string();
             #[cfg(feature = "api")]
-            if standard_transaction_pending
-                && let Err(rollback_err) = crate::api::standard_mode::rollback_pending_transaction(
+            if transaction_pending
+                && let Err(rollback_err) = crate::infra::config_transaction::rollback(
                     controller.config_path(),
                     reload_err.to_string(),
                 )
             {
                 reload_failure.push_str(&format!(
-                    "; Standard Mode file rollback also failed and the recovery journal was retained: {rollback_err}"
+                    "; configuration file rollback also failed and the recovery journal was retained: {rollback_err}"
                 ));
             }
             match bootstrap::assemble(&previous_config, Some(controller.clone())).await {

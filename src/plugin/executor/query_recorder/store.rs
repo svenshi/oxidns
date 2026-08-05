@@ -658,14 +658,12 @@ fn insert_record(
         )?;
     }
 
-    let diagnosis = build_diagnosis(&record, &steps);
     Ok(RecordDetail {
         record: RecordRow {
             id: record_id,
             ..record
         },
         steps,
-        diagnosis,
     })
 }
 
@@ -1017,92 +1015,7 @@ pub(super) fn load_record_detail(
     };
 
     let steps = load_steps(&conn, &backend.tables, record_id)?;
-    let diagnosis = build_diagnosis(&record, &steps);
-    Ok(Some(RecordDetail {
-        record,
-        steps,
-        diagnosis,
-    }))
-}
-
-fn build_diagnosis(record: &RecordRow, steps: &[StepJson]) -> serde_json::Value {
-    let first_rule_miss = steps.iter().find(|step| {
-        step.kind == "matcher"
-            && matches!(
-                step.outcome.as_str(),
-                "not_matched" | "always_true_not_matched" | "always_false_not_matched"
-            )
-    });
-    let cache = steps.iter().find(|step| step.kind == "cache");
-    let fallback = steps.iter().rev().find(|step| step.kind == "fallback");
-    let upstream = steps
-        .iter()
-        .find(|step| step.kind == "upstream" && step.outcome == "selected");
-    let upstream_failures: Vec<_> = steps
-        .iter()
-        .filter(|step| {
-            step.kind == "upstream"
-                && matches!(
-                    step.outcome.as_str(),
-                    "timeout"
-                        | "transport_error"
-                        | "response_not_selected"
-                        | "cancelled_after_selection"
-                )
-        })
-        .map(|step| {
-            serde_json::json!({
-                "memberId": step.tag,
-                "reason": step.outcome,
-                "durationUs": step.duration_us,
-            })
-        })
-        .collect();
-    let timing: Vec<_> = steps
-        .iter()
-        .filter(|step| step.duration_us.is_some())
-        .map(|step| {
-            serde_json::json!({
-                "kind": step.kind,
-                "tag": step.tag,
-                "outcome": step.outcome,
-                "durationUs": step.duration_us,
-            })
-        })
-        .collect();
-    serde_json::json!({
-        "schema": 1,
-        "intentRevision": record.diagnostic_context.get("intentRevision"),
-        "context": record.diagnostic_context,
-        "firstRuleMiss": first_rule_miss.map(|step| serde_json::json!({
-            "matcherTag": step.tag,
-            "sequenceTag": step.sequence_tag,
-            "nodeIndex": step.node_index,
-            "reason": step.outcome,
-        })),
-        "defaultPathReason": if first_rule_miss.is_some() { "higher_priority_rules_did_not_return" } else { "not_observed" },
-        "fallback": fallback.map(|step| serde_json::json!({ "tag": step.tag, "reason": step.outcome })),
-        "cache": cache.map(|step| serde_json::json!({
-            "tag": step.tag,
-            "reason": step.outcome,
-            "ecsInKey": step.detail.get("ecsInKey"),
-            "ecsScoped": step.detail.get("ecsScoped"),
-        })),
-        "upstream": upstream.map(|step| serde_json::json!({
-            "memberId": step.tag,
-            "durationUs": step.duration_us,
-        })),
-        "upstreamFailures": upstream_failures,
-        "final": {
-            "rcode": record.rcode,
-            "source": upstream.and_then(|step| step.tag.as_deref()).or_else(|| cache.and_then(|step| (step.outcome.starts_with("hit_")).then_some("cache"))),
-            "elapsedMs": record.elapsed_ms,
-            "stages": timing,
-        },
-        "stepsTruncated": record.steps_truncated,
-        "droppedStepCount": record.dropped_step_count,
-        "explanationUnavailable": !record.diagnostic_context.contains_key("intentRevision"),
-    })
+    Ok(Some(RecordDetail { record, steps }))
 }
 
 fn load_steps(

@@ -186,6 +186,10 @@ struct ControlState {
     last_reload_error: Option<String>,
     /// SHA256 of the config the backend has actually assembled and is running.
     running_config_version: Option<String>,
+    /// Exact YAML source of the currently healthy runtime. This is
+    /// intentionally retained independently from disk so a save-only edit
+    /// cannot corrupt the rollback source for a later transactional apply.
+    healthy_config_content: Option<String>,
     /// SHA256 of the config the most recent reload attempted to apply.
     last_reload_target_version: Option<String>,
 }
@@ -352,6 +356,25 @@ impl AppController {
     pub fn set_running_config_version(&self, version: Option<String>) {
         let mut state = self.state.lock().expect("control state poisoned");
         state.running_config_version = version;
+    }
+
+    pub fn set_healthy_config(&self, content: String) {
+        let mut state = self.state.lock().expect("control state poisoned");
+        state.running_config_version = Some(config_version(&content));
+        state.healthy_config_content = Some(content);
+    }
+
+    pub fn healthy_config(&self) -> Option<(String, String)> {
+        let state = self.state.lock().expect("control state poisoned");
+        state.healthy_config_content.as_ref().map(|content| {
+            (
+                content.clone(),
+                state
+                    .running_config_version
+                    .clone()
+                    .unwrap_or_else(|| config_version(content)),
+            )
+        })
     }
 
     pub fn mark_reload_started(&self, target_version: Option<String>) {

@@ -16,8 +16,8 @@ use super::model::{
 };
 use super::store::{
     create_schema, load_latency_summary, load_plugin_stats, load_qtype_distribution,
-    load_rcode_distribution, load_timeseries, load_top_clients, load_top_qnames,
-    open_reader_database, open_writer_database, query_records, table_names,
+    load_rcode_distribution, load_record_detail, load_timeseries, load_top_clients,
+    load_top_qnames, open_reader_database, open_writer_database, query_records, table_names,
 };
 use super::{QueryRecorder, QueryRecorderFactory, resolve_config, should_record};
 use crate::core::context::{DnsContext, ExecutionPathEvent};
@@ -355,13 +355,7 @@ async fn test_query_recorder_execute_enqueues_record() {
             cleanup_interval_hours: Some(1),
             reader_concurrency: Some(2),
             max_steps: Some(512),
-            context: BTreeMap::from([
-                (
-                    "schema".to_string(),
-                    "standard-query-diagnostic:1".to_string(),
-                ),
-                ("intentRevision".to_string(), "sha256:test".to_string()),
-            ]),
+            context: BTreeMap::from([("opaque-key".to_string(), "opaque-value".to_string())]),
             include_marks: Vec::new(),
             exclude_marks: Vec::new(),
         })
@@ -381,9 +375,11 @@ async fn test_query_recorder_execute_enqueues_record() {
 
     let backend = plugin.backend.as_ref().unwrap().clone();
     flush_backend(&backend).await;
+    let detail_backend = backend;
+    let list_backend = detail_backend.clone();
     let records = tokio::task::spawn_blocking(move || {
         query_records(
-            backend,
+            list_backend,
             ListQuery {
                 cursor: None,
                 limit: 10,
@@ -401,11 +397,20 @@ async fn test_query_recorder_execute_enqueues_record() {
     assert_eq!(
         records[0]
             .diagnostic_context
-            .get("intentRevision")
+            .get("opaque-key")
             .map(String::as_str),
-        Some("sha256:test")
+        Some("opaque-value")
     );
     assert!(!records[0].steps_truncated);
+    let record_id = records[0].id;
+    let detail = tokio::task::spawn_blocking(move || load_record_detail(detail_backend, record_id))
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("record detail");
+    let serialized = serde_json::to_value(detail).expect("serialize detail");
+    assert!(serialized.get("diagnosis").is_none());
+    assert_eq!(serialized["context"]["opaque-key"], "opaque-value");
 
     plugin.destroy().await.unwrap();
 }

@@ -7,6 +7,8 @@
 pub use crate::build_info;
 pub mod cache;
 pub mod clock;
+#[cfg(feature = "api")]
+pub mod config_transaction;
 pub mod control;
 pub mod env;
 pub mod error;

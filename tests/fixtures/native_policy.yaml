@@ -1,0 +1,38 @@
+log:
+  level: info
+plugins:
+  - tag: native_cache_default
+    type: cache
+    args:
+      size: 1024
+      min_positive_ttl: 60
+      max_positive_ttl: 86400
+      max_negative_ttl: 300
+      negative_ttl_without_soa: 300
+      ecs_in_key: false
+      short_circuit: true
+  - tag: native_forward_default
+    type: forward
+    args:
+      upstreams:
+        - tag: local
+          addr: udp://127.0.0.1:5353
+      concurrent: 1
+      response_selection: balanced
+  - tag: native_path_default
+    type: sequence
+    args:
+      - exec: $native_cache_default
+      - matches: "!has_resp"
+        exec: $native_forward_default
+      - exec: accept
+  - tag: native_udp
+    type: udp_server
+    args:
+      listen: 127.0.0.1:0
+      entry: native_path_default
+  - tag: native_tcp
+    type: tcp_server
+    args:
+      listen: 127.0.0.1:0
+      entry: native_path_default

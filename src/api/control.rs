@@ -22,6 +22,7 @@ use crate::api::{ApiHandler, ApiRegister, json_error, json_ok, json_response};
 use crate::build_info::BuildInfo;
 use crate::config;
 use crate::infra::VERSION;
+use crate::infra::config_transaction::{self as config_tx, BeginError};
 use crate::infra::control::{
     AppController, ControlRequestError, ProcessMemoryKind, ReloadSnapshot, config_version,
 };
@@ -41,6 +42,7 @@ struct ConfigCheckResponse {
     path: Option<String>,
     plugin_count: usize,
     dependency_graph: crate::plugin::DependencyGraphReport,
+    version: String,
     message: String,
 }
 
@@ -74,6 +76,57 @@ struct ConfigSaveResponse {
     init_order: Vec<String>,
     reload: Option<ReloadSnapshot>,
     message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConfigApplyRequest {
+    format: Option<String>,
+    content: String,
+    base_version: String,
+    candidate_version: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ConfigApplyResponse {
+    ok: bool,
+    status: &'static str,
+    transaction_id: String,
+    previous_config_version: String,
+    candidate_config_version: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ConfigApplyStatusResponse {
+    ok: bool,
+    transaction: Option<config_tx::TransactionRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct ConfigHistoryItem {
+    id: String,
+    created_at_ms: u64,
+    config_version: String,
+    content_bytes: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct ConfigHistoryResponse {
+    ok: bool,
+    entries: Vec<ConfigHistoryItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConfigHistoryRestoreRequest {
+    id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ConfigHistoryRestoreResponse {
+    ok: bool,
+    id: String,
+    format: &'static str,
+    content: String,
+    version: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -327,12 +380,12 @@ impl ApiHandler for ConfigSaveHandler {
             Err(ConfigSaveError::ReloadBusy) => json_error(
                 StatusCode::CONFLICT,
                 "reload_busy",
-                "configuration was saved, but reload is already pending or in progress",
+                "configuration was not changed because reload is already pending or in progress",
             ),
-            Err(ConfigSaveError::StandardTransactionBusy) => json_error(
+            Err(ConfigSaveError::TransactionBusy) => json_error(
                 StatusCode::CONFLICT,
-                "standard_transaction_busy",
-                "a Standard Mode transaction is pending; Expert configuration writes are temporarily blocked",
+                "config_transaction_busy",
+                "a configuration transaction is pending",
             ),
             Err(ConfigSaveError::Io(message) | ConfigSaveError::Reload(message)) => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -344,7 +397,9 @@ impl ApiHandler for ConfigSaveHandler {
 }
 
 #[derive(Debug)]
-struct ConfigValidateHandler;
+struct ConfigValidateHandler {
+    controller: Arc<AppController>,
+}
 
 #[async_trait]
 impl ApiHandler for ConfigValidateHandler {
@@ -354,9 +409,135 @@ impl ApiHandler for ConfigValidateHandler {
             Err(err) => return err.into_response(),
         };
 
-        match validate_config_text(&body) {
+        match validate_config_text(self.controller.config_path(), &body) {
             Ok(response) => json_ok(StatusCode::OK, &response),
             Err(err) => config_validation_error("config_validate_failed", err, Some(&body)),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ConfigApplyHandler {
+    controller: Arc<AppController>,
+}
+
+#[async_trait]
+impl ApiHandler for ConfigApplyHandler {
+    async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
+        let request = match serde_json::from_slice::<ConfigApplyRequest>(request.body()) {
+            Ok(request) => request,
+            Err(err) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_config_apply_request",
+                    format!("request body must be JSON: {err}"),
+                );
+            }
+        };
+        match prepare_config_apply(self.controller.clone(), request) {
+            Ok(response) => json_ok(StatusCode::ACCEPTED, &response),
+            Err(error) => config_apply_error(error),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ConfigApplyStatusHandler {
+    controller: Arc<AppController>,
+}
+
+#[async_trait]
+impl ApiHandler for ConfigApplyStatusHandler {
+    async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
+        match config_tx::status(self.controller.config_path()) {
+            Ok(transaction) => json_ok(
+                StatusCode::OK,
+                &ConfigApplyStatusResponse {
+                    ok: true,
+                    transaction,
+                },
+            ),
+            Err(message) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "config_transaction_read_failed",
+                message,
+            ),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ConfigHistoryHandler {
+    controller: Arc<AppController>,
+}
+
+#[async_trait]
+impl ApiHandler for ConfigHistoryHandler {
+    async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
+        match config_tx::history(self.controller.config_path()) {
+            Ok(entries) => json_ok(
+                StatusCode::OK,
+                &ConfigHistoryResponse {
+                    ok: true,
+                    entries: entries
+                        .into_iter()
+                        .map(|entry| ConfigHistoryItem {
+                            id: entry.id,
+                            created_at_ms: entry.created_at_ms,
+                            config_version: entry.config_version,
+                            content_bytes: entry.content.len(),
+                        })
+                        .collect(),
+                },
+            ),
+            Err(message) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "config_history_read_failed",
+                message,
+            ),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ConfigHistoryRestoreHandler {
+    controller: Arc<AppController>,
+}
+
+#[async_trait]
+impl ApiHandler for ConfigHistoryRestoreHandler {
+    async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
+        let request = match serde_json::from_slice::<ConfigHistoryRestoreRequest>(request.body()) {
+            Ok(request) => request,
+            Err(err) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_config_history_request",
+                    format!("request body must be JSON: {err}"),
+                );
+            }
+        };
+        match config_tx::history_entry(self.controller.config_path(), &request.id) {
+            Ok(Some(entry)) => json_ok(
+                StatusCode::OK,
+                &ConfigHistoryRestoreResponse {
+                    ok: true,
+                    id: entry.id,
+                    format: "yaml",
+                    version: entry.config_version,
+                    content: entry.content,
+                },
+            ),
+            Ok(None) => json_error(
+                StatusCode::NOT_FOUND,
+                "config_history_not_found",
+                "configuration history entry was not found",
+            ),
+            Err(message) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "config_history_read_failed",
+                message,
+            ),
         }
     }
 }
@@ -465,7 +646,7 @@ enum ConfigSaveError {
     Validation(String),
     Io(String),
     ReloadBusy,
-    StandardTransactionBusy,
+    TransactionBusy,
     Reload(String),
 }
 
@@ -477,18 +658,25 @@ fn validate_config_file(path: &Path) -> std::result::Result<ConfigCheckResponse,
         path: Some(path.display().to_string()),
         plugin_count: summary.plugin_count,
         dependency_graph: summary.dependency_graph,
+        version: fs::read_to_string(path)
+            .map(|content| config_version(&content))
+            .map_err(|err| format!("failed to read config {}: {err}", path.display()))?,
         message: "configuration is valid".to_string(),
     })
 }
 
-fn validate_config_text(text: &str) -> std::result::Result<ConfigCheckResponse, String> {
-    let summary = config::validate_text(text).map_err(|err| err.to_string())?;
+fn validate_config_text(
+    config_path: &Path,
+    text: &str,
+) -> std::result::Result<ConfigCheckResponse, String> {
+    let summary = config_tx::validate_candidate(config_path, text)?;
     Ok(ConfigCheckResponse {
         ok: true,
         source: "body",
-        path: None,
+        path: Some(config_path.display().to_string()),
         plugin_count: summary.plugin_count,
         dependency_graph: summary.dependency_graph,
+        version: config_version(text),
         message: "configuration is valid".to_string(),
     })
 }
@@ -511,10 +699,6 @@ fn save_config_file(
     controller: Arc<AppController>,
     request: ConfigSaveRequest,
 ) -> std::result::Result<ConfigSaveResponse, ConfigSaveError> {
-    let _guard = crate::api::standard_mode::config_mutation_guard().map_err(ConfigSaveError::Io)?;
-    if crate::api::standard_mode::has_pending_transaction(controller.config_path()) {
-        return Err(ConfigSaveError::StandardTransactionBusy);
-    }
     let format = request.format.as_deref().unwrap_or("yaml");
     if format != "yaml" {
         return Err(ConfigSaveError::InvalidFormat(format.to_string()));
@@ -531,8 +715,8 @@ fn save_config_file(
     }
 
     let summary = if request.validate.unwrap_or(true) {
-        config::validate_text(&request.content)
-            .map_err(|err| ConfigSaveError::Validation(err.to_string()))?
+        config_tx::validate_candidate(path, &request.content)
+            .map_err(ConfigSaveError::Validation)?
     } else {
         let parsed: crate::config::types::Config = serde_yaml_ng::from_str(&request.content)
             .map_err(|err| ConfigSaveError::Validation(err.to_string()))?;
@@ -543,9 +727,40 @@ fn save_config_file(
         }
     };
 
-    fs::write(path, request.content.as_bytes()).map_err(|err| {
-        ConfigSaveError::Io(format!("failed to write config {}: {err}", path.display()))
-    })?;
+    if request.reload.unwrap_or(false) {
+        let (healthy, _) = controller
+            .healthy_config()
+            .unwrap_or_else(|| (current.clone(), config_version(&current)));
+        let base_version = request
+            .base_version
+            .clone()
+            .unwrap_or_else(|| config_version(&current));
+        let candidate_version = config_version(&request.content);
+        begin_apply(
+            controller.clone(),
+            &healthy,
+            &request.content,
+            &base_version,
+            &candidate_version,
+        )?;
+    } else {
+        let _guard = config_tx::mutation_guard().map_err(ConfigSaveError::Io)?;
+        if config_tx::has_pending(path) {
+            return Err(ConfigSaveError::TransactionBusy);
+        }
+        // Re-check the version while holding the shared writer lock.
+        let locked_current = fs::read_to_string(path).map_err(|err| {
+            ConfigSaveError::Io(format!("failed to read config {}: {err}", path.display()))
+        })?;
+        if request
+            .base_version
+            .as_deref()
+            .is_some_and(|base| base != config_version(&locked_current))
+        {
+            return Err(ConfigSaveError::VersionConflict);
+        }
+        config_tx::atomic_write_config(path, &request.content).map_err(ConfigSaveError::Io)?;
+    }
 
     let saved = fs::read_to_string(path).map_err(|err| {
         ConfigSaveError::Io(format!(
@@ -555,11 +770,7 @@ fn save_config_file(
     })?;
 
     let reload = if request.reload.unwrap_or(false) {
-        match controller.request_reload() {
-            Ok(()) => Some(controller.reload_snapshot()),
-            Err(ControlRequestError::ReloadBusy) => return Err(ConfigSaveError::ReloadBusy),
-            Err(err) => return Err(ConfigSaveError::Reload(err.to_string())),
-        }
+        Some(controller.reload_snapshot())
     } else {
         None
     };
@@ -575,6 +786,130 @@ fn save_config_file(
         reload,
         message: "configuration saved".to_string(),
     })
+}
+
+fn prepare_config_apply(
+    controller: Arc<AppController>,
+    request: ConfigApplyRequest,
+) -> std::result::Result<ConfigApplyResponse, BeginError> {
+    if request.format.as_deref().unwrap_or("yaml") != "yaml" {
+        return Err(BeginError::Invalid(
+            "request format must be yaml".to_string(),
+        ));
+    }
+    let reload = controller.reload_snapshot();
+    if reload.pending || reload.in_progress {
+        return Err(BeginError::Busy);
+    }
+    let current = fs::read_to_string(controller.config_path()).map_err(|err| {
+        BeginError::Io(format!(
+            "failed to read config {}: {err}",
+            controller.config_path().display()
+        ))
+    })?;
+    let (healthy, _) = controller
+        .healthy_config()
+        .unwrap_or_else(|| (current, request.base_version.clone()));
+    let record = config_tx::begin(
+        controller.config_path(),
+        &healthy,
+        &request.content,
+        &request.base_version,
+        &request.candidate_version,
+    )?;
+    if let Err(error) = controller.request_reload() {
+        let message = error.to_string();
+        config_tx::rollback(controller.config_path(), &message)
+            .map_err(|rollback| BeginError::Io(rollback.to_string()))?;
+        return Err(match error {
+            ControlRequestError::ReloadBusy => BeginError::Busy,
+            ControlRequestError::CommandChannelClosed => BeginError::Io(message),
+        });
+    }
+    Ok(ConfigApplyResponse {
+        ok: true,
+        status: "pending",
+        transaction_id: record.transaction_id,
+        previous_config_version: record.previous_config_version,
+        candidate_config_version: record.candidate_config_version,
+    })
+}
+
+fn begin_apply(
+    controller: Arc<AppController>,
+    healthy: &str,
+    content: &str,
+    base_version: &str,
+    candidate_version: &str,
+) -> std::result::Result<(), ConfigSaveError> {
+    let reload = controller.reload_snapshot();
+    if reload.pending || reload.in_progress {
+        return Err(ConfigSaveError::ReloadBusy);
+    }
+    config_tx::begin(
+        controller.config_path(),
+        healthy,
+        content,
+        base_version,
+        candidate_version,
+    )
+    .map_err(|error| match error {
+        BeginError::Busy => ConfigSaveError::TransactionBusy,
+        BeginError::VersionConflict => ConfigSaveError::VersionConflict,
+        BeginError::CandidateVersionConflict => ConfigSaveError::Validation(
+            "candidate version does not match configuration content".to_string(),
+        ),
+        BeginError::TooLarge { actual, max } => ConfigSaveError::Validation(format!(
+            "configuration is too large: {actual} bytes > {max} bytes"
+        )),
+        BeginError::Invalid(message) => ConfigSaveError::Validation(message),
+        BeginError::Io(message) => ConfigSaveError::Io(message),
+    })?;
+    match controller.request_reload() {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let message = error.to_string();
+            config_tx::rollback(controller.config_path(), &message)
+                .map_err(|rollback| ConfigSaveError::Io(rollback.to_string()))?;
+            match error {
+                ControlRequestError::ReloadBusy => Err(ConfigSaveError::ReloadBusy),
+                ControlRequestError::CommandChannelClosed => Err(ConfigSaveError::Reload(message)),
+            }
+        }
+    }
+}
+
+fn config_apply_error(error: BeginError) -> crate::api::ApiResponse {
+    match error {
+        BeginError::Busy => json_error(
+            StatusCode::CONFLICT,
+            "config_apply_busy",
+            "a configuration transaction or reload is already active",
+        ),
+        BeginError::VersionConflict => json_error(
+            StatusCode::CONFLICT,
+            "config_conflict",
+            "configuration file changed since it was loaded",
+        ),
+        BeginError::CandidateVersionConflict => json_error(
+            StatusCode::CONFLICT,
+            "candidate_version_conflict",
+            "candidate version does not match configuration content",
+        ),
+        BeginError::TooLarge { actual, max } => json_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "config_too_large",
+            format!("configuration is too large: {actual} bytes > {max} bytes"),
+        ),
+        BeginError::Invalid(message) => {
+            json_error(StatusCode::BAD_REQUEST, "config_validate_failed", message)
+        }
+        BeginError::Io(message) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "config_apply_failed",
+            message,
+        ),
+    }
 }
 
 fn config_updated_at_ms(path: &Path) -> Option<u64> {
@@ -644,21 +979,67 @@ pub fn register_builtin_routes(
             controller: controller.clone(),
         }),
     )?;
-    register.register_post("/config/validate", Arc::new(ConfigValidateHandler))?;
+    register.register_post(
+        "/config/validate",
+        Arc::new(ConfigValidateHandler {
+            controller: controller.clone(),
+        }),
+    )?;
+    register.register_post(
+        "/config/apply",
+        Arc::new(ConfigApplyHandler {
+            controller: controller.clone(),
+        }),
+    )?;
+    register.register_get(
+        "/config/apply/status",
+        Arc::new(ConfigApplyStatusHandler {
+            controller: controller.clone(),
+        }),
+    )?;
+    register.register_get(
+        "/config/history",
+        Arc::new(ConfigHistoryHandler {
+            controller: controller.clone(),
+        }),
+    )?;
+    register.register_post(
+        "/config/history/restore",
+        Arc::new(ConfigHistoryRestoreHandler { controller }),
+    )?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use http::Method;
     use http_body_util::BodyExt;
-    use tempfile::NamedTempFile;
+    use tempfile::TempDir;
     use tokio::sync::mpsc::error::TryRecvError;
 
     use super::*;
     use crate::api::ApiHandler;
     use crate::infra::clock::AppClock;
     use crate::infra::control::ControlCommand;
+
+    struct TempConfig {
+        _dir: TempDir,
+        path: PathBuf,
+    }
+
+    impl TempConfig {
+        fn new() -> Self {
+            let dir = TempDir::new().expect("temp directory");
+            let path = dir.path().join("config.yaml");
+            Self { _dir: dir, path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
 
     fn valid_config_yaml() -> &'static str {
         r#"
@@ -679,7 +1060,7 @@ plugins:
     #[tokio::test]
     async fn control_handlers_enqueue_shutdown_and_reload() {
         AppClock::start();
-        let temp = NamedTempFile::new().expect("temp file");
+        let temp = TempConfig::new();
         std::fs::write(temp.path(), valid_config_yaml()).expect("write config");
         let (controller, mut rx) = AppController::new(temp.path().to_path_buf());
 
@@ -713,7 +1094,7 @@ plugins:
     #[tokio::test]
     async fn reload_handler_rejects_parallel_reload_requests() {
         AppClock::start();
-        let temp = NamedTempFile::new().expect("temp file");
+        let temp = TempConfig::new();
         std::fs::write(temp.path(), valid_config_yaml()).expect("write config");
         let (controller, _rx) = AppController::new(temp.path().to_path_buf());
         controller.request_reload().expect("first reload accepted");
@@ -728,7 +1109,7 @@ plugins:
     #[tokio::test]
     async fn system_handler_reports_build_capabilities() {
         AppClock::start();
-        let temp = NamedTempFile::new().expect("temp file");
+        let temp = TempConfig::new();
         std::fs::write(temp.path(), valid_config_yaml()).expect("write config");
         let (controller, _rx) = AppController::new(temp.path().to_path_buf());
         let handler = SystemHandler { controller };
@@ -759,14 +1140,14 @@ plugins:
     #[tokio::test]
     async fn config_handlers_validate_current_file_and_request_body() {
         AppClock::start();
-        let temp = NamedTempFile::new().expect("temp file");
+        let temp = TempConfig::new();
         std::fs::write(temp.path(), valid_config_yaml()).expect("write config");
         let (controller, _rx) = AppController::new(temp.path().to_path_buf());
 
         let check = ConfigCheckHandler {
             controller: controller.clone(),
         };
-        let validate = ConfigValidateHandler;
+        let validate = ConfigValidateHandler { controller };
 
         let response = check
             .handle(test_request(Method::GET, "/config/check", Bytes::new()))
@@ -809,7 +1190,10 @@ plugins:
 
     #[tokio::test]
     async fn config_validate_error_includes_diagnostic_location() {
-        let validate = ConfigValidateHandler;
+        let temp = TempConfig::new();
+        std::fs::write(temp.path(), valid_config_yaml()).expect("write config");
+        let (controller, _rx) = AppController::new(temp.path().to_path_buf());
+        let validate = ConfigValidateHandler { controller };
         let response = validate
             .handle(test_request(
                 Method::POST,
@@ -842,7 +1226,10 @@ plugins:
 
     #[tokio::test]
     async fn config_validate_reports_invalid_plugin_tag_at_its_value() {
-        let validate = ConfigValidateHandler;
+        let temp = TempConfig::new();
+        std::fs::write(temp.path(), valid_config_yaml()).expect("write config");
+        let (controller, _rx) = AppController::new(temp.path().to_path_buf());
+        let validate = ConfigValidateHandler { controller };
         let response = validate
             .handle(test_request(
                 Method::POST,
@@ -879,7 +1266,7 @@ plugins:
     #[tokio::test]
     async fn config_get_and_save_handlers_round_trip_file_content() {
         AppClock::start();
-        let temp = NamedTempFile::new().expect("temp file");
+        let temp = TempConfig::new();
         std::fs::write(temp.path(), valid_config_yaml()).expect("write config");
         let (controller, mut rx) = AppController::new(temp.path().to_path_buf());
 
@@ -931,7 +1318,7 @@ plugins:
     #[tokio::test]
     async fn config_save_rejects_invalid_yaml_and_version_conflicts() {
         AppClock::start();
-        let temp = NamedTempFile::new().expect("temp file");
+        let temp = TempConfig::new();
         std::fs::write(temp.path(), valid_config_yaml()).expect("write config");
         let (controller, _rx) = AppController::new(temp.path().to_path_buf());
         let save = ConfigSaveHandler { controller };
@@ -970,9 +1357,9 @@ plugins:
     }
 
     #[tokio::test]
-    async fn config_save_reports_reload_busy_after_successful_write() {
+    async fn config_save_reload_busy_does_not_change_disk() {
         AppClock::start();
-        let temp = NamedTempFile::new().expect("temp file");
+        let temp = TempConfig::new();
         std::fs::write(temp.path(), valid_config_yaml()).expect("write config");
         let (controller, _rx) = AppController::new(temp.path().to_path_buf());
         controller.request_reload().expect("seed pending reload");
@@ -998,6 +1385,86 @@ plugins:
             ))
             .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
-        assert_eq!(std::fs::read_to_string(temp.path()).unwrap(), next_config);
+        assert_eq!(
+            std::fs::read_to_string(temp.path()).unwrap(),
+            valid_config_yaml()
+        );
+    }
+
+    #[tokio::test]
+    async fn config_apply_is_atomic_and_enqueues_reload() {
+        AppClock::start();
+        let temp = TempConfig::new();
+        std::fs::write(temp.path(), valid_config_yaml()).expect("write config");
+        let (controller, mut rx) = AppController::new(temp.path().to_path_buf());
+        controller.set_healthy_config(valid_config_yaml().to_string());
+        let apply = ConfigApplyHandler {
+            controller: controller.clone(),
+        };
+        let candidate = "plugins: []\n";
+        let response = apply
+            .handle(test_request(
+                Method::POST,
+                "/config/apply",
+                Bytes::from(
+                    serde_json::json!({
+                        "format": "yaml",
+                        "content": candidate,
+                        "base_version": config_version(valid_config_yaml()),
+                        "candidate_version": config_version(candidate)
+                    })
+                    .to_string(),
+                ),
+            ))
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            rx.try_recv().expect("reload command"),
+            ControlCommand::Reload
+        );
+        assert_eq!(std::fs::read_to_string(temp.path()).unwrap(), candidate);
+        let status = config_tx::status(temp.path()).unwrap().expect("status");
+        assert_eq!(status.status, config_tx::TransactionStatus::Pending);
+        config_tx::rollback(temp.path(), "test cleanup").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(temp.path()).unwrap(),
+            valid_config_yaml()
+        );
+    }
+
+    #[tokio::test]
+    async fn config_apply_rejects_stale_and_forged_versions_without_writing() {
+        AppClock::start();
+        let temp = TempConfig::new();
+        std::fs::write(temp.path(), valid_config_yaml()).expect("write config");
+        let (controller, _rx) = AppController::new(temp.path().to_path_buf());
+        controller.set_healthy_config(valid_config_yaml().to_string());
+        let apply = ConfigApplyHandler { controller };
+        let candidate = "plugins: []\n";
+        for (base_version, candidate_version) in [
+            ("stale".to_string(), config_version(candidate)),
+            (config_version(valid_config_yaml()), "forged".to_string()),
+        ] {
+            let response = apply
+                .handle(test_request(
+                    Method::POST,
+                    "/config/apply",
+                    Bytes::from(
+                        serde_json::json!({
+                            "format": "yaml",
+                            "content": candidate,
+                            "base_version": base_version,
+                            "candidate_version": candidate_version
+                        })
+                        .to_string(),
+                    ),
+                ))
+                .await;
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            assert_eq!(
+                std::fs::read_to_string(temp.path()).unwrap(),
+                valid_config_yaml()
+            );
+        }
     }
 }
