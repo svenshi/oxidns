@@ -1,135 +1,48 @@
 ---
-title: Standard Mode Plan/Apply
+title: Standard Mode and Backend Boundary
 ---
 
-The Standard Mode API compiles user intent into complete OxiDNS YAML and applies it as a recoverable transaction. It only manages OxiDNS configuration; it does not modify OS DNS, firewalls, OpenWrt/UCI, or third-party proxy systems.
+Standard and Expert are WebUI workspaces only. The OxiDNS backend contains no Standard Intent compiler, Plan, templates, Expert Copy, or mode ownership. Every `/api/standard/*` route is absent and returns `404`.
 
-All routes use the management API `/api` prefix and inherit its TLS, Basic Auth, and CORS policy.
+## Data flow
 
-## `POST /api/standard/plan`
-
-This read-only endpoint performs schema migration, normalization, semantic and capability validation, YAML generation, backend configuration preflight, ownership analysis, and takeover diff calculation. It does not write files or trigger reload.
-
-```json
-{
-  "intent": { "schema": 6, "listen": {}, "upstreamGroups": [] },
-  "base_config_version": "sha256-hex",
-  "base_standard_version": "sha256-hex",
-  "takeover": false
-}
+```text
+WebUI Standard Intent
+  → TypeScript migration, validation, compilation, Plan, and explanation
+  → native OxiDNS YAML
+  → POST /api/config/validate
+  → POST /api/config/apply
+  → DNS Runtime
+  → raw query events
+  → WebUI query-explainer
 ```
 
-The two base versions are optional for preview. When supplied and stale, they appear as conflicts in `blockers`. `takeover` acknowledges ownership only and does not make Plan mutate state.
+The client obtains Feature, Server, Executor, Matcher, and Provider capabilities from `GET /api/build`. It produces deterministic YAML and an Intent revision, while backend validation of the native configuration remains the final Apply gate.
 
-Important response fields:
+## Generic APIs used by the workspace
 
-| Field | Meaning |
+| Purpose | Endpoint |
 | --- | --- |
-| `ownership` | `managed`, `modified`, or `unmanaged` |
-| `semantic_diff` | Schema-1 stable-object Diff, affected paths/rules/caches/listeners/groups/files, plus compatible tag Diff |
-| `dependency_graph` | Read-only generated plugin nodes, edges, initialization order, and sequence flows |
-| `blockers` | Control-plane blockers such as version conflicts or required takeover |
-| `plan.normalizedIntent` | Backend-migrated and normalized schema v6 intent |
-| `plan.diagnostics` | Semantic diagnostics with stable `severity`, `code`, and `path` |
-| `plan.generated` | Candidate YAML, version, tag map, summary, and schema-1 compilation explanation; absent on errors |
-| `can_apply` | `true` only when both the plan and control-plane checks pass |
+| Candidate YAML validation | `POST /api/config/validate` |
+| Atomic apply and rollback | `POST /api/config/apply` |
+| Transaction status | `GET /api/config/apply/status` |
+| Healthy YAML history | `GET /api/config/history` |
+| Historical YAML preview | `POST /api/config/history/restore` |
+| Opaque workspace JSON | `GET/PUT /api/webui/config` |
+| Build and plugin capabilities | `GET /api/build` |
 
-Missing required plugins, invalid references, duplicate IDs/tags, invalid TTL ranges, missing local semantic data files, invalid ECS/IP-selection parameters, and unsupported log sampling or scenario values block apply. Duplicate, overridden, and unreachable rules are also included in `plan.details.ruleAnalysis`. Missing optional metrics support only produces a warning.
+See [Configuration API](configuration.mdx) for complete transaction fields.
 
-## `POST /api/standard/apply`
+## Workspace state
 
-Apply reruns the complete plan, verifies both base versions and the reviewed candidate version, writes a recovery journal, stages candidate DNS YAML, and requests a runtime reload.
+The active Intent, generated mappings, and latest generation metadata may be stored as ordinary JSON through `/api/webui/config`. The backend provides only a 2 MiB opaque CAS store whose default is `{"schema":1}`; it does not parse Standard or Expert fields.
 
-```json
-{
-  "intent": { "schema": 6, "listen": {}, "upstreamGroups": [] },
-  "base_config_version": "plan-response-config-version",
-  "base_standard_version": "plan-response-standard-version",
-  "planned_config_version": "plan-generated-config-version",
-  "takeover": true
-}
-```
+After DNS Apply succeeds, the WebUI retries workspace CAS up to three times. A workspace save failure never rolls back the active DNS configuration; the UI offers an Intent download for workspace recovery.
 
-A successful request returns `202 Accepted`:
+Templates live in browser IndexedDB, scoped by OxiDNS instance, with a limit of 64 records and 2 MiB total. Intent import/export, template preview, Expert Copy, and Expert Analysis are browser operations. Expert Copy only places generated YAML in the editor and never writes configuration.
 
-```json
-{
-  "ok": true,
-  "transaction_id": "standard-...",
-  "status": "pending",
-  "target_config_version": "sha256-hex"
-}
-```
+## Query explanation
 
-Clients must poll transaction status. Standard state and generated metadata are committed only after the candidate runtime assembles successfully. Assembly failure restores the previous DNS file, Standard state, and runtime. If the process is interrupted, the next startup restores the complete old state before normal configuration loading.
+The Query Recorder backend returns only records, steps, truncation statistics, and an arbitrary read-only `context` string map. Cache, Forward, and Fallback entries are raw runtime events. The backend returns no product-level `diagnosis` and does not interpret `intentRevision`.
 
-Status codes:
-
-* `400 Bad Request`: the request or Standard intent cannot be decoded.
-* `409 Conflict`: a base version is stale, the candidate differs from the reviewed plan, takeover confirmation is missing, or another transaction/reload is active.
-* `500 Internal Server Error`: capability discovery, file staging, or the reload request failed.
-
-The journal may contain sensitive configuration fields. OxiDNS bounds its size and writes it with mode `0600` on Unix beside the configuration file. Do not include the journal in public diagnostic bundles.
-
-## `GET /api/standard/apply/status`
-
-Returns the current pending transaction, or the most recent completed record when none is pending:
-
-```json
-{
-  "ok": true,
-  "transaction": {
-    "schema": 1,
-    "transaction_id": "standard-...",
-    "status": "succeeded",
-    "completed_at_ms": 1760000000000,
-    "previous_config_version": "sha256-hex",
-    "candidate_config_version": "sha256-hex"
-  }
-}
-```
-
-`status` is `pending`, `succeeded`, `failed`, or `recovered`. Failure text is bounded; candidate YAML and Standard intent are never returned by this endpoint.
-
-## Standard Mode Configuration History
-
-After every successful transaction commit, the backend persists the normalized Standard Mode intent and retains the latest 20 entries. The history file sits beside the DNS configuration, is atomically replaced, and uses mode `0600` on Unix. The list endpoint omits complete intent so routine status reads do not expose sensitive upstream proxy settings.
-
-### `GET /api/standard/history`
-
-Returns history metadata in reverse chronological order, including snapshot ID, transaction ID, configuration version, schema, upstream group count, and resolution path count.
-
-### `POST /api/standard/history/restore`
-
-```json
-{ "id": "standard-..." }
-```
-
-Returns the stored Standard Mode intent only after an operator explicitly selects an entry. The WebUI does not overwrite the current configuration with historical YAML. It submits the intent through Plan, diff review, capability validation, and transactional Apply again. Restore therefore remains protected by current build capabilities, configuration ownership, and optimistic concurrency versions.
-
-## `POST /api/standard/templates/preview`
-
-Accepts `base_intent`, a `kind` (`low_latency`, `privacy_dns`, `internal_domains`, or `regional_upstream`), and parameters, then expands a complete schema-v6 draft without side effects. It returns `expansion.proposedIntent`, added/modified objects, explanation tags, and the normal Plan response. Namespace collisions are rejected. Accepting a preview still requires exact-version Plan/Apply.
-
-## Explanation and asset APIs
-
-- `GET /api/standard/assets/export`: export current normalized intent in asset schema 1.
-- `POST /api/standard/assets/import`: read-only import, migration, validation, and Plan, limited to 2 MiB; it never applies.
-- `POST /api/standard/assets/expert-copy`: return detached Expert YAML, version, capabilities, and graph without writing configuration.
-- `POST /api/standard/assets/expert-analysis`: validate up to 2 MiB of Expert YAML read-only and return its graph, Expert-only objects, and system-integration notices; never execute or reverse-convert it.
-- `GET/POST/PATCH/DELETE /api/standard/assets/templates`: list, create, update, or exactly delete local saved templates.
-- `POST /api/standard/assets/templates/duplicate`: copy a template under a new stable ID.
-
-The template asset store is limited to 64 entries and 2 MiB, lives beside the config, is atomically written with mode `0600` on Unix, and supports optimistic `expectedVersion`. Saving never changes Standard intent; actual use still passes through template preview and Plan/Apply.
-
-The Standard-generated `query_recorder` adds schema-1 `diagnosis`, `intentRevision`, cache/upstream/fallback facts, and stage timing to record details. A query defaults to 512 events (Expert accepts 32–4096); overflow returns `stepsTruncated` and `droppedStepCount`. Old rows without a revision return `explanationUnavailable` instead of being mapped to current intent.
-
-## Schema v6 Runtime Semantics
-
-- Every filter subscription generates independent `download`, `cron`, and job tags. A download failure stops that subscription's provider reload, leaving the last valid rule file active.
-- Every resolution path owns an independent cache instance. Cache list, delete, flush, dump, and load operations resolve instances through `tagMap.caches` in generated metadata.
-- Hosts, redirects, static records, response TTL, fixed QTYPE responses, and DDNS compile to native OxiDNS plugins. DDNS domains bypass cache and use a short fixed TTL.
-- Dynamic learning rule and metadata files are the only runtime-state files created by Standard Mode. After a successful Apply, cleanup is limited to exact previous-manifest files under `./data/standard-dynamic-learning/`; it is never recursive and never accepts arbitrary user paths.
-- See [Standard Mode Advanced Policies](../standard-mode-advanced.md) for dedicated groups, dynamic learning, advanced request/response rules, and the four server-side templates.
-- Six semantic data roles combine manual, local-file, online-subscription, and native geosite/geoip sources. Lifecycle tags are exposed through `tagMap.ruleDataSources`; aggregate Providers are exposed through `tagMap.ruleData`.
-- Domestic/remote paths, three unknown-domain modes, response-validation fallback, ECS, dual-stack policy, and IP selection compile to native OxiDNS plugins. See [Standard Mode Smart Routing](../standard-mode-smart-routing.md) for the complete semantics.
+The WebUI adds product explanations only when the recorded revision matches the active Intent and generated mapping. If the versions differ or mapping is unavailable, it displays the raw backend facts only.

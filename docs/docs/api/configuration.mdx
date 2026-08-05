@@ -2,86 +2,87 @@
 title: 配置接口
 ---
 
+配置 API 只处理原生 OxiDNS YAML。标准模式与专家模式是 WebUI 工作区概念，后端不会接收意图、Plan 或模式所有权。
 
-配置 API 可读取、保存、检查和校验 YAML。生产变更应先校验、备份原配置，再 reload 并检查状态。
-
-## 配置检查接口
+## 读取与校验
 
 ### `GET /api/config`
 
-作用：
+读取启动参数指向的配置文件原文，返回 `content`、配置路径、SHA-256 `version` 和文件更新时间。环境变量不会被展开后写回。
 
-* 读取当前启动参数指向的配置文件原文。
-* 返回 YAML 文本、配置路径、内容版本和文件更新时间。
-* 不展开环境变量占位符；响应中的 `content` 与磁盘文件保持一致。
+### `GET /api/config/check`
 
-返回示例：
+在真实配置路径上检查当前磁盘配置，包括环境变量、`include` 和相对路径。
+
+### `POST /api/config/validate`
+
+校验候选 YAML，但不写文件。推荐请求：
 
 ```json
 {
-  "ok": true,
-  "path": "/etc/oxidns/config.yaml",
   "format": "yaml",
-  "content": "plugins:\n  - tag: forward\n    type: forward\n",
-  "version": "sha256-hex",
-  "updated_at_ms": 1760000000000
+  "content": "plugins:\n  - tag: forward\n    type: forward\n"
 }
 ```
 
-### `PUT /api/config`
+为兼容旧调用，也接受直接的 UTF-8 YAML 正文。候选文件会在真实配置目录旁预检，因此 `include` 和相对路径与正式 Apply 的语义一致。成功响应包含候选 `version`、插件数量、依赖图和初始化顺序。
 
-作用：
+## 原子应用
 
-* 保存完整 YAML 配置文件。
-* 保存前默认执行与 `POST /api/config/validate` 相同的校验。
-* 可在保存成功后触发一次应用级 reload。
-* 保存时写入请求中的原始文本，不会把 `${VAR}` 展开后的值落盘。
+### `POST /api/config/apply`
 
-请求体：
+使用乐观并发控制启动通用配置事务：
 
 ```json
 {
   "format": "yaml",
-  "content": "plugins:\n  - tag: debug_main\n    type: debug_print\n",
+  "content": "...",
+  "base_version": "当前磁盘配置版本",
+  "candidate_version": "validate 返回的候选版本"
+}
+```
+
+规则：
+
+- 正文最大 2 MiB；服务端会重新计算候选版本并再次完整校验。
+- `base_version` 必须等于当前磁盘版本；候选版本不符、已有事务或 reload 正在进行均返回 `409 Conflict`。
+- 接受后返回 `202 Accepted`，其中包含 `config-{timestamp}-{pid}-{hash12}` 事务 ID、前后版本和 `pending` 状态。
+- 服务端使用原子文件替换。reload 或运行时组装失败时，磁盘配置和上一套健康运行时都会恢复。
+
+### `GET /api/config/apply/status`
+
+返回当前或最近事务的 ID、状态、前后版本和错误。前端应在收到 `202` 后轮询，直到 `committed` 或 `rolled_back`。
+
+## 健康历史
+
+### `GET /api/config/history`
+
+列出已健康运行过的版本及时间，不在列表响应中返回 YAML 正文。历史最多 20 条，正文累计最多 20 MiB；相同版本去重，超限淘汰最旧记录。
+
+### `POST /api/config/history/restore`
+
+请求体为 `{"id":"history-entry-id"}`。接口只返回该版本的 YAML 预览，不写配置、不 reload。调用方必须读取当前配置版本，并把预览再次交给 `/config/validate` 和 `/config/apply`。
+
+历史记录是非关键附加能力；写历史失败会记录警告，但不会回滚已经成功运行的 DNS 配置。
+
+## 兼容保存接口
+
+### `PUT /api/config`
+
+请求格式保持兼容：
+
+```json
+{
+  "format": "yaml",
+  "content": "...",
   "base_version": "sha256-hex",
   "validate": true,
   "reload": false
 }
 ```
 
-返回：
+- `reload: false`：共享配置写锁下原子替换，只保存不改变当前运行时。
+- `reload: true`：内部进入与 `/config/apply` 相同的通用事务。
+- 所有写操作共享同一把配置锁，避免 Save、Apply 与 reload 交叉覆盖。
 
-* `200 OK`
-  * 配置已保存，返回新版本、插件数量和初始化顺序。
-* `400 Bad Request`
-  * YAML 无法解析、配置校验失败，或 `format` 不是 `yaml`。
-* `409 Conflict`
-  * `base_version` 与当前文件版本不一致，或保存后请求 reload 时已有 reload 正在进行。
-
-### `GET /api/config/check`
-
-作用：
-
-* 校验当前配置文件路径对应的配置文件。
-* 校验时会在内存中展开环境变量占位符，但不会修改磁盘文件。
-
-适用场景：
-
-* 检查磁盘上现有配置是否能成功解析与通过插件依赖校验。
-
-### `POST /api/config/validate`
-
-作用：
-
-* 直接校验请求体中的 YAML 配置文本。
-* 同时支持 `PUT /api/config` 使用的 JSON 包装格式。
-* 校验时会在内存中展开环境变量占位符，但不会返回或保存展开后的配置。
-
-请求体要求：
-
-* UTF-8 YAML 文本且非空；或
-* JSON：`{"format":"yaml","content":"...yaml..."}`
-
-适用场景：
-
-* 控制平面先验校验配置，再决定是否落盘。
+事务边车文件位于配置旁：`.config-transaction.json`、`.config-transaction.last.json` 和 `.config-history.json`。进程启动发现 pending journal 时，会先恢复上一健康 YAML 再加载配置。

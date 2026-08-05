@@ -95,7 +95,7 @@ See [Configuration](https://oxidns.org/en/configuration) and [Common Scenarios](
 
 See the [Plugin Reference](https://oxidns.org/en/plugin-reference/overview) for the complete list of built-in components and configuration fields.
 
-Built-in Standard Mode compiles upstream groups, isolated paths, smart routing, dedicated groups, bounded learning, advanced rules, and scenario templates into native OxiDNS plugins, with compilation explanation, bounded per-query diagnosis, semantic Diff, portable intent assets, and safe rollback. It does not control OpenWrt, OS DNS, DHCP, firewalls, or third-party proxies. See [Standard Mode Operations](https://oxidns.org/en/standard-mode-operations).
+The WebUI Standard workspace compiles upstream groups, isolated paths, smart routing, dedicated groups, bounded learning, advanced rules, and scenario templates into native OxiDNS YAML in the browser, then applies it through generic validation and transaction APIs. The backend is unaware of Standard/Expert modes and does not control OpenWrt, OS DNS, DHCP, firewalls, or third-party proxies. See [Standard Mode Operations](https://oxidns.org/en/standard-mode-operations).
 
 ---
 

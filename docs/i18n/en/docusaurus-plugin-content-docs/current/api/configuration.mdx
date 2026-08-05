@@ -2,86 +2,87 @@
 title: Configuration API
 ---
 
+The configuration API only handles native OxiDNS YAML. Standard and Expert are WebUI workspace concepts; the backend does not accept intents, plans, or mode ownership.
 
-The configuration API reads, saves, checks, and validates YAML. Validate and back up production configuration before saving it, then reload and inspect status.
-
-## Config Check Endpoints
+## Read and validate
 
 ### `GET /api/config`
 
-Purpose:
+Returns the exact configuration file selected at startup, its path, SHA-256 `version`, and modification time. Expanded environment values are never written back.
 
-* Reads the config file referenced by the current startup options.
-* Returns the raw YAML text, config path, content version, and file update time.
-* Does not expand environment variable placeholders; `content` matches the file on disk.
+### `GET /api/config/check`
 
-Example response:
+Checks the current on-disk configuration at its real path, including environment variables, `include`, and relative paths.
+
+### `POST /api/config/validate`
+
+Validates candidate YAML without writing it. The recommended request is:
 
 ```json
 {
-  "ok": true,
-  "path": "/etc/oxidns/config.yaml",
   "format": "yaml",
-  "content": "plugins:\n  - tag: forward\n    type: forward\n",
-  "version": "sha256-hex",
-  "updated_at_ms": 1760000000000
+  "content": "plugins:\n  - tag: forward\n    type: forward\n"
 }
 ```
 
-### `PUT /api/config`
+Raw UTF-8 YAML remains accepted for compatibility. The candidate is preflighted beside the real configuration file, so `include` and relative paths have the same semantics as Apply. A successful response includes the candidate `version`, plugin count, dependency graph, and initialization order.
 
-Purpose:
+## Atomic apply
 
-* Saves the full YAML config file.
-* Runs the same validation as `POST /api/config/validate` before writing by default.
-* Can request an application-level reload after a successful save.
-* Writes the original request text, not the expanded values of `${VAR}` placeholders.
+### `POST /api/config/apply`
 
-Request body:
+Starts a generic configuration transaction with optimistic concurrency control:
 
 ```json
 {
   "format": "yaml",
-  "content": "plugins:\n  - tag: debug_main\n    type: debug_print\n",
+  "content": "...",
+  "base_version": "current disk version",
+  "candidate_version": "candidate version returned by validate"
+}
+```
+
+Rules:
+
+- Content is limited to 2 MiB. The server recomputes the candidate version and performs full validation again.
+- `base_version` must equal the current disk version. A forged candidate version, active transaction, or reload in progress returns `409 Conflict`.
+- Accepted requests return `202 Accepted` with a `config-{timestamp}-{pid}-{hash12}` transaction ID, before/after versions, and `pending` status.
+- The server uses atomic file replacement. If reload or runtime assembly fails, both the disk configuration and the previous healthy runtime are restored.
+
+### `GET /api/config/apply/status`
+
+Returns the active or latest transaction ID, state, before/after versions, and error. After `202`, clients should poll until `committed` or `rolled_back`.
+
+## Healthy history
+
+### `GET /api/config/history`
+
+Lists versions that have run successfully without including YAML content in the list response. History retains at most 20 entries and 20 MiB of YAML, deduplicates identical versions, and evicts the oldest entries first.
+
+### `POST /api/config/history/restore`
+
+Send `{"id":"history-entry-id"}`. This endpoint returns only a YAML preview; it neither writes nor reloads configuration. Read the current configuration version, then submit the preview through `/config/validate` and `/config/apply` to activate it.
+
+History is a non-critical add-on. A history write failure is logged but never rolls back a configuration that is already running successfully.
+
+## Compatible save endpoint
+
+### `PUT /api/config`
+
+The request remains compatible:
+
+```json
+{
+  "format": "yaml",
+  "content": "...",
   "base_version": "sha256-hex",
   "validate": true,
   "reload": false
 }
 ```
 
-Responses:
+- `reload: false` atomically replaces the file under the shared configuration lock and does not change the running configuration.
+- `reload: true` enters the same generic transaction used by `/config/apply`.
+- Every configuration writer shares one lock, preventing Save, Apply, and reload from overwriting each other.
 
-* `200 OK`
-  * The config was saved. The response includes the new version, plugin count, and init order.
-* `400 Bad Request`
-  * The YAML cannot be parsed, validation failed, or `format` is not `yaml`.
-* `409 Conflict`
-  * `base_version` does not match the current file version, or a reload was requested while another reload is already running.
-
-### `GET /api/config/check`
-
-Purpose:
-
-* Validates the config file at the current config path.
-* Expands environment variable placeholders in memory for validation, without modifying the file on disk.
-
-Good fit:
-
-* Check whether the on-disk config parses correctly and passes plugin dependency validation.
-
-### `POST /api/config/validate`
-
-Purpose:
-
-* Validates YAML config text sent directly in the request body.
-* Also accepts the JSON envelope used by `PUT /api/config`.
-* Expands environment variable placeholders in memory for validation, without returning or saving expanded config text.
-
-Request body requirements:
-
-* Non-empty UTF-8 YAML text; or
-* JSON: `{"format":"yaml","content":"...yaml..."}`
-
-Good fit:
-
-* Validate a config in the control plane before writing it to disk.
+Transaction sidecars live beside the configuration file: `.config-transaction.json`, `.config-transaction.last.json`, and `.config-history.json`. If startup discovers a pending journal, OxiDNS restores the previous healthy YAML before loading configuration.

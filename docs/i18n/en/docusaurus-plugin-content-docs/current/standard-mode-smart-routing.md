@@ -61,6 +61,6 @@ ECS runs before cache. Paths that preserve or generate ECS automatically set `ec
 
 ## Pre-apply checks
 
-The Rust backend remains authoritative on save: it migrates and normalizes intent, checks build capabilities and references, verifies local data files, reports duplicate/overridden/unreachable rules, generates candidate configuration, and runs backend preflight. Only then can a recoverable transaction apply it. Schema v4 migrates to v5; legacy ECS and IP-selection placeholders produce review warnings and never silently broaden routing.
+On save, the browser compiler migrates and normalizes intent, checks build capabilities and references, reports duplicate/overridden/unreachable rules, and generates candidate configuration. Generic `/config/validate` performs the final preflight of native YAML and real relative paths. Only then can the generic recoverable transaction apply it. Schema v4 migrates to v5; legacy ECS and IP-selection placeholders produce review warnings and never silently broaden routing.
 
-See [Standard Mode Plan/Apply](api/standard-mode.mdx) for the transaction contract.
+See [Standard Mode and Backend Boundary](api/standard-mode.mdx) for the workspace boundary and [Configuration API](api/configuration.mdx) for transaction fields.

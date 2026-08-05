@@ -1,135 +1,48 @@
 ---
-title: 标准模式 Plan/Apply
+title: 标准模式与后端边界
 ---
 
-标准模式 API 把用户意图编译为完整 OxiDNS YAML，并以可恢复事务应用。它只管理 OxiDNS 自身配置，不修改操作系统 DNS、防火墙、OpenWrt/UCI 或第三方代理系统。
+标准模式和专家模式仅是 WebUI 工作区。OxiDNS 后端不包含 Standard Intent 编译器、Plan、模板、Expert Copy 或模式所有权，所有 `/api/standard/*` 路由均不存在并返回 `404`。
 
-所有路由都位于管理 API 的 `/api` 前缀下，并遵循相同的 TLS、Basic Auth 和 CORS 规则。
+## 数据流
 
-## `POST /api/standard/plan`
-
-只读地执行 schema 迁移、规范化、语义和编译能力校验、YAML 生成、后端配置预检、所有权分析与接管差异计算。Plan 不写文件，也不触发 reload。
-
-```json
-{
-  "intent": { "schema": 6, "listen": {}, "upstreamGroups": [] },
-  "base_config_version": "sha256-hex",
-  "base_standard_version": "sha256-hex",
-  "takeover": false
-}
+```text
+WebUI Standard Intent
+  → TypeScript 迁移、校验、编译、Plan 与解释
+  → 原生 OxiDNS YAML
+  → POST /api/config/validate
+  → POST /api/config/apply
+  → DNS Runtime
+  → 原始查询事件
+  → WebUI query-explainer
 ```
 
-`base_config_version` 和 `base_standard_version` 在预览时可省略；传入后若已过期，会在 `blockers` 中返回冲突。`takeover` 仅用于确认接管，不改变 Plan 的只读性质。
+前端从 `GET /api/build` 获取当前二进制的 Feature、Server、Executor、Matcher 和 Provider 能力。它生成确定性 YAML 和 Intent revision，但后端的真实配置校验始终是 Apply 的最终条件。
 
-关键返回字段：
+## 使用的通用接口
 
-| 字段 | 含义 |
+| 用途 | 接口 |
 | --- | --- |
-| `ownership` | `managed`、`modified` 或 `unmanaged` |
-| `semantic_diff` | schema 1 稳定对象 Diff、受影响路径/规则/缓存/监听器/上游组/文件，以及兼容 tag Diff |
-| `dependency_graph` | 生成配置的只读插件节点、依赖边、初始化顺序和 sequence 流程 |
-| `blockers` | 版本冲突或需要显式接管等控制面阻断项 |
-| `plan.normalizedIntent` | 后端迁移和规范化后的 schema v6 意图 |
-| `plan.diagnostics` | 带稳定 `severity`、`code`、`path` 的语义诊断 |
-| `plan.generated` | 候选 YAML、版本、tag map、摘要和 schema 1 编译解释；有错误时不存在 |
-| `can_apply` | Plan 与控制面阻断项均通过时为 `true` |
+| 候选 YAML 校验 | `POST /api/config/validate` |
+| 原子应用与回滚 | `POST /api/config/apply` |
+| 事务状态 | `GET /api/config/apply/status` |
+| 健康 YAML 历史 | `GET /api/config/history` |
+| 历史 YAML 预览 | `POST /api/config/history/restore` |
+| 透明工作区 JSON | `GET/PUT /api/webui/config` |
+| 构建与插件能力 | `GET /api/build` |
 
-缺少必需插件、无效引用、重复 ID/tag、错误 TTL 区间、缺失的本地语义数据文件、无效 ECS/IP 优选参数，以及尚不支持的日志采样或场景值都会阻止应用。重复、被覆盖和不可达规则同时写入 `plan.details.ruleAnalysis`。可选指标插件缺失只产生 warning。
+完整事务字段见[配置接口](configuration.mdx)。
 
-## `POST /api/standard/apply`
+## 工作区状态
 
-Apply 会重新执行完整 Plan，检查两个基础版本和已审阅的候选版本，然后写入恢复日志、暂存候选 DNS YAML 并请求运行时 reload。
+活动 Intent、生成映射和最近生成信息可作为普通 JSON 保存在 `/api/webui/config`。后端只提供 2 MiB 透明 CAS 存储，默认值是 `{"schema":1}`，不会解析其中的 Standard 或 Expert 字段。
 
-```json
-{
-  "intent": { "schema": 6, "listen": {}, "upstreamGroups": [] },
-  "base_config_version": "plan-response-config-version",
-  "base_standard_version": "plan-response-standard-version",
-  "planned_config_version": "plan-generated-config-version",
-  "takeover": true
-}
-```
+DNS Apply 成功后，WebUI 最多重试三次工作区 CAS。即使工作区保存失败，已经生效的 DNS 配置也不会回滚；界面会提示下载 Intent 以便恢复工作区。
 
-返回 `202 Accepted`：
+模板位于浏览器 IndexedDB，按 OxiDNS 实例隔离，最多 64 条且累计最多 2 MiB。Intent 导入导出、模板预览、Expert Copy 和 Expert Analysis 均在浏览器完成。Expert Copy 只把生成 YAML 放入编辑器，不写配置。
 
-```json
-{
-  "ok": true,
-  "transaction_id": "standard-...",
-  "status": "pending",
-  "target_config_version": "sha256-hex"
-}
-```
+## 查询解释
 
-调用方必须轮询事务状态。只有候选运行时成功组装后，后端才提交标准模式状态和生成元数据；组装失败会恢复旧 DNS 文件、旧标准状态和旧运行时。进程在事务中断时，下次启动会在加载普通配置前恢复旧的完整状态。
+Query Recorder 后端只返回记录、步骤、截断统计和任意只读 `context` 字符串映射。Cache、Forward 与 Fallback 都是原始运行事件；后端不返回产品化 `diagnosis`，也不解释 `intentRevision`。
 
-返回状态：
-
-* `400 Bad Request`：请求或标准意图无法解码。
-* `409 Conflict`：基础版本过期、候选版本与已审阅 Plan 不同、需要接管确认、已有事务或 reload 正在执行。
-* `500 Internal Server Error`：能力快照、文件暂存或 reload 请求失败。
-
-事务日志可能包含配置中的敏感字段，后端会限制大小并在 Unix 上以 `0600` 权限写入配置文件旁；不要把日志文件复制到公开诊断包。
-
-## `GET /api/standard/apply/status`
-
-返回当前 pending 事务；没有 pending 事务时返回最近一次完成记录：
-
-```json
-{
-  "ok": true,
-  "transaction": {
-    "schema": 1,
-    "transaction_id": "standard-...",
-    "status": "succeeded",
-    "completed_at_ms": 1760000000000,
-    "previous_config_version": "sha256-hex",
-    "candidate_config_version": "sha256-hex"
-  }
-}
-```
-
-`status` 为 `pending`、`succeeded`、`failed` 或 `recovered`。失败信息经过长度限制，不返回候选 YAML 或标准意图。
-
-## 标准模式配置历史
-
-后端在每次事务成功提交后保存规范化的标准模式意图，最多保留最近 20 条。历史文件位于 DNS 配置文件旁，使用原子替换，并在 Unix 上以 `0600` 权限写入。列表接口不返回完整意图，避免在日常状态读取中暴露上游代理等敏感配置。
-
-### `GET /api/standard/history`
-
-返回按时间倒序排列的历史元数据，包括快照 ID、事务 ID、配置版本、schema、上游组数量和解析路径数量。
-
-### `POST /api/standard/history/restore`
-
-```json
-{ "id": "standard-..." }
-```
-
-仅在操作者明确选择某条历史时返回其中保存的标准模式意图。WebUI 不会把历史 YAML 直接覆盖到当前配置，而是把该意图重新送入 Plan、差异预览、能力校验和事务 Apply。因此恢复操作仍受当前构建能力、配置所有权和乐观并发版本保护。
-
-## `POST /api/standard/templates/preview`
-
-以 `base_intent`、`kind`（`low_latency`、`privacy_dns`、`internal_domains`、`regional_upstream`）和参数为输入，只读扩展完整 schema v6 草稿。返回 `expansion.proposedIntent`、新增/修改对象、解释标签及正常 Plan 结果。命名空间冲突直接拒绝；预览不写状态，接受后仍必须走精确版本 Plan/Apply。
-
-## 解释与配置资产接口
-
-- `GET /api/standard/assets/export`：导出 asset schema 1 的当前规范化意图。
-- `POST /api/standard/assets/import`：只读导入、迁移、校验和 Plan；最大 2 MiB，不执行 Apply。
-- `POST /api/standard/assets/expert-copy`：返回分离的 Expert YAML、版本、能力和依赖图，不写配置。
-- `POST /api/standard/assets/expert-analysis`：只读校验最多 2 MiB 的 Expert YAML，返回依赖图、Expert-only 对象和系统集成提示；不执行或反向转换配置。
-- `GET/POST/PATCH/DELETE /api/standard/assets/templates`：列出、新建、更新或精确删除本地保存模板。
-- `POST /api/standard/assets/templates/duplicate`：以新稳定 ID 复制模板。
-
-模板资产库最多 64 条、2 MiB，位于配置文件旁，原子写入并在 Unix 上使用 `0600`。所有修改都可以携带 `expectedVersion` 做乐观并发校验。保存模板不修改标准意图；真正使用时仍调用模板 preview 和 Plan/Apply。
-
-Standard 生成的 `query_recorder` 会在每条详情中返回 schema 1 `diagnosis`、`intentRevision`、缓存/上游/fallback 事实和阶段耗时。单查询默认最多 512 个事件（Expert 可配 32–4096）；截断时返回 `stepsTruncated` 与 `droppedStepCount`。旧记录没有修订号时返回 `explanationUnavailable`，不会映射到当前意图。
-
-## schema v6 运行语义
-
-- 每个过滤订阅生成独立的 `download`、`cron` 和任务标签。下载失败会停止该订阅的 provider reload，已有规则文件继续生效。
-- 每条解析路径拥有独立缓存实例；缓存查看、删除、清空、dump/load 使用生成元数据中的 `tagMap.caches` 定位。
-- Hosts、重定向、静态记录、响应 TTL、QTYPE 固定响应和 DDNS 均编译为 OxiDNS 原生插件。DDNS 域名绕过缓存并使用短固定 TTL。
-- 动态学习的规则和元数据文件是唯一由 Standard Mode 创建的运行状态文件。成功 Apply 后只清理旧 manifest 中、且位于 `./data/standard-dynamic-learning/` 下的精确文件；不递归删除，也不接触任意用户路径。
-- 专属解析组、动态学习、高级请求/响应规则和四个服务端模板的完整语义见[标准模式高级策略](../standard-mode-advanced.md)。
-- 六类语义数据角色可组合手工、本地文件、在线订阅和原生 geosite/geoip；订阅生命周期标签位于 `tagMap.ruleDataSources`，聚合 Provider 位于 `tagMap.ruleData`。
-- 国内/远程路径、三种未知域名模式、响应校验 fallback、ECS、双栈和 IP 优选均编译为 OxiDNS 原生插件。详细语义见[标准模式智能分流](../standard-mode-smart-routing.md)。
+WebUI 只有在记录中的 revision 与活动 Intent 及生成映射匹配时才添加产品解释。版本不一致或映射缺失时，仅显示后端提供的原始事实。

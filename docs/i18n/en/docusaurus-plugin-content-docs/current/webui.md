@@ -14,12 +14,12 @@ In both modes, the WebUI defaults to the relative backend URL `/api`. When the W
 
 - Expert Mode manages complete YAML and plugin graphs. Existing configurations open in Expert Mode by default.
 - Standard Mode manages native OxiDNS DNS intent. It does not operate OpenWrt/UCI, OS DNS, firewalls, or third-party proxy systems.
-- Before saving, the Rust backend builds a Plan that exposes diagnostics, configuration ownership, and plugin changes. Unmanaged or modified configurations require explicit takeover confirmation.
-- After confirmation, Standard state, generated metadata, DNS YAML, and runtime reload are applied as one recoverable transaction. Failure restores the previous files and runtime.
+- Before saving, the browser-side TypeScript compiler builds a Plan that exposes diagnostics, configuration ownership, and plugin changes. Unmanaged or modified configurations require explicit takeover confirmation.
+- After confirmation, native DNS YAML is applied through the generic configuration transaction. Failure restores the previous file and runtime; a workspace JSON save failure does not roll back DNS.
 - Standard Mode provides multiple upstream groups, reference-aware resolution paths, independent filter subscriptions, local DNS policies, query-log export, per-path cache operations, and backend configuration history.
 - Schema v5 also provides six semantic data roles, domestic/remote paths, three unknown-domain modes, response-validation fallback, ECS, dual-stack policy, and DNSSEC-safe IP selection. Rule-data UI reports missing, stale, download, and Provider load states.
-- Local DNS Policies only use native OxiDNS plugins. History restores under Operations & Recovery pass through diff review and transactional apply instead of overwriting YAML.
-- Switching the WebUI view alone does not rewrite DNS YAML. See [Standard Mode Plan/Apply](api/standard-mode.mdx) for the API contract.
+- Local DNS Policies only use native OxiDNS plugins. History restore under Operations & Recovery returns a YAML preview and then passes through diff review and the generic transaction instead of overwriting configuration.
+- Switching the WebUI view alone does not rewrite DNS YAML. See [Standard Mode and Backend Boundary](api/standard-mode.mdx) for the workspace boundary and generic APIs.
 - Upstream leak prevention applies only to queries that reach OxiDNS. See [Standard Mode Smart Routing](standard-mode-smart-routing.md) for the complete boundary and configuration semantics.
 
 ## Use The WebUI Included In Release Packages
