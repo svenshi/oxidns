@@ -967,7 +967,7 @@ function RecordDetailDialog({
           ? [
               {
                 title: t(WEBUI.standardQueries.explanationTitle),
-                children: <ExplanationSummary explanation={explanation} diagnosis={record.diagnosis} />,
+                children: <ExplanationSummary explanation={explanation} record={record} />,
               },
               {
                 title: t(WEBUI.standardQueries.quickActionsTitle),
@@ -1039,30 +1039,26 @@ function RecordDetailDialog({
 
 function ExplanationSummary({
   explanation,
-  diagnosis,
+  record,
 }: {
   explanation: StandardQueryExplanation;
-  diagnosis?: QueryRecordDetail["diagnosis"];
+  record: QueryRecordDetail;
 }) {
   const { t } = useI18n();
   return (
     <div className="space-y-3">
-      {diagnosis ? (
+      {Object.keys(record.context ?? {}).length > 0 || record.steps_truncated ? (
         <div className="rounded-lg border bg-muted/20 p-3 text-xs">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="font-medium">{t(WEBUI.standardQueries.backendDiagnosis, { schema: diagnosis.schema })}</span>
-            <code>{diagnosis.intentRevision ?? t(WEBUI.standardQueries.noIntentRevision)}</code>
+            <span className="font-medium">{t(WEBUI.standardQueries.diagnosticFacts)}</span>
+            <code>{record.context?.intentRevision ?? t(WEBUI.standardQueries.noIntentRevision)}</code>
           </div>
-          {diagnosis.explanationUnavailable ? (
-            <p className="mt-2 text-warning-foreground">{t(WEBUI.standardQueries.revisionUnavailable)}</p>
-          ) : null}
-          <p className="mt-2 text-muted-foreground">{t(WEBUI.standardQueries.defaultPathReason, { reason: diagnosis.defaultPathReason ?? t(WEBUI.standardQueries.notObserved) })}</p>
-          {diagnosis.stepsTruncated ? (
-            <p className="mt-1 text-warning-foreground">{t(WEBUI.standardQueries.traceTruncated, { count: diagnosis.droppedStepCount ?? 0 })}</p>
+          {record.steps_truncated ? (
+            <p className="mt-1 text-warning-foreground">{t(WEBUI.standardQueries.traceTruncated, { count: record.dropped_step_count ?? 0 })}</p>
           ) : null}
           <details className="mt-2">
             <summary className="cursor-pointer font-medium">{t(WEBUI.standardQueries.diagnosticFacts)}</summary>
-            <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 text-[10px]">{JSON.stringify(diagnosis, null, 2)}</pre>
+            <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 text-[10px]">{JSON.stringify(record.context, null, 2)}</pre>
           </details>
         </div>
       ) : null}

@@ -36,25 +36,32 @@ import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
 import {
   deleteCacheEntry,
-  analyzeExpertConfig,
-  copyStandardToExpert,
-  exportStandardAsset,
   fetchCacheDump,
   fetchCacheEntries,
-  fetchStandardHistory,
-  fetchStandardHistoryRestore,
-  importStandardAsset,
+  fetchConfigHistory,
+  previewConfigHistoryRestore,
   flushCache,
   loadCacheDump,
   type CacheEntryRow,
-  type StandardHistoryItem,
-  type StandardAssetEnvelope,
+  type ConfigHistoryItem,
 } from "@/lib/oxidns-api";
+import {
+  analyzeExpertConfig,
+  copyStandardToExpert,
+  exportStandardAsset,
+  importStandardAsset,
+  type StandardAssetEnvelope,
+} from "@/lib/standard-mode/assets";
 import { useAppStore } from "@/lib/store";
 
 export default function StandardOperationsPage() {
   const settings = useAppStore((state) => state.standardSettings);
   const lastGenerated = useAppStore((state) => state.standardLastGenerated);
+  const build = useAppStore((state) => state.buildInfo);
+  const baseYaml = useAppStore((state) => state.configText);
+  const setWebUiMode = useAppStore((state) => state.setWebUiMode);
+  const setYamlConfig = useAppStore((state) => state.setYamlConfig);
+  const setEditorMode = useAppStore((state) => state.setEditorMode);
   const saveStandardSettings = useAppStore(
     (state) => state.saveStandardSettings,
   );
@@ -84,7 +91,7 @@ export default function StandardOperationsPage() {
   const [cacheQuery, setCacheQuery] = useState("");
   const [cacheLoading, setCacheLoading] = useState(false);
   const [cacheAction, setCacheAction] = useState<string | null>(null);
-  const [history, setHistory] = useState<StandardHistoryItem[]>([]);
+  const [history, setHistory] = useState<ConfigHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [restoringId, setRestoringId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -128,7 +135,7 @@ export default function StandardOperationsPage() {
     setHistoryLoading(true);
     setError(null);
     try {
-      setHistory((await fetchStandardHistory()).entries);
+      setHistory((await fetchConfigHistory()).entries);
     } catch (loadError) {
       setError(
         loadError instanceof Error ? loadError.message : String(loadError),
@@ -224,7 +231,7 @@ export default function StandardOperationsPage() {
     }
   };
 
-  const restoreHistory = async (item: StandardHistoryItem) => {
+  const restoreHistory = async (item: ConfigHistoryItem) => {
     if (
       !window.confirm(
         t(WEBUI.standardOperations.historyRestoreConfirm, {
@@ -238,8 +245,8 @@ export default function StandardOperationsPage() {
     setError(null);
     setMessage(null);
     try {
-      const response = await fetchStandardHistoryRestore(item.id);
-      await saveStandardSettings(response.entry.settings, { apply: true });
+      const response = await previewConfigHistoryRestore(item.id);
+      downloadText(`oxidns-history-${item.config_version.slice(0, 12)}.yaml`, response.content, "application/yaml");
       setMessage(t(WEBUI.standardOperations.historyRestoreSuccess));
       await loadHistory();
     } catch (restoreError) {
@@ -266,10 +273,11 @@ export default function StandardOperationsPage() {
     setAssetAction("export");
     setError(null);
     try {
-      const response = await exportStandardAsset();
+      if (!build) throw new Error("Build capabilities are not loaded");
+      const asset = await exportStandardAsset(settings, build);
       downloadText(
-        `oxidns-standard-${response.asset.intentRevision.slice(-12)}.json`,
-        JSON.stringify(response.asset, null, 2),
+        `oxidns-standard-${asset.intentRevision.slice(-12)}.json`,
+        JSON.stringify(asset, null, 2),
         "application/json",
       );
       setMessage(t(WEBUI.standardOperations.exportSuccess));
@@ -285,8 +293,8 @@ export default function StandardOperationsPage() {
     setError(null);
     try {
       const asset = JSON.parse(await file.text()) as StandardAssetEnvelope;
-      const response = await importStandardAsset(asset, true);
-      await saveStandardSettings(response.plan.plan.normalizedIntent, {
+      const imported = importStandardAsset(asset);
+      await saveStandardSettings(imported, {
         apply: true,
       });
       setMessage(t(WEBUI.standardOperations.importSuccess));
@@ -301,12 +309,11 @@ export default function StandardOperationsPage() {
     setAssetAction("expert-copy");
     setError(null);
     try {
-      const response = await copyStandardToExpert(settings);
-      downloadText(
-        `oxidns-expert-${response.intentRevision.slice(-12)}.yaml`,
-        response.yaml,
-        "application/yaml",
-      );
+      if (!build) throw new Error("Build capabilities are not loaded");
+      const response = await copyStandardToExpert(settings, build, baseYaml);
+      setWebUiMode("expert");
+      setYamlConfig(response.yaml);
+      setEditorMode(true);
       setMessage(t(WEBUI.standardOperations.expertCopySuccess));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -642,19 +649,14 @@ export default function StandardOperationsPage() {
                             {t(WEBUI.standardOperations.historyCurrent)}
                           </Badge>
                         ) : null}
-                        <Badge variant="outline">
-                          schema {item.settings_schema}
-                        </Badge>
+                        <Badge variant="outline">YAML</Badge>
                       </div>
                       <p className="font-mono text-xs text-muted-foreground">
                         {item.config_version.slice(0, 16)} ·{" "}
-                        {item.transaction_id}
+                        {item.id}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {t(WEBUI.standardOperations.historySummary, {
-                          groups: formatNumber(item.upstream_group_count),
-                          paths: formatNumber(item.path_count),
-                        })}
+                        {formatNumber(item.content_bytes)} bytes
                       </p>
                     </div>
                     <Button

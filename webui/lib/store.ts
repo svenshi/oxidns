@@ -13,7 +13,7 @@ import {
   type OxiDnsConfig,
 } from "./oxidns-config";
 import {
-  applyStandardMode,
+  applyConfigFile,
   fetchBuildInfo,
   fetchConfigFile,
   fetchHealth,
@@ -21,10 +21,9 @@ import {
   fetchPrometheusMetrics,
   fetchReloadStatus,
   fetchSystem,
-  fetchStandardTransactionStatus,
+  fetchConfigApplyStatus,
   fetchWebUiConfig,
   patchWebUiConfig,
-  planStandardMode,
   requestReload,
   requestRestart,
   reloadProvider as requestProviderReload,
@@ -34,6 +33,7 @@ import {
   type BuildInfo,
   type ConfigFileResponse,
   type ConfigValidateResponse,
+  type ConfigTransactionRecord,
   type DependencyGraphReport,
   type HealthResponse,
   ProviderReloadBusyError,
@@ -43,6 +43,7 @@ import {
   type SystemResponse,
   type WebUiConfigResponse,
 } from "./oxidns-api";
+import { compileStandardIntent } from "./standard-mode/compiler";
 import {
   parsePrometheusMetrics,
   type OutboundMetricsMap,
@@ -110,7 +111,6 @@ import type {
   StandardGeneratedMetadata,
   StandardModeSettings,
   StandardPlanResponse,
-  StandardTransactionRecord,
 } from "./standard-mode/types";
 
 type StoreSet = (
@@ -457,11 +457,45 @@ export const useAppStore = create<AppState>((set, get) => ({
       const nextSettings = settings ?? state.standardSettings;
       set({ isApplying: true });
       try {
-        const plan = await planStandardMode({
+        const buildInfo =
+          state.buildInfo ?? (await fetchBuildInfo()).build;
+        const policyPlan = await compileStandardIntent({
           intent: nextSettings,
-          baseConfigVersion: state.configVersion,
-          baseStandardVersion: state.webUiConfigVersion,
+          baseYaml: state.configText,
+          build: buildInfo,
         });
+        const candidate = policyPlan.generated;
+        let validation: ConfigValidateResponse | null = null;
+        if (candidate) validation = await validateConfigText(candidate.yaml);
+        const ownership =
+          state.standardLastGenerated?.configVersion === state.configVersion
+            ? "managed"
+            : state.modeHeaderPresent
+              ? "modified"
+              : "unmanaged";
+        const plan: StandardPlanResponse = {
+          ok: true,
+          config_version: state.configVersion,
+          standard_version: state.webUiConfigVersion,
+          ownership,
+          semantic_diff: {
+            schema: 1,
+            baseline: ownership === "managed" ? "managed" : "takeover",
+            preserved_top_level: ["include", "api", "network", "runtime", "log"],
+            generated_plugin_tags: candidate?.generatedTags ?? [],
+            replaced_plugin_tags: state.plugins.map((plugin) => plugin.name),
+            removed_plugin_tags: state.plugins
+              .map((plugin) => plugin.name)
+              .filter((tag) => !candidate?.generatedTags.includes(tag)),
+            summary: [
+              `${candidate?.pluginCount ?? 0} native plugins will be generated`,
+            ],
+          },
+          dependency_graph: validation?.dependency_graph,
+          blockers: [],
+          can_apply: policyPlan.canApply && Boolean(validation),
+          plan: policyPlan,
+        };
         if (!isCurrentBackend(backendKey)) return;
         const nonTakeoverBlockers = plan.blockers.filter(
           (blocker) => blocker.code !== "takeover_confirmation_required",
@@ -479,14 +513,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (!generated) {
           throw new Error(tClient(WEBUI.storeErrors.standardPlanMissingConfig));
         }
-        const takeover = plan.ownership !== "managed";
-        const accepted = await applyStandardMode({
-          intent: plan.plan.normalizedIntent,
-          baseConfigVersion: plan.config_version,
-          baseStandardVersion: plan.standard_version,
-          plannedConfigVersion: generated.configVersion,
-          takeover,
-        });
+        const accepted = await applyConfigFile(
+          generated.yaml,
+          plan.config_version,
+          generated.configVersion,
+        );
         const transaction = await pollStandardTransaction(
           accepted.transaction_id,
         );
@@ -497,6 +528,37 @@ export const useAppStore = create<AppState>((set, get) => ({
           throw new Error(
             tClient(WEBUI.storeErrors.standardApplyRefreshMismatch),
           );
+        }
+
+        const intentRevision =
+          generated.explanation?.intentRevision ?? "";
+        const webUiPatch: JsonObject = {
+          mode: "standard",
+          ui: { modeSelectionDismissed: true },
+          standard: {
+            settings: plan.plan.normalizedIntent as unknown as JsonValue,
+            meta: {
+              settingsRevision: intentRevision,
+              lastGenerated: {
+                configVersion: generated.configVersion,
+                settingsRevision: intentRevision,
+                intentRevision,
+                generatedTags: generated.generatedTags,
+                tagMap: generated.tagMap as unknown as JsonValue,
+                summary: generated.summary as unknown as JsonValue,
+                explanation: generated.explanation as unknown as JsonValue,
+                managedFiles: (generated.managedFiles ?? []) as JsonValue,
+                generatedAtMs: Date.now(),
+                transactionId: accepted.transaction_id,
+              },
+            },
+          },
+        };
+        try {
+          await persistWebUiConfigPatch(set, get, webUiPatch, 3);
+        } catch {
+          // DNS is already healthy. Preserve the partial-success state and let
+          // the operations page offer an Intent download instead of rolling it back.
         }
 
         const scope = getScopeKey(get().configPath);
@@ -1734,20 +1796,40 @@ async function persistWebUiConfigPatch(
   set: StoreSet,
   get: StoreGet,
   patch: JsonObject,
+  maxAttempts = 1,
 ): Promise<void> {
   await enqueueWebUiConfigSave(set, async () => {
     const backendKey = currentBackendKey();
     const state = get();
     if (state.isOfflineMode) return;
     set({ webUiConfigError: null });
-    try {
-      const response = await patchWebUiConfig({
-        patch,
-        baseVersion: state.webUiConfigVersion,
-      });
-      if (!isCurrentBackend(backendKey)) return;
-      applyWebUiConfigResponse(response, set);
-    } catch (error) {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        const current = get();
+        const response = await patchWebUiConfig({
+          patch,
+          baseVersion: current.webUiConfigVersion,
+        });
+        if (!isCurrentBackend(backendKey)) return;
+        applyWebUiConfigResponse(response, set);
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt + 1 < maxAttempts) {
+          try {
+            const latest = await fetchWebUiConfig();
+            if (!isCurrentBackend(backendKey)) return;
+            applyWebUiConfigResponse(latest, set);
+            continue;
+          } catch {
+            // Preserve the original CAS failure as the actionable error.
+          }
+        }
+      }
+    }
+    {
+      const error = lastError;
       if (!isCurrentBackend(backendKey)) return;
       set({
         webUiConfigError:
@@ -2042,13 +2124,13 @@ function standardPlanFailureMessage(plan: StandardPlanResponse): string {
 
 async function pollStandardTransaction(
   transactionId: string,
-): Promise<StandardTransactionRecord> {
+): Promise<ConfigTransactionRecord> {
   const deadline = Date.now() + 45_000;
   let lastError: unknown = null;
   while (Date.now() < deadline) {
-    let transaction: StandardTransactionRecord | undefined;
+    let transaction: ConfigTransactionRecord | undefined;
     try {
-      const response = await fetchStandardTransactionStatus();
+      const response = await fetchConfigApplyStatus();
       transaction = response.transaction;
     } catch (error) {
       lastError = error;

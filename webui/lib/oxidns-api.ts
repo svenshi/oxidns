@@ -3,15 +3,6 @@
 import { useAuthStore } from "./auth-store";
 import { WEBUI, tClient } from "./i18n";
 import type { MatcherRuntimeMode } from "./matcher-control";
-import type {
-  StandardApplyResponse,
-  StandardModeSettings,
-  StandardPlanResponse,
-  StandardTemplateKind,
-  StandardTemplateParameters,
-  StandardTemplatePreviewResponse,
-  StandardTransactionStatusResponse,
-} from "./standard-mode/types";
 
 export interface ConfigFileResponse {
   ok: boolean;
@@ -86,90 +77,6 @@ export interface PatchWebUiConfigOptions {
 
 export interface DeleteWebUiConfigOptions {
   baseVersion?: string | null;
-}
-
-export interface StandardPlanOptions {
-  intent: StandardModeSettings;
-  baseConfigVersion?: string | null;
-  baseStandardVersion?: string | null;
-  takeover?: boolean;
-}
-
-export interface StandardApplyOptions {
-  intent: StandardModeSettings;
-  baseConfigVersion: string;
-  baseStandardVersion: string;
-  plannedConfigVersion: string;
-  takeover?: boolean;
-}
-
-export interface StandardTemplatePreviewOptions {
-  baseIntent: StandardModeSettings;
-  kind: StandardTemplateKind;
-  parameters: StandardTemplateParameters;
-  baseConfigVersion?: string | null;
-  baseStandardVersion?: string | null;
-  takeover?: boolean;
-}
-
-export interface StandardHistoryItem {
-  id: string;
-  created_at_ms: number;
-  transaction_id: string;
-  config_version: string;
-  standard_version: string;
-  settings_schema?: number | null;
-  upstream_group_count: number;
-  path_count: number;
-  intent_revision?: string;
-  summary?: unknown;
-}
-
-export interface StandardHistoryListResponse {
-  ok: boolean;
-  entries: StandardHistoryItem[];
-}
-
-export interface StandardHistoryRestoreResponse {
-  ok: boolean;
-  entry: StandardHistoryItem & { settings: StandardModeSettings };
-}
-
-export interface StandardAssetEnvelope {
-  assetSchema: number;
-  kind: "oxidns_standard_intent";
-  oxidnsVersion: string;
-  bundle: string;
-  intentSchema: number;
-  intentRevision: string;
-  intent: StandardModeSettings;
-  exportedAtMs: number;
-  name?: string;
-  description?: string;
-}
-
-export interface StandardSavedTemplate {
-  id: string;
-  name: string;
-  description?: string;
-  kind: StandardTemplateKind;
-  parameters: StandardTemplateParameters;
-  sourceIntentSchema: number;
-  createdAtMs: number;
-  updatedAtMs: number;
-}
-
-export interface StandardAssetStore {
-  schema: number;
-  version: string;
-  templates: StandardSavedTemplate[];
-}
-
-export class StandardPlanConflictError extends Error {
-  constructor(public readonly plan: StandardPlanResponse) {
-    super("Standard Mode state changed; review the refreshed plan");
-    this.name = "StandardPlanConflictError";
-  }
 }
 
 export interface HealthResponse {
@@ -318,7 +225,58 @@ export interface ConfigValidateResponse {
   path?: string;
   plugin_count: number;
   dependency_graph: DependencyGraphReport;
+  version: string;
   message: string;
+}
+
+export interface ConfigApplyResponse {
+  ok: boolean;
+  status: "pending";
+  transaction_id: string;
+  previous_config_version: string;
+  candidate_config_version: string;
+}
+
+export type ConfigTransactionStatus =
+  | "pending"
+  | "succeeded"
+  | "failed"
+  | "recovered";
+
+export interface ConfigTransactionRecord {
+  schema: number;
+  transaction_id: string;
+  status: ConfigTransactionStatus;
+  created_at_ms: number;
+  completed_at_ms?: number;
+  previous_config_version: string;
+  candidate_config_version: string;
+  error?: string;
+}
+
+export interface ConfigApplyStatusResponse {
+  ok: boolean;
+  transaction?: ConfigTransactionRecord;
+}
+
+export interface ConfigHistoryItem {
+  id: string;
+  created_at_ms: number;
+  config_version: string;
+  content_bytes: number;
+}
+
+export interface ConfigHistoryResponse {
+  ok: boolean;
+  entries: ConfigHistoryItem[];
+}
+
+export interface ConfigHistoryRestoreResponse {
+  ok: boolean;
+  id: string;
+  format: "yaml";
+  content: string;
+  version: string;
 }
 
 export interface ConfigDiagnostic {
@@ -436,20 +394,9 @@ export interface QueryRecordRow {
 
 export interface QueryRecordDetail extends QueryRecordRow {
   steps: QueryRecorderStep[];
-  diagnosis?: {
-    schema: number;
-    intentRevision?: string;
-    firstRuleMiss?: unknown;
-    defaultPathReason?: string;
-    fallback?: unknown;
-    cache?: unknown;
-    upstream?: unknown;
-    upstreamFailures?: unknown[];
-    final?: unknown;
-    stepsTruncated?: boolean;
-    droppedStepCount?: number;
-    explanationUnavailable?: boolean;
-  };
+  context: Record<string, string>;
+  steps_truncated: boolean;
+  dropped_step_count: number;
 }
 
 export interface QueryRecordsResponse {
@@ -798,219 +745,6 @@ export async function fetchWebUiOptions(): Promise<WebUiOptionsResponse> {
   return readJsonResponse<WebUiOptionsResponse>(response);
 }
 
-export async function planStandardMode({
-  intent,
-  baseConfigVersion,
-  baseStandardVersion,
-  takeover = false,
-}: StandardPlanOptions): Promise<StandardPlanResponse> {
-  const response = await fetch(apiUrl("/standard/plan"), {
-    method: "POST",
-    headers: {
-      ...apiHeaders(),
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      intent,
-      base_config_version: baseConfigVersion ?? undefined,
-      base_standard_version: baseStandardVersion ?? undefined,
-      takeover,
-    }),
-  });
-  return readJsonResponse<StandardPlanResponse>(response);
-}
-
-export async function applyStandardMode({
-  intent,
-  baseConfigVersion,
-  baseStandardVersion,
-  plannedConfigVersion,
-  takeover = false,
-}: StandardApplyOptions): Promise<StandardApplyResponse> {
-  const response = await fetch(apiUrl("/standard/apply"), {
-    method: "POST",
-    headers: {
-      ...apiHeaders(),
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      intent,
-      base_config_version: baseConfigVersion,
-      base_standard_version: baseStandardVersion,
-      planned_config_version: plannedConfigVersion,
-      takeover,
-    }),
-  });
-  if (response.status === 409) {
-    const body = (await response
-      .json()
-      .catch(() => null)) as StandardPlanResponse | null;
-    if (body?.plan && Array.isArray(body.blockers)) {
-      throw new StandardPlanConflictError(body);
-    }
-    throw new Error(tClient(WEBUI.storeErrors.standardPlanRejected));
-  }
-  return readJsonResponse<StandardApplyResponse>(response);
-}
-
-export async function previewStandardTemplate({
-  baseIntent,
-  kind,
-  parameters,
-  baseConfigVersion,
-  baseStandardVersion,
-  takeover = false,
-}: StandardTemplatePreviewOptions): Promise<StandardTemplatePreviewResponse> {
-  const response = await fetch(apiUrl("/standard/templates/preview"), {
-    method: "POST",
-    headers: { ...apiHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify({
-      base_intent: baseIntent,
-      kind,
-      parameters,
-      base_config_version: baseConfigVersion ?? undefined,
-      base_standard_version: baseStandardVersion ?? undefined,
-      takeover,
-    }),
-  });
-  return readJsonResponse<StandardTemplatePreviewResponse>(response);
-}
-
-export async function fetchStandardTransactionStatus(): Promise<StandardTransactionStatusResponse> {
-  const response = await fetch(apiUrl("/standard/apply/status"), {
-    method: "GET",
-    headers: apiHeaders(),
-  });
-  return readJsonResponse<StandardTransactionStatusResponse>(response);
-}
-
-export async function fetchStandardHistory(): Promise<StandardHistoryListResponse> {
-  const response = await fetch(apiUrl("/standard/history"), {
-    method: "GET",
-    headers: apiHeaders(),
-  });
-  return readJsonResponse<StandardHistoryListResponse>(response);
-}
-
-export async function fetchStandardHistoryRestore(
-  id: string,
-): Promise<StandardHistoryRestoreResponse> {
-  const response = await fetch(apiUrl("/standard/history/restore"), {
-    method: "POST",
-    headers: {
-      ...apiHeaders(),
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ id }),
-  });
-  return readJsonResponse<StandardHistoryRestoreResponse>(response);
-}
-
-export async function exportStandardAsset(): Promise<{
-  ok: boolean;
-  asset: StandardAssetEnvelope;
-}> {
-  const response = await fetch(apiUrl("/standard/assets/export"), {
-    method: "GET",
-    headers: apiHeaders(),
-  });
-  return readJsonResponse(response);
-}
-
-export async function importStandardAsset(
-  asset: StandardAssetEnvelope,
-  takeover = false,
-): Promise<{ ok: boolean; plan: StandardPlanResponse; intent_revision: string }> {
-  const response = await fetch(apiUrl("/standard/assets/import"), {
-    method: "POST",
-    headers: { ...apiHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify({ asset, takeover }),
-  });
-  return readJsonResponse(response);
-}
-
-export async function copyStandardToExpert(intent: StandardModeSettings): Promise<{
-  ok: boolean;
-  detached: boolean;
-  yaml: string;
-  configVersion: string;
-  intentRevision: string;
-  dependencyGraph: DependencyGraphReport;
-}> {
-  const response = await fetch(apiUrl("/standard/assets/expert-copy"), {
-    method: "POST",
-    headers: { ...apiHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify({ intent }),
-  });
-  return readJsonResponse(response);
-}
-
-export async function analyzeExpertConfig(yaml: string): Promise<{
-  ok: boolean;
-  readOnly: boolean;
-  pluginCount: number;
-  dependencyGraph: DependencyGraphReport;
-  expertOnlyObjects: Array<{ tag: string; pluginType: string; kind: string }>;
-  systemIntegrations: string[];
-  reverseConversion: { available: false; reason: string };
-}> {
-  const response = await fetch(apiUrl("/standard/assets/expert-analysis"), {
-    method: "POST",
-    headers: { ...apiHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify({ yaml }),
-  });
-  return readJsonResponse(response);
-}
-
-export async function fetchSavedStandardTemplates(): Promise<{
-  ok: boolean;
-  store: StandardAssetStore;
-}> {
-  const response = await fetch(apiUrl("/standard/assets/templates"), {
-    method: "GET",
-    headers: apiHeaders(),
-  });
-  return readJsonResponse(response);
-}
-
-export async function saveStandardTemplate(
-  template: StandardSavedTemplate,
-  expectedVersion?: string,
-): Promise<{ ok: boolean; store: StandardAssetStore }> {
-  const response = await fetch(apiUrl("/standard/assets/templates"), {
-    method: "POST",
-    headers: { ...apiHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify({ expectedVersion, template }),
-  });
-  return readJsonResponse(response);
-}
-
-export async function duplicateStandardTemplate(
-  id: string,
-  newId: string,
-  newName: string,
-  expectedVersion?: string,
-): Promise<{ ok: boolean; store: StandardAssetStore }> {
-  const response = await fetch(apiUrl("/standard/assets/templates/duplicate"), {
-    method: "POST",
-    headers: { ...apiHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify({ expectedVersion, id, newId, newName }),
-  });
-  return readJsonResponse(response);
-}
-
-export async function deleteStandardTemplate(
-  id: string,
-  expectedVersion?: string,
-): Promise<{ ok: boolean; store: StandardAssetStore }> {
-  const response = await fetch(apiUrl("/standard/assets/templates"), {
-    method: "DELETE",
-    headers: { ...apiHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify({ expectedVersion, id }),
-  });
-  return readJsonResponse(response);
-}
-
 export async function fetchHealth(): Promise<HealthResponse> {
   const response = await fetch(apiUrl("/health"), {
     method: "GET",
@@ -1063,6 +797,51 @@ export async function validateConfigText(
     body: JSON.stringify({ format: "yaml", content }),
   });
   return readJsonResponse<ConfigValidateResponse>(response);
+}
+
+export async function applyConfigFile(
+  content: string,
+  baseVersion: string,
+  candidateVersion: string,
+): Promise<ConfigApplyResponse> {
+  const response = await fetch(apiUrl("/config/apply"), {
+    method: "POST",
+    headers: { ...apiHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({
+      format: "yaml",
+      content,
+      base_version: baseVersion,
+      candidate_version: candidateVersion,
+    }),
+  });
+  return readJsonResponse<ConfigApplyResponse>(response);
+}
+
+export async function fetchConfigApplyStatus(): Promise<ConfigApplyStatusResponse> {
+  const response = await fetch(apiUrl("/config/apply/status"), {
+    method: "GET",
+    headers: apiHeaders(),
+  });
+  return readJsonResponse<ConfigApplyStatusResponse>(response);
+}
+
+export async function fetchConfigHistory(): Promise<ConfigHistoryResponse> {
+  const response = await fetch(apiUrl("/config/history"), {
+    method: "GET",
+    headers: apiHeaders(),
+  });
+  return readJsonResponse<ConfigHistoryResponse>(response);
+}
+
+export async function previewConfigHistoryRestore(
+  id: string,
+): Promise<ConfigHistoryRestoreResponse> {
+  const response = await fetch(apiUrl("/config/history/restore"), {
+    method: "POST",
+    headers: { ...apiHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+  return readJsonResponse<ConfigHistoryRestoreResponse>(response);
 }
 
 export async function saveConfigFile({

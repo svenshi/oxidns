@@ -71,7 +71,7 @@ export function explainStandardQueryRecord(
   metadata: StandardGeneratedMetadata | null,
 ): StandardQueryExplanation {
   const steps = queryRecordSteps(record);
-  const recordedIntentRevision = (record as Partial<QueryRecordDetail>).diagnosis
+  const recordedIntentRevision = (record as Partial<QueryRecordDetail>).context
     ?.intentRevision;
   const activeIntentRevision =
     metadata?.intentRevision ?? metadata?.explanation?.intentRevision;

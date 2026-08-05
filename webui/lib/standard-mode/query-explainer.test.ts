@@ -22,6 +22,9 @@ function record(steps: QueryRecordDetail["steps"]): QueryRecordDetail {
     authorities_json: [],
     additionals_json: [],
     signature_json: [],
+    context: { intentRevision: "sha256:current" },
+    steps_truncated: false,
+    dropped_step_count: 0,
     steps,
   };
 }
@@ -245,11 +248,7 @@ describe("Standard query explanation", () => {
         outcome: "entered",
       },
     ]);
-    historical.diagnosis = {
-      schema: 1,
-      intentRevision: "sha256:historical",
-      explanationUnavailable: true,
-    };
+    historical.context = { intentRevision: "sha256:historical" };
 
     const explanation = explainStandardQueryRecord(
       historical,

@@ -18,17 +18,19 @@ import {
   appendDynamicDomainRules,
   clearDynamicDomainRules,
   fetchDynamicDomainStatus,
-  fetchSavedStandardTemplates,
-  saveStandardTemplate,
-  duplicateStandardTemplate,
-  deleteStandardTemplate,
   listDynamicDomainRules,
-  previewStandardTemplate,
   removeDynamicDomainRules,
   setLearnDomainPaused,
   type DynamicDomainStatusResponse,
-  type StandardAssetStore,
 } from "@/lib/oxidns-api";
+import {
+  deleteStandardTemplate,
+  duplicateStandardTemplate,
+  fetchSavedStandardTemplates,
+  previewStandardTemplate,
+  saveStandardTemplate,
+  type StandardAssetStore,
+} from "@/lib/standard-mode/assets";
 import type {
   StandardAdvancedCondition,
   StandardAdvancedRule,
@@ -136,6 +138,9 @@ function newAdvancedRule(settings: StandardModeSettings, phase: "request" | "res
 export default function StandardAdvancedPage() {
   const stored = useAppStore((state) => state.standardSettings);
   const generated = useAppStore((state) => state.standardLastGenerated);
+  const build = useAppStore((state) => state.buildInfo);
+  const baseYaml = useAppStore((state) => state.configText);
+  const configPath = useAppStore((state) => state.configPath);
   const saveStandardSettings = useAppStore((state) => state.saveStandardSettings);
   const isConfigSaving = useAppStore((state) => state.isConfigSaving);
   const isApplying = useAppStore((state) => state.isApplying);
@@ -173,20 +178,22 @@ export default function StandardAdvancedPage() {
   }), [baseUpstreams, domains, kind, namespace]);
 
   useEffect(() => {
-    void fetchSavedStandardTemplates()
+    void fetchSavedStandardTemplates(configPath)
       .then((response) => setAssetStore(response.store))
       .catch(() => undefined);
-  }, []);
+  }, [configPath]);
 
   const runPreview = async () => {
     setPreviewing(true);
     setError(null);
     try {
+      if (!build) throw new Error("Build capabilities are not loaded");
       setPreview(await previewStandardTemplate({
         baseIntent: settings,
         kind,
         parameters: templateParameters,
-        takeover: true,
+        build,
+        baseYaml,
       }));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -206,7 +213,7 @@ export default function StandardAdvancedPage() {
         sourceIntentSchema: settings.schema,
         createdAtMs: 0,
         updatedAtMs: 0,
-      }, assetStore?.version);
+      }, assetStore?.version, configPath);
       setAssetStore(response.store);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -292,8 +299,8 @@ export default function StandardAdvancedPage() {
               {assetStore.templates.map((item) => <div key={item.id} className="flex flex-wrap items-center gap-2 text-xs">
                 <Badge variant="outline">{item.kind}</Badge><code>{item.id}</code>
                 <Button size="sm" variant="ghost" onClick={() => loadSavedTemplate(item.id)}>{t(WEBUI.standardAdvanced.loadTemplate)}</Button>
-                <Button size="sm" variant="ghost" onClick={() => void duplicateStandardTemplate(item.id, `${item.id}_copy`, `${item.name} copy`, assetStore.version).then((response) => setAssetStore(response.store)).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))}>{t(WEBUI.standardAdvanced.duplicateTemplate)}</Button>
-                <Button size="sm" variant="ghost" onClick={() => void deleteStandardTemplate(item.id, assetStore.version).then((response) => setAssetStore(response.store)).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))}><Trash2 className="size-3" />{t(WEBUI.standardAdvanced.deleteTemplate)}</Button>
+                <Button size="sm" variant="ghost" onClick={() => void duplicateStandardTemplate(item.id, `${item.id}_copy`, `${item.name} copy`, assetStore.version, configPath).then((response) => setAssetStore(response.store)).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))}>{t(WEBUI.standardAdvanced.duplicateTemplate)}</Button>
+                <Button size="sm" variant="ghost" onClick={() => void deleteStandardTemplate(item.id, assetStore.version, configPath).then((response) => setAssetStore(response.store)).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))}><Trash2 className="size-3" />{t(WEBUI.standardAdvanced.deleteTemplate)}</Button>
               </div>)}
             </div> : null}
           </CardContent>

@@ -203,7 +203,7 @@ export const enUSWebui = {
   standardOperations: {
     title: "Operations & Recovery",
     description:
-      "Manage caches by resolution path and inspect or restore backend-persisted Standard Mode snapshots.",
+      "Manage caches by resolution path and inspect healthy YAML history retained by the generic backend.",
     refresh: "Refresh",
     cacheTitle: "Path caches",
     cacheDescription:
@@ -223,17 +223,18 @@ export const enUSWebui = {
     domain: "Domain",
     state: "State",
     action: "Action",
-    historyTitle: "Standard Mode configuration history",
+    historyTitle: "Healthy YAML history",
     historyDescription:
-      "The backend retains up to 20 successfully applied Standard Mode intents. A restore still passes plan review, capability checks, and transactional apply.",
+      "The backend retains up to 20 native YAML versions that ran successfully. This action only downloads a preview and never changes the runtime configuration.",
     historyCurrent: "Current",
     historySummary: "{groups} upstream groups · {paths} resolution paths",
-    historyRestore: "Restore and review",
+    historyRestore: "Download YAML preview",
     historyRestoreConfirm:
-      "Prepare the Standard Mode configuration from {time} and open its diff review?",
-    historyRestoreSuccess: "Historical configuration restored transactionally.",
+      "Download the historical YAML preview from {time}? The runtime configuration will not change.",
+    historyRestoreSuccess:
+      "Historical YAML preview downloaded; the runtime configuration was not changed.",
     historyEmpty:
-      "No successfully applied Standard Mode history snapshots yet.",
+      "No healthy YAML history is available yet.",
     assetsTitle: "Standard intent assets and Expert bridge",
     assetsDescription:
       "Import is migrated and planned before Apply. Expert copy and analysis are detached, read-only operations and never control the host system.",
@@ -244,7 +245,7 @@ export const enUSWebui = {
     exportSuccess: "Standard intent exported with its stable revision.",
     importSuccess: "Imported intent passed migration and Plan; review before Apply.",
     expertCopySuccess:
-      "Detached Expert YAML downloaded; Standard ownership was not changed.",
+      "Generated YAML was placed in the Expert editor; the runtime configuration was not changed.",
     expertAnalysisSuccess:
       "Expert configuration analyzed read-only; no configuration was changed.",
     intentRevision: "Intent revision:",
@@ -794,7 +795,6 @@ export const enUSWebui = {
     initialPath: "Initial path",
     finalPath: "Final path",
     responseValidation: "Response validation",
-    backendDiagnosis: "Backend diagnosis · schema {schema}",
     noIntentRevision: "no intent revision",
     revisionUnavailable:
       "The matching Standard explanation is unavailable; raw bounded facts are shown without remapping to a newer intent.",

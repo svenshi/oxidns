@@ -3,9 +3,8 @@ import type { StandardUpstream } from "./types";
 /**
  * Format one upstream for the connectivity-test API.
  *
- * Runtime Standard Mode generation is intentionally owned by the Rust
- * `/standard/plan` compiler. This browser helper does not generate OxiDNS
- * configuration and must not be used as a second compiler.
+ * Standard Mode generation is owned by the browser-side TypeScript compiler.
+ * This helper only formats one endpoint for the generic connectivity-test API.
  */
 export function upstreamAddress(upstream: StandardUpstream): string {
   const address = upstream.address.trim();

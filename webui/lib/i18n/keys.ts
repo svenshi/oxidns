@@ -750,7 +750,6 @@ export const WEBUI = {
     initialPath: "webui.standardQueries.initialPath",
     finalPath: "webui.standardQueries.finalPath",
     responseValidation: "webui.standardQueries.responseValidation",
-    backendDiagnosis: "webui.standardQueries.backendDiagnosis",
     noIntentRevision: "webui.standardQueries.noIntentRevision",
     revisionUnavailable: "webui.standardQueries.revisionUnavailable",
     defaultPathReason: "webui.standardQueries.defaultPathReason",

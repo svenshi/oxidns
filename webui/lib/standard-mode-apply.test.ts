@@ -1,174 +1,143 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createDefaultStandardSettings } from "./standard-mode/defaults";
-import type { StandardPlanResponse } from "./standard-mode/types";
+import type { StandardPolicyPlan } from "./standard-mode/types";
 
 const apiMocks = vi.hoisted(() => ({
-  applyStandardMode: vi.fn(),
-  fetchStandardTransactionStatus: vi.fn(),
-  planStandardMode: vi.fn(),
+  applyConfigFile: vi.fn(),
+  fetchConfigApplyStatus: vi.fn(),
+  validateConfigText: vi.fn(),
+  patchWebUiConfig: vi.fn(),
+  fetchWebUiConfig: vi.fn(),
 }));
+const compilerMocks = vi.hoisted(() => ({ compileStandardIntent: vi.fn() }));
 
-vi.mock("./oxidns-api", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./oxidns-api")>();
-  return { ...actual, ...apiMocks };
-});
+vi.mock("./oxidns-api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./oxidns-api")>()),
+  ...apiMocks,
+}));
+vi.mock("./standard-mode/compiler", () => compilerMocks);
 
 import { useAuthStore } from "./auth-store";
 import { useAppStore } from "./store";
 
-function plan(
-  ownership: StandardPlanResponse["ownership"],
-): StandardPlanResponse {
+function policy(): StandardPolicyPlan {
   const intent = createDefaultStandardSettings();
   return {
-    ok: true,
-    config_version: "config-v1",
-    standard_version: "standard-v1",
-    ownership,
-    semantic_diff: {
-      preserved_top_level: ["include", "api", "network"],
-      generated_plugin_tags: ["standard_main"],
-      replaced_plugin_tags: [],
-      removed_plugin_tags: ownership === "managed" ? [] : ["expert_main"],
-    },
-    blockers:
-      ownership === "managed"
-        ? []
-        : [
-            {
-              code: "takeover_confirmation_required",
-              path: "takeover",
-              message: "confirmation required",
-            },
-          ],
-    can_apply: ownership === "managed",
-    plan: {
-      normalizedIntent: intent,
-      diagnostics: [],
-      generated: {
-        yaml: "# oxidns-webui.mode: standard\nplugins: []\n",
-        configVersion: "config-v2",
-        pluginCount: 1,
-        generatedTags: ["standard_main"],
-        tagMap: {
-          system: [],
-          caches: {},
-          upstreamGroups: {},
-          paths: {},
-          routingRules: {},
-          exceptionRules: {},
-        },
-        summary: {
-          upstreamGroupCount: 1,
-          pathCount: 1,
-          enabledUpstreamCount: 1,
-          filteringEnabled: false,
-          cacheEnabled: true,
-          queryLogEnabled: true,
-          routingRuleCount: 0,
-          exceptionRuleCount: 0,
-          deviceCount: 0,
-          localPolicyCount: 0,
-        },
+    normalizedIntent: intent,
+    diagnostics: [],
+    generated: {
+      yaml: "# oxidns-webui.mode: standard\nplugins: []\n",
+      configVersion: "config-v2",
+      pluginCount: 1,
+      generatedTags: ["standard_main"],
+      tagMap: {
+        system: [], caches: {}, upstreamGroups: {}, paths: {},
+        routingRules: {}, exceptionRules: {},
       },
-      canApply: true,
-      details: {},
+      summary: {
+        upstreamGroupCount: 1, pathCount: 1, enabledUpstreamCount: 1,
+        filteringEnabled: false, cacheEnabled: true, queryLogEnabled: true,
+        routingRuleCount: 0, exceptionRuleCount: 0, deviceCount: 0,
+        localPolicyCount: 0,
+      },
+      explanation: {
+        schema: 1, intentRevision: "sha256:intent", mappings: [],
+        finalPriority: [], pathBoundaries: [], generatedTags: ["standard_main"],
+        capabilities: { features: [], servers: [], executors: [], matchers: [], providers: [], missingOptional: [] },
+      },
     },
+    canApply: true,
+    details: {},
   };
 }
 
-describe("Standard Mode transactional apply", () => {
+describe("Standard Mode generic transactional apply", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useAuthStore.setState({
       isConnected: true,
       connectionEpoch: 100,
-      serverConfig: {
-        url: "/api",
-        requiresAuth: false,
-        username: "",
-        password: "",
-      },
+      serverConfig: { url: "/api", requiresAuth: false, username: "", password: "" },
     });
     useAppStore.setState({
       configVersion: "config-v1",
+      configText: "plugins:\n  - tag: expert_main\n    type: sequence\n    args: []\n",
       webUiConfigVersion: "standard-v1",
       configPath: "/etc/oxidns/config.yaml",
       isOfflineMode: false,
       webUiMode: "expert",
+      modeHeaderPresent: false,
       historyOpen: false,
       standardApplyConfirmation: null,
+      buildInfo: {
+        version: "test", bundle: "standard", enabled_bundles: ["standard"], enabled_features: [],
+        supported_plugins: { servers: [], executors: [], matchers: [], providers: [] },
+      },
       loadConfig: vi.fn().mockImplementation(async () => {
         useAppStore.setState({ configVersion: "config-v2" });
       }),
     });
-    apiMocks.applyStandardMode.mockResolvedValue({
-      ok: true,
-      transaction_id: "tx-1",
-      status: "pending",
-      target_config_version: "config-v2",
+    compilerMocks.compileStandardIntent.mockResolvedValue(policy());
+    apiMocks.validateConfigText.mockResolvedValue({
+      ok: true, source: "body", path: "/etc/oxidns/config.yaml", plugin_count: 1,
+      dependency_graph: { nodes: [], edges: [], init_order: [] }, version: "config-v2", message: "valid",
     });
-    apiMocks.fetchStandardTransactionStatus.mockResolvedValue({
+    apiMocks.applyConfigFile.mockResolvedValue({
+      ok: true, transaction_id: "config-1-2-abcdef", status: "pending",
+      previous_config_version: "config-v1", candidate_config_version: "config-v2",
+    });
+    apiMocks.fetchConfigApplyStatus.mockResolvedValue({
       ok: true,
       transaction: {
-        schema: 1,
-        transaction_id: "tx-1",
-        status: "succeeded",
-        completed_at_ms: 10,
-        previous_config_version: "config-v1",
-        candidate_config_version: "config-v2",
+        schema: 1, transaction_id: "config-1-2-abcdef", status: "succeeded",
+        created_at_ms: 1, completed_at_ms: 10,
+        previous_config_version: "config-v1", candidate_config_version: "config-v2",
       },
     });
+    apiMocks.patchWebUiConfig.mockResolvedValue({
+      ok: true, path: "/etc/oxidns/config.yaml.webui.json", version: "standard-v2",
+      updated_at_ms: 10, defaulted: false, recovered: false, backup_path: null,
+      config: { schema: 1, mode: "standard", ui: { modeSelectionDismissed: true }, standard: {} },
+    });
   });
 
-  it("reviews an unmanaged takeover before sending the exact planned versions", async () => {
-    const response = plan("unmanaged");
-    apiMocks.planStandardMode.mockResolvedValue(response);
-
-    const saving = useAppStore
-      .getState()
-      .saveStandardSettings(createDefaultStandardSettings(), { apply: true });
-    await vi.waitFor(() => {
-      expect(useAppStore.getState().standardApplyConfirmation).toBe(response);
-    });
-    expect(apiMocks.applyStandardMode).not.toHaveBeenCalled();
-
+  it("reviews an unmanaged takeover then submits only native YAML and versions", async () => {
+    const saving = useAppStore.getState().saveStandardSettings(createDefaultStandardSettings(), { apply: true });
+    await vi.waitFor(() => expect(useAppStore.getState().standardApplyConfirmation?.ownership).toBe("unmanaged"));
+    expect(apiMocks.applyConfigFile).not.toHaveBeenCalled();
     useAppStore.getState().confirmStandardApply();
     await saving;
-
-    expect(apiMocks.applyStandardMode).toHaveBeenCalledWith({
-      intent: response.plan.normalizedIntent,
-      baseConfigVersion: "config-v1",
-      baseStandardVersion: "standard-v1",
-      plannedConfigVersion: "config-v2",
-      takeover: true,
-    });
-    expect(apiMocks.fetchStandardTransactionStatus).toHaveBeenCalled();
+    expect(apiMocks.applyConfigFile).toHaveBeenCalledWith(
+      "# oxidns-webui.mode: standard\nplugins: []\n",
+      "config-v1",
+      "config-v2",
+    );
+    expect(apiMocks.fetchConfigApplyStatus).toHaveBeenCalled();
+    expect(apiMocks.patchWebUiConfig).toHaveBeenCalledTimes(1);
   });
 
-  it("does not write when the review is cancelled", async () => {
-    apiMocks.planStandardMode.mockResolvedValue(plan("managed"));
-    const saving = useAppStore
-      .getState()
-      .saveStandardSettings(createDefaultStandardSettings(), { apply: true });
-    await vi.waitFor(() => {
-      expect(useAppStore.getState().standardApplyConfirmation).not.toBeNull();
-    });
-
+  it("does not write when review is cancelled", async () => {
+    const saving = useAppStore.getState().saveStandardSettings(createDefaultStandardSettings(), { apply: true });
+    await vi.waitFor(() => expect(useAppStore.getState().standardApplyConfirmation).not.toBeNull());
     useAppStore.getState().cancelStandardApply();
     await expect(saving).rejects.toThrow();
-    expect(apiMocks.applyStandardMode).not.toHaveBeenCalled();
+    expect(apiMocks.applyConfigFile).not.toHaveBeenCalled();
   });
 
-  it("keeps Expert raw-YAML history inaccessible in Standard Mode", () => {
-    useAppStore.setState({ isOfflineMode: true });
-    useAppStore.getState().setHistoryOpen(true);
-    expect(useAppStore.getState().historyOpen).toBe(true);
-
-    useAppStore.getState().setWebUiMode("standard");
-    expect(useAppStore.getState().historyOpen).toBe(false);
-    useAppStore.getState().setHistoryOpen(true);
-    expect(useAppStore.getState().historyOpen).toBe(false);
+  it("keeps DNS applied when opaque workspace CAS fails three times", async () => {
+    apiMocks.patchWebUiConfig.mockRejectedValue(new Error("CAS conflict"));
+    apiMocks.fetchWebUiConfig.mockResolvedValue({
+      ok: true, path: "/etc/oxidns/config.yaml.webui.json", version: "changed",
+      updated_at_ms: 10, defaulted: false, recovered: false, backup_path: null,
+      config: { schema: 1 },
+    });
+    const saving = useAppStore.getState().saveStandardSettings(createDefaultStandardSettings(), { apply: true });
+    await vi.waitFor(() => expect(useAppStore.getState().standardApplyConfirmation).not.toBeNull());
+    useAppStore.getState().confirmStandardApply();
+    await saving;
+    expect(apiMocks.applyConfigFile).toHaveBeenCalledTimes(1);
+    expect(apiMocks.patchWebUiConfig).toHaveBeenCalledTimes(3);
+    expect(useAppStore.getState().webUiConfigError).toContain("CAS conflict");
   });
 });

@@ -187,7 +187,7 @@ export const zhCNWebui = {
   },
   standardOperations: {
     title: "运行与恢复",
-    description: "按解析路径管理缓存，并查看或恢复标准模式的后端持久化快照。",
+    description: "按解析路径管理缓存，并查看通用后端保存的健康 YAML 历史。",
     refresh: "刷新",
     cacheTitle: "路径缓存",
     cacheDescription:
@@ -207,15 +207,15 @@ export const zhCNWebui = {
     domain: "域名",
     state: "状态",
     action: "操作",
-    historyTitle: "标准模式配置历史",
+    historyTitle: "健康 YAML 历史",
     historyDescription:
-      "后端最多保留 20 个成功应用的标准模式意图。恢复仍需经过计划预览、能力校验和事务应用。",
+      "后端最多保留 20 个成功运行的原生 YAML 版本。这里只下载预览，不会直接修改运行配置。",
     historyCurrent: "当前配置",
     historySummary: "{groups} 个上游组 · {paths} 条解析路径",
-    historyRestore: "恢复并预览",
-    historyRestoreConfirm: "准备恢复 {time} 的标准模式配置并进入差异预览吗？",
-    historyRestoreSuccess: "历史配置已通过事务方式恢复。",
-    historyEmpty: "尚无成功应用的标准模式历史快照。",
+    historyRestore: "下载 YAML 预览",
+    historyRestoreConfirm: "下载 {time} 的历史 YAML 预览吗？运行配置不会改变。",
+    historyRestoreSuccess: "历史 YAML 预览已下载，运行配置未改变。",
+    historyEmpty: "尚无健康 YAML 历史。",
     assetsTitle: "标准模式意图资产与专家模式桥接",
     assetsDescription:
       "导入内容先迁移并生成计划，再进入应用确认；专家模式复制和分析均为分离的只读操作，不控制宿主系统。",
@@ -225,7 +225,7 @@ export const zhCNWebui = {
     analyzeExpert: "分析专家模式 YAML",
     exportSuccess: "已导出带稳定修订标识的标准模式意图。",
     importSuccess: "导入意图已通过迁移与计划校验，请在应用前复核。",
-    expertCopySuccess: "已下载分离的专家模式 YAML，标准模式所有权未改变。",
+    expertCopySuccess: "生成的 YAML 已放入专家编辑器，运行配置未改变。",
     expertAnalysisSuccess: "已只读分析专家配置，未修改任何配置。",
     intentRevision: "意图修订：",
     explanationSummary: "{mappings} 项意图映射 · {rules} 条优先级规则 · {tags} 个生成标签",
@@ -737,7 +737,6 @@ export const zhCNWebui = {
     initialPath: "初始路径",
     finalPath: "最终路径",
     responseValidation: "响应校验",
-    backendDiagnosis: "后端诊断 · 模式 {schema}",
     noIntentRevision: "无意图修订标识",
     revisionUnavailable:
       "无法获得与该记录匹配的标准模式解释；这里只展示有界原始事实，不会套用较新的意图。",
