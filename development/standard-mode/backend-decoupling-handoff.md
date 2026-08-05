@@ -85,13 +85,14 @@ WebUI Intent
 - WebUI `typecheck`、无警告 lint、20 个 Vitest 文件/128 个测试、生产构建；
 - 中英文 Docusaurus 内容检查与生产构建；
 - 本机无凭据隔离脚本：Standard bundle、旧路由 404、透明状态、真实目录 Validate、伪造版本拒绝、原子 Apply、真实 DNS 查询、只读历史预览、运行时组装失败回滚、通用边车名称全部通过；
+- 隔离机 `root@172.16.2.55`：同一无凭据脚本在 `/tmp/oxidns-standard-decoupling.67da42858633/` 执行通过，覆盖 Standard bundle、旧路由 404、透明状态、真实目录 Validate、原子 Apply、真实 DNS 查询、只读历史预览、运行时组装失败回滚和通用边车名称；
 - Linux x86_64 musl Standard release：static PIE、stripped，SHA-256 `67da42858633baf3476fc26fba663a88456d1151e5f02b6005cb2f15f8d4d87a`；
 - 后端反耦合扫描无 `standard_mode`、`StandardIntent`、`StandardPlan`、`ExpertCopy`、模式所有权或 `/api/standard`；
 - 两份冻结规划相对 `90a5dec` 零字节差异。
 
 第一次在受限沙箱执行 bundle 网络测试时，16 个 loopback bind 测试因 `Operation not permitted` 失败；按测试策略在允许本地临时端口的相同矩阵中重跑后全部通过。这是环境分类，不是产品失败。
 
-隔离机上传尝试使用当前 SSH agent 连接 `root@172.16.2.55`，服务端拒绝现有 public key/password-less 认证。二进制和无凭据脚本已准备完成；需要恢复该主机的可用认证后，上传到 `/tmp/oxidns-standard-decoupling.67da42858633/` 并执行同一脚本。
+最终 Linux musl 二进制与无凭据脚本保留在隔离机 `/tmp/oxidns-standard-decoupling.67da42858633/`，远端 SHA-256 与本地制品一致。
 
 ## 7. 交接文件
 

@@ -1,6 +1,6 @@
 # Standard / Expert Mode Backend Decoupling
 
-Status: implemented; remote isolation pending authentication
+Status: implemented and accepted
 
 Baseline commit: `90a5dec`
 
