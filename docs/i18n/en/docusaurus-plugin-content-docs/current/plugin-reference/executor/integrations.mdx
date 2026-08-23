@@ -143,7 +143,7 @@ Sends callback requests to external `http/https` services. It can trigger before
 - Source fields: `client_ip`, `client_port`, `server_name`, `url_path`
 - Runtime fields: `marks`, `has_resp`
 - Response fields: `rcode`, `rcode_name`, `resp_ip`
-- Cron metadata: `cron_plugin_tag`, `cron_job_name`, `cron_trigger_kind`, `cron_scheduled_at_unix_ms`
+- Cron metadata: `cron_plugin_tag`, `cron_job_name`, `cron_trigger_kind` (`schedule`, `interval`, or `manual`), `cron_scheduled_at_unix_ms`
 
 ### Behavior
 
@@ -242,7 +242,7 @@ Runs an explicitly configured external command and injects a stable subset of th
 - Source fields: `client_ip`, `client_port`, `server_name`, `url_path`
 - Runtime fields: `marks`, `has_resp`
 - Response fields: `rcode`, `rcode_name`, `resp_ip`
-- Cron metadata: `cron_plugin_tag`, `cron_job_name`, `cron_trigger_kind`, `cron_scheduled_at_unix_ms`
+- Cron metadata: `cron_plugin_tag`, `cron_job_name`, `cron_trigger_kind` (`schedule`, `interval`, or `manual`), `cron_scheduled_at_unix_ms`
 
 ### Behavior
 

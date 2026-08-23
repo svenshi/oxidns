@@ -41,6 +41,25 @@ title: 插件扩展 API
 
 导入缓存 dump。
 
+### cron
+
+#### `POST /api/plugins/<cron_tag>/jobs/<job_name>/run`
+
+立即启动一个已配置的 cron job。`job_name` 是经过 URL 编码的 `args.jobs[].name`；手动触发使用与定时触发相同的 executor 列表和重叠保护，但不会改变下一次计划运行时间。
+
+返回：
+
+* `202 Accepted`
+  * 任务已在后台启动，响应中的 `status` 为 `started`、`trigger` 为 `manual`。
+* `404 Not Found`
+  * 当前 cron runtime 中不存在该任务。
+* `409 Conflict`
+  * 同一任务已有一轮正在执行；请求返回 `cron_job_already_running`，不会排队。
+* `503 Service Unavailable`
+  * cron 调度器正在停止或已经不可用。
+
+WebUI 会在已应用的 cron 插件详情中为每个任务显示“手动运行”按钮。编辑未保存配置时按钮隐藏，避免用尚未应用的任务名称触发旧 runtime。
+
 ### matcher
 
 配置在 `plugins:` 中、具有稳定 tag 的 matcher 都会注册以下运行时控制接口：

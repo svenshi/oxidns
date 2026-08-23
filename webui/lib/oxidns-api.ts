@@ -108,6 +108,15 @@ export interface ProviderReloadResponse {
 
 export class ProviderReloadBusyError extends Error {}
 
+export interface CronJobRunResponse {
+  ok: boolean;
+  job: string;
+  status: "started";
+  trigger: "manual";
+}
+
+export class CronJobAlreadyRunningError extends Error {}
+
 export type ProcessMemoryKind =
   | "rss"
   | "private_working_set"
@@ -563,6 +572,29 @@ export async function reloadProvider(
       throw new ProviderReloadBusyError(
         error instanceof Error ? error.message : "Provider reload is busy",
       );
+    }
+    throw error;
+  }
+}
+
+export async function runCronJob(
+  tag: string,
+  jobName: string,
+): Promise<CronJobRunResponse> {
+  const response = await fetch(
+    apiUrl(
+      `/plugins/${encodeURIComponent(tag)}/jobs/${encodeURIComponent(jobName)}/run`,
+    ),
+    {
+      method: "POST",
+      headers: apiHeaders(),
+    },
+  );
+  try {
+    return await readJsonResponse<CronJobRunResponse>(response);
+  } catch (error) {
+    if (response.status === 409) {
+      throw new CronJobAlreadyRunningError();
     }
     throw error;
   }

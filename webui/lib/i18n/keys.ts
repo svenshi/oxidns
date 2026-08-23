@@ -446,6 +446,11 @@ export const WEBUI = {
     createDepsBtn: "webui.cron.createDepsBtn",
     arrangement: "webui.cron.arrangement",
     taskCount: "webui.cron.taskCount",
+    runNow: "webui.cron.runNow",
+    runStarting: "webui.cron.runStarting",
+    runStarted: "webui.cron.runStarted",
+    runBusy: "webui.cron.runBusy",
+    runFailed: "webui.cron.runFailed",
   },
   dynamicDomainSet: {
     ruleFileLabel: "webui.dynamicDomainSet.ruleFileLabel",

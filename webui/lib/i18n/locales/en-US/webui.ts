@@ -392,6 +392,11 @@ export const enUSWebui = {
     createDepsBtn: "Create dependency plugin",
     arrangement: "Cron task scheduling",
     taskCount: "Tasks",
+    runNow: "Run now",
+    runStarting: "Starting",
+    runStarted: 'Job "{name}" started',
+    runBusy: 'Job "{name}" is already running',
+    runFailed: 'Failed to start job "{name}"',
   },
   dynamicDomainSet: {
     ruleFileLabel: "Rule file",

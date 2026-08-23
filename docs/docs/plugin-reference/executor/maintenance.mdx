@@ -435,6 +435,7 @@ plugins:
 
 - `schedule` 和 `interval` 必须二选一。
 - 同一个 job 若上一轮仍在运行，本轮会被跳过，不补跑。
+- 管理 API 和 WebUI 可以手动启动单个 job；手动触发不会改变下一次计划运行时间，并与定时触发共享重叠保护。
 - 任务使用空的 `DnsContext`，适合副作用类 executor 或后台编排的 `sequence`。
 - `cron` 本身不能放进普通请求 `sequence` 里执行。
 
@@ -442,6 +443,7 @@ plugins:
 
 - 定时触发后台副作用逻辑。
 - 定时执行一个专门的 `sequence` 编排。
+- 在 WebUI 中按需验证或立即执行某个维护任务。
 - 为未来的 `reload` 之类后台动作提供统一调度入口。
 
 <Admonition type="note" title="注意事项">

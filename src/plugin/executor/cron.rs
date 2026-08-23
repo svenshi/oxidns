@@ -14,6 +14,9 @@
 //! - overlapping triggers are skipped rather than queued; and
 //! - quick-setup executors are owned and destroyed by this plugin.
 
+#[cfg(feature = "api")]
+mod api;
+
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,7 +26,7 @@ use async_trait::async_trait;
 use cronexpr::Crontab;
 use jiff::Timestamp;
 use serde::Deserialize;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
@@ -51,6 +54,7 @@ const ATTR_SCHEDULED_AT_UNIX_MS: &str = "cron.scheduled_at_unix_ms";
 const ATTR_TRIGGER_KIND: &str = "cron.trigger_kind";
 const CRON_PLUGIN_TYPE: &str = "cron";
 const MIN_INTERVAL: Duration = Duration::from_secs(60);
+const SCHEDULER_COMMAND_CAPACITY: usize = 16;
 
 #[derive(Debug, Clone, Deserialize)]
 struct CronConfig {
@@ -113,6 +117,22 @@ struct RuntimeJob {
 }
 
 #[derive(Debug)]
+#[cfg_attr(not(feature = "api"), allow(dead_code))]
+pub(super) enum SchedulerCommand {
+    Run {
+        job_name: String,
+        reply: oneshot::Sender<ManualRunOutcome>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ManualRunOutcome {
+    Started,
+    AlreadyRunning,
+    NotFound,
+}
+
+#[derive(Debug)]
 struct CronMetrics {
     tag: String,
     run_total: AtomicU64,
@@ -168,6 +188,7 @@ struct CronExecutor {
     tag: String,
     config: CronConfig,
     quick_setup_executors: Vec<Arc<dyn Executor>>,
+    command_tx: Mutex<Option<mpsc::Sender<SchedulerCommand>>>,
     stop_tx: Mutex<Option<oneshot::Sender<()>>>,
     scheduler_handle: Mutex<Option<JoinHandle<()>>>,
     metrics: Arc<CronMetrics>,
@@ -199,14 +220,20 @@ impl Plugin for CronExecutor {
             });
         }
 
+        let (command_tx, command_rx) = mpsc::channel(SCHEDULER_COMMAND_CAPACITY);
+        #[cfg(feature = "api")]
+        api::register(&self.tag, command_tx.clone())?;
+
         let (stop_tx, stop_rx) = oneshot::channel();
         let handle = tokio::spawn(run_scheduler(
             self.tag.clone(),
             runtime_jobs,
+            command_rx,
             stop_rx,
             self.metrics.clone(),
         ));
 
+        *self.command_tx.get_mut() = Some(command_tx);
         *self.stop_tx.get_mut() = Some(stop_tx);
         *self.scheduler_handle.get_mut() = Some(handle);
         Ok(())
@@ -217,6 +244,7 @@ impl Plugin for CronExecutor {
         if let Some(stop_tx) = self.stop_tx.lock().await.take() {
             let _ = stop_tx.send(());
         }
+        self.command_tx.lock().await.take();
 
         if let Some(handle) = self.scheduler_handle.lock().await.take() {
             match handle.await {
@@ -405,6 +433,7 @@ impl PluginFactory for CronFactory {
             metrics: Arc::new(CronMetrics::new(plugin_config.tag.clone())),
             config,
             quick_setup_executors: Vec::new(),
+            command_tx: Mutex::new(None),
             stop_tx: Mutex::new(None),
             scheduler_handle: Mutex::new(None),
         })))
@@ -646,6 +675,7 @@ fn advance_next_run_past_now(job: &mut RuntimeJob, now_ms: i64) -> Result<()> {
 async fn run_scheduler(
     plugin_tag: String,
     mut jobs: Vec<RuntimeJob>,
+    mut command_rx: mpsc::Receiver<SchedulerCommand>,
     mut stop_rx: oneshot::Receiver<()>,
     metrics: Arc<CronMetrics>,
 ) {
@@ -693,22 +723,8 @@ async fn run_scheduler(
                     continue;
                 }
 
-                let run_name = job.name.clone();
-                let trigger_kind = job.trigger.kind_name().to_string();
-                let executors = job.executors.clone();
-                let run_plugin_tag = plugin_tag.clone();
-                let run_metrics = metrics.clone();
-                job.handle = Some(tokio::spawn(async move {
-                    run_job(
-                        run_plugin_tag,
-                        run_name,
-                        trigger_kind,
-                        scheduled_at_ms,
-                        executors,
-                        run_metrics,
-                    )
-                    .await;
-                }));
+                let trigger_kind = job.trigger.kind_name();
+                spawn_job_run(job, &plugin_tag, trigger_kind, scheduled_at_ms, &metrics);
             }
             continue;
         }
@@ -720,6 +736,12 @@ async fn run_scheduler(
 
         tokio::select! {
             _ = &mut stop_rx => break,
+            command = command_rx.recv() => {
+                let Some(command) = command else {
+                    break;
+                };
+                handle_scheduler_command(&plugin_tag, &mut jobs, command, &metrics).await;
+            }
             _ = tokio::time::sleep(Duration::from_millis(delay_ms.max(1))) => {}
         }
     }
@@ -730,6 +752,78 @@ async fn run_scheduler(
             await_job_handle(&plugin_tag, &job.name, handle).await;
         }
     }
+}
+
+async fn handle_scheduler_command(
+    plugin_tag: &str,
+    jobs: &mut [RuntimeJob],
+    command: SchedulerCommand,
+    metrics: &Arc<CronMetrics>,
+) {
+    match command {
+        SchedulerCommand::Run { job_name, reply } => {
+            let Some(job_index) = jobs.iter().position(|job| job.name == job_name) else {
+                let _ = reply.send(ManualRunOutcome::NotFound);
+                return;
+            };
+
+            if jobs[job_index]
+                .handle
+                .as_ref()
+                .is_some_and(|handle| handle.is_finished())
+                && let Some(handle) = jobs[job_index].handle.take()
+            {
+                await_job_handle(plugin_tag, &job_name, handle).await;
+            }
+
+            let job = &mut jobs[job_index];
+            if job.handle.is_some() {
+                metrics.skipped_total.fetch_add(1, Ordering::Relaxed);
+                warn!(
+                    plugin = %plugin_tag,
+                    job = %job.name,
+                    trigger = "manual",
+                    "manual cron job run rejected because the previous run is still active"
+                );
+                let _ = reply.send(ManualRunOutcome::AlreadyRunning);
+                return;
+            }
+
+            spawn_job_run(
+                job,
+                plugin_tag,
+                "manual",
+                AppClock::now_timestamp() as i64,
+                metrics,
+            );
+            let _ = reply.send(ManualRunOutcome::Started);
+        }
+    }
+}
+
+fn spawn_job_run(
+    job: &mut RuntimeJob,
+    plugin_tag: &str,
+    trigger_kind: &str,
+    scheduled_at_ms: i64,
+    metrics: &Arc<CronMetrics>,
+) {
+    let run_name = job.name.clone();
+    let trigger_kind = trigger_kind.to_string();
+    let executors = job.executors.clone();
+    let run_plugin_tag = plugin_tag.to_string();
+    let run_metrics = metrics.clone();
+    job.handle = Some(tokio::spawn(async move {
+        run_job(
+            run_plugin_tag,
+            run_name,
+            trigger_kind,
+            scheduled_at_ms,
+            executors,
+            run_metrics,
+        )
+        .await;
+    }));
 }
 
 async fn reap_finished_job_handles(plugin_tag: &str, jobs: &mut [RuntimeJob]) {
@@ -1090,10 +1184,12 @@ jobs:
             executors: vec![executor.clone()],
             handle: None,
         };
+        let (_command_tx, command_rx) = mpsc::channel(1);
         let (stop_tx, stop_rx) = oneshot::channel();
         let scheduler = tokio::spawn(run_scheduler(
             "cron".to_string(),
             vec![job],
+            command_rx,
             stop_rx,
             Arc::new(CronMetrics::new("cron".to_string())),
         ));
@@ -1125,10 +1221,12 @@ jobs:
             executors: vec![executor.clone()],
             handle: None,
         };
+        let (_command_tx, command_rx) = mpsc::channel(1);
         let (stop_tx, stop_rx) = oneshot::channel();
         let scheduler = tokio::spawn(run_scheduler(
             "cron".to_string(),
             vec![job],
+            command_rx,
             stop_rx,
             Arc::new(CronMetrics::new("cron".to_string())),
         ));
@@ -1153,6 +1251,78 @@ jobs:
     }
 
     #[tokio::test]
+    async fn test_manual_run_starts_named_job_and_rejects_overlap() {
+        AppClock::start();
+        let log = Arc::new(StdMutex::new(Vec::new()));
+        let started = Arc::new(Notify::new());
+        let blocker = Arc::new(Notify::new());
+        let executor = Arc::new(
+            StubExecutor::new("probe", StubBehavior::Next, log)
+                .with_started_notify(started.clone())
+                .with_blocker(blocker.clone()),
+        );
+        let interval = Duration::from_secs(3600);
+        let job = RuntimeJob {
+            name: "refresh_sets".to_string(),
+            trigger: JobTrigger::Interval { interval },
+            next_run_ms: compute_next_run_ms(
+                &JobTrigger::Interval { interval },
+                AppClock::now_timestamp() as i64,
+            )
+            .unwrap(),
+            executors: vec![executor.clone()],
+            handle: None,
+        };
+        let (command_tx, command_rx) = mpsc::channel(2);
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let scheduler = tokio::spawn(run_scheduler(
+            "cron".to_string(),
+            vec![job],
+            command_rx,
+            stop_rx,
+            Arc::new(CronMetrics::new("cron".to_string())),
+        ));
+
+        let (reply, response) = oneshot::channel();
+        command_tx
+            .send(SchedulerCommand::Run {
+                job_name: "refresh_sets".to_string(),
+                reply,
+            })
+            .await
+            .unwrap();
+        assert_eq!(response.await.unwrap(), ManualRunOutcome::Started);
+        tokio::time::timeout(Duration::from_secs(1), started.notified())
+            .await
+            .expect("manual cron job should start");
+
+        let (reply, response) = oneshot::channel();
+        command_tx
+            .send(SchedulerCommand::Run {
+                job_name: "refresh_sets".to_string(),
+                reply,
+            })
+            .await
+            .unwrap();
+        assert_eq!(response.await.unwrap(), ManualRunOutcome::AlreadyRunning);
+        assert_eq!(executor.started.load(Ordering::Relaxed), 1);
+
+        let (reply, response) = oneshot::channel();
+        command_tx
+            .send(SchedulerCommand::Run {
+                job_name: "missing".to_string(),
+                reply,
+            })
+            .await
+            .unwrap();
+        assert_eq!(response.await.unwrap(), ManualRunOutcome::NotFound);
+
+        blocker.notify_one();
+        let _ = stop_tx.send(());
+        scheduler.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_destroy_cleans_up_quick_setup_executors() {
         let log = Arc::new(StdMutex::new(Vec::new()));
         let quick = Arc::new(StubExecutor::new("quick", StubBehavior::Next, log));
@@ -1169,6 +1339,7 @@ jobs:
                 }],
             },
             quick_setup_executors: vec![quick],
+            command_tx: Mutex::new(None),
             stop_tx: Mutex::new(None),
             scheduler_handle: Mutex::new(None),
             metrics: Arc::new(CronMetrics::new("cron".to_string())),
