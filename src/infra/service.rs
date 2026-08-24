@@ -99,7 +99,7 @@ fn run_windows_service() -> Result<()> {
 
     let app_tx = shutdown_tx;
     let app_thread = std::thread::spawn(move || {
-        let result = crate::app::run(start_opts);
+        let result = crate::app::run_windows_service(start_opts);
         let _ = app_tx.send(());
         result
     });
@@ -115,7 +115,7 @@ fn run_windows_service() -> Result<()> {
 
     let _ = report(ServiceState::StopPending, ServiceControlAccept::empty(), 5);
 
-    let app_result = if app_thread.is_finished() {
+    let shutdown_signal = if app_thread.is_finished() {
         app_thread
             .join()
             .unwrap_or_else(|_| Err(DnsError::runtime("app thread panicked")))
@@ -123,10 +123,16 @@ fn run_windows_service() -> Result<()> {
         // App is still running after receiving stop — exit so SCM marks us stopped.
         let _ = report(ServiceState::Stopped, ServiceControlAccept::empty(), 0);
         std::process::exit(0);
-    };
+    }?;
+
+    if matches!(shutdown_signal, crate::app::ShutdownSignal::Restart) {
+        // Do not report a clean STOPPED state: terminate with a failure code so
+        // the SCM recovery action starts a fresh service process.
+        std::process::exit(1);
+    }
 
     let _ = report(ServiceState::Stopped, ServiceControlAccept::empty(), 0);
-    app_result
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -272,16 +278,18 @@ pub fn install(options: ServiceInstallConfig) -> Result<()> {
 ///
 /// The `service-manager` Windows backend installs services through `sc create`,
 /// which cannot apply its `RestartPolicy`. Configure the equivalent recovery
-/// action through the native Windows service API instead. This is called both
-/// after installation and immediately before an in-service restart so that
-/// services installed by older OxiDNS versions are repaired in place.
+/// action through the native Windows service API after installation, while the
+/// installer is still running outside the SCM service dispatcher.
 #[cfg(windows)]
 pub(crate) fn configure_windows_restart_recovery() -> Result<()> {
     let manager =
         WindowsServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
             .map_err(|err| DnsError::runtime(format!("Failed to open Windows SCM: {err}")))?;
     let service = manager
-        .open_service(SERVICE_LABEL, ServiceAccess::CHANGE_CONFIG)
+        .open_service(
+            SERVICE_LABEL,
+            ServiceAccess::CHANGE_CONFIG | ServiceAccess::START,
+        )
         .map_err(|err| {
             DnsError::runtime(format!(
                 "Failed to open Windows service '{SERVICE_LABEL}' for recovery configuration: {err}"

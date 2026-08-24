@@ -50,6 +50,18 @@ pub struct StartConfig {
 
 /// Start OxiDNS in the foreground using the provided CLI options.
 pub fn run(start: StartConfig) -> Result<()> {
+    match run_until_shutdown(start)? {
+        ShutdownSignal::Restart => exec_restart(),
+        _ => Ok(()),
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn run_windows_service(start: StartConfig) -> Result<ShutdownSignal> {
+    run_until_shutdown(start)
+}
+
+fn run_until_shutdown(start: StartConfig) -> Result<ShutdownSignal> {
     // Capture the exe path before any binary replacement can invalidate it.
     ORIGINAL_EXE.get_or_init(|| std::env::current_exe().unwrap_or_default());
     AppClock::start();
@@ -77,7 +89,7 @@ fn prepare_working_dir(working_dir: Option<&std::path::PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn init_runtime(options: StartConfig, config: Config) -> Result<()> {
+fn init_runtime(options: StartConfig, config: Config) -> Result<ShutdownSignal> {
     let worker_threads = config.runtime.effective_worker_threads();
     let mut tokio_runtime = runtime::Builder::new_multi_thread();
     tokio_runtime
@@ -87,10 +99,7 @@ fn init_runtime(options: StartConfig, config: Config) -> Result<()> {
     let tokio_runtime = tokio_runtime
         .build()
         .map_err(|err| DnsError::runtime(format!("Failed to initialize Tokio runtime: {err}")))?;
-    match tokio_runtime.block_on(run_async_main(options, config))? {
-        ShutdownSignal::Restart => exec_restart(),
-        _ => Ok(()),
-    }
+    tokio_runtime.block_on(run_async_main(options, config))
 }
 
 /// Replace the current process image with a fresh copy of OxiDNS using the
@@ -118,21 +127,13 @@ pub(crate) fn exec_restart() -> Result<()> {
 
     #[cfg(windows)]
     {
-        if windows_running_as_service() {
-            // Under Windows SCM: do not spawn a duplicate — SCM will restart the
-            // service on our behalf. Exit with a non-zero code to trigger the
-            // configured recovery action. Reapply it here so installations made
-            // by older OxiDNS versions are repaired before the process exits.
-            crate::infra::service::configure_windows_restart_recovery()?;
-            std::process::exit(1);
-        } else {
-            // Foreground mode: spawn the replacement process then exit cleanly.
-            std::process::Command::new(&exe)
-                .args(&args)
-                .spawn()
-                .map_err(|e| DnsError::runtime(format!("restart: spawn failed: {e}")))?;
-            std::process::exit(0);
-        }
+        // Windows services handle Restart in the SCM wrapper and never reach
+        // this foreground replacement path.
+        std::process::Command::new(&exe)
+            .args(&args)
+            .spawn()
+            .map_err(|e| DnsError::runtime(format!("restart: spawn failed: {e}")))?;
+        std::process::exit(0);
     }
 
     #[cfg(not(any(unix, windows)))]
@@ -143,31 +144,6 @@ pub(crate) fn exec_restart() -> Result<()> {
             .map_err(|e| DnsError::runtime(format!("restart: spawn failed: {e}")))?;
         std::process::exit(0);
     }
-}
-
-/// Detect whether this process is running under the Windows Service Control
-/// Manager by checking if the parent process is `services.exe`.
-///
-/// Uses the already-available `sysinfo` crate — no extra dependencies needed.
-/// Falls back to `false` (assume foreground) on any lookup error.
-#[cfg(windows)]
-fn windows_running_as_service() -> bool {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
-
-    let refresh = ProcessRefreshKind::nothing();
-    let mut sys = System::new_with_specifics(RefreshKind::nothing().with_processes(refresh));
-    sys.refresh_processes(ProcessesToUpdate::All, false);
-
-    let current_pid = Pid::from_u32(std::process::id());
-    sys.process(current_pid)
-        .and_then(|p| p.parent())
-        .and_then(|parent_pid| sys.process(parent_pid))
-        .is_some_and(|parent| {
-            parent
-                .name()
-                .to_string_lossy()
-                .eq_ignore_ascii_case("services.exe")
-        })
 }
 
 fn load_config(options: &StartConfig) -> Result<Config> {
@@ -181,7 +157,7 @@ fn load_config(options: &StartConfig) -> Result<Config> {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(super) enum ShutdownSignal {
+pub(crate) enum ShutdownSignal {
     ApiRequest,
     Restart,
     #[cfg(unix)]
