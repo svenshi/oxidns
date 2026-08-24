@@ -435,7 +435,7 @@ plugins:
 
 - `schedule` 和 `interval` 必须二选一。
 - 同一个 job 若上一轮仍在运行，本轮会被跳过，不补跑。
-- 管理 API 和 WebUI 可以手动启动单个 job；手动触发不会改变下一次计划运行时间，并与定时触发共享重叠保护。
+- 管理 API 和 WebUI 可以手动启动单个 job，并与定时触发共享重叠保护。`interval` 任务会从手动触发时刻重新计算下一次运行时间；cron 表达式任务保持原计划。
 - 任务使用空的 `DnsContext`，适合副作用类 executor 或后台编排的 `sequence`。
 - `cron` 本身不能放进普通请求 `sequence` 里执行。
 

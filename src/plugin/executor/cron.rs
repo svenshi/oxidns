@@ -789,16 +789,20 @@ async fn handle_scheduler_command(
                 return;
             }
 
-            spawn_job_run(
-                job,
-                plugin_tag,
-                "manual",
-                AppClock::now_timestamp() as i64,
-                metrics,
-            );
+            let manual_run_at_ms = AppClock::now_timestamp() as i64;
+            reset_interval_next_run(job, manual_run_at_ms);
+            spawn_job_run(job, plugin_tag, "manual", manual_run_at_ms, metrics);
             let _ = reply.send(ManualRunOutcome::Started);
         }
     }
+}
+
+fn reset_interval_next_run(job: &mut RuntimeJob, manual_run_at_ms: i64) {
+    let JobTrigger::Interval { interval } = &job.trigger else {
+        return;
+    };
+    let interval_ms = interval.as_millis().min(i64::MAX as u128) as i64;
+    job.next_run_ms = manual_run_at_ms.saturating_add(interval_ms);
 }
 
 fn spawn_job_run(
@@ -1248,6 +1252,36 @@ jobs:
 
         let _ = stop_tx.send(());
         scheduler.await.unwrap();
+    }
+
+    #[test]
+    fn test_manual_run_resets_only_interval_schedule() {
+        let interval = Duration::from_secs(300);
+        let mut interval_job = RuntimeJob {
+            name: "interval".to_string(),
+            trigger: JobTrigger::Interval { interval },
+            next_run_ms: 123,
+            executors: Vec::new(),
+            handle: None,
+        };
+        reset_interval_next_run(&mut interval_job, 1_000);
+        assert_eq!(interval_job.next_run_ms, 301_000);
+
+        let cron_config = JobConfig {
+            name: "scheduled".to_string(),
+            schedule: Some("0 * * * *".to_string()),
+            interval: None,
+            executors: vec!["$noop".to_string()],
+        };
+        let mut scheduled_job = RuntimeJob {
+            name: "scheduled".to_string(),
+            trigger: parse_job_trigger_with_timezone(&cron_config, "UTC").unwrap(),
+            next_run_ms: 456,
+            executors: Vec::new(),
+            handle: None,
+        };
+        reset_interval_next_run(&mut scheduled_job, 1_000);
+        assert_eq!(scheduled_job.next_run_ms, 456);
     }
 
     #[tokio::test]

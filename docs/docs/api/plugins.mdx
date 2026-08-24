@@ -45,7 +45,7 @@ title: 插件扩展 API
 
 #### `POST /api/plugins/<cron_tag>/jobs/<job_name>/run`
 
-立即启动一个已配置的 cron job。`job_name` 是经过 URL 编码的 `args.jobs[].name`；手动触发使用与定时触发相同的 executor 列表和重叠保护，但不会改变下一次计划运行时间。
+立即启动一个已配置的 cron job。`job_name` 是经过 URL 编码的 `args.jobs[].name`；手动触发使用与定时触发相同的 executor 列表和重叠保护。对于 `interval` 任务，下一次运行时间会从本次手动触发时刻重新计算；使用 cron 表达式的任务仍保持原计划。
 
 返回：
 
