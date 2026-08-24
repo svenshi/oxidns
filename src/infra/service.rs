@@ -19,11 +19,13 @@ use service_manager::{
 use windows_service::{
     define_windows_service,
     service::{
-        ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState,
+        ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept,
+        ServiceExitCode, ServiceFailureActions, ServiceFailureResetPeriod, ServiceState,
         ServiceStatus as WinServiceStatus, ServiceType,
     },
     service_control_handler::{self, ServiceControlHandlerResult},
     service_dispatcher,
+    service_manager::{ServiceManager as WindowsServiceManager, ServiceManagerAccess},
 };
 
 use crate::infra::error::{DnsError, Result};
@@ -261,7 +263,61 @@ pub fn install(options: ServiceInstallConfig) -> Result<()> {
     manager
         .install(ctx)
         .map_err(|err| DnsError::runtime(format!("Failed to install service: {err}")))?;
+    #[cfg(windows)]
+    configure_windows_restart_recovery()?;
     Ok(())
+}
+
+/// Configure the SCM recovery action used by application-requested restarts.
+///
+/// The `service-manager` Windows backend installs services through `sc create`,
+/// which cannot apply its `RestartPolicy`. Configure the equivalent recovery
+/// action through the native Windows service API instead. This is called both
+/// after installation and immediately before an in-service restart so that
+/// services installed by older OxiDNS versions are repaired in place.
+#[cfg(windows)]
+pub(crate) fn configure_windows_restart_recovery() -> Result<()> {
+    let manager =
+        WindowsServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(|err| DnsError::runtime(format!("Failed to open Windows SCM: {err}")))?;
+    let service = manager
+        .open_service(SERVICE_LABEL, ServiceAccess::CHANGE_CONFIG)
+        .map_err(|err| {
+            DnsError::runtime(format!(
+                "Failed to open Windows service '{SERVICE_LABEL}' for recovery configuration: {err}"
+            ))
+        })?;
+
+    service
+        .update_failure_actions(windows_restart_failure_actions())
+        .map_err(|err| {
+            DnsError::runtime(format!(
+                "Failed to configure Windows service restart recovery: {err}"
+            ))
+        })?;
+    service
+        .set_failure_actions_on_non_crash_failures(true)
+        .map_err(|err| {
+            DnsError::runtime(format!(
+                "Failed to enable Windows service restart recovery: {err}"
+            ))
+        })?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_restart_failure_actions() -> ServiceFailureActions {
+    use std::time::Duration;
+
+    ServiceFailureActions {
+        reset_period: ServiceFailureResetPeriod::Never,
+        reboot_msg: None,
+        command: None,
+        actions: Some(vec![ServiceAction {
+            action_type: ServiceActionType::Restart,
+            delay: Duration::from_secs(3),
+        }]),
+    }
 }
 
 pub fn start() -> Result<()> {
@@ -351,6 +407,22 @@ fn normalize_config_path(path: &Path, working_dir: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_recovery_restarts_after_three_seconds() {
+        use std::time::Duration;
+
+        let recovery = windows_restart_failure_actions();
+        assert_eq!(recovery.reset_period, ServiceFailureResetPeriod::Never);
+        assert_eq!(
+            recovery.actions,
+            Some(vec![ServiceAction {
+                action_type: ServiceActionType::Restart,
+                delay: Duration::from_secs(3),
+            }])
+        );
+    }
 
     #[test]
     fn normalize_working_dir_rejects_relative_paths() {

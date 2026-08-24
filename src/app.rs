@@ -121,7 +121,9 @@ pub(crate) fn exec_restart() -> Result<()> {
         if windows_running_as_service() {
             // Under Windows SCM: do not spawn a duplicate — SCM will restart the
             // service on our behalf. Exit with a non-zero code to trigger the
-            // OnFailure restart policy configured at install time.
+            // configured recovery action. Reapply it here so installations made
+            // by older OxiDNS versions are repaired before the process exits.
+            crate::infra::service::configure_windows_restart_recovery()?;
             std::process::exit(1);
         } else {
             // Foreground mode: spawn the replacement process then exit cleanly.
