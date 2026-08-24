@@ -62,6 +62,10 @@ directory must be absolute. The generated service uses restart-on-failure with
 a short delay; repeated restarts indicate a persistent startup problem and
 must not be treated as recovery.
 
+Linux service discovery supports systemd, OpenRC, and OpenWrt/ImmortalWrt
+procd. On procd systems the built-in installer owns `/etc/init.d/oxidns` and
+uses the normal `enable`, `start`, `stop`, and `restart` actions.
+
 The packaged Linux unit starts:
 
 ```text

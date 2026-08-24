@@ -8,6 +8,9 @@
 //! platform-specific service manager details outside the normal foreground
 //! application runner.
 
+#[cfg(target_os = "linux")]
+mod procd;
+
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -209,6 +212,11 @@ pub struct ServiceInstallConfig {
 }
 
 pub fn status() -> Result<ServiceStatus> {
+    #[cfg(target_os = "linux")]
+    if procd::available() {
+        return procd::status();
+    }
+
     let service_manage = service_manager()?;
     let status = service_manage.status(ServiceStatusCtx {
         label: service_label()?,
@@ -226,6 +234,11 @@ pub fn install(options: ServiceInstallConfig) -> Result<()> {
     let config_path = normalize_config_path(&options.config, &working_dir)?;
     let program = std::env::current_exe()
         .map_err(|err| DnsError::runtime(format!("Failed to resolve current executable: {err}")))?;
+
+    #[cfg(target_os = "linux")]
+    if procd::available() {
+        return procd::install(&program, &config_path, &working_dir);
+    }
 
     let mut manager = native_service_manager().map_err(|err| {
         DnsError::runtime(format!("Failed to detect native service manager: {err}"))
@@ -265,6 +278,11 @@ pub fn install(options: ServiceInstallConfig) -> Result<()> {
 }
 
 pub fn start() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if procd::available() {
+        return procd::run_action("start");
+    }
+
     let manager = service_manager()?;
     manager
         .start(ServiceStartCtx {
@@ -275,6 +293,11 @@ pub fn start() -> Result<()> {
 }
 
 pub fn stop() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if procd::available() {
+        return procd::run_action("stop");
+    }
+
     let manager = service_manager()?;
     manager
         .stop(ServiceStopCtx {
@@ -285,6 +308,11 @@ pub fn stop() -> Result<()> {
 }
 
 pub fn uninstall() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if procd::available() {
+        return procd::uninstall();
+    }
+
     let manager = service_manager()?;
     manager
         .uninstall(ServiceUninstallCtx {

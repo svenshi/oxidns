@@ -116,6 +116,8 @@ oxidns probe upstream tcp://dns.example.com:53 -c config.yaml --outbound remote
 
 管理系统服务安装与运行状态。
 
+Linux 支持 systemd、OpenRC，以及 OpenWrt/ImmortalWrt 使用的 procd。在 procd 系统上，安装命令会生成并启用 `/etc/init.d/oxidns`，同时配置进程异常退出后的自动恢复。
+
 支持以下子命令：
 
 - `service install`
@@ -137,7 +139,7 @@ sudo oxidns service install -d /var/lib/oxidns -c /etc/oxidns/config.yaml
 - `-d, --working-dir <PATH>`
   - 服务工作目录，也是服务内所有运行期相对路径的基准。
   - 必须为绝对路径。
-  - 生成的服务会通过 `ExecStart ... -d <PATH>` 传给 OxiDNS；自定义 systemd unit 若额外设置 `WorkingDirectory=`，请保持二者一致。
+  - 生成的服务会通过启动命令的 `-d <PATH>` 传给 OxiDNS；自定义 systemd unit 若额外设置 `WorkingDirectory=`，请保持二者一致。
 - `-c, --config <PATH>`
   - 服务启动时使用的配置文件路径。
 

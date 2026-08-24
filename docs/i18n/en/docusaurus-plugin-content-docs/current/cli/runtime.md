@@ -116,6 +116,8 @@ Protocol behavior:
 
 Manages system service installation and runtime state.
 
+On Linux, systemd, OpenRC, and the procd manager used by OpenWrt/ImmortalWrt are supported. On procd systems, installation creates and enables `/etc/init.d/oxidns` and configures automatic recovery after an unexpected process exit.
+
 Supported subcommands:
 
 - `service install`
@@ -137,7 +139,7 @@ Arguments:
 - `-d, --working-dir <PATH>`
   - Service working directory, and the base for all runtime relative paths inside the service.
   - Must be an absolute path.
-  - The generated service passes this to OxiDNS through `ExecStart ... -d <PATH>`; if a custom systemd unit also sets `WorkingDirectory=`, keep both values aligned.
+  - The generated service passes this to OxiDNS through the startup command's `-d <PATH>`; if a custom systemd unit also sets `WorkingDirectory=`, keep both values aligned.
 - `-c, --config <PATH>`
   - Configuration path used by the installed service.
 
