@@ -23,22 +23,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cronexpr::Crontab;
-use jiff::Timestamp;
 use serde::Deserialize;
-use tokio::sync::{Mutex, mpsc, oneshot};
-use tokio::task::JoinHandle;
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
-use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::observability::metrics::{
     MetricLabel, MetricSample, MetricSink, MetricSource, register_metric_source,
     unregister_metric_source,
 };
 use crate::infra::system::{parse_simple_duration, system_timezone_name};
+use crate::infra::task::{
+    self as task_center, ManagedTaskHandle, TaskEvent, TaskEventHandler, TaskRunContext,
+    TaskSchedule, TaskTriggerKind,
+};
 use crate::plugin::dependency::DependencySpec;
 use crate::plugin::executor::{ExecStep, Executor};
 use crate::plugin::{
@@ -54,7 +53,6 @@ const ATTR_SCHEDULED_AT_UNIX_MS: &str = "cron.scheduled_at_unix_ms";
 const ATTR_TRIGGER_KIND: &str = "cron.trigger_kind";
 const CRON_PLUGIN_TYPE: &str = "cron";
 const MIN_INTERVAL: Duration = Duration::from_secs(60);
-const SCHEDULER_COMMAND_CAPACITY: usize = 16;
 
 #[derive(Debug, Clone, Deserialize)]
 struct CronConfig {
@@ -80,56 +78,11 @@ enum ExecutorRef {
 }
 
 #[derive(Debug, Clone)]
-enum JobTrigger {
-    Cron {
-        schedule: String,
-        crontab: Arc<Crontab>,
-        timezone_name: String,
-    },
-    Interval {
-        interval: Duration,
-    },
-}
-
-impl JobTrigger {
-    fn kind_name(&self) -> &'static str {
-        match self {
-            Self::Cron { .. } => "schedule",
-            Self::Interval { .. } => "interval",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
 struct PreparedJob {
     name: String,
-    trigger: JobTrigger,
+    schedule: TaskSchedule,
+    scheduled_trigger_kind: &'static str,
     executors: Vec<Arc<dyn Executor>>,
-}
-
-#[derive(Debug)]
-struct RuntimeJob {
-    name: String,
-    trigger: JobTrigger,
-    next_run_ms: i64,
-    executors: Vec<Arc<dyn Executor>>,
-    handle: Option<JoinHandle<()>>,
-}
-
-#[derive(Debug)]
-#[cfg_attr(not(feature = "api"), allow(dead_code))]
-pub(super) enum SchedulerCommand {
-    Run {
-        job_name: String,
-        reply: oneshot::Sender<ManualRunOutcome>,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ManualRunOutcome {
-    Started,
-    AlreadyRunning,
-    NotFound,
 }
 
 #[derive(Debug)]
@@ -188,9 +141,7 @@ struct CronExecutor {
     tag: String,
     config: CronConfig,
     quick_setup_executors: Vec<Arc<dyn Executor>>,
-    command_tx: Mutex<Option<mpsc::Sender<SchedulerCommand>>>,
-    stop_tx: Mutex<Option<oneshot::Sender<()>>>,
-    scheduler_handle: Mutex<Option<JoinHandle<()>>>,
+    task_handles: Vec<ManagedTaskHandle>,
     metrics: Arc<CronMetrics>,
 }
 
@@ -201,69 +152,113 @@ impl Plugin for CronExecutor {
     }
 
     async fn init(&mut self, context: &PluginInitContext<'_>) -> Result<()> {
-        register_metric_source(self.metrics.clone())?;
         let mut prepared_jobs = Vec::with_capacity(self.config.jobs.len());
         let jobs = self.config.jobs.clone();
         for (job_index, job) in jobs.iter().enumerate() {
-            prepared_jobs.push(self.prepare_job(context, job, job_index).await?);
+            match self.prepare_job(context, job, job_index).await {
+                Ok(prepared) => prepared_jobs.push(prepared),
+                Err(error) => {
+                    rollback_quick_setup_executors(&mut self.quick_setup_executors).await;
+                    return Err(error);
+                }
+            }
         }
 
-        let mut runtime_jobs = Vec::with_capacity(prepared_jobs.len());
-        for job in prepared_jobs {
-            let next_run_ms = compute_next_run_ms(&job.trigger, Timestamp::now().as_millisecond())?;
-            runtime_jobs.push(RuntimeJob {
-                name: job.name,
-                trigger: job.trigger,
-                next_run_ms,
-                executors: job.executors,
-                handle: None,
-            });
+        if let Err(error) = register_metric_source(self.metrics.clone()) {
+            rollback_quick_setup_executors(&mut self.quick_setup_executors).await;
+            return Err(error);
         }
 
-        let (command_tx, command_rx) = mpsc::channel(SCHEDULER_COMMAND_CAPACITY);
+        let mut task_handles = Vec::with_capacity(prepared_jobs.len());
         #[cfg(feature = "api")]
-        api::register(&self.tag, command_tx.clone())?;
+        let mut api_jobs = std::collections::HashMap::with_capacity(prepared_jobs.len());
+        for job in prepared_jobs {
+            let task_name = format!("cron:{}:{}", self.tag, job.name);
+            let run_plugin_tag = self.tag.clone();
+            let run_job_name = job.name.clone();
+            let run_executors = job.executors.clone();
+            let run_metrics = self.metrics.clone();
+            let scheduled_trigger_kind = job.scheduled_trigger_kind;
 
-        let (stop_tx, stop_rx) = oneshot::channel();
-        let handle = tokio::spawn(run_scheduler(
-            self.tag.clone(),
-            runtime_jobs,
-            command_rx,
-            stop_rx,
-            self.metrics.clone(),
-        ));
+            let event_plugin_tag = self.tag.clone();
+            let event_job_name = job.name.clone();
+            let event_metrics = self.metrics.clone();
+            let on_event: TaskEventHandler = Arc::new(move |event| match event {
+                TaskEvent::Skipped { trigger } => {
+                    event_metrics.skipped_total.fetch_add(1, Ordering::Relaxed);
+                    let trigger_kind = match trigger {
+                        TaskTriggerKind::Scheduled => scheduled_trigger_kind,
+                        TaskTriggerKind::Manual => "manual",
+                    };
+                    warn!(
+                        plugin = %event_plugin_tag,
+                        job = %event_job_name,
+                        trigger = %trigger_kind,
+                        "cron job trigger skipped because the previous run is still active"
+                    );
+                }
+            });
 
-        *self.command_tx.get_mut() = Some(command_tx);
-        *self.stop_tx.get_mut() = Some(stop_tx);
-        *self.scheduler_handle.get_mut() = Some(handle);
+            let handle = match task_center::register_scheduled(
+                task_name,
+                job.schedule,
+                Some(on_event),
+                move |context: TaskRunContext| {
+                    let plugin_tag = run_plugin_tag.clone();
+                    let job_name = run_job_name.clone();
+                    let executors = run_executors.clone();
+                    let metrics = run_metrics.clone();
+                    async move {
+                        let trigger_kind = match context.trigger {
+                            TaskTriggerKind::Scheduled => scheduled_trigger_kind,
+                            TaskTriggerKind::Manual => "manual",
+                        };
+                        run_job(
+                            plugin_tag,
+                            job_name,
+                            trigger_kind.to_string(),
+                            context.scheduled_at_unix_ms,
+                            executors,
+                            metrics,
+                        )
+                        .await;
+                    }
+                },
+            )
+            .await
+            {
+                Ok(handle) => handle,
+                Err(error) => {
+                    stop_registered_tasks(&task_handles).await;
+                    unregister_metric_source(&self.tag);
+                    rollback_quick_setup_executors(&mut self.quick_setup_executors).await;
+                    return Err(DnsError::plugin(format!(
+                        "failed to register cron job '{}': {}",
+                        job.name, error
+                    )));
+                }
+            };
+
+            #[cfg(feature = "api")]
+            api_jobs.insert(job.name, handle.clone());
+            task_handles.push(handle);
+        }
+
+        #[cfg(feature = "api")]
+        if let Err(error) = api::register(&self.tag, Arc::new(api_jobs)) {
+            stop_registered_tasks(&task_handles).await;
+            unregister_metric_source(&self.tag);
+            rollback_quick_setup_executors(&mut self.quick_setup_executors).await;
+            return Err(error);
+        }
+
+        self.task_handles = task_handles;
         Ok(())
     }
 
     async fn destroy(&self) -> Result<()> {
         unregister_metric_source(&self.tag);
-        if let Some(stop_tx) = self.stop_tx.lock().await.take() {
-            let _ = stop_tx.send(());
-        }
-        self.command_tx.lock().await.take();
-
-        if let Some(handle) = self.scheduler_handle.lock().await.take() {
-            match handle.await {
-                Ok(()) => {}
-                Err(err) if err.is_cancelled() => {}
-                Err(err) if err.is_panic() => {
-                    return Err(DnsError::plugin(format!(
-                        "cron scheduler task panicked: {}",
-                        err
-                    )));
-                }
-                Err(err) => {
-                    return Err(DnsError::plugin(format!(
-                        "cron scheduler task exited unexpectedly: {}",
-                        err
-                    )));
-                }
-            }
-        }
+        stop_registered_tasks(&self.task_handles).await;
 
         let mut first_err = None;
         for executor in &self.quick_setup_executors {
@@ -312,7 +307,8 @@ impl CronExecutor {
 
         Ok(PreparedJob {
             name: job.name.trim().to_string(),
-            trigger,
+            schedule: trigger.0,
+            scheduled_trigger_kind: trigger.1,
             executors,
         })
     }
@@ -433,9 +429,7 @@ impl PluginFactory for CronFactory {
             metrics: Arc::new(CronMetrics::new(plugin_config.tag.clone())),
             config,
             quick_setup_executors: Vec::new(),
-            command_tx: Mutex::new(None),
-            stop_tx: Mutex::new(None),
-            scheduler_handle: Mutex::new(None),
+            task_handles: Vec::new(),
         })))
     }
 }
@@ -486,7 +480,10 @@ fn validate_config(plugin_config: &PluginConfig, config: &CronConfig) -> Result<
     Ok(())
 }
 
-fn parse_job_trigger_with_timezone(job: &JobConfig, timezone_name: &str) -> Result<JobTrigger> {
+fn parse_job_trigger_with_timezone(
+    job: &JobConfig,
+    timezone_name: &str,
+) -> Result<(TaskSchedule, &'static str)> {
     let has_schedule = job.schedule.as_ref().is_some_and(|v| !v.trim().is_empty());
     let has_interval = job.interval.as_ref().is_some_and(|v| !v.trim().is_empty());
 
@@ -517,26 +514,20 @@ fn parse_job_trigger_with_timezone(job: &JobConfig, timezone_name: &str) -> Resu
             )));
         }
 
-        let schedule_with_timezone = format!("{} {}", schedule, timezone_name);
-        let crontab = cronexpr::parse_crontab(&schedule_with_timezone).map_err(|e| {
+        let task_schedule = TaskSchedule::cron(schedule, timezone_name).map_err(|e| {
             DnsError::plugin(format!(
                 "failed to parse cron schedule for job '{}': {}",
                 job.name, e
             ))
         })?;
-
-        return Ok(JobTrigger::Cron {
-            schedule: schedule.to_string(),
-            crontab: Arc::new(crontab),
-            timezone_name: timezone_name.to_string(),
-        });
+        return Ok((task_schedule, "schedule"));
     }
 
     let interval = parse_interval(
         job.name.as_str(),
         job.interval.as_deref().unwrap_or_default(),
     )?;
-    Ok(JobTrigger::Interval { interval })
+    Ok((TaskSchedule::fixed(interval), "interval"))
 }
 
 fn parse_executor_ref(raw: &str) -> Result<ExecutorRef> {
@@ -626,246 +617,19 @@ fn plugin_type_kind_name(plugin_type: crate::plugin::PluginType) -> &'static str
     }
 }
 
-fn compute_next_run_ms(trigger: &JobTrigger, timestamp_ms: i64) -> Result<i64> {
-    match trigger {
-        JobTrigger::Cron { crontab, .. } => {
-            let timestamp = Timestamp::from_millisecond(timestamp_ms).map_err(|e| {
-                DnsError::plugin(format!(
-                    "failed to build timestamp from '{}': {}",
-                    timestamp_ms, e
-                ))
-            })?;
-            let next = crontab.find_next(timestamp).map_err(|e| {
-                DnsError::plugin(format!(
-                    "failed to compute next run for cron schedule '{}': {}",
-                    trigger_description(trigger),
-                    e
-                ))
-            })?;
-            Ok(next.timestamp().as_millisecond())
-        }
-        JobTrigger::Interval { interval } => {
-            let interval_ms = interval.as_millis().min(i64::MAX as u128) as i64;
-            Ok(timestamp_ms.saturating_add(interval_ms))
-        }
+async fn stop_registered_tasks(handles: &[ManagedTaskHandle]) {
+    for handle in handles {
+        handle.stop().await;
     }
 }
 
-fn trigger_description(trigger: &JobTrigger) -> String {
-    match trigger {
-        JobTrigger::Cron {
-            schedule,
-            timezone_name,
-            ..
-        } => format!("{} {}", schedule, timezone_name),
-        JobTrigger::Interval { interval } => format!("{:?}", interval),
-    }
-}
-
-fn advance_next_run_past_now(job: &mut RuntimeJob, now_ms: i64) -> Result<()> {
-    loop {
-        let next = compute_next_run_ms(&job.trigger, job.next_run_ms)?;
-        job.next_run_ms = next;
-        if job.next_run_ms > now_ms {
-            return Ok(());
-        }
-    }
-}
-
-async fn run_scheduler(
-    plugin_tag: String,
-    mut jobs: Vec<RuntimeJob>,
-    mut command_rx: mpsc::Receiver<SchedulerCommand>,
-    mut stop_rx: oneshot::Receiver<()>,
-    metrics: Arc<CronMetrics>,
-) {
-    loop {
-        reap_finished_job_handles(&plugin_tag, &mut jobs).await;
-
-        let now_ms = AppClock::now_timestamp() as i64;
-        let mut due = Vec::new();
-        let mut next_delay_ms: Option<u64> = None;
-
-        for (idx, job) in jobs.iter().enumerate() {
-            if job.next_run_ms <= now_ms {
-                due.push(idx);
-                continue;
-            }
-
-            let delta = (job.next_run_ms - now_ms) as u64;
-            next_delay_ms = Some(next_delay_ms.map_or(delta, |current| current.min(delta)));
-        }
-
-        if !due.is_empty() {
-            for idx in due {
-                let job = &mut jobs[idx];
-                let scheduled_at_ms = job.next_run_ms;
-                if let Err(err) = advance_next_run_past_now(job, now_ms) {
-                    error!(
-                        plugin = %plugin_tag,
-                        job = %job.name,
-                        error = %err,
-                        "failed to advance cron job schedule"
-                    );
-                    let fallback = MIN_INTERVAL.as_millis().min(i64::MAX as u128) as i64;
-                    job.next_run_ms = now_ms.saturating_add(fallback);
-                    continue;
-                }
-
-                if job.handle.is_some() {
-                    metrics.skipped_total.fetch_add(1, Ordering::Relaxed);
-                    warn!(
-                        plugin = %plugin_tag,
-                        job = %job.name,
-                        trigger = %job.trigger.kind_name(),
-                        "cron job trigger skipped because the previous run is still active"
-                    );
-                    continue;
-                }
-
-                let trigger_kind = job.trigger.kind_name();
-                spawn_job_run(job, &plugin_tag, trigger_kind, scheduled_at_ms, &metrics);
-            }
-            continue;
-        }
-
-        let Some(delay_ms) = next_delay_ms else {
-            debug!(plugin = %plugin_tag, "cron scheduler has no jobs left to process");
-            break;
-        };
-
-        tokio::select! {
-            _ = &mut stop_rx => break,
-            command = command_rx.recv() => {
-                let Some(command) = command else {
-                    break;
-                };
-                handle_scheduler_command(&plugin_tag, &mut jobs, command, &metrics).await;
-            }
-            _ = tokio::time::sleep(Duration::from_millis(delay_ms.max(1))) => {}
-        }
-    }
-
-    for job in &mut jobs {
-        if let Some(handle) = job.handle.take() {
-            handle.abort();
-            await_job_handle(&plugin_tag, &job.name, handle).await;
-        }
-    }
-}
-
-async fn handle_scheduler_command(
-    plugin_tag: &str,
-    jobs: &mut [RuntimeJob],
-    command: SchedulerCommand,
-    metrics: &Arc<CronMetrics>,
-) {
-    match command {
-        SchedulerCommand::Run { job_name, reply } => {
-            let Some(job_index) = jobs.iter().position(|job| job.name == job_name) else {
-                let _ = reply.send(ManualRunOutcome::NotFound);
-                return;
-            };
-
-            if jobs[job_index]
-                .handle
-                .as_ref()
-                .is_some_and(|handle| handle.is_finished())
-                && let Some(handle) = jobs[job_index].handle.take()
-            {
-                await_job_handle(plugin_tag, &job_name, handle).await;
-            }
-
-            let job = &mut jobs[job_index];
-            if job.handle.is_some() {
-                metrics.skipped_total.fetch_add(1, Ordering::Relaxed);
-                warn!(
-                    plugin = %plugin_tag,
-                    job = %job.name,
-                    trigger = "manual",
-                    "manual cron job run rejected because the previous run is still active"
-                );
-                let _ = reply.send(ManualRunOutcome::AlreadyRunning);
-                return;
-            }
-
-            let manual_run_at_ms = AppClock::now_timestamp() as i64;
-            reset_interval_next_run(job, manual_run_at_ms);
-            spawn_job_run(job, plugin_tag, "manual", manual_run_at_ms, metrics);
-            let _ = reply.send(ManualRunOutcome::Started);
-        }
-    }
-}
-
-fn reset_interval_next_run(job: &mut RuntimeJob, manual_run_at_ms: i64) {
-    let JobTrigger::Interval { interval } = &job.trigger else {
-        return;
-    };
-    let interval_ms = interval.as_millis().min(i64::MAX as u128) as i64;
-    job.next_run_ms = manual_run_at_ms.saturating_add(interval_ms);
-}
-
-fn spawn_job_run(
-    job: &mut RuntimeJob,
-    plugin_tag: &str,
-    trigger_kind: &str,
-    scheduled_at_ms: i64,
-    metrics: &Arc<CronMetrics>,
-) {
-    let run_name = job.name.clone();
-    let trigger_kind = trigger_kind.to_string();
-    let executors = job.executors.clone();
-    let run_plugin_tag = plugin_tag.to_string();
-    let run_metrics = metrics.clone();
-    job.handle = Some(tokio::spawn(async move {
-        run_job(
-            run_plugin_tag,
-            run_name,
-            trigger_kind,
-            scheduled_at_ms,
-            executors,
-            run_metrics,
-        )
-        .await;
-    }));
-}
-
-async fn reap_finished_job_handles(plugin_tag: &str, jobs: &mut [RuntimeJob]) {
-    let mut finished = Vec::new();
-    for job in jobs {
-        if job
-            .handle
-            .as_ref()
-            .is_some_and(|handle| handle.is_finished())
-            && let Some(handle) = job.handle.take()
-        {
-            finished.push((job.name.clone(), handle));
-        }
-    }
-
-    for (job_name, handle) in finished {
-        await_job_handle(plugin_tag, &job_name, handle).await;
-    }
-}
-
-async fn await_job_handle(plugin_tag: &str, job_name: &str, handle: JoinHandle<()>) {
-    match handle.await {
-        Ok(()) => {}
-        Err(err) if err.is_cancelled() => {}
-        Err(err) if err.is_panic() => {
-            error!(
-                plugin = %plugin_tag,
-                job = %job_name,
-                error = %err,
-                "cron job task panicked"
-            );
-        }
-        Err(err) => {
+async fn rollback_quick_setup_executors(executors: &mut Vec<Arc<dyn Executor>>) {
+    for executor in std::mem::take(executors) {
+        if let Err(error) = executor.destroy().await {
             warn!(
-                plugin = %plugin_tag,
-                job = %job_name,
-                error = %err,
-                "cron job task exited unexpectedly"
+                executor = %executor.tag(),
+                error = %error,
+                "failed to roll back cron quick-setup executor"
             );
         }
     }
@@ -947,8 +711,6 @@ mod tests {
         log: Arc<StdMutex<Vec<String>>>,
         destroyed: Arc<AtomicBool>,
         started: Arc<AtomicUsize>,
-        started_notify: Option<Arc<Notify>>,
-        blocker: Option<Arc<Notify>>,
     }
 
     impl StubExecutor {
@@ -959,19 +721,7 @@ mod tests {
                 log,
                 destroyed: Arc::new(AtomicBool::new(false)),
                 started: Arc::new(AtomicUsize::new(0)),
-                started_notify: None,
-                blocker: None,
             }
-        }
-
-        fn with_started_notify(mut self, started_notify: Arc<Notify>) -> Self {
-            self.started_notify = Some(started_notify);
-            self
-        }
-
-        fn with_blocker(mut self, blocker: Arc<Notify>) -> Self {
-            self.blocker = Some(blocker);
-            self
         }
     }
 
@@ -987,6 +737,10 @@ mod tests {
 
         async fn destroy(&self) -> Result<()> {
             self.destroyed.store(true, Ordering::Relaxed);
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("destroy:{}", self.tag));
             Ok(())
         }
     }
@@ -995,13 +749,7 @@ mod tests {
     impl Executor for StubExecutor {
         async fn execute(&self, _context: &mut DnsContext) -> Result<ExecStep> {
             self.started.fetch_add(1, Ordering::Relaxed);
-            if let Some(started_notify) = &self.started_notify {
-                started_notify.notify_one();
-            }
             self.log.lock().unwrap().push(self.tag.clone());
-            if let Some(blocker) = &self.blocker {
-                blocker.notified().await;
-            }
             match self.behavior {
                 StubBehavior::Next => Ok(ExecStep::Next),
                 StubBehavior::Stop => Ok(ExecStep::Stop),
@@ -1121,10 +869,11 @@ jobs:
         };
         let trigger =
             parse_job_trigger_with_timezone(&job, "Asia/Shanghai").expect("timezone should work");
-        match trigger {
-            JobTrigger::Cron { timezone_name, .. } => assert_eq!(timezone_name, "Asia/Shanghai"),
-            JobTrigger::Interval { .. } => panic!("expected cron trigger"),
+        match trigger.0 {
+            TaskSchedule::Cron { timezone, .. } => assert_eq!(timezone, "Asia/Shanghai"),
+            TaskSchedule::FixedInterval { .. } => panic!("expected cron trigger"),
         }
+        assert_eq!(trigger.1, "schedule");
     }
 
     #[test]
@@ -1169,197 +918,39 @@ jobs:
     }
 
     #[tokio::test]
-    async fn test_interval_scheduler_waits_full_interval_before_first_run() {
-        AppClock::start();
-        let log = Arc::new(StdMutex::new(Vec::new()));
-        let executor = Arc::new(StubExecutor::new("probe", StubBehavior::Next, log.clone()));
-        let interval = Duration::from_secs(5);
-        let now_ms = AppClock::now_timestamp() as i64;
-        let first_run_at = compute_next_run_ms(&JobTrigger::Interval { interval }, now_ms).unwrap();
-        assert_eq!(
-            first_run_at,
-            now_ms + i64::try_from(interval.as_millis()).unwrap()
-        );
-
-        let job = RuntimeJob {
-            name: "job".to_string(),
-            trigger: JobTrigger::Interval { interval },
-            next_run_ms: first_run_at,
-            executors: vec![executor.clone()],
-            handle: None,
-        };
-        let (_command_tx, command_rx) = mpsc::channel(1);
-        let (stop_tx, stop_rx) = oneshot::channel();
-        let scheduler = tokio::spawn(run_scheduler(
-            "cron".to_string(),
-            vec![job],
-            command_rx,
-            stop_rx,
-            Arc::new(CronMetrics::new("cron".to_string())),
-        ));
-
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert_eq!(executor.started.load(Ordering::Relaxed), 0);
-
-        let _ = stop_tx.send(());
-        scheduler.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_scheduler_skips_overlapping_job_runs() {
-        AppClock::start();
+    async fn test_destroy_stops_tasks_before_quick_setup_executors() {
         let log = Arc::new(StdMutex::new(Vec::new()));
         let started = Arc::new(Notify::new());
-        let blocker = Arc::new(Notify::new());
-        let executor = Arc::new(
-            StubExecutor::new("probe", StubBehavior::Next, log.clone())
-                .with_started_notify(started.clone())
-                .with_blocker(blocker.clone()),
-        );
-        let interval = Duration::from_millis(20);
+        let started_task = started.clone();
+        let task_log = log.clone();
+        let handle = task_center::register_scheduled(
+            "cron-destroy-order",
+            TaskSchedule::fixed(Duration::from_secs(60)),
+            None,
+            move |_| {
+                let started_task = started_task.clone();
+                let task_log = task_log.clone();
+                async move {
+                    struct DropLog(Arc<StdMutex<Vec<String>>>);
 
-        let job = RuntimeJob {
-            name: "job".to_string(),
-            trigger: JobTrigger::Interval { interval },
-            next_run_ms: AppClock::now_timestamp() as i64,
-            executors: vec![executor.clone()],
-            handle: None,
-        };
-        let (_command_tx, command_rx) = mpsc::channel(1);
-        let (stop_tx, stop_rx) = oneshot::channel();
-        let scheduler = tokio::spawn(run_scheduler(
-            "cron".to_string(),
-            vec![job],
-            command_rx,
-            stop_rx,
-            Arc::new(CronMetrics::new("cron".to_string())),
-        ));
+                    impl Drop for DropLog {
+                        fn drop(&mut self) {
+                            self.0.lock().unwrap().push("task-stopped".to_string());
+                        }
+                    }
 
-        tokio::time::timeout(Duration::from_secs(1), started.notified())
-            .await
-            .expect("first cron job run should start");
-        assert_eq!(executor.started.load(Ordering::Relaxed), 1);
+                    let _drop_log = DropLog(task_log);
+                    started_task.notify_one();
+                    std::future::pending::<()>().await;
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(handle.trigger().await, task_center::TriggerOutcome::Started);
+        started.notified().await;
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(executor.started.load(Ordering::Relaxed), 1);
-
-        let second_run = started.notified();
-        blocker.notify_waiters();
-        tokio::time::timeout(Duration::from_secs(1), second_run)
-            .await
-            .expect("cron job should run again after the blocking run finishes");
-        assert_eq!(executor.started.load(Ordering::Relaxed), 2);
-
-        let _ = stop_tx.send(());
-        scheduler.await.unwrap();
-    }
-
-    #[test]
-    fn test_manual_run_resets_only_interval_schedule() {
-        let interval = Duration::from_secs(300);
-        let mut interval_job = RuntimeJob {
-            name: "interval".to_string(),
-            trigger: JobTrigger::Interval { interval },
-            next_run_ms: 123,
-            executors: Vec::new(),
-            handle: None,
-        };
-        reset_interval_next_run(&mut interval_job, 1_000);
-        assert_eq!(interval_job.next_run_ms, 301_000);
-
-        let cron_config = JobConfig {
-            name: "scheduled".to_string(),
-            schedule: Some("0 * * * *".to_string()),
-            interval: None,
-            executors: vec!["$noop".to_string()],
-        };
-        let mut scheduled_job = RuntimeJob {
-            name: "scheduled".to_string(),
-            trigger: parse_job_trigger_with_timezone(&cron_config, "UTC").unwrap(),
-            next_run_ms: 456,
-            executors: Vec::new(),
-            handle: None,
-        };
-        reset_interval_next_run(&mut scheduled_job, 1_000);
-        assert_eq!(scheduled_job.next_run_ms, 456);
-    }
-
-    #[tokio::test]
-    async fn test_manual_run_starts_named_job_and_rejects_overlap() {
-        AppClock::start();
-        let log = Arc::new(StdMutex::new(Vec::new()));
-        let started = Arc::new(Notify::new());
-        let blocker = Arc::new(Notify::new());
-        let executor = Arc::new(
-            StubExecutor::new("probe", StubBehavior::Next, log)
-                .with_started_notify(started.clone())
-                .with_blocker(blocker.clone()),
-        );
-        let interval = Duration::from_secs(3600);
-        let job = RuntimeJob {
-            name: "refresh_sets".to_string(),
-            trigger: JobTrigger::Interval { interval },
-            next_run_ms: compute_next_run_ms(
-                &JobTrigger::Interval { interval },
-                AppClock::now_timestamp() as i64,
-            )
-            .unwrap(),
-            executors: vec![executor.clone()],
-            handle: None,
-        };
-        let (command_tx, command_rx) = mpsc::channel(2);
-        let (stop_tx, stop_rx) = oneshot::channel();
-        let scheduler = tokio::spawn(run_scheduler(
-            "cron".to_string(),
-            vec![job],
-            command_rx,
-            stop_rx,
-            Arc::new(CronMetrics::new("cron".to_string())),
-        ));
-
-        let (reply, response) = oneshot::channel();
-        command_tx
-            .send(SchedulerCommand::Run {
-                job_name: "refresh_sets".to_string(),
-                reply,
-            })
-            .await
-            .unwrap();
-        assert_eq!(response.await.unwrap(), ManualRunOutcome::Started);
-        tokio::time::timeout(Duration::from_secs(1), started.notified())
-            .await
-            .expect("manual cron job should start");
-
-        let (reply, response) = oneshot::channel();
-        command_tx
-            .send(SchedulerCommand::Run {
-                job_name: "refresh_sets".to_string(),
-                reply,
-            })
-            .await
-            .unwrap();
-        assert_eq!(response.await.unwrap(), ManualRunOutcome::AlreadyRunning);
-        assert_eq!(executor.started.load(Ordering::Relaxed), 1);
-
-        let (reply, response) = oneshot::channel();
-        command_tx
-            .send(SchedulerCommand::Run {
-                job_name: "missing".to_string(),
-                reply,
-            })
-            .await
-            .unwrap();
-        assert_eq!(response.await.unwrap(), ManualRunOutcome::NotFound);
-
-        blocker.notify_one();
-        let _ = stop_tx.send(());
-        scheduler.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_destroy_cleans_up_quick_setup_executors() {
-        let log = Arc::new(StdMutex::new(Vec::new()));
-        let quick = Arc::new(StubExecutor::new("quick", StubBehavior::Next, log));
+        let quick = Arc::new(StubExecutor::new("quick", StubBehavior::Next, log.clone()));
         let destroyed = quick.destroyed.clone();
         let cron = CronExecutor {
             tag: "cron".to_string(),
@@ -1373,14 +964,16 @@ jobs:
                 }],
             },
             quick_setup_executors: vec![quick],
-            command_tx: Mutex::new(None),
-            stop_tx: Mutex::new(None),
-            scheduler_handle: Mutex::new(None),
+            task_handles: vec![handle],
             metrics: Arc::new(CronMetrics::new("cron".to_string())),
         };
 
         cron.destroy().await.unwrap();
         assert!(destroyed.load(Ordering::Relaxed));
+        assert_eq!(
+            log.lock().unwrap().as_slice(),
+            ["task-stopped", "destroy:quick"]
+        );
     }
 
     #[test]

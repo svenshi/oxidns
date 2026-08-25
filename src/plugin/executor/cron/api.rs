@@ -3,23 +3,25 @@
 
 //! Management API for manually triggering configured cron jobs.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use http::{Request, StatusCode};
 use serde::Serialize;
-use tokio::sync::{mpsc, oneshot};
 
-use super::{ManualRunOutcome, SchedulerCommand};
 use crate::api::{ApiHandler, json_error, json_ok};
 use crate::infra::error::Result;
+use crate::infra::task::{ManagedTaskHandle, TriggerOutcome};
 use crate::register_plugin_api;
 
-pub(super) fn register(tag: &str, command_tx: mpsc::Sender<SchedulerCommand>) -> Result<()> {
+pub(super) fn register(tag: &str, jobs: Arc<HashMap<String, ManagedTaskHandle>>) -> Result<()> {
     register_plugin_api!(
         tag,
         |plugin_api|
         POST_PREFIX "/jobs/" => CronJobRunHandler {
-            command_tx,
+            jobs,
             path_prefix: plugin_api.path("/jobs/")?,
         },
     )?;
@@ -28,7 +30,7 @@ pub(super) fn register(tag: &str, command_tx: mpsc::Sender<SchedulerCommand>) ->
 
 #[derive(Debug)]
 struct CronJobRunHandler {
-    command_tx: mpsc::Sender<SchedulerCommand>,
+    jobs: Arc<HashMap<String, ManagedTaskHandle>>,
     path_prefix: String,
 }
 
@@ -50,25 +52,16 @@ impl ApiHandler for CronJobRunHandler {
             }
         };
 
-        let (reply, response) = oneshot::channel();
-        if self
-            .command_tx
-            .send(SchedulerCommand::Run {
-                job_name: job_name.clone(),
-                reply,
-            })
-            .await
-            .is_err()
-        {
+        let Some(handle) = self.jobs.get(&job_name) else {
             return json_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "cron_scheduler_unavailable",
-                "cron scheduler is not running",
+                StatusCode::NOT_FOUND,
+                "cron_job_not_found",
+                format!("cron job '{job_name}' does not exist"),
             );
-        }
+        };
 
-        match response.await {
-            Ok(ManualRunOutcome::Started) => json_ok(
+        match handle.trigger().await {
+            TriggerOutcome::Started => json_ok(
                 StatusCode::ACCEPTED,
                 &CronJobRunResponse {
                     ok: true,
@@ -77,20 +70,15 @@ impl ApiHandler for CronJobRunHandler {
                     trigger: "manual",
                 },
             ),
-            Ok(ManualRunOutcome::AlreadyRunning) => json_error(
+            TriggerOutcome::AlreadyRunning => json_error(
                 StatusCode::CONFLICT,
                 "cron_job_already_running",
                 format!("cron job '{job_name}' is already running"),
             ),
-            Ok(ManualRunOutcome::NotFound) => json_error(
-                StatusCode::NOT_FOUND,
-                "cron_job_not_found",
-                format!("cron job '{job_name}' does not exist"),
-            ),
-            Err(_) => json_error(
+            TriggerOutcome::Unavailable => json_error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "cron_scheduler_unavailable",
-                "cron scheduler stopped before handling the request",
+                "cron scheduler is not available",
             ),
         }
     }
@@ -146,38 +134,41 @@ fn percent_decode_path_segment(encoded: &str) -> std::result::Result<String, Str
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use http_body_util::BodyExt;
+    use tokio::sync::Notify;
 
     use super::*;
+    use crate::infra::task::{TaskSchedule, register_scheduled};
 
-    async fn run_handler(outcome: ManualRunOutcome) -> crate::api::ApiResponse {
-        let (command_tx, mut command_rx) = mpsc::channel(1);
+    async fn run_handler(handle: ManagedTaskHandle) -> crate::api::ApiResponse {
         let handler = CronJobRunHandler {
-            command_tx,
+            jobs: Arc::new(HashMap::from([("refresh sets/a+b".to_string(), handle)])),
             path_prefix: "/plugins/cron_main/jobs/".to_string(),
         };
-        let task = tokio::spawn(async move {
-            handler
-                .handle(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/plugins/cron_main/jobs/refresh%20sets%2Fa%2Bb/run")
-                        .body(Bytes::new())
-                        .unwrap(),
-                )
-                .await
-        });
-
-        let SchedulerCommand::Run { job_name, reply } =
-            command_rx.recv().await.expect("run command should be sent");
-        assert_eq!(job_name, "refresh sets/a+b");
-        reply.send(outcome).expect("handler should await the reply");
-        task.await.expect("handler task should finish")
+        handler
+            .handle(
+                Request::builder()
+                    .method("POST")
+                    .uri("/plugins/cron_main/jobs/refresh%20sets%2Fa%2Bb/run")
+                    .body(Bytes::new())
+                    .unwrap(),
+            )
+            .await
     }
 
     #[tokio::test]
     async fn manual_run_handler_returns_accepted_for_started_job() {
-        let response = run_handler(ManualRunOutcome::Started).await;
+        let handle = register_scheduled(
+            "cron-api-started",
+            TaskSchedule::fixed(Duration::from_secs(3600)),
+            None,
+            |_| async {},
+        )
+        .await
+        .unwrap();
+        let response = run_handler(handle.clone()).await;
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         let body = response
             .into_body()
@@ -189,12 +180,70 @@ mod tests {
             serde_json::from_slice(&body).expect("response should be valid json");
         assert_eq!(payload["job"], "refresh sets/a+b");
         assert_eq!(payload["trigger"], "manual");
+        handle.stop().await;
     }
 
     #[tokio::test]
     async fn manual_run_handler_returns_conflict_for_active_job() {
-        let response = run_handler(ManualRunOutcome::AlreadyRunning).await;
+        let started = Arc::new(Notify::new());
+        let blocker = Arc::new(Notify::new());
+        let started_task = started.clone();
+        let blocker_task = blocker.clone();
+        let handle = register_scheduled(
+            "cron-api-busy",
+            TaskSchedule::fixed(Duration::from_secs(3600)),
+            None,
+            move |_| {
+                let started_task = started_task.clone();
+                let blocker_task = blocker_task.clone();
+                async move {
+                    started_task.notify_one();
+                    blocker_task.notified().await;
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(handle.trigger().await, TriggerOutcome::Started);
+        started.notified().await;
+
+        let response = run_handler(handle.clone()).await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
+        blocker.notify_waiters();
+        handle.stop().await;
+    }
+
+    #[tokio::test]
+    async fn manual_run_handler_returns_unavailable_for_stopped_job() {
+        let handle = register_scheduled(
+            "cron-api-stopped",
+            TaskSchedule::fixed(Duration::from_secs(3600)),
+            None,
+            |_| async {},
+        )
+        .await
+        .unwrap();
+        handle.stop().await;
+        let response = run_handler(handle).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn manual_run_handler_returns_not_found_for_unknown_job() {
+        let handler = CronJobRunHandler {
+            jobs: Arc::new(HashMap::new()),
+            path_prefix: "/plugins/cron_main/jobs/".to_string(),
+        };
+        let response = handler
+            .handle(
+                Request::builder()
+                    .method("POST")
+                    .uri("/plugins/cron_main/jobs/missing/run")
+                    .body(Bytes::new())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]
