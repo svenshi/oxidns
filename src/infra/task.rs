@@ -1181,6 +1181,11 @@ mod tests {
                 return;
             }
             tokio::task::yield_now().await;
+            // A cooperative yield alone is not sufficient when a scheduler
+            // has to be recreated on platforms with slower thread wakeups
+            // (notably Windows). Give the runtime a small real scheduling
+            // window before checking again.
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
         panic!("timed out waiting for {label}");
     }
