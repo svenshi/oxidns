@@ -21,15 +21,62 @@ describe("cron manual run", () => {
   });
 
   it("exposes the runtime action only for an applied, read-only plugin", () => {
-    expect(cronManualRunRuntimeTag(false, "applied", "cron_main")).toBe(
-      "cron_main",
-    );
-    expect(cronManualRunRuntimeTag(true, "applied", "cron_main")).toBeUndefined();
     expect(
-      cronManualRunRuntimeTag(false, "not-applied", "cron_main"),
+      cronManualRunRuntimeTag(
+        false,
+        "applied",
+        "cron_main",
+        "version-1",
+        "version-1",
+      ),
+    ).toBe("cron_main");
+    expect(
+      cronManualRunRuntimeTag(
+        true,
+        "applied",
+        "cron_main",
+        "version-1",
+        "version-1",
+      ),
     ).toBeUndefined();
     expect(
-      cronManualRunRuntimeTag(false, "unknown", "cron_main"),
+      cronManualRunRuntimeTag(
+        false,
+        "not-applied",
+        "cron_main",
+        "version-1",
+        "version-1",
+      ),
+    ).toBeUndefined();
+    expect(
+      cronManualRunRuntimeTag(
+        false,
+        "unknown",
+        "cron_main",
+        "version-1",
+        "version-1",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("hides the runtime action until the displayed config is running", () => {
+    expect(
+      cronManualRunRuntimeTag(
+        false,
+        "applied",
+        "cron_main",
+        "saved-version",
+        "running-version",
+      ),
+    ).toBeUndefined();
+    expect(
+      cronManualRunRuntimeTag(
+        false,
+        "applied",
+        "cron_main",
+        null,
+        null,
+      ),
     ).toBeUndefined();
   });
 

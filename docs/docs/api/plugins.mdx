@@ -45,7 +45,7 @@ title: 插件扩展 API
 
 #### `POST /api/plugins/<cron_tag>/jobs/<job_name>/run`
 
-立即启动一个已配置的 cron job。`job_name` 是经过 URL 编码的 `args.jobs[].name`；手动触发使用与定时触发相同的 executor 列表和重叠保护。对于 `interval` 任务，下一次运行时间会从本次手动触发时刻重新计算；使用 cron 表达式的任务仍保持原计划。
+立即启动一个已配置的 cron job。`job_name` 是经过 URL 编码的 `args.jobs[].name`；手动触发使用与定时触发相同的 executor 列表和重叠保护，但不会改变 `interval` 或 cron 表达式任务的原定计划。
 
 返回：
 
@@ -58,7 +58,7 @@ title: 插件扩展 API
 * `503 Service Unavailable`
   * 手动触发队列已满、TaskCenter 正在停止或对应任务已经不可用。
 
-WebUI 会在已应用的 cron 插件详情中为每个任务显示“手动运行”按钮。编辑未保存配置时按钮隐藏，避免用尚未应用的任务名称触发旧 runtime。
+WebUI 会在当前配置版本已经运行时为 cron 插件中的每个任务显示“手动运行”按钮。编辑配置或保存后尚未应用时按钮隐藏，避免用页面中的新配置触发旧 runtime。
 
 ### matcher
 

@@ -48,7 +48,7 @@ Imports a cache dump.
 
 #### `POST /api/plugins/<cron_tag>/jobs/<job_name>/run`
 
-Starts one configured cron job immediately. `job_name` is the URL-encoded `args.jobs[].name`. A manual trigger uses the same executor list and overlap protection as scheduled triggers. For an `interval` job, the next run is recalculated from the manual trigger time; cron-expression jobs keep their existing schedule.
+Starts one configured cron job immediately. `job_name` is the URL-encoded `args.jobs[].name`. A manual trigger uses the same executor list and overlap protection as scheduled triggers, but does not change the existing interval or cron-expression schedule.
 
 Responses:
 
@@ -61,7 +61,7 @@ Responses:
 * `503 Service Unavailable`
   * The manual-trigger queue is full, TaskCenter is stopping, or the task handle is unavailable.
 
-The WebUI shows **Run now** for every job in the detail view of an applied cron plugin. The action is hidden while editing unsaved configuration so a name that has not been applied cannot target the old runtime.
+The WebUI shows **Run now** for every cron job only when the displayed config version is active. The action is hidden while editing or after saving an unapplied version so the displayed configuration cannot target an older runtime.
 
 ### matcher
 

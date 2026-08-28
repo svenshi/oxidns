@@ -435,7 +435,7 @@ Schedules a list of executors in the background. It does not participate in the 
 
 - `schedule` and `interval` are mutually exclusive.
 - If a job is still running when the next trigger arrives, that trigger is skipped and not replayed later.
-- The management API and WebUI can start an individual job manually with the same overlap protection as scheduled triggers. An `interval` job recalculates its next run from the manual trigger time, while a cron-expression job keeps its existing schedule.
+- The management API and WebUI can start an individual job manually with the same overlap protection as scheduled triggers. Manual runs do not change the existing interval or cron-expression schedule.
 - Jobs run with an empty `DnsContext`, so this plugin is best suited for side-effect executors or dedicated background `sequence` chains.
 - `cron` itself cannot be executed inside a normal request `sequence`.
 

@@ -684,6 +684,8 @@ function CronDetail({
   const saveConfig = useAppStore((state) => state.saveConfig);
   const isConfigSaving = useAppStore((state) => state.isConfigSaving);
   const plugins = useAppStore((state) => state.plugins);
+  const configVersion = useAppStore((state) => state.configVersion);
+  const runningVersion = useAppStore((state) => state.runningVersion);
   const appliedStatus = usePluginAppliedStatus(plugin.name);
   const [editing, setEditing] = useState(false);
   const [configValues, setConfigValues] = useState<Record<string, unknown>>(
@@ -756,6 +758,8 @@ function CronDetail({
                 editing,
                 appliedStatus,
                 plugin.name,
+                configVersion,
+                runningVersion,
               )}
             />
           </CardContent>

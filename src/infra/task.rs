@@ -107,7 +107,7 @@ pub(crate) enum TaskTriggerKind {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)] // All scheduling capabilities remain compiled even when no bundled plugin uses them.
+#[allow(dead_code)]
 pub(crate) struct TaskRunContext {
     pub trigger: TaskTriggerKind,
     pub scheduled_at_unix_ms: i64,
@@ -198,11 +198,11 @@ impl std::fmt::Debug for TaskClock {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Cron remains a core capability in bundles without the cron plugin.
 enum TaskSchedule {
     FixedInterval {
         interval: Duration,
     },
+    #[cfg(feature = "_task-cron")]
     Cron {
         expression: String,
         timezone: String,
@@ -215,7 +215,7 @@ impl TaskSchedule {
         Self::FixedInterval { interval }
     }
 
-    #[allow(dead_code)]
+    #[cfg(feature = "_task-cron")]
     fn cron(expression: &str, timezone: &str) -> DnsResult<Self> {
         let expression = expression.trim();
         let timezone = timezone.trim();
@@ -271,6 +271,7 @@ impl TaskSchedule {
                     unix_ms: previous.unix_ms.saturating_add(advance_ms),
                 }))
             }
+            #[cfg(feature = "_task-cron")]
             Self::Cron {
                 expression,
                 timezone,
@@ -309,12 +310,16 @@ impl TaskSchedule {
         }
     }
 
-    fn resets_after_manual_run(&self) -> bool {
-        matches!(self, Self::FixedInterval { .. })
-    }
-
     fn is_cron(&self) -> bool {
-        matches!(self, Self::Cron { .. })
+        #[cfg(feature = "_task-cron")]
+        {
+            matches!(self, Self::Cron { .. })
+        }
+        #[cfg(not(feature = "_task-cron"))]
+        {
+            let _ = self;
+            false
+        }
     }
 
     fn reanchor_cron_deadline(
@@ -322,34 +327,42 @@ impl TaskSchedule {
         deadline: TaskDeadline,
         now: TaskDeadline,
     ) -> DnsResult<TaskDeadline> {
-        let Self::Cron {
-            expression,
-            timezone,
-            ..
-        } = self
-        else {
-            return Ok(deadline);
-        };
-        let delta_ms = deadline.unix_ms.checked_sub(now.unix_ms).ok_or_else(|| {
-            DnsError::runtime(format!(
-                "cron schedule '{expression} {timezone}' produced an invalid wall-clock delta"
-            ))
-        })?;
-        let instant = if delta_ms <= 0 {
-            now.instant
-        } else {
-            now.instant
-                .checked_add(Duration::from_millis(delta_ms as u64))
-                .ok_or_else(|| {
-                    DnsError::runtime(format!(
-                        "cron schedule '{expression} {timezone}' produced an invalid deadline"
-                    ))
-                })?
-        };
-        Ok(TaskDeadline {
-            instant,
-            unix_ms: deadline.unix_ms,
-        })
+        #[cfg(feature = "_task-cron")]
+        {
+            let Self::Cron {
+                expression,
+                timezone,
+                ..
+            } = self
+            else {
+                return Ok(deadline);
+            };
+            let delta_ms = deadline.unix_ms.checked_sub(now.unix_ms).ok_or_else(|| {
+                DnsError::runtime(format!(
+                    "cron schedule '{expression} {timezone}' produced an invalid wall-clock delta"
+                ))
+            })?;
+            let instant = if delta_ms <= 0 {
+                now.instant
+            } else {
+                now.instant
+                    .checked_add(Duration::from_millis(delta_ms as u64))
+                    .ok_or_else(|| {
+                        DnsError::runtime(format!(
+                            "cron schedule '{expression} {timezone}' produced an invalid deadline"
+                        ))
+                    })?
+            };
+            Ok(TaskDeadline {
+                instant,
+                unix_ms: deadline.unix_ms,
+            })
+        }
+        #[cfg(not(feature = "_task-cron"))]
+        {
+            let _ = (self, now);
+            Ok(deadline)
+        }
     }
 }
 
@@ -481,7 +494,7 @@ impl TaskCenter {
         self.spawn_inner(name, TaskSchedule::fixed(interval), options, task)
     }
 
-    #[allow(dead_code)]
+    #[cfg(feature = "_task-cron")]
     fn spawn_cron<F, Fut>(
         &self,
         name: impl Into<String>,
@@ -667,15 +680,19 @@ async fn run_scheduler(
                     handle_command(command, &mut tasks, &mut deadlines);
                 }
                 _ = sleep_until(next_wakeup) => {
-                    refresh_cron_deadlines(&mut tasks, &mut deadlines);
+                    if cron_recheck_at.is_some() {
+                        refresh_cron_deadlines(&mut tasks, &mut deadlines);
+                    }
                     run_due_tasks(&mut tasks, &mut deadlines).await;
-                    cron_recheck_at = Some(
-                        Instant::now() + CRON_WALL_CLOCK_RECHECK_INTERVAL
-                    );
+                    if cron_recheck_at.is_some() {
+                        cron_recheck_at = Some(
+                            Instant::now() + CRON_WALL_CLOCK_RECHECK_INTERVAL
+                        );
+                    }
                 }
                 trigger = trigger_rx.recv() => {
                     if let Some(trigger) = trigger {
-                        handle_trigger(trigger, &mut tasks, &mut deadlines).await;
+                        handle_trigger(trigger, &mut tasks).await;
                     }
                 }
             }
@@ -690,7 +707,7 @@ async fn run_scheduler(
                 }
                 trigger = trigger_rx.recv() => {
                     if let Some(trigger) = trigger {
-                        handle_trigger(trigger, &mut tasks, &mut deadlines).await;
+                        handle_trigger(trigger, &mut tasks).await;
                     }
                 }
             }
@@ -747,6 +764,7 @@ fn handle_command(
             } else {
                 let _ = ack.send(());
             }
+            rebuild_deadline_heap(tasks, deadlines);
         }
         Command::RemoveDetached { id } => {
             if let Some(mut task) = tasks.remove(&id)
@@ -754,6 +772,7 @@ fn handle_command(
             {
                 stop_handle_detached(task.name, handle);
             }
+            rebuild_deadline_heap(tasks, deadlines);
         }
         Command::StopAll { ack } => {
             let mut running = Vec::new();
@@ -795,6 +814,13 @@ fn refresh_cron_deadlines(
         }
     }
 
+    rebuild_deadline_heap(tasks, deadlines);
+}
+
+fn rebuild_deadline_heap(
+    tasks: &HashMap<u64, ScheduledTask>,
+    deadlines: &mut BinaryHeap<Reverse<(Instant, u64)>>,
+) {
     deadlines.clear();
     for (&id, task) in tasks.iter() {
         if let Some(deadline) = task.next_run {
@@ -886,11 +912,7 @@ async fn run_due_tasks(
     }
 }
 
-async fn handle_trigger(
-    trigger: TriggerCommand,
-    tasks: &mut HashMap<u64, ScheduledTask>,
-    deadlines: &mut BinaryHeap<Reverse<(Instant, u64)>>,
-) {
+async fn handle_trigger(trigger: TriggerCommand, tasks: &mut HashMap<u64, ScheduledTask>) {
     let Some(task) = tasks.get_mut(&trigger.id) else {
         let _ = trigger.reply.send(TriggerOutcome::Unavailable);
         return;
@@ -918,25 +940,6 @@ async fn handle_trigger(
     }
 
     let now = task.clock.now_for(&task.schedule);
-    if task.schedule.resets_after_manual_run() {
-        match compute_next_deadline(&task.name, &task.schedule, now, now) {
-            Ok(next_run) => {
-                task.next_run = next_run;
-                if let Some(next_run) = next_run {
-                    deadlines.push(Reverse((next_run.instant, trigger.id)));
-                }
-            }
-            Err(error) => {
-                task.next_run = None;
-                error!(
-                    task = %task.name,
-                    error = %error,
-                    "Failed to reset scheduled task after manual trigger; automatic execution is paused"
-                );
-            }
-        }
-    }
-
     let run = task.task.clone();
     task.running = Some(tokio::spawn(async move {
         run(TaskRunContext {
@@ -1087,7 +1090,7 @@ where
     global_task_center().spawn_fixed(name, interval, options, task)
 }
 
-#[allow(dead_code)]
+#[cfg(feature = "_task-cron")]
 pub(crate) fn spawn_cron<F, Fut>(
     name: impl Into<String>,
     expression: &str,
@@ -1102,7 +1105,7 @@ where
     global_task_center().spawn_cron(name, expression, timezone, options, task)
 }
 
-#[allow(dead_code)]
+#[cfg(feature = "_task-cron")]
 pub(crate) fn validate_cron(expression: &str, timezone: &str) -> DnsResult<()> {
     TaskSchedule::cron(expression, timezone).map(drop)
 }
@@ -1149,12 +1152,14 @@ mod tests {
         })
     }
 
+    #[cfg(feature = "_task-cron")]
     #[derive(Debug, Clone, Copy)]
     enum TestScheduleKind {
         Fixed,
         Cron,
     }
 
+    #[cfg(feature = "_task-cron")]
     fn spawn_test_schedule<F, Fut>(
         center: &TaskCenter,
         kind: TestScheduleKind,
@@ -1680,7 +1685,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn manual_trigger_resets_fixed_interval_from_now() {
+    async fn manual_trigger_preserves_fixed_interval_schedule() {
         let center = TaskCenter::new();
         let runs = Arc::new(AtomicUsize::new(0));
         let triggers = Arc::new(Mutex::new(Vec::new()));
@@ -1688,7 +1693,7 @@ mod tests {
         let triggers_task = triggers.clone();
         let handle = center
             .spawn_fixed(
-                "manual-reset",
+                "manual-preserve",
                 Duration::from_secs(10),
                 TaskOptions::default(),
                 move |context| {
@@ -1707,24 +1712,24 @@ mod tests {
         wait_until("manual run", || runs.load(Ordering::Relaxed) == 1).await;
 
         advance_and_flush(Duration::from_secs(5)).await;
-        assert_eq!(
-            runs.load(Ordering::Relaxed),
-            1,
-            "the original interval deadline must become stale"
-        );
-
-        advance_and_flush(Duration::from_secs(5)).await;
-        wait_until("rescheduled fixed run", || {
+        wait_until("original fixed deadline", || {
             runs.load(Ordering::Relaxed) == 2
         })
         .await;
+        advance_and_flush(Duration::from_secs(10)).await;
+        wait_until("next fixed deadline", || runs.load(Ordering::Relaxed) == 3).await;
         assert_eq!(
             triggers.lock().unwrap().as_slice(),
-            &[TaskTriggerKind::Manual, TaskTriggerKind::Scheduled]
+            &[
+                TaskTriggerKind::Manual,
+                TaskTriggerKind::Scheduled,
+                TaskTriggerKind::Scheduled
+            ]
         );
         handle.stop().await;
     }
 
+    #[cfg(feature = "_task-cron")]
     #[test]
     fn cron_schedule_computes_timezone_aware_future_deadlines() {
         let instant = Instant::now();
@@ -1740,9 +1745,9 @@ mod tests {
         let shanghai = TaskSchedule::cron("0 9 * * *", "Asia/Shanghai").unwrap();
         let shanghai_next = shanghai.next_after(epoch, epoch).unwrap().unwrap();
         assert_eq!(shanghai_next.unix_ms, 3_600_000);
-        assert!(!utc.resets_after_manual_run());
     }
 
+    #[cfg(feature = "_task-cron")]
     #[test]
     fn cron_schedule_handles_day_boundaries_and_dst_gaps() {
         fn deadline(timestamp: &str, instant: Instant) -> TaskDeadline {
@@ -1796,6 +1801,7 @@ mod tests {
         assert!(next.instant > now.instant);
     }
 
+    #[cfg(feature = "_task-cron")]
     #[tokio::test(start_paused = true)]
     async fn cron_deadline_reanchors_after_wall_clock_jumps() {
         let wall_unix_ms = Arc::new(std::sync::atomic::AtomicI64::new(0));
@@ -1838,6 +1844,7 @@ mod tests {
         handle.stop().await;
     }
 
+    #[cfg(feature = "_task-cron")]
     #[test]
     fn cron_reanchor_rebuilds_deadline_heap_without_stale_growth() {
         AppClock::start();
@@ -1872,6 +1879,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "_task-cron")]
     #[tokio::test]
     async fn fixed_and_cron_share_managed_lifecycle_capabilities() {
         for kind in [TestScheduleKind::Fixed, TestScheduleKind::Cron] {
@@ -1964,6 +1972,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "_task-cron")]
     #[tokio::test(start_paused = true)]
     async fn cron_entrypoint_supports_manual_and_scheduled_contexts() {
         let center = TaskCenter::with_wall_clock(advancing_wall_clock(0));
@@ -2004,13 +2013,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_entrypoints_validate_schedule_inputs() {
+    async fn fixed_entrypoint_rejects_zero_interval() {
         let center = TaskCenter::new();
         assert!(
             center
                 .spawn_fixed("zero", Duration::ZERO, TaskOptions::default(), |_| async {},)
                 .is_err()
         );
+    }
+
+    #[cfg(feature = "_task-cron")]
+    #[tokio::test]
+    async fn cron_entrypoint_validates_schedule_inputs() {
+        let center = TaskCenter::new();
         assert!(
             center
                 .spawn_cron(
@@ -2036,8 +2051,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manual_trigger_preserves_existing_cron_deadline() {
-        let schedule = TaskSchedule::cron("0 * * * *", "UTC").unwrap();
+    async fn repeated_manual_triggers_preserve_fixed_deadline_and_heap_size() {
+        let schedule = TaskSchedule::fixed(Duration::from_secs(3600));
         let clock = TaskClock::new(advancing_wall_clock(0));
         let now = clock.now_for(&schedule);
         let next_run = schedule.next_after(now, now).unwrap();
@@ -2045,7 +2060,7 @@ mod tests {
         let mut tasks = HashMap::from([(
             1,
             ScheduledTask {
-                name: "calendar".to_string(),
+                name: "fixed-preserve".to_string(),
                 clock,
                 schedule,
                 next_run,
@@ -2057,13 +2072,52 @@ mod tests {
         let mut deadlines = BinaryHeap::new();
         let deadline = next_run.unwrap();
         deadlines.push(Reverse((deadline.instant, 1)));
-        let (reply, response) = oneshot::channel();
+        for _ in 0..128 {
+            let (reply, response) = oneshot::channel();
+            handle_trigger(TriggerCommand { id: 1, reply }, &mut tasks).await;
+            assert_eq!(response.await.unwrap(), TriggerOutcome::Started);
+            assert_eq!(tasks[&1].next_run, Some(deadline));
+            stop_running_task(tasks.get_mut(&1).unwrap()).await;
+        }
 
-        handle_trigger(TriggerCommand { id: 1, reply }, &mut tasks, &mut deadlines).await;
+        assert_eq!(deadlines.len(), 1);
+        assert_eq!(
+            next_deadline(&tasks, &mut deadlines),
+            Some(deadline.instant)
+        );
+    }
 
-        assert_eq!(response.await.unwrap(), TriggerOutcome::Started);
-        assert_eq!(tasks[&1].next_run, Some(deadline));
-        stop_running_task(tasks.get_mut(&1).unwrap()).await;
+    #[test]
+    fn removing_task_compacts_stale_deadline_entries() {
+        AppClock::start();
+        let clock = TaskClock::new(advancing_wall_clock(0));
+        let schedule = TaskSchedule::fixed(Duration::from_secs(3600));
+        let now = clock.now_for(&schedule);
+        let next_run = schedule.next_after(now, now).unwrap();
+        let task: TaskFn = Arc::new(|_| Box::pin(async {}));
+        let make_task = |name: &str| ScheduledTask {
+            name: name.to_string(),
+            clock: clock.clone(),
+            schedule: schedule.clone(),
+            next_run,
+            task: task.clone(),
+            on_event: None,
+            running: None,
+        };
+        let mut tasks = HashMap::from([(1, make_task("removed")), (2, make_task("kept"))]);
+        let deadline = next_run.unwrap();
+        let mut deadlines = BinaryHeap::from([
+            Reverse((deadline.instant, 1)),
+            Reverse((deadline.instant, 2)),
+        ]);
+        let (ack, mut response) = oneshot::channel();
+
+        handle_command(Command::Remove { id: 1, ack }, &mut tasks, &mut deadlines);
+
+        assert_eq!(response.try_recv(), Ok(()));
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(deadlines.len(), 1);
+        assert_eq!(deadlines.peek(), Some(&Reverse((deadline.instant, 2))));
     }
 
     #[tokio::test]
