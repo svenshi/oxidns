@@ -19,7 +19,7 @@ conditions below.
 
 | Change | Required synchronization | Minimum validation |
 |---|---|---|
-| Internal Rust refactor with unchanged behavior | Module declarations, imports, public re-exports, architecture notes when boundaries change | `cargo check`, focused tests, `cargo +nightly fmt --all --check`; use `just check` before merge |
+| Internal Rust refactor with unchanged behavior | Module declarations and in-repository imports; architecture notes when boundaries change. Do not add root-crate compatibility facades unless an explicitly supported Rust API requires one | `cargo check`, focused tests, `cargo +nightly fmt --all --check`; use `just check` before merge |
 | New, renamed, or removed plugin type | Plugin module/factory, dependency kind, Cargo feature and bundle when gated, `tests/plugin_integration.rs`, plugin docs in both languages, WebUI definition/i18n, README capability lists, example config when relevant | Feature-on/off checks, plugin integration tests, `just check`, WebUI typecheck |
 | Plugin config field, enum, default, or validation change | Rust config parser, integration tests, Chinese/English plugin reference, WebUI schema and both locales, `config.yaml` when canonical defaults change, README when behavior is prominent | Focused unit/integration tests, config validation, WebUI typecheck, docs build for non-trivial docs changes |
 | Matcher/provider rule syntax change | Parser and error diagnostics, unit tests, `tests/plugin_integration.rs`, Chinese/English configuration docs, affected provider/plugin reference, examples | Focused parser tests plus plugin integration tests |
@@ -37,6 +37,12 @@ conditions below.
 | Release workflow or artifact naming change | `release.yml`, `custom-build.yml` target mapping, upgrade asset selection, Docker download patterns, release process and user install docs | Workflow review, archive-name tests, dry-run or manual workflow where available |
 
 ## Compatibility Questions
+
+The root crate is shipped as a binary application rather than a supported Rust
+SDK. Its Rust source paths are not a compatibility axis unless a particular API
+is explicitly documented as stable. Evaluate compatibility through the
+operator-facing contracts below; do not retain obsolete internal APIs for
+hypothetical external crate consumers.
 
 Answer these explicitly for any behavior change:
 

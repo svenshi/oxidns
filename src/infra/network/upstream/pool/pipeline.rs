@@ -53,7 +53,7 @@ pub struct PipelinePool<C: Connection> {
     /// Notify waiters when a slot is released, inserted, retired, or closed.
     release_notified: Notify,
     /// Background maintenance task registered in task center.
-    maintenance_task_id: Mutex<Option<u64>>,
+    maintenance_task_handle: Mutex<Option<task_center::ManagedTaskHandle>>,
 }
 
 #[async_trait]
@@ -188,7 +188,7 @@ impl<C: Connection> PipelinePool<C> {
             connect_timeout,
             next_id: AtomicU16::new(1),
             release_notified: Notify::new(),
-            maintenance_task_id: Mutex::new(None),
+            maintenance_task_handle: Mutex::new(None),
         });
         start_maintenance(&pool);
         if min_size > 0 {
@@ -613,8 +613,8 @@ impl<C: Connection> Drop for SlotReservation<'_, C> {
 }
 
 impl<C: Connection> ManagedMaintenanceTask for PipelinePool<C> {
-    fn maintenance_task_id(&self) -> &Mutex<Option<u64>> {
-        &self.maintenance_task_id
+    fn maintenance_task_handle(&self) -> &Mutex<Option<task_center::ManagedTaskHandle>> {
+        &self.maintenance_task_handle
     }
 
     fn maintenance_task_name(&self) -> String {
@@ -624,13 +624,13 @@ impl<C: Connection> ManagedMaintenanceTask for PipelinePool<C> {
 
 impl<C: Connection> Drop for PipelinePool<C> {
     fn drop(&mut self) {
-        let task_id = self
-            .maintenance_task_id
+        let task_handle = self
+            .maintenance_task_handle
             .lock()
             .ok()
             .and_then(|mut guard| guard.take());
-        if let Some(task_id) = task_id {
-            task_center::stop_task_detached(task_id);
+        if let Some(handle) = task_handle {
+            handle.stop_detached();
         }
     }
 }
@@ -759,7 +759,7 @@ mod tests {
             connect_timeout: Duration::from_secs(5),
             next_id: AtomicU16::new(1),
             release_notified: Notify::new(),
-            maintenance_task_id: Mutex::new(None),
+            maintenance_task_handle: Mutex::new(None),
         }
     }
 

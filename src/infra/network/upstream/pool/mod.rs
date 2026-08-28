@@ -35,7 +35,6 @@
 //! - Connection reuse to amortize handshake costs
 
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -140,7 +139,7 @@ pub trait ConnectionPool<C: Connection>: Send + Sync + Debug + 'static {
 /// Pools that own a periodic maintenance task managed by the global task
 /// center.
 pub trait ManagedMaintenanceTask {
-    fn maintenance_task_id(&self) -> &Mutex<Option<u64>>;
+    fn maintenance_task_handle(&self) -> &Mutex<Option<task_center::ManagedTaskHandle>>;
     fn maintenance_task_name(&self) -> String;
 }
 
@@ -158,32 +157,30 @@ where
     P: ConnectionPool<C> + ManagedMaintenanceTask + 'static,
 {
     let weak_pool: Weak<P> = Arc::downgrade(pool);
-    let task_id_slot = Arc::new(AtomicU64::new(0));
-    let task_id_slot_task = task_id_slot.clone();
     let task_name = pool.maintenance_task_name();
-    let task_id = task_center::spawn_fixed(task_name, MAINTENANCE_DURATION, move || {
-        let weak_pool = weak_pool.clone();
-        let task_id_slot_task = task_id_slot_task.clone();
-        async move {
-            let Some(pool) = weak_pool.upgrade() else {
-                let task_id = task_id_slot_task.load(Ordering::Acquire);
-                if task_id != 0 {
-                    task_center::stop_task_detached(task_id);
-                }
-                return;
-            };
+    let task_handle = task_center::spawn_fixed(
+        task_name,
+        MAINTENANCE_DURATION,
+        task_center::TaskOptions::default(),
+        move |_| {
+            let weak_pool = weak_pool.clone();
+            async move {
+                let Some(pool) = weak_pool.upgrade() else {
+                    return;
+                };
 
-            // Perform maintenance (awaiting ensures fairness and proper error handling)
-            pool.maintain().await;
-            // Yield to allow other tasks to run
-            yield_now().await;
-        }
-    });
-    task_id_slot.store(task_id, Ordering::Release);
+                // Perform maintenance (awaiting ensures fairness and proper error handling)
+                pool.maintain().await;
+                // Yield to allow other tasks to run
+                yield_now().await;
+            }
+        },
+    )
+    .expect("global task center must accept pool maintenance task");
     *pool
-        .maintenance_task_id()
+        .maintenance_task_handle()
         .lock()
-        .expect("maintenance_task_id poisoned") = Some(task_id);
+        .expect("maintenance_task_handle poisoned") = Some(task_handle);
 }
 
 #[cfg(test)]

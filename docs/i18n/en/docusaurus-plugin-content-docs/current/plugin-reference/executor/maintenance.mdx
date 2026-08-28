@@ -404,6 +404,7 @@ Schedules a list of executors in the background. It does not participate in the 
   - Only `minute hour day month day-of-week` is supported.
   - Second-level cron expressions are not supported.
   - Next runs are computed in `args.timezone` or the system local time zone.
+  - TaskCenter re-anchors deadlines to the system wall clock, so NTP or manual clock adjustments affect future runs.
 
 #### `args.jobs[].interval`
 
@@ -416,6 +417,7 @@ Schedules a list of executors in the background. It does not participate in the 
 - Runtime impact:
   - Minimum interval is `1m`.
   - The first run happens after one full interval elapses.
+  - Fixed intervals use monotonic time and are not affected by wall-clock adjustments.
 
 #### `args.jobs[].executors`
 
@@ -433,6 +435,7 @@ Schedules a list of executors in the background. It does not participate in the 
 
 - `schedule` and `interval` are mutually exclusive.
 - If a job is still running when the next trigger arrives, that trigger is skipped and not replayed later.
+- The management API and WebUI can start an individual job manually with the same overlap protection as scheduled triggers. Manual runs do not change the existing interval or cron-expression schedule.
 - Jobs run with an empty `DnsContext`, so this plugin is best suited for side-effect executors or dedicated background `sequence` chains.
 - `cron` itself cannot be executed inside a normal request `sequence`.
 
@@ -440,6 +443,7 @@ Schedules a list of executors in the background. It does not participate in the 
 
 - Periodic side-effect tasks.
 - Scheduling a dedicated background `sequence`.
+- Running or validating an individual maintenance job on demand from the WebUI.
 - Providing a common trigger surface for future executors such as `reload`.
 
 <Admonition type="note" title="Notes">

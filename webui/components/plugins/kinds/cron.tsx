@@ -6,7 +6,16 @@
 "use client";
 
 import { useState } from "react";
-import { Clock, Minus, Pencil, Plus, Save, Trash2 } from "lucide-react";
+import {
+  Clock,
+  Loader2,
+  Minus,
+  Pencil,
+  Play,
+  Plus,
+  Save,
+  Trash2,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -39,6 +48,13 @@ import type { PluginInstance } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
+import {
+  CronJobAlreadyRunningError,
+  CronJobUnavailableError,
+  runCronJob,
+} from "@/lib/oxidns-api";
+import { usePluginAppliedStatus } from "@/hooks/use-plugin-applied";
+import { cronManualRunRuntimeTag } from "@/lib/cron-manual-run";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -147,6 +163,7 @@ interface CronComposerProps {
   onChange: (value: Record<string, unknown>) => void;
   plugins: PluginInstance[];
   readOnly?: boolean;
+  runtimeTag?: string;
 }
 
 export function CronComposer({
@@ -154,6 +171,7 @@ export function CronComposer({
   onChange,
   plugins,
   readOnly = false,
+  runtimeTag,
 }: CronComposerProps) {
   const { t } = useI18n();
   const [view, setView] = useState<"visual" | "yaml">("visual");
@@ -288,6 +306,7 @@ export function CronComposer({
                 total={jobs.length}
                 plugins={plugins}
                 readOnly={readOnly}
+                runtimeTag={runtimeTag}
                 onChange={(patch) => updateJob(job.id, patch)}
                 onDelete={() => deleteJob(job.id)}
               />
@@ -319,6 +338,7 @@ function CronJobCard({
   total,
   plugins,
   readOnly,
+  runtimeTag,
   onChange,
   onDelete,
 }: {
@@ -327,10 +347,16 @@ function CronJobCard({
   total: number;
   plugins: PluginInstance[];
   readOnly: boolean;
+  runtimeTag?: string;
   onChange: (patch: Partial<CronJob>) => void;
   onDelete: () => void;
 }) {
   const { t } = useI18n();
+  const [manualRunPending, setManualRunPending] = useState(false);
+  const [manualRunNotice, setManualRunNotice] = useState<{
+    tone: "success" | "error";
+    message: string;
+  } | null>(null);
   const addExecutor = () => {
     onChange({ executors: [...job.executors, createEmptyExecutorItem()] });
   };
@@ -345,6 +371,33 @@ function CronJobCard({
 
   const deleteExecutor = (itemId: string) => {
     onChange({ executors: job.executors.filter((item) => item.id !== itemId) });
+  };
+
+  const handleManualRun = async () => {
+    if (!runtimeTag || !job.name.trim()) return;
+    setManualRunPending(true);
+    setManualRunNotice(null);
+    try {
+      await runCronJob(runtimeTag, job.name.trim());
+      setManualRunNotice({
+        tone: "success",
+        message: t(WEBUI.cron.runStarted, { name: job.name.trim() }),
+      });
+    } catch (error) {
+      setManualRunNotice({
+        tone: "error",
+        message:
+          error instanceof CronJobAlreadyRunningError
+            ? t(WEBUI.cron.runBusy, { name: job.name.trim() })
+            : error instanceof CronJobUnavailableError
+              ? t(WEBUI.cron.runUnavailable, { name: job.name.trim() })
+            : error instanceof Error
+              ? error.message
+              : t(WEBUI.cron.runFailed, { name: job.name.trim() }),
+      });
+    } finally {
+      setManualRunPending(false);
+    }
   };
 
   return (
@@ -385,6 +438,26 @@ function CronJobCard({
           <Badge variant="outline" className="shrink-0 font-mono text-[10px]">
             #{index + 1} / {total}
           </Badge>
+          {readOnly && runtimeTag && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 shrink-0 px-2 text-xs"
+              onClick={() => void handleManualRun()}
+              disabled={manualRunPending || !job.name.trim()}
+              title={t(WEBUI.cron.runNow)}
+            >
+              {manualRunPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Play className="h-3.5 w-3.5" />
+              )}
+              {manualRunPending
+                ? t(WEBUI.cron.runStarting)
+                : t(WEBUI.cron.runNow)}
+            </Button>
+          )}
           {!readOnly && (
             <Button
               type="button"
@@ -400,6 +473,19 @@ function CronJobCard({
         </div>
       </CardHeader>
       <CardContent className="space-y-3 p-3 pt-0">
+        {manualRunNotice && (
+          <div
+            role={manualRunNotice.tone === "error" ? "alert" : "status"}
+            className={cn(
+              "rounded-md border px-2.5 py-1.5 text-xs",
+              manualRunNotice.tone === "error"
+                ? "border-destructive/40 bg-destructive/5 text-destructive"
+                : "border-primary/30 bg-primary/5 text-primary",
+            )}
+          >
+            {manualRunNotice.message}
+          </div>
+        )}
         {/* Schedule / interval */}
         <div className="grid gap-2 sm:grid-cols-2">
           <div className="space-y-1">
@@ -598,6 +684,9 @@ function CronDetail({
   const saveConfig = useAppStore((state) => state.saveConfig);
   const isConfigSaving = useAppStore((state) => state.isConfigSaving);
   const plugins = useAppStore((state) => state.plugins);
+  const configVersion = useAppStore((state) => state.configVersion);
+  const runningVersion = useAppStore((state) => state.runningVersion);
+  const appliedStatus = usePluginAppliedStatus(plugin.name);
   const [editing, setEditing] = useState(false);
   const [configValues, setConfigValues] = useState<Record<string, unknown>>(
     () => plugin.config,
@@ -665,6 +754,13 @@ function CronDetail({
               onChange={setConfigValues}
               plugins={plugins}
               readOnly={!editing}
+              runtimeTag={cronManualRunRuntimeTag(
+                editing,
+                appliedStatus,
+                plugin.name,
+                configVersion,
+                runningVersion,
+              )}
             />
           </CardContent>
         </Card>

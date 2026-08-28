@@ -62,7 +62,7 @@ struct DualSelector {
     cache_enabled: bool,
     cache_ttl_ms: u64,
     cleanup_started: AtomicBool,
-    cleanup_task_id: Option<u64>,
+    cleanup_task_handle: Option<task_center::ManagedTaskHandle>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -119,23 +119,32 @@ impl Plugin for DualSelector {
         }
 
         let cache = self.cache.clone();
-        self.cleanup_task_id = Some(task_center::spawn_fixed(
-            format!("dual_selector:{}:cleanup", self.tag),
-            Duration::from_secs(CLEANUP_INTERVAL_SECS),
-            move || {
-                let cache = cache.clone();
-                async move {
-                    let now = AppClock::elapsed_millis();
-                    while cache.remove_expired_batch(now, 256) > 0 {}
+        self.cleanup_task_handle = Some(
+            match task_center::spawn_fixed(
+                format!("dual_selector:{}:cleanup", self.tag),
+                Duration::from_secs(CLEANUP_INTERVAL_SECS),
+                task_center::TaskOptions::default(),
+                move |_| {
+                    let cache = cache.clone();
+                    async move {
+                        let now = AppClock::elapsed_millis();
+                        while cache.remove_expired_batch(now, 256) > 0 {}
+                    }
+                },
+            ) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    self.cleanup_started.store(false, Ordering::Relaxed);
+                    return Err(error);
                 }
             },
-        ));
+        );
         Ok(())
     }
 
     async fn destroy(&self) -> Result<()> {
-        if let Some(task_id) = self.cleanup_task_id {
-            task_center::stop_task(task_id).await;
+        if let Some(handle) = &self.cleanup_task_handle {
+            handle.stop().await;
         }
         self.cleanup_started.store(false, Ordering::Relaxed);
         Ok(())
@@ -481,7 +490,7 @@ impl PluginFactory for DualSelectorFactory {
             cache_enabled: cfg.cache_enabled,
             cache_ttl_ms: cfg.cache_ttl_ms,
             cleanup_started: AtomicBool::new(false),
-            cleanup_task_id: None,
+            cleanup_task_handle: None,
         })))
     }
 
@@ -494,7 +503,7 @@ impl PluginFactory for DualSelectorFactory {
             cache_enabled: DEFAULT_CACHE_ENABLED,
             cache_ttl_ms: DEFAULT_CACHE_TTL_MS,
             cleanup_started: AtomicBool::new(false),
-            cleanup_task_id: None,
+            cleanup_task_handle: None,
         })))
     }
 }
@@ -530,7 +539,7 @@ mod tests {
             cache_enabled: true,
             cache_ttl_ms: DEFAULT_CACHE_TTL_MS,
             cleanup_started: AtomicBool::new(false),
-            cleanup_task_id: None,
+            cleanup_task_handle: None,
         }
     }
 

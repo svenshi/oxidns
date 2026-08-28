@@ -406,6 +406,7 @@ plugins:
   - 仅支持 `minute hour day month day-of-week`。
   - 不支持秒级 cron。
   - 按 `args.timezone` 或系统本地时区计算下一次触发时间。
+  - TaskCenter 会重新校准系统墙钟；NTP 同步或手动校时会影响后续触发时间。
 
 #### `args.jobs[].interval`
 
@@ -418,6 +419,7 @@ plugins:
 - 运行影响：
   - 最小粒度为 `1m`。
   - 启动后会等待一个完整间隔再首次触发。
+  - 固定间隔使用单调时间，不受系统墙钟调整影响。
 
 #### `args.jobs[].executors`
 
@@ -435,6 +437,7 @@ plugins:
 
 - `schedule` 和 `interval` 必须二选一。
 - 同一个 job 若上一轮仍在运行，本轮会被跳过，不补跑。
+- 管理 API 和 WebUI 可以手动启动单个 job，并与定时触发共享重叠保护。手动运行不会改变 `interval` 或 cron 表达式任务的原定计划。
 - 任务使用空的 `DnsContext`，适合副作用类 executor 或后台编排的 `sequence`。
 - `cron` 本身不能放进普通请求 `sequence` 里执行。
 
@@ -442,6 +445,7 @@ plugins:
 
 - 定时触发后台副作用逻辑。
 - 定时执行一个专门的 `sequence` 编排。
+- 在 WebUI 中按需验证或立即执行某个维护任务。
 - 为未来的 `reload` 之类后台动作提供统一调度入口。
 
 <Admonition type="note" title="注意事项">
