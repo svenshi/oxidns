@@ -33,6 +33,68 @@ export interface CronManualRunReconcileResult {
   effects: CronManualRunEffect[];
 }
 
+interface CronStatusRequestLease {
+  signal: AbortSignal;
+  isCurrent: () => boolean;
+  release: () => void;
+}
+
+export class CronStatusRequestCoordinator {
+  private version = 0;
+  private active:
+    | {
+        controller: AbortController;
+        parentSignal?: AbortSignal;
+        abortFromParent: () => void;
+        version: number;
+      }
+    | undefined;
+
+  begin(parentSignal?: AbortSignal): CronStatusRequestLease {
+    this.cancelActive();
+    const version = ++this.version;
+    const controller = new AbortController();
+    const abortFromParent = () => controller.abort();
+    if (parentSignal?.aborted) {
+      controller.abort();
+    } else {
+      parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+    }
+    const active = {
+      controller,
+      parentSignal,
+      abortFromParent,
+      version,
+    };
+    this.active = active;
+
+    return {
+      signal: controller.signal,
+      isCurrent: () =>
+        !controller.signal.aborted &&
+        this.active === active &&
+        this.version === version,
+      release: () => {
+        parentSignal?.removeEventListener("abort", abortFromParent);
+        if (this.active === active) this.active = undefined;
+      },
+    };
+  }
+
+  invalidate() {
+    this.version += 1;
+    this.cancelActive();
+  }
+
+  private cancelActive() {
+    const active = this.active;
+    if (!active) return;
+    active.parentSignal?.removeEventListener("abort", active.abortFromParent);
+    active.controller.abort();
+    this.active = undefined;
+  }
+}
+
 export function emptyCronManualRunView(): CronManualRunView {
   return {
     starting: false,
@@ -111,6 +173,26 @@ export function expireCronManualRunSuccess(
   view: CronManualRunView,
 ): CronManualRunView {
   return view.success === "visible" ? { ...view, success: "none" } : view;
+}
+
+export function clearCronManualRunViewsAfterStatusFailure(
+  previous: Record<string, CronManualRunView>,
+  jobNames: string[],
+): Record<string, CronManualRunView> {
+  return Object.fromEntries(
+    jobNames.map((jobName) => {
+      const prior = previous[jobName] ?? emptyCronManualRunView();
+      return [
+        jobName,
+        {
+          ...prior,
+          starting: false,
+          currentRun: null,
+          success: "none",
+        },
+      ];
+    }),
+  );
 }
 
 export function initializeCronManualRunViews(

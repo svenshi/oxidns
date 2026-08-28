@@ -60,8 +60,10 @@ import { usePluginAppliedStatus } from "@/hooks/use-plugin-applied";
 import {
   CRON_STATUS_POLL_INTERVAL_MS,
   CRON_SUCCESS_DURATION_MS,
+  CronStatusRequestCoordinator,
   acceptCronManualRun,
   beginCronManualRun,
+  clearCronManualRunViewsAfterStatusFailure,
   cronConfigValuesForDisplay,
   cronManualRunRuntimeTag,
   cronRunButtonPhase,
@@ -739,9 +741,10 @@ function CronDetail({
   const runViewsRef = useRef(runViews);
   const initializedRunStatusRef = useRef(false);
   const pollFailureNotifiedRef = useRef(false);
-  const statusGenerationRef = useRef(0);
   const runRequestControllersRef = useRef(new Map<string, AbortController>());
-  const statusControllersRef = useRef(new Set<AbortController>());
+  const statusRequestCoordinatorRef = useRef(
+    new CronStatusRequestCoordinator(),
+  );
   const successTimersRef = useRef(new Map<string, number>());
 
   const replaceRunViews = useCallback(
@@ -790,17 +793,15 @@ function CronDetail({
 
   useEffect(() => {
     const runRequestControllers = runRequestControllersRef.current;
-    const statusControllers = statusControllersRef.current;
+    const statusRequestCoordinator = statusRequestCoordinatorRef.current;
     const successTimers = successTimersRef.current;
     initializedRunStatusRef.current = false;
     pollFailureNotifiedRef.current = false;
-    statusGenerationRef.current += 1;
+    statusRequestCoordinator.invalidate();
     for (const controller of runRequestControllers.values()) {
       controller.abort();
     }
     runRequestControllers.clear();
-    for (const controller of statusControllers) controller.abort();
-    statusControllers.clear();
     for (const timer of successTimers.values()) {
       window.clearTimeout(timer);
     }
@@ -813,15 +814,11 @@ function CronDetail({
 
     return () => {
       window.clearTimeout(resetTimer);
-      statusGenerationRef.current += 1;
+      statusRequestCoordinator.invalidate();
       for (const controller of runRequestControllers.values()) {
         controller.abort();
       }
       runRequestControllers.clear();
-      for (const controller of statusControllers) {
-        controller.abort();
-      }
-      statusControllers.clear();
       for (const timer of successTimers.values()) {
         window.clearTimeout(timer);
       }
@@ -830,14 +827,12 @@ function CronDetail({
   }, [jobNames, replaceRunViews, runSessionKey]);
 
   const refreshCronStatuses = useCallback(
-    async (signal: AbortSignal) => {
+    async (parentSignal?: AbortSignal) => {
       if (!runtimeTag || !isConnected) return;
-      const generation = statusGenerationRef.current;
+      const request = statusRequestCoordinatorRef.current.begin(parentSignal);
       try {
-        const response = await fetchCronJobStatuses(runtimeTag, signal);
-        if (signal.aborted || generation !== statusGenerationRef.current) {
-          return;
-        }
+        const response = await fetchCronJobStatuses(runtimeTag, request.signal);
+        if (!request.isCurrent()) return;
         pollFailureNotifiedRef.current = false;
         const hasLocalRun = Object.values(runViewsRef.current).some(
           (view) => view.starting || view.trackedManualRunId !== null,
@@ -857,8 +852,8 @@ function CronDetail({
         }
         initializedRunStatusRef.current = true;
       } catch (error) {
-        if (signal.aborted || isAbortError(error)) return;
-        if (generation !== statusGenerationRef.current) return;
+        if (request.signal.aborted || isAbortError(error)) return;
+        if (!request.isCurrent()) return;
         if (!pollFailureNotifiedRef.current) {
           pollFailureNotifiedRef.current = true;
           toast({
@@ -868,10 +863,13 @@ function CronDetail({
         }
         initializedRunStatusRef.current = false;
         replaceRunViews(
-          Object.fromEntries(
-            jobNames.map((jobName) => [jobName, emptyCronManualRunView()]),
+          clearCronManualRunViewsAfterStatusFailure(
+            runViewsRef.current,
+            jobNames,
           ),
         );
+      } finally {
+        request.release();
       }
     },
     [
@@ -894,17 +892,13 @@ function CronDetail({
 
   const refreshCronStatusesNow = useCallback(() => {
     if (!runtimeTag || !isConnected) return;
-    const controller = new AbortController();
-    statusControllersRef.current.add(controller);
-    void refreshCronStatuses(controller.signal).finally(() => {
-      statusControllersRef.current.delete(controller);
-    });
+    void refreshCronStatuses();
   }, [isConnected, refreshCronStatuses, runtimeTag]);
 
   const handleManualRun = useCallback(
     async (jobName: string) => {
       if (!runtimeTag || !jobName) return;
-      statusGenerationRef.current += 1;
+      statusRequestCoordinatorRef.current.invalidate();
       updateRunView(jobName, beginCronManualRun);
       const controller = new AbortController();
       runRequestControllersRef.current.get(jobName)?.abort();

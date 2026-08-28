@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { useAuthStore } from "./auth-store";
 import {
+  CronStatusRequestCoordinator,
   acceptCronManualRun,
   beginCronManualRun,
+  clearCronManualRunViewsAfterStatusFailure,
   cronConfigValuesForDisplay,
   cronManualRunRuntimeTag,
   cronRunButtonPhase,
@@ -199,6 +201,48 @@ describe("cron manual run", () => {
     });
     expect(cronRunButtonPhase(completed.views.job)).toBe("success");
     expect(completed.effects).toEqual([]);
+  });
+
+  it("preserves accepted run IDs while status synchronization is unavailable", () => {
+    const failedViews = clearCronManualRunViewsAfterStatusFailure(
+      {
+        success: acceptCronManualRun(beginCronManualRun(undefined), 10),
+        failure: acceptCronManualRun(beginCronManualRun(undefined), 11),
+      },
+      ["success", "failure"],
+    );
+
+    expect(cronRunButtonPhase(failedViews.success)).toBe("idle");
+    expect(failedViews.success.trackedManualRunId).toBe(10);
+    expect(failedViews.failure.trackedManualRunId).toBe(11);
+
+    const recovered = reconcileCronManualRunViews(
+      failedViews,
+      ["success", "failure"],
+      {
+        success: completedSnapshot(10, "completed"),
+        failure: completedSnapshot(11, "failed"),
+      },
+    );
+    expect(cronRunButtonPhase(recovered.views.success)).toBe("success");
+    expect(recovered.effects).toEqual([
+      { jobName: "failure", type: "failed", executorErrorCount: 0 },
+    ]);
+  });
+
+  it("allows only the newest status request to update run state", () => {
+    const coordinator = new CronStatusRequestCoordinator();
+    const older = coordinator.begin();
+    const newer = coordinator.begin();
+
+    expect(older.signal.aborted).toBe(true);
+    expect(older.isCurrent()).toBe(false);
+    expect(newer.signal.aborted).toBe(false);
+    expect(newer.isCurrent()).toBe(true);
+
+    coordinator.invalidate();
+    expect(newer.signal.aborted).toBe(true);
+    expect(newer.isCurrent()).toBe(false);
   });
 
   it("maps partial, failed, cancelled, and lost runs to one-shot effects", () => {
