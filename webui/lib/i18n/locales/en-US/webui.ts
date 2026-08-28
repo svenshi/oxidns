@@ -394,10 +394,20 @@ export const enUSWebui = {
     taskCount: "Tasks",
     runNow: "Run now",
     runStarting: "Starting",
+    runExecuting: "Running",
+    runCompleted: "Completed",
     runStarted: 'Job "{name}" started',
     runBusy: 'Job "{name}" is already running',
+    runNotFound: 'Job "{name}" no longer exists; refresh the config and retry',
     runUnavailable: 'Job "{name}" is temporarily unavailable',
     runFailed: 'Failed to start job "{name}"',
+    runPartialFailure:
+      'Job "{name}" finished with {count} executor failures; check the logs',
+    runExecutionFailed: 'Job "{name}" failed; check the logs',
+    runCancelled: 'Job "{name}" was cancelled',
+    runStatusLost: 'Lost the run status for job "{name}"; check the logs',
+    runStatusSyncFailed:
+      "Failed to sync cron job status; retrying automatically",
   },
   dynamicDomainSet: {
     ruleFileLabel: "Rule file",

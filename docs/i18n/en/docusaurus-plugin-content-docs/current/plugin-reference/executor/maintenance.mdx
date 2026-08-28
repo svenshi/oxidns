@@ -436,6 +436,8 @@ Schedules a list of executors in the background. It does not participate in the 
 - `schedule` and `interval` are mutually exclusive.
 - If a job is still running when the next trigger arrives, that trigger is skipped and not replayed later.
 - The management API and WebUI can start an individual job manually with the same overlap protection as scheduled triggers. Manual runs do not change the existing interval or cron-expression schedule.
+- Scheduled and manual runs of one job share an increasing run ID. Runtime state retains only the current run and latest manual result, not history.
+- Executor errors are counted while later executors continue. A clean chain is `completed`, ordinary executor errors produce `completed_with_errors`, a panic produces `failed`, and destruction, reload, or shutdown cancellation produces `cancelled`.
 - Jobs run with an empty `DnsContext`, so this plugin is best suited for side-effect executors or dedicated background `sequence` chains.
 - `cron` itself cannot be executed inside a normal request `sequence`.
 

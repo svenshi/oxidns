@@ -18,16 +18,17 @@
 mod api;
 
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
+use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::observability::metrics::{
     MetricLabel, MetricSample, MetricSink, MetricSource, register_metric_source,
@@ -81,7 +82,7 @@ enum ExecutorRef {
 struct PreparedJob {
     name: String,
     schedule: PreparedSchedule,
-    scheduled_trigger_kind: &'static str,
+    scheduled_trigger_kind: CronRunTrigger,
     executors: Vec<Arc<dyn Executor>>,
 }
 
@@ -92,6 +93,191 @@ enum PreparedSchedule {
         expression: String,
         timezone: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CronRunTrigger {
+    Manual,
+    Schedule,
+    Interval,
+}
+
+impl CronRunTrigger {
+    fn from_context(context: TaskRunContext, scheduled: Self) -> Self {
+        match context.trigger {
+            TaskTriggerKind::Scheduled => scheduled,
+            TaskTriggerKind::Manual => Self::Manual,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Schedule => "schedule",
+            Self::Interval => "interval",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CronCurrentRunStatus {
+    Pending,
+    Running,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CronManualRunStatus {
+    Completed,
+    CompletedWithErrors,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct CronCurrentRun {
+    run_id: u64,
+    trigger: CronRunTrigger,
+    status: CronCurrentRunStatus,
+    started_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct CronManualRunResult {
+    run_id: u64,
+    status: CronManualRunStatus,
+    executor_error_count: u64,
+    completed_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+struct CronJobRunSnapshot {
+    current_run: Option<CronCurrentRun>,
+    last_manual_run: Option<CronManualRunResult>,
+}
+
+#[derive(Debug, Default)]
+struct CronJobRunState {
+    snapshot: StdMutex<CronJobRunSnapshot>,
+}
+
+impl CronJobRunState {
+    fn begin(self: &Arc<Self>, context: TaskRunContext, scheduled: CronRunTrigger) -> CronRunGuard {
+        let trigger = CronRunTrigger::from_context(context, scheduled);
+        self.with_snapshot(|snapshot| {
+            snapshot.current_run = Some(CronCurrentRun {
+                run_id: context.run_id,
+                trigger,
+                status: CronCurrentRunStatus::Pending,
+                started_at_ms: AppClock::now_timestamp(),
+            });
+        });
+        CronRunGuard {
+            state: self.clone(),
+            run_id: context.run_id,
+            trigger,
+            executor_error_count: 0,
+            finished: false,
+        }
+    }
+
+    #[cfg(any(feature = "api", test))]
+    fn snapshot(&self) -> CronJobRunSnapshot {
+        self.snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn with_snapshot(&self, update: impl FnOnce(&mut CronJobRunSnapshot)) {
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        update(&mut snapshot);
+    }
+}
+
+#[derive(Debug)]
+struct CronRunGuard {
+    state: Arc<CronJobRunState>,
+    run_id: u64,
+    trigger: CronRunTrigger,
+    executor_error_count: u64,
+    finished: bool,
+}
+
+impl CronRunGuard {
+    fn mark_running(&self) {
+        self.state.with_snapshot(|snapshot| {
+            if let Some(current) = snapshot.current_run.as_mut()
+                && current.run_id == self.run_id
+            {
+                current.status = CronCurrentRunStatus::Running;
+            }
+        });
+    }
+
+    fn record_executor_error(&mut self) {
+        self.executor_error_count = self.executor_error_count.saturating_add(1);
+    }
+
+    fn complete(&mut self) {
+        let status = if self.executor_error_count == 0 {
+            CronManualRunStatus::Completed
+        } else {
+            CronManualRunStatus::CompletedWithErrors
+        };
+        self.finish(status);
+    }
+
+    fn finish(&mut self, status: CronManualRunStatus) {
+        if self.finished {
+            return;
+        }
+        self.state.with_snapshot(|snapshot| {
+            if snapshot
+                .current_run
+                .as_ref()
+                .is_none_or(|current| current.run_id != self.run_id)
+            {
+                return;
+            }
+            snapshot.current_run = None;
+            if self.trigger == CronRunTrigger::Manual {
+                snapshot.last_manual_run = Some(CronManualRunResult {
+                    run_id: self.run_id,
+                    status,
+                    executor_error_count: self.executor_error_count,
+                    completed_at_ms: AppClock::now_timestamp(),
+                });
+            }
+        });
+        self.finished = true;
+    }
+}
+
+impl Drop for CronRunGuard {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let status = if std::thread::panicking() {
+            CronManualRunStatus::Failed
+        } else {
+            CronManualRunStatus::Cancelled
+        };
+        self.finish(status);
+    }
+}
+
+#[cfg(feature = "api")]
+#[derive(Debug, Clone)]
+struct CronApiJob {
+    handle: ManagedTaskHandle,
+    state: Arc<CronJobRunState>,
 }
 
 #[derive(Debug)]
@@ -188,6 +374,7 @@ impl Plugin for CronExecutor {
             let run_executors = job.executors.clone();
             let run_metrics = self.metrics.clone();
             let scheduled_trigger_kind = job.scheduled_trigger_kind;
+            let run_state = Arc::new(CronJobRunState::default());
 
             let event_plugin_tag = self.tag.clone();
             let event_job_name = job.name.clone();
@@ -196,8 +383,8 @@ impl Plugin for CronExecutor {
                 TaskEvent::Skipped { trigger } => {
                     event_metrics.skipped_total.fetch_add(1, Ordering::Relaxed);
                     let trigger_kind = match trigger {
-                        TaskTriggerKind::Scheduled => scheduled_trigger_kind,
-                        TaskTriggerKind::Manual => "manual",
+                        TaskTriggerKind::Scheduled => scheduled_trigger_kind.as_str(),
+                        TaskTriggerKind::Manual => CronRunTrigger::Manual.as_str(),
                     };
                     warn!(
                         plugin = %event_plugin_tag,
@@ -209,25 +396,28 @@ impl Plugin for CronExecutor {
             });
 
             let options = TaskOptions::default().on_event(on_event);
+            let task_run_state = run_state.clone();
             let run = move |context: TaskRunContext| {
                 let plugin_tag = run_plugin_tag.clone();
                 let job_name = run_job_name.clone();
                 let executors = run_executors.clone();
                 let metrics = run_metrics.clone();
+                let mut run_guard = task_run_state.begin(context, scheduled_trigger_kind);
                 async move {
-                    let trigger_kind = match context.trigger {
-                        TaskTriggerKind::Scheduled => scheduled_trigger_kind,
-                        TaskTriggerKind::Manual => "manual",
-                    };
+                    run_guard.mark_running();
+                    let trigger_kind =
+                        CronRunTrigger::from_context(context, scheduled_trigger_kind);
                     run_job(
                         plugin_tag,
                         job_name,
-                        trigger_kind.to_string(),
+                        trigger_kind,
                         context.scheduled_at_unix_ms,
                         executors,
                         metrics,
+                        &mut run_guard,
                     )
                     .await;
+                    run_guard.complete();
                 }
             };
             let handle = match job.schedule {
@@ -253,7 +443,13 @@ impl Plugin for CronExecutor {
             };
 
             #[cfg(feature = "api")]
-            api_jobs.insert(job.name, handle.clone());
+            api_jobs.insert(
+                job.name,
+                CronApiJob {
+                    handle: handle.clone(),
+                    state: run_state,
+                },
+            );
             task_handles.push(handle);
         }
 
@@ -496,7 +692,7 @@ fn validate_config(plugin_config: &PluginConfig, config: &CronConfig) -> Result<
 fn parse_job_trigger_with_timezone(
     job: &JobConfig,
     timezone_name: &str,
-) -> Result<(PreparedSchedule, &'static str)> {
+) -> Result<(PreparedSchedule, CronRunTrigger)> {
     let has_schedule = job.schedule.as_ref().is_some_and(|v| !v.trim().is_empty());
     let has_interval = job.interval.as_ref().is_some_and(|v| !v.trim().is_empty());
 
@@ -539,7 +735,7 @@ fn parse_job_trigger_with_timezone(
                 expression: schedule.to_string(),
                 timezone: timezone_name.to_string(),
             },
-            "schedule",
+            CronRunTrigger::Schedule,
         ));
     }
 
@@ -547,7 +743,7 @@ fn parse_job_trigger_with_timezone(
         job.name.as_str(),
         job.interval.as_deref().unwrap_or_default(),
     )?;
-    Ok((PreparedSchedule::Fixed(interval), "interval"))
+    Ok((PreparedSchedule::Fixed(interval), CronRunTrigger::Interval))
 }
 
 fn parse_executor_ref(raw: &str) -> Result<ExecutorRef> {
@@ -658,16 +854,17 @@ async fn rollback_quick_setup_executors(executors: &mut Vec<Arc<dyn Executor>>) 
 async fn run_job(
     plugin_tag: String,
     job_name: String,
-    trigger_kind: String,
+    trigger_kind: CronRunTrigger,
     scheduled_at_ms: i64,
     executors: Vec<Arc<dyn Executor>>,
     metrics: Arc<CronMetrics>,
+    run_guard: &mut CronRunGuard,
 ) {
     metrics.run_total.fetch_add(1, Ordering::Relaxed);
     info!(
         plugin = %plugin_tag,
         job = %job_name,
-        trigger = %trigger_kind,
+        trigger = %trigger_kind.as_str(),
         executor_count = executors.len(),
         "cron job started"
     );
@@ -676,12 +873,13 @@ async fn run_job(
     context.set_attr(ATTR_PLUGIN_TAG, plugin_tag.clone());
     context.set_attr(ATTR_JOB_NAME, job_name.clone());
     context.set_attr(ATTR_SCHEDULED_AT_UNIX_MS, scheduled_at_ms);
-    context.set_attr(ATTR_TRIGGER_KIND, trigger_kind.clone());
+    context.set_attr(ATTR_TRIGGER_KIND, trigger_kind.as_str().to_string());
 
     for executor in executors {
         match executor.execute(&mut context).await {
             Ok(ExecStep::Next) | Ok(ExecStep::Stop) | Ok(ExecStep::Return) => {}
             Err(err) => {
+                run_guard.record_executor_error();
                 metrics.executor_error_total.fetch_add(1, Ordering::Relaxed);
                 warn!(
                     plugin = %plugin_tag,
@@ -697,7 +895,7 @@ async fn run_job(
     info!(
         plugin = %plugin_tag,
         job = %job_name,
-        trigger = %trigger_kind,
+        trigger = %trigger_kind.as_str(),
         "cron job finished"
     );
 }
@@ -893,7 +1091,7 @@ jobs:
             PreparedSchedule::Cron { timezone, .. } => assert_eq!(timezone, "Asia/Shanghai"),
             PreparedSchedule::Fixed(_) => panic!("expected cron trigger"),
         }
-        assert_eq!(trigger.1, "schedule");
+        assert_eq!(trigger.1, CronRunTrigger::Schedule);
     }
 
     #[test]
@@ -902,6 +1100,67 @@ jobs:
         assert!(parse_interval("ok", "1h").is_ok());
         let err = parse_interval("bad", "30s").expect_err("30s should be rejected");
         assert!(err.to_string().contains("at least 1 minute"));
+    }
+
+    #[test]
+    fn test_run_guard_tracks_pending_running_and_cancelled() {
+        let state = Arc::new(CronJobRunState::default());
+        let context = TaskRunContext {
+            run_id: 7,
+            trigger: TaskTriggerKind::Manual,
+            scheduled_at_unix_ms: 123,
+        };
+        let guard = state.begin(context, CronRunTrigger::Schedule);
+        let pending = state.snapshot().current_run.unwrap();
+        assert_eq!(pending.run_id, 7);
+        assert_eq!(pending.trigger, CronRunTrigger::Manual);
+        assert_eq!(pending.status, CronCurrentRunStatus::Pending);
+
+        guard.mark_running();
+        assert_eq!(
+            state.snapshot().current_run.unwrap().status,
+            CronCurrentRunStatus::Running
+        );
+        drop(guard);
+
+        let snapshot = state.snapshot();
+        assert!(snapshot.current_run.is_none());
+        let result = snapshot.last_manual_run.unwrap();
+        assert_eq!(result.run_id, 7);
+        assert_eq!(result.status, CronManualRunStatus::Cancelled);
+        assert_eq!(result.executor_error_count, 0);
+    }
+
+    #[test]
+    fn test_run_guard_records_panics_as_failed_and_ignores_scheduled_results() {
+        let manual_state = Arc::new(CronJobRunState::default());
+        let panic_state = manual_state.clone();
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let context = TaskRunContext {
+                run_id: 2,
+                trigger: TaskTriggerKind::Manual,
+                scheduled_at_unix_ms: 0,
+            };
+            let guard = panic_state.begin(context, CronRunTrigger::Interval);
+            guard.mark_running();
+            panic!("intentional cron guard panic");
+        }));
+        assert!(panic_result.is_err());
+        let result = manual_state.snapshot().last_manual_run.unwrap();
+        assert_eq!(result.status, CronManualRunStatus::Failed);
+
+        let scheduled_state = Arc::new(CronJobRunState::default());
+        let context = TaskRunContext {
+            run_id: 3,
+            trigger: TaskTriggerKind::Scheduled,
+            scheduled_at_unix_ms: 0,
+        };
+        let guard = scheduled_state.begin(context, CronRunTrigger::Schedule);
+        guard.mark_running();
+        drop(guard);
+        let snapshot = scheduled_state.snapshot();
+        assert!(snapshot.current_run.is_none());
+        assert!(snapshot.last_manual_run.is_none());
     }
 
     #[tokio::test]
@@ -917,15 +1176,25 @@ jobs:
             Arc::new(StubExecutor::new("third", StubBehavior::Next, log.clone())),
         ];
 
+        let state = Arc::new(CronJobRunState::default());
+        let context = TaskRunContext {
+            run_id: 1,
+            trigger: TaskTriggerKind::Manual,
+            scheduled_at_unix_ms: 123,
+        };
+        let mut run_guard = state.begin(context, CronRunTrigger::Interval);
+        run_guard.mark_running();
         run_job(
             "cron".to_string(),
             "job".to_string(),
-            "interval".to_string(),
+            CronRunTrigger::Manual,
             123,
             executors,
             Arc::new(CronMetrics::new("cron".to_string())),
+            &mut run_guard,
         )
         .await;
+        run_guard.complete();
 
         assert_eq!(
             log.lock().unwrap().clone(),
@@ -935,6 +1204,14 @@ jobs:
                 "third".to_string()
             ]
         );
+        let snapshot = state.snapshot();
+        assert!(snapshot.current_run.is_none());
+        let result = snapshot
+            .last_manual_run
+            .expect("manual result should be retained");
+        assert_eq!(result.run_id, 1);
+        assert_eq!(result.status, CronManualRunStatus::CompletedWithErrors);
+        assert_eq!(result.executor_error_count, 1);
     }
 
     #[tokio::test]
@@ -966,7 +1243,10 @@ jobs:
             },
         )
         .unwrap();
-        assert_eq!(handle.trigger().await, task_center::TriggerOutcome::Started);
+        assert!(matches!(
+            handle.trigger().await,
+            task_center::TriggerOutcome::Started { run_id: 1 }
+        ));
         started.notified().await;
 
         let quick = Arc::new(StubExecutor::new("quick", StubBehavior::Next, log.clone()));

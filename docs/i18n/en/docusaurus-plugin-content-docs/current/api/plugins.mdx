@@ -53,7 +53,7 @@ Starts one configured cron job immediately. `job_name` is the URL-encoded `args.
 Responses:
 
 * `202 Accepted`
-  * The job started in the background. The response contains `status: "started"` and `trigger: "manual"`.
+  * The background runtime accepted the job. The response contains `status: "started"`, `trigger: "manual"`, and the new `run_id`. A `202` does not mean the executor chain completed successfully.
 * `404 Not Found`
   * The job does not exist in the active cron runtime.
 * `409 Conflict`
@@ -61,7 +61,55 @@ Responses:
 * `503 Service Unavailable`
   * The manual-trigger queue is full, TaskCenter is stopping, or the task handle is unavailable.
 
-The WebUI shows **Run now** for every cron job only when the displayed config version is active. The action is hidden while editing or after saving an unapplied version so the displayed configuration cannot target an older runtime.
+Example accepted response:
+
+```json
+{
+  "ok": true,
+  "job": "refresh_sets",
+  "status": "started",
+  "trigger": "manual",
+  "run_id": 12
+}
+```
+
+`run_id` starts at `1` and increases within one registered job lifetime. Scheduled and manual runs share the same sequence; re-registering the plugin or restarting the process resets it.
+
+#### `GET /api/plugins/<cron_tag>/jobs/status`
+
+Returns lightweight status for every job in the active cron runtime, keyed by job name:
+
+```json
+{
+  "ok": true,
+  "jobs": {
+    "refresh_sets": {
+      "current_run": {
+        "run_id": 12,
+        "trigger": "manual",
+        "status": "running",
+        "started_at_ms": 1780000000000
+      },
+      "last_manual_run": null
+    },
+    "cleanup": {
+      "current_run": null,
+      "last_manual_run": {
+        "run_id": 8,
+        "status": "completed_with_errors",
+        "executor_error_count": 2,
+        "completed_at_ms": 1780000001000
+      }
+    }
+  }
+}
+```
+
+- `current_run.trigger` is `manual`, `schedule`, or `interval`; its `status` is `pending` or `running`.
+- `last_manual_run.status` is `completed`, `completed_with_errors`, `failed`, or `cancelled`. Executor errors increment `executor_error_count` without stopping later executors.
+- Timestamps are Unix milliseconds. The API retains only the current run and latest manual result; it does not expose history, log content, result details, or a stop action.
+
+The WebUI shows **Run now** only when the displayed config version is active and batch-syncs real status every two seconds. The action is hidden while editing or after saving an unapplied version, and reopening the detail view does not replay old terminal results.
 
 ### matcher
 

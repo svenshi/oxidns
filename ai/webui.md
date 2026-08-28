@@ -62,6 +62,13 @@ Paths in this guide are relative to `webui/` unless stated otherwise.
 - Keep `CreatePluginDialog` catalog-driven. Search should cover kind, display name, description, type label, and config fields so operators can find plugins by the concept they remember.
 - When replacing mock data with real APIs, keep network calls outside low-level UI primitives and preserve optimistic UI only where the backend operation is reversible or clearly reported.
 
+### Shared Toasts and asynchronous runtime actions
+
+- Mount the shared Radix Toast provider inside the root i18n provider. Operational warnings and errors use the shared programmatic toast API, appear in the top-right, remain dismissible, and default to five seconds; do not add per-card notice blocks that change repeated-item height.
+- For asynchronous runtime actions, an accepted mutation response is not completion. Correlate the returned operation ID with a lightweight status endpoint, keep the initiating control loading until the matching terminal result arrives, and reserve inline success styling for confirmed success.
+- Poll one batch endpoint per visible detail surface instead of one request per card. Start immediately, serialize rounds, abort requests and timers when the runtime tag, config version, connection session, edit mode, or component lifetime changes, and deduplicate consecutive polling-failure toasts.
+- On a new polling session, restore active loading states but treat existing terminal results as a baseline so reopening a view does not replay stale success or error feedback. Backend-active state takes visual priority over transient success feedback.
+
 ## Design Principles
 
 - The WebUI is an operational DNS console, not a marketing site. Prioritize dense, calm, scan-friendly screens over decorative layouts.

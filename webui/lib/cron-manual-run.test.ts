@@ -2,13 +2,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { useAuthStore } from "./auth-store";
 import {
+  acceptCronManualRun,
+  beginCronManualRun,
   cronConfigValuesForDisplay,
   cronManualRunRuntimeTag,
+  cronRunButtonPhase,
+  initializeCronManualRunViews,
+  reconcileCronManualRunViews,
 } from "./cron-manual-run";
 import {
   CronJobAlreadyRunningError,
+  CronJobNotFoundError,
   CronJobUnavailableError,
+  fetchCronJobStatuses,
   runCronJob,
+  type CronJobRunSnapshot,
 } from "./oxidns-api";
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -73,13 +81,7 @@ describe("cron manual run", () => {
       ),
     ).toBeUndefined();
     expect(
-      cronManualRunRuntimeTag(
-        false,
-        "applied",
-        "cron_main",
-        null,
-        null,
-      ),
+      cronManualRunRuntimeTag(false, "applied", "cron_main", null, null),
     ).toBeUndefined();
   });
 
@@ -87,9 +89,9 @@ describe("cron manual run", () => {
     const staleDraft = { jobs: [{ name: "old-job" }] };
     const refreshedConfig = { jobs: [{ name: "new-job" }] };
 
-    expect(
-      cronConfigValuesForDisplay(false, staleDraft, refreshedConfig),
-    ).toBe(refreshedConfig);
+    expect(cronConfigValuesForDisplay(false, staleDraft, refreshedConfig)).toBe(
+      refreshedConfig,
+    );
     expect(cronConfigValuesForDisplay(true, staleDraft, refreshedConfig)).toBe(
       staleDraft,
     );
@@ -105,13 +107,18 @@ describe("cron manual run", () => {
         job: "refresh sets/a+b",
         status: "started",
         trigger: "manual",
+        run_id: 7,
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
       runCronJob("cron main", "refresh sets/a+b"),
-    ).resolves.toMatchObject({ status: "started", trigger: "manual" });
+    ).resolves.toMatchObject({
+      status: "started",
+      trigger: "manual",
+      run_id: 7,
+    });
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/plugins/cron%20main/jobs/refresh%20sets%2Fa%2Bb/run",
       expect.objectContaining({ method: "POST" }),
@@ -128,6 +135,12 @@ describe("cron manual run", () => {
         }),
       )
       .mockResolvedValueOnce(
+        jsonResponse(404, {
+          code: "cron_job_not_found",
+          message: "missing",
+        }),
+      )
+      .mockResolvedValueOnce(
         jsonResponse(503, {
           code: "cron_scheduler_unavailable",
           message: "unavailable",
@@ -139,7 +152,168 @@ describe("cron manual run", () => {
       CronJobAlreadyRunningError,
     );
     await expect(runCronJob("cron", "job")).rejects.toBeInstanceOf(
+      CronJobNotFoundError,
+    );
+    await expect(runCronJob("cron", "job")).rejects.toBeInstanceOf(
       CronJobUnavailableError,
     );
   });
+
+  it("fetches all job statuses with an abortable encoded plugin request", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        ok: true,
+        jobs: { job: { current_run: null, last_manual_run: null } },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchCronJobStatuses("cron main", controller.signal),
+    ).resolves.toMatchObject({ ok: true });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/plugins/cron%20main/jobs/status",
+      expect.objectContaining({ method: "GET", signal: controller.signal }),
+    );
+  });
+
+  it("keeps loading until the accepted run reaches a real terminal result", () => {
+    let view = beginCronManualRun(undefined);
+    expect(cronRunButtonPhase(view)).toBe("starting");
+    view = acceptCronManualRun(view, 4);
+
+    const pending = reconcileCronManualRunViews({ job: view }, ["job"], {
+      job: runSnapshot(4, "pending"),
+    });
+    expect(cronRunButtonPhase(pending.views.job)).toBe("pending");
+    expect(pending.effects).toEqual([]);
+
+    const running = reconcileCronManualRunViews(pending.views, ["job"], {
+      job: runSnapshot(4, "running"),
+    });
+    expect(cronRunButtonPhase(running.views.job)).toBe("running");
+
+    const completed = reconcileCronManualRunViews(running.views, ["job"], {
+      job: completedSnapshot(4, "completed"),
+    });
+    expect(cronRunButtonPhase(completed.views.job)).toBe("success");
+    expect(completed.effects).toEqual([]);
+  });
+
+  it("maps partial, failed, cancelled, and lost runs to one-shot effects", () => {
+    for (const status of [
+      "completed_with_errors",
+      "failed",
+      "cancelled",
+    ] as const) {
+      const accepted = acceptCronManualRun(beginCronManualRun(undefined), 8);
+      const result = reconcileCronManualRunViews({ job: accepted }, ["job"], {
+        job: completedSnapshot(8, status, 2),
+      });
+      expect(result.effects).toEqual([
+        { jobName: "job", type: status, executorErrorCount: 2 },
+      ]);
+      const replay = reconcileCronManualRunViews(result.views, ["job"], {
+        job: completedSnapshot(8, status, 2),
+      });
+      expect(replay.effects).toEqual([]);
+    }
+
+    const lost = reconcileCronManualRunViews(
+      { job: acceptCronManualRun(beginCronManualRun(undefined), 9) },
+      ["job"],
+      { job: { current_run: null, last_manual_run: null } },
+    );
+    expect(lost.effects).toEqual([
+      { jobName: "job", type: "lost", executorErrorCount: 0 },
+    ]);
+  });
+
+  it("does not replay old results but adopts a manual run already in progress", () => {
+    const initialized = initializeCronManualRunViews(["done", "active"], {
+      done: completedSnapshot(2, "failed"),
+      active: runSnapshot(3, "running"),
+    });
+    expect(cronRunButtonPhase(initialized.done)).toBe("idle");
+    expect(cronRunButtonPhase(initialized.active)).toBe("running");
+    expect(initialized.active.trackedManualRunId).toBe(3);
+
+    const completed = reconcileCronManualRunViews(
+      initialized,
+      ["done", "active"],
+      {
+        done: completedSnapshot(2, "failed"),
+        active: completedSnapshot(3, "completed"),
+      },
+    );
+    expect(cronRunButtonPhase(completed.views.active)).toBe("success");
+    expect(completed.effects).toEqual([]);
+  });
+
+  it("keeps a completed flash queued behind a newer active run and drops removed jobs", () => {
+    const result = reconcileCronManualRunViews(
+      {
+        removed: acceptCronManualRun(beginCronManualRun(undefined), 4),
+        kept: acceptCronManualRun(beginCronManualRun(undefined), 5),
+      },
+      ["kept"],
+      {
+        kept: {
+          current_run: {
+            run_id: 6,
+            trigger: "schedule",
+            status: "running",
+            started_at_ms: 20,
+          },
+          last_manual_run: {
+            run_id: 5,
+            status: "completed",
+            executor_error_count: 0,
+            completed_at_ms: 10,
+          },
+        },
+      },
+    );
+    expect(result.views.removed).toBeUndefined();
+    expect(result.views.kept.success).toBe("queued");
+    expect(cronRunButtonPhase(result.views.kept)).toBe("running");
+
+    const idle = reconcileCronManualRunViews(result.views, ["kept"], {
+      kept: completedSnapshot(5, "completed"),
+    });
+    expect(idle.views.kept.success).toBe("visible");
+    expect(cronRunButtonPhase(idle.views.kept)).toBe("success");
+  });
 });
+
+function runSnapshot(
+  runId: number,
+  status: "pending" | "running",
+): CronJobRunSnapshot {
+  return {
+    current_run: {
+      run_id: runId,
+      trigger: "manual",
+      status,
+      started_at_ms: 1,
+    },
+    last_manual_run: null,
+  };
+}
+
+function completedSnapshot(
+  runId: number,
+  status: "completed" | "completed_with_errors" | "failed" | "cancelled",
+  executorErrorCount = 0,
+): CronJobRunSnapshot {
+  return {
+    current_run: null,
+    last_manual_run: {
+      run_id: runId,
+      status,
+      executor_error_count: executorErrorCount,
+      completed_at_ms: 2,
+    },
+  };
+}

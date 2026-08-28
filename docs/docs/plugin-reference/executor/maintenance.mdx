@@ -438,6 +438,8 @@ plugins:
 - `schedule` 和 `interval` 必须二选一。
 - 同一个 job 若上一轮仍在运行，本轮会被跳过，不补跑。
 - 管理 API 和 WebUI 可以手动启动单个 job，并与定时触发共享重叠保护。手动运行不会改变 `interval` 或 cron 表达式任务的原定计划。
+- 每个 job 的定时与手动运行共用递增的运行编号；运行时只保留当前运行和最近一次手动结果，不保存历史。
+- executor 返回错误时会记录失败数量并继续执行后续 executor；全部 executor 正常结束才算 `completed`，存在普通错误时为 `completed_with_errors`，panic 为 `failed`，任务因销毁、reload 或停止而中断时为 `cancelled`。
 - 任务使用空的 `DnsContext`，适合副作用类 executor 或后台编排的 `sequence`。
 - `cron` 本身不能放进普通请求 `sequence` 里执行。
 
