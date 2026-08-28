@@ -54,7 +54,10 @@ import {
   runCronJob,
 } from "@/lib/oxidns-api";
 import { usePluginAppliedStatus } from "@/hooks/use-plugin-applied";
-import { cronManualRunRuntimeTag } from "@/lib/cron-manual-run";
+import {
+  cronConfigValuesForDisplay,
+  cronManualRunRuntimeTag,
+} from "@/lib/cron-manual-run";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -691,8 +694,18 @@ function CronDetail({
   const [configValues, setConfigValues] = useState<Record<string, unknown>>(
     () => plugin.config,
   );
+  const displayedConfigValues = cronConfigValuesForDisplay(
+    editing,
+    configValues,
+    plugin.config,
+  );
 
-  const jobCount = parseCronJobs(configValues.jobs).length;
+  const jobCount = parseCronJobs(displayedConfigValues.jobs).length;
+
+  const handleStartEditing = () => {
+    setConfigValues(plugin.config);
+    setEditing(true);
+  };
 
   const handleCancel = () => {
     setConfigValues(plugin.config);
@@ -741,7 +754,7 @@ function CronDetail({
                   </Button>
                 </>
               ) : (
-                <Button size="sm" onClick={() => setEditing(true)}>
+                <Button size="sm" onClick={handleStartEditing}>
                   <Pencil className="h-4 w-4" />
                   {t(WEBUI.common.editConfig)}
                 </Button>
@@ -750,7 +763,7 @@ function CronDetail({
           </CardHeader>
           <CardContent className="p-4 pt-0">
             <CronComposer
-              value={configValues}
+              value={displayedConfigValues}
               onChange={setConfigValues}
               plugins={plugins}
               readOnly={!editing}

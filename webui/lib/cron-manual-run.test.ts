@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { useAuthStore } from "./auth-store";
-import { cronManualRunRuntimeTag } from "./cron-manual-run";
+import {
+  cronConfigValuesForDisplay,
+  cronManualRunRuntimeTag,
+} from "./cron-manual-run";
 import {
   CronJobAlreadyRunningError,
   CronJobUnavailableError,
@@ -78,6 +81,18 @@ describe("cron manual run", () => {
         null,
       ),
     ).toBeUndefined();
+  });
+
+  it("displays refreshed plugin config without replacing an active draft", () => {
+    const staleDraft = { jobs: [{ name: "old-job" }] };
+    const refreshedConfig = { jobs: [{ name: "new-job" }] };
+
+    expect(
+      cronConfigValuesForDisplay(false, staleDraft, refreshedConfig),
+    ).toBe(refreshedConfig);
+    expect(cronConfigValuesForDisplay(true, staleDraft, refreshedConfig)).toBe(
+      staleDraft,
+    );
   });
 
   it("encodes plugin and job names and returns the accepted response", async () => {
