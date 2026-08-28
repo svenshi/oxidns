@@ -347,13 +347,13 @@ pub(super) struct AddressListManagerRuntime {
     /// Single-owner worker task that serializes all local state transitions.
     worker_handle: Option<JoinHandle<()>>,
     /// Local-memory cache prune loop.
-    prune_task_id: Option<u64>,
+    prune_task_handle: Option<task_center::ManagedTaskHandle>,
     /// Periodic persistent reconcile loop.
-    reconcile_task_id: Option<u64>,
+    reconcile_task_handle: Option<task_center::ManagedTaskHandle>,
 }
 
 impl AddressListManagerRuntime {
-    pub(super) fn start(tag: String, manager: AddressListManager) -> Self {
+    pub(super) fn start(tag: String, manager: AddressListManager) -> Result<Self> {
         // All mutable state lives behind one worker to avoid cross-map locking
         // or request-path synchronization in the DNS hot path.
         let has_persistent = !manager.persistent_items.is_empty();
@@ -361,7 +361,7 @@ impl AddressListManagerRuntime {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let worker_tag = tag.clone();
         let worker_handle_mailbox = handle.clone();
-        let worker_handle = Some(tokio::spawn(async move {
+        let mut worker_handle = Some(tokio::spawn(async move {
             run_manager_worker(worker_tag, manager, worker_handle_mailbox, shutdown_rx).await;
         }));
 
@@ -373,41 +373,62 @@ impl AddressListManagerRuntime {
         // Pruning is local-memory only. It never talks to RouterOS and exists
         // solely to keep the write-suppression cache bounded.
         let prune_handle = handle.clone();
-        let prune_task_id = Some(task_center::spawn_fixed(
+        let prune_task_handle = match task_center::spawn_fixed(
             format!("ros_address_list:{tag}:dynamic_cache_prune"),
             Duration::from_secs(DYNAMIC_CACHE_PRUNE_INTERVAL_SECS),
-            move || {
+            task_center::TaskOptions::default(),
+            move |_| {
                 let prune_handle = prune_handle.clone();
                 async move {
                     prune_handle.request_prune();
                 }
             },
-        ));
+        ) {
+            Ok(handle) => handle,
+            Err(error) => {
+                if let Some(worker) = worker_handle.take() {
+                    abort_and_reap(worker);
+                }
+                return Err(error);
+            }
+        };
 
         // Periodic reconciliation is only a persistent desired-set safety net.
         // Dynamic entries are maintained exclusively by DNS observations and
         // RouterOS native timeout.
-        let reconcile_task_id = has_persistent.then(|| {
+        let reconcile_task_handle = if has_persistent {
             let reconcile_handle = handle.clone();
-            task_center::spawn_fixed(
+            match task_center::spawn_fixed(
                 format!("ros_address_list:{tag}:reconcile"),
                 Duration::from_secs(RECONCILE_INTERVAL_SECS),
-                move || {
+                task_center::TaskOptions::default(),
+                move |_| {
                     let reconcile_handle = reconcile_handle.clone();
                     async move {
                         reconcile_handle.request_reconcile();
                     }
                 },
-            )
-        });
+            ) {
+                Ok(handle) => Some(handle),
+                Err(error) => {
+                    prune_task_handle.stop_detached();
+                    if let Some(worker) = worker_handle.take() {
+                        abort_and_reap(worker);
+                    }
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
 
-        Self {
+        Ok(Self {
             handle,
             shutdown_tx: Some(shutdown_tx),
             worker_handle,
-            prune_task_id,
-            reconcile_task_id,
-        }
+            prune_task_handle: Some(prune_task_handle),
+            reconcile_task_handle,
+        })
     }
 
     #[inline]
@@ -425,17 +446,20 @@ impl AddressListManagerRuntime {
         cleanup: bool,
         deadline: tokio::time::Instant,
     ) -> Result<()> {
-        let tasks = [self.prune_task_id.take(), self.reconcile_task_id.take()]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-        for (index, task) in tasks.iter().copied().enumerate() {
-            if tokio::time::timeout_at(deadline, task_center::stop_task(task))
+        let tasks = [
+            self.prune_task_handle.take(),
+            self.reconcile_task_handle.take(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        for (index, task) in tasks.iter().enumerate() {
+            if tokio::time::timeout_at(deadline, task.stop())
                 .await
                 .is_err()
             {
                 for remaining in &tasks[index..] {
-                    task_center::stop_task_detached(*remaining);
+                    remaining.stop_detached();
                 }
                 self.handle.close();
                 if let Some(worker) = self.worker_handle.take() {

@@ -115,8 +115,8 @@ aho-corasick = "1.1.4"
 prost = { version = "0.14", optional = true }
 regex = "1.12.2"
 
-# Executor plugin dependencies, each gated by its own feature.
-cronexpr = { version = "1.5.0", optional = true }
+# TaskCenter calendar scheduling and executor plugin dependencies.
+cronexpr = "1.5.0"
 fast-socks5 = "1.0.0"
 mikrotik-rs = { package = "oxidns-mikrotik-rs", version = "0.8.1", optional = true }
 rusqlite = { version = "0.40.1", features = ["bundled"], optional = true }
@@ -285,7 +285,7 @@ plugin-query-recorder = ["api", "_sequence-step-recording", "dep:rusqlite"]
 plugin-ipset = ["dep:ripset"]
 
 # `cron` executor (cron-expression scheduled triggers).
-plugin-cron = ["dep:cronexpr"]
+plugin-cron = []
 
 # `dynamic_domain_set` provider + `learn_domain` executor (runtime-writable
 # domain rule set with background-flush persistence and pipeline learning).

@@ -450,6 +450,7 @@ export const WEBUI = {
     runStarting: "webui.cron.runStarting",
     runStarted: "webui.cron.runStarted",
     runBusy: "webui.cron.runBusy",
+    runUnavailable: "webui.cron.runUnavailable",
     runFailed: "webui.cron.runFailed",
   },
   dynamicDomainSet: {

@@ -18,7 +18,6 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
 use futures::stream::{FuturesUnordered, StreamExt};
-#[cfg(feature = "plugin-cron")]
 use jiff::Timestamp;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -94,9 +93,11 @@ where
 }
 
 const MANUAL_TRIGGER_CAPACITY: usize = 16;
+const CRON_WALL_CLOCK_RECHECK_INTERVAL: Duration = Duration::from_secs(30);
 
 type TaskFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 type TaskFn = Arc<dyn Fn(TaskRunContext) -> TaskFuture + Send + Sync + 'static>;
+type WallClock = Arc<dyn Fn() -> i64 + Send + Sync + 'static>;
 pub(crate) type TaskEventHandler = Arc<dyn Fn(TaskEvent) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,7 +107,7 @@ pub(crate) enum TaskTriggerKind {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[cfg_attr(not(feature = "plugin-cron"), allow(dead_code))]
+#[allow(dead_code)] // All scheduling capabilities remain compiled even when no bundled plugin uses them.
 pub(crate) struct TaskRunContext {
     pub trigger: TaskTriggerKind,
     pub scheduled_at_unix_ms: i64,
@@ -124,27 +125,42 @@ pub(crate) enum TriggerOutcome {
     Unavailable,
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct TaskOptions {
+    on_event: Option<TaskEventHandler>,
+}
+
+impl TaskOptions {
+    #[allow(dead_code)] // Used by task owners that opt into scheduler events.
+    pub(crate) fn on_event(mut self, handler: TaskEventHandler) -> Self {
+        self.on_event = Some(handler);
+        self
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TaskDeadline {
     instant: Instant,
     unix_ms: i64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone)]
 struct TaskClock {
     base_instant: Instant,
     base_unix_ms: i64,
+    wall_clock: WallClock,
 }
 
 impl TaskClock {
-    fn new() -> Self {
+    fn new(wall_clock: WallClock) -> Self {
         Self {
             base_instant: Instant::now(),
             base_unix_ms: AppClock::now_timestamp().min(i64::MAX as u64) as i64,
+            wall_clock,
         }
     }
 
-    fn now(self) -> TaskDeadline {
+    fn monotonic_now(&self) -> TaskDeadline {
         let instant = Instant::now();
         let elapsed_ms = instant
             .duration_since(self.base_instant)
@@ -155,14 +171,38 @@ impl TaskClock {
             unix_ms: self.base_unix_ms.saturating_add(elapsed_ms),
         }
     }
+
+    fn wall_now(&self) -> TaskDeadline {
+        TaskDeadline {
+            instant: Instant::now(),
+            unix_ms: (self.wall_clock)(),
+        }
+    }
+
+    fn now_for(&self, schedule: &TaskSchedule) -> TaskDeadline {
+        if schedule.is_cron() {
+            self.wall_now()
+        } else {
+            self.monotonic_now()
+        }
+    }
+}
+
+impl std::fmt::Debug for TaskClock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskClock")
+            .field("base_instant", &self.base_instant)
+            .field("base_unix_ms", &self.base_unix_ms)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum TaskSchedule {
+#[allow(dead_code)] // Cron remains a core capability in bundles without the cron plugin.
+enum TaskSchedule {
     FixedInterval {
         interval: Duration,
     },
-    #[cfg(feature = "plugin-cron")]
     Cron {
         expression: String,
         timezone: String,
@@ -171,12 +211,12 @@ pub(crate) enum TaskSchedule {
 }
 
 impl TaskSchedule {
-    pub(crate) fn fixed(interval: Duration) -> Self {
+    fn fixed(interval: Duration) -> Self {
         Self::FixedInterval { interval }
     }
 
-    #[cfg(feature = "plugin-cron")]
-    pub(crate) fn cron(expression: &str, timezone: &str) -> DnsResult<Self> {
+    #[allow(dead_code)]
+    fn cron(expression: &str, timezone: &str) -> DnsResult<Self> {
         let expression = expression.trim();
         let timezone = timezone.trim();
         if expression.split_whitespace().count() != 5 {
@@ -213,18 +253,24 @@ impl TaskSchedule {
                         "fixed task interval must be greater than zero",
                     ));
                 }
-                let interval_ms = interval.as_millis().min(i64::MAX as u128) as i64;
-                let mut next = TaskDeadline {
-                    instant: previous.instant + *interval,
-                    unix_ms: previous.unix_ms.saturating_add(interval_ms),
-                };
-                while next.instant <= now.instant {
-                    next.instant += *interval;
-                    next.unix_ms = next.unix_ms.saturating_add(interval_ms);
-                }
-                Ok(Some(next))
+                let interval_ns = interval.as_nanos();
+                let elapsed_ns = now.instant.duration_since(previous.instant).as_nanos();
+                let steps = elapsed_ns / interval_ns + 1;
+                let remainder_ns = elapsed_ns % interval_ns;
+                let delay_ns = interval_ns - remainder_ns;
+                let delay = duration_from_nanos(delay_ns)?;
+                let instant = now.instant.checked_add(delay).ok_or_else(|| {
+                    DnsError::runtime("fixed task interval produced an invalid deadline")
+                })?;
+                let advance_ms = interval
+                    .as_millis()
+                    .saturating_mul(steps)
+                    .min(i64::MAX as u128) as i64;
+                Ok(Some(TaskDeadline {
+                    instant,
+                    unix_ms: previous.unix_ms.saturating_add(advance_ms),
+                }))
             }
-            #[cfg(feature = "plugin-cron")]
             Self::Cron {
                 expression,
                 timezone,
@@ -266,6 +312,59 @@ impl TaskSchedule {
     fn resets_after_manual_run(&self) -> bool {
         matches!(self, Self::FixedInterval { .. })
     }
+
+    fn is_cron(&self) -> bool {
+        matches!(self, Self::Cron { .. })
+    }
+
+    fn reanchor_cron_deadline(
+        &self,
+        deadline: TaskDeadline,
+        now: TaskDeadline,
+    ) -> DnsResult<TaskDeadline> {
+        let Self::Cron {
+            expression,
+            timezone,
+            ..
+        } = self
+        else {
+            return Ok(deadline);
+        };
+        let delta_ms = deadline.unix_ms.checked_sub(now.unix_ms).ok_or_else(|| {
+            DnsError::runtime(format!(
+                "cron schedule '{expression} {timezone}' produced an invalid wall-clock delta"
+            ))
+        })?;
+        let instant = if delta_ms <= 0 {
+            now.instant
+        } else {
+            now.instant
+                .checked_add(Duration::from_millis(delta_ms as u64))
+                .ok_or_else(|| {
+                    DnsError::runtime(format!(
+                        "cron schedule '{expression} {timezone}' produced an invalid deadline"
+                    ))
+                })?
+        };
+        Ok(TaskDeadline {
+            instant,
+            unix_ms: deadline.unix_ms,
+        })
+    }
+}
+
+fn duration_from_nanos(nanos: u128) -> DnsResult<Duration> {
+    const NANOS_PER_SECOND: u128 = 1_000_000_000;
+    let seconds = nanos / NANOS_PER_SECOND;
+    if seconds > u64::MAX as u128 {
+        return Err(DnsError::runtime(
+            "fixed task interval produced an invalid deadline",
+        ));
+    }
+    Ok(Duration::new(
+        seconds as u64,
+        (nanos % NANOS_PER_SECOND) as u32,
+    ))
 }
 
 enum Command {
@@ -277,7 +376,6 @@ enum Command {
         next_run: Option<TaskDeadline>,
         task: TaskFn,
         on_event: Option<TaskEventHandler>,
-        ack: Option<oneshot::Sender<()>>,
     },
     Remove {
         id: u64,
@@ -317,10 +415,10 @@ impl std::fmt::Debug for ScheduledTask {
 }
 
 /// Runtime-wide center for periodic background tasks.
-#[derive(Debug)]
 pub struct TaskCenter {
     next_id: AtomicU64,
     channels: StdMutex<TaskCenterChannels>,
+    wall_clock: WallClock,
 }
 
 #[derive(Debug, Clone)]
@@ -331,10 +429,15 @@ struct TaskCenterChannels {
 
 impl TaskCenter {
     fn new() -> Self {
+        Self::with_wall_clock(Arc::new(|| Timestamp::now().as_millisecond()))
+    }
+
+    fn with_wall_clock(wall_clock: WallClock) -> Self {
         AppClock::start();
         Self {
             next_id: AtomicU64::new(1),
             channels: StdMutex::new(Self::spawn_scheduler()),
+            wall_clock,
         }
     }
 
@@ -359,42 +462,47 @@ impl TaskCenter {
         channels.clone()
     }
 
-    /// Register a fixed-interval task into the global scheduler.
-    ///
-    /// The first run happens after one full interval, and missed ticks use
-    /// Skip behavior semantics (no burst catch-up).
-    pub fn spawn_fixed<F, Fut>(&self, name: impl Into<String>, interval: Duration, task: F) -> u64
+    fn spawn_fixed<F, Fut>(
+        &self,
+        name: impl Into<String>,
+        interval: Duration,
+        options: TaskOptions,
+        task: F,
+    ) -> DnsResult<ManagedTaskHandle>
     where
-        F: Fn() -> Fut + Send + Sync + 'static,
+        F: Fn(TaskRunContext) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let name = name.into();
-        let task: TaskFn = Arc::new(move |_| Box::pin(task()));
-        let clock = TaskClock::new();
-        let now = clock.now();
-        let schedule = TaskSchedule::fixed(interval);
-        let next_run = schedule.next_after(now, now).ok().flatten();
-        let channels = self.channels();
-        let _ = channels.control_tx.send(Command::Register {
-            id,
-            name,
-            clock,
-            schedule,
-            next_run,
-            task,
-            on_event: None,
-            ack: None,
-        });
-        id
+        if interval.is_zero() {
+            return Err(DnsError::runtime(
+                "fixed task interval must be greater than zero",
+            ));
+        }
+        self.spawn_inner(name, TaskSchedule::fixed(interval), options, task)
     }
 
-    #[cfg_attr(not(feature = "plugin-cron"), allow(dead_code))]
-    async fn register_scheduled<F, Fut>(
+    #[allow(dead_code)]
+    fn spawn_cron<F, Fut>(
+        &self,
+        name: impl Into<String>,
+        expression: &str,
+        timezone: &str,
+        options: TaskOptions,
+        task: F,
+    ) -> DnsResult<ManagedTaskHandle>
+    where
+        F: Fn(TaskRunContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let schedule = TaskSchedule::cron(expression, timezone)?;
+        self.spawn_inner(name, schedule, options, task)
+    }
+
+    fn spawn_inner<F, Fut>(
         &self,
         name: impl Into<String>,
         schedule: TaskSchedule,
-        on_event: Option<TaskEventHandler>,
+        options: TaskOptions,
         task: F,
     ) -> DnsResult<ManagedTaskHandle>
     where
@@ -403,28 +511,23 @@ impl TaskCenter {
     {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let name = name.into();
-        let clock = TaskClock::new();
-        let now = clock.now();
+        let clock = TaskClock::new(self.wall_clock.clone());
+        let now = clock.now_for(&schedule);
         let next_run = compute_next_deadline(&name, &schedule, now, now)?;
         let task: TaskFn = Arc::new(move |context| Box::pin(task(context)));
-        let (ack_tx, ack_rx) = oneshot::channel();
         let channels = self.channels();
-        channels
-            .control_tx
-            .send(Command::Register {
-                id,
-                name,
-                clock,
-                schedule,
-                next_run,
-                task,
-                on_event,
-                ack: Some(ack_tx),
-            })
-            .map_err(|_| DnsError::runtime("task center is not running"))?;
-        ack_rx
-            .await
-            .map_err(|_| DnsError::runtime("task center stopped during registration"))?;
+        let command = Command::Register {
+            id,
+            name,
+            clock,
+            schedule,
+            next_run,
+            task,
+            on_event: options.on_event,
+        };
+
+        let channels = self.send_registration(channels, command)?;
+
         Ok(ManagedTaskHandle {
             id,
             control_tx: channels.control_tx,
@@ -432,28 +535,23 @@ impl TaskCenter {
         })
     }
 
-    /// Stop a previously registered task.
-    pub async fn stop_task(&self, id: u64) {
-        let (ack_tx, ack_rx) = oneshot::channel();
-        if self
-            .channels()
-            .control_tx
-            .send(Command::Remove { id, ack: ack_tx })
-            .is_err()
-        {
-            return;
-        }
-        let _ = ack_rx.await;
-    }
-
-    /// Request task removal without waiting for acknowledgement.
-    ///
-    /// This is useful from synchronous drop paths where awaiting is impossible.
-    pub fn stop_task_detached(&self, id: u64) {
-        let _ = self
-            .channels()
-            .control_tx
-            .send(Command::RemoveDetached { id });
+    fn send_registration(
+        &self,
+        channels: TaskCenterChannels,
+        command: Command,
+    ) -> DnsResult<TaskCenterChannels> {
+        let channels = match channels.control_tx.send(command) {
+            Ok(()) => channels,
+            Err(error) => {
+                let retry_channels = self.channels();
+                retry_channels
+                    .control_tx
+                    .send(error.0)
+                    .map_err(|_| DnsError::runtime("task center is not running"))?;
+                retry_channels
+            }
+        };
+        Ok(channels)
     }
 
     /// Stop all managed tasks.
@@ -471,8 +569,17 @@ impl TaskCenter {
     }
 }
 
+impl std::fmt::Debug for TaskCenter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskCenter")
+            .field("next_id", &self.next_id)
+            .field("channels", &self.channels)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone)]
-#[cfg_attr(not(feature = "plugin-cron"), allow(dead_code))]
+#[allow(dead_code)] // Manual triggering is available even when no bundled caller exposes it.
 pub(crate) struct ManagedTaskHandle {
     id: u64,
     control_tx: mpsc::UnboundedSender<Command>,
@@ -488,7 +595,7 @@ impl std::fmt::Debug for ManagedTaskHandle {
 }
 
 impl ManagedTaskHandle {
-    #[cfg_attr(not(feature = "plugin-cron"), allow(dead_code))]
+    #[allow(dead_code)]
     pub(crate) async fn trigger(&self) -> TriggerOutcome {
         let (reply, response) = oneshot::channel();
         if self
@@ -501,7 +608,6 @@ impl ManagedTaskHandle {
         response.await.unwrap_or(TriggerOutcome::Unavailable)
     }
 
-    #[cfg_attr(not(feature = "plugin-cron"), allow(dead_code))]
     pub(crate) async fn stop(&self) {
         let (ack_tx, ack_rx) = oneshot::channel();
         if self
@@ -516,6 +622,12 @@ impl ManagedTaskHandle {
         }
         let _ = ack_rx.await;
     }
+
+    pub(crate) fn stop_detached(&self) {
+        let _ = self
+            .control_tx
+            .send(Command::RemoveDetached { id: self.id });
+    }
 }
 
 #[hotpath::measure]
@@ -525,19 +637,41 @@ async fn run_scheduler(
 ) {
     let mut tasks: HashMap<u64, ScheduledTask> = HashMap::new();
     let mut deadlines: BinaryHeap<Reverse<(Instant, u64)>> = BinaryHeap::new();
+    let mut cron_recheck_at = None;
 
     loop {
-        if let Some(next_deadline) = next_deadline(&tasks, &mut deadlines) {
+        let has_active_cron = tasks
+            .values()
+            .any(|task| task.schedule.is_cron() && task.next_run.is_some());
+        if has_active_cron {
+            cron_recheck_at
+                .get_or_insert_with(|| Instant::now() + CRON_WALL_CLOCK_RECHECK_INTERVAL);
+        } else {
+            cron_recheck_at = None;
+        }
+
+        let next_deadline = next_deadline(&tasks, &mut deadlines);
+        let next_wakeup = match (next_deadline, cron_recheck_at) {
+            (Some(deadline), Some(recheck)) => Some(deadline.min(recheck)),
+            (Some(deadline), None) => Some(deadline),
+            (None, Some(recheck)) => Some(recheck),
+            (None, None) => None,
+        };
+        if let Some(next_wakeup) = next_wakeup {
             tokio::select! {
                 biased;
                 command = control_rx.recv() => {
                     let Some(command) = command else {
                         break;
                     };
-                    handle_command(command, &mut tasks, &mut deadlines).await;
+                    handle_command(command, &mut tasks, &mut deadlines);
                 }
-                _ = sleep_until(next_deadline) => {
+                _ = sleep_until(next_wakeup) => {
+                    refresh_cron_deadlines(&mut tasks, &mut deadlines);
                     run_due_tasks(&mut tasks, &mut deadlines).await;
+                    cron_recheck_at = Some(
+                        Instant::now() + CRON_WALL_CLOCK_RECHECK_INTERVAL
+                    );
                 }
                 trigger = trigger_rx.recv() => {
                     if let Some(trigger) = trigger {
@@ -552,7 +686,7 @@ async fn run_scheduler(
                     let Some(command) = command else {
                         break;
                     };
-                    handle_command(command, &mut tasks, &mut deadlines).await;
+                    handle_command(command, &mut tasks, &mut deadlines);
                 }
                 trigger = trigger_rx.recv() => {
                     if let Some(trigger) = trigger {
@@ -572,7 +706,7 @@ async fn run_scheduler(
     stop_handles(running).await;
 }
 
-async fn handle_command(
+fn handle_command(
     cmd: Command,
     tasks: &mut HashMap<u64, ScheduledTask>,
     deadlines: &mut BinaryHeap<Reverse<(Instant, u64)>>,
@@ -586,7 +720,6 @@ async fn handle_command(
             next_run,
             task,
             on_event,
-            ack,
         } => {
             if let Some(next_run) = next_run {
                 deadlines.push(Reverse((next_run.instant, id)));
@@ -603,19 +736,23 @@ async fn handle_command(
                     running: None,
                 },
             );
-            if let Some(ack) = ack {
-                let _ = ack.send(());
-            }
         }
         Command::Remove { id, ack } => {
             if let Some(mut task) = tasks.remove(&id) {
-                stop_running_task(&mut task).await;
+                if let Some(handle) = task.running.take() {
+                    stop_handle_with_ack(task.name, handle, ack);
+                } else {
+                    let _ = ack.send(());
+                }
+            } else {
+                let _ = ack.send(());
             }
-            let _ = ack.send(());
         }
         Command::RemoveDetached { id } => {
-            if let Some(mut task) = tasks.remove(&id) {
-                stop_running_task(&mut task).await;
+            if let Some(mut task) = tasks.remove(&id)
+                && let Some(handle) = task.running.take()
+            {
+                stop_handle_detached(task.name, handle);
             }
         }
         Command::StopAll { ack } => {
@@ -626,8 +763,42 @@ async fn handle_command(
                 }
             }
             deadlines.clear();
-            stop_handles(running).await;
-            let _ = ack.send(());
+            stop_handles_with_ack(running, ack);
+        }
+    }
+}
+
+fn refresh_cron_deadlines(
+    tasks: &mut HashMap<u64, ScheduledTask>,
+    deadlines: &mut BinaryHeap<Reverse<(Instant, u64)>>,
+) {
+    for task in tasks.values_mut() {
+        if !task.schedule.is_cron() {
+            continue;
+        }
+        let Some(deadline) = task.next_run else {
+            continue;
+        };
+        let now = task.clock.wall_now();
+        match task.schedule.reanchor_cron_deadline(deadline, now) {
+            Ok(deadline) => {
+                task.next_run = Some(deadline);
+            }
+            Err(error) => {
+                task.next_run = None;
+                error!(
+                    task = %task.name,
+                    error = %error,
+                    "Failed to re-anchor cron task; automatic execution is paused"
+                );
+            }
+        }
+    }
+
+    deadlines.clear();
+    for (&id, task) in tasks.iter() {
+        if let Some(deadline) = task.next_run {
+            deadlines.push(Reverse((deadline.instant, id)));
         }
     }
 }
@@ -654,7 +825,7 @@ async fn run_due_tasks(
             let Some(scheduled_at) = task.next_run.take() else {
                 continue;
             };
-            let task_now = task.clock.now();
+            let task_now = task.clock.now_for(&task.schedule);
             task.next_run =
                 match compute_next_deadline(&task.name, &task.schedule, scheduled_at, task_now) {
                     Ok(next_run) => next_run,
@@ -746,7 +917,7 @@ async fn handle_trigger(
         return;
     }
 
-    let now = task.clock.now();
+    let now = task.clock.now_for(&task.schedule);
     if task.schedule.resets_after_manual_run() {
         match compute_next_deadline(&task.name, &task.schedule, now, now) {
             Ok(next_run) => {
@@ -844,10 +1015,35 @@ async fn await_finished_handle(name: String, handle: JoinHandle<()>) {
     }
 }
 
+#[cfg(test)]
 async fn stop_running_task(task: &mut ScheduledTask) {
     if let Some(handle) = task.running.take() {
         stop_handle(task.name.clone(), handle).await;
     }
+}
+
+fn stop_handle_with_ack(name: String, handle: JoinHandle<()>, ack: oneshot::Sender<()>) {
+    tokio::spawn(async move {
+        stop_handle(name, handle).await;
+        let _ = ack.send(());
+    });
+}
+
+fn stop_handle_detached(name: String, handle: JoinHandle<()>) {
+    tokio::spawn(async move {
+        stop_handle(name, handle).await;
+    });
+}
+
+fn stop_handles_with_ack(handles: Vec<(String, JoinHandle<()>)>, ack: oneshot::Sender<()>) {
+    if handles.is_empty() {
+        let _ = ack.send(());
+        return;
+    }
+    tokio::spawn(async move {
+        stop_handles(handles).await;
+        let _ = ack.send(());
+    });
 }
 
 async fn stop_handle(name: String, handle: JoinHandle<()>) {
@@ -878,42 +1074,37 @@ fn global_task_center() -> &'static TaskCenter {
     GLOBAL_TASK_CENTER.get_or_init(TaskCenter::new)
 }
 
-/// Register a fixed-interval task into the global runtime task center.
-#[inline]
-pub fn spawn_fixed<F, Fut>(name: impl Into<String>, interval: Duration, task: F) -> u64
-where
-    F: Fn() -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = ()> + Send + 'static,
-{
-    global_task_center().spawn_fixed(name, interval, task)
-}
-
-#[cfg_attr(not(feature = "plugin-cron"), allow(dead_code))]
-pub(crate) async fn register_scheduled<F, Fut>(
+pub(crate) fn spawn_fixed<F, Fut>(
     name: impl Into<String>,
-    schedule: TaskSchedule,
-    on_event: Option<TaskEventHandler>,
+    interval: Duration,
+    options: TaskOptions,
     task: F,
 ) -> DnsResult<ManagedTaskHandle>
 where
     F: Fn(TaskRunContext) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
-    global_task_center()
-        .register_scheduled(name, schedule, on_event, task)
-        .await
+    global_task_center().spawn_fixed(name, interval, options, task)
 }
 
-/// Stop a previously registered global task.
-#[inline]
-pub async fn stop_task(id: u64) {
-    global_task_center().stop_task(id).await;
+#[allow(dead_code)]
+pub(crate) fn spawn_cron<F, Fut>(
+    name: impl Into<String>,
+    expression: &str,
+    timezone: &str,
+    options: TaskOptions,
+    task: F,
+) -> DnsResult<ManagedTaskHandle>
+where
+    F: Fn(TaskRunContext) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    global_task_center().spawn_cron(name, expression, timezone, options, task)
 }
 
-/// Stop a previously registered global task from a synchronous path.
-#[inline]
-pub fn stop_task_detached(id: u64) {
-    global_task_center().stop_task_detached(id);
+#[allow(dead_code)]
+pub(crate) fn validate_cron(expression: &str, timezone: &str) -> DnsResult<()> {
+    TaskSchedule::cron(expression, timezone).map(drop)
 }
 
 /// Stop all tasks registered in the global runtime task center.
@@ -944,6 +1135,42 @@ mod tests {
     async fn flush_tasks() {
         for _ in 0..4 {
             tokio::task::yield_now().await;
+        }
+    }
+
+    fn advancing_wall_clock(base_unix_ms: i64) -> WallClock {
+        let base_instant = Instant::now();
+        Arc::new(move || {
+            let elapsed_ms = Instant::now()
+                .duration_since(base_instant)
+                .as_millis()
+                .min(i64::MAX as u128) as i64;
+            base_unix_ms.saturating_add(elapsed_ms)
+        })
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum TestScheduleKind {
+        Fixed,
+        Cron,
+    }
+
+    fn spawn_test_schedule<F, Fut>(
+        center: &TaskCenter,
+        kind: TestScheduleKind,
+        name: &str,
+        options: TaskOptions,
+        task: F,
+    ) -> DnsResult<ManagedTaskHandle>
+    where
+        F: Fn(TaskRunContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        match kind {
+            TestScheduleKind::Fixed => {
+                center.spawn_fixed(name, Duration::from_secs(60), options, task)
+            }
+            TestScheduleKind::Cron => center.spawn_cron(name, "* * * * *", "UTC", options, task),
         }
     }
 
@@ -989,38 +1216,94 @@ mod tests {
         let blocker = Arc::new(Notify::new());
         let blocker_task = blocker.clone();
 
-        let task_id = center.spawn_fixed("test", Duration::from_millis(10), move || {
-            let blocker_task = blocker_task.clone();
-            let release_flag = release_flag.clone();
-            let started_tx_task = started_tx_task.clone();
-            async move {
-                struct DropFlag(Arc<AtomicBool>);
-                impl Drop for DropFlag {
-                    fn drop(&mut self) {
-                        self.0.store(true, Ordering::Release);
-                    }
-                }
+        let handle = center
+            .spawn_fixed(
+                "test",
+                Duration::from_millis(10),
+                TaskOptions::default(),
+                move |_| {
+                    let blocker_task = blocker_task.clone();
+                    let release_flag = release_flag.clone();
+                    let started_tx_task = started_tx_task.clone();
+                    async move {
+                        struct DropFlag(Arc<AtomicBool>);
+                        impl Drop for DropFlag {
+                            fn drop(&mut self) {
+                                self.0.store(true, Ordering::Release);
+                            }
+                        }
 
-                let _drop_flag = DropFlag(release_flag);
-                if let Some(started_tx) = started_tx_task
-                    .lock()
-                    .expect("started_tx mutex poisoned")
-                    .take()
-                {
-                    let _ = started_tx.send(());
-                }
-                blocker_task.notified().await;
-            }
-        });
+                        let _drop_flag = DropFlag(release_flag);
+                        if let Some(started_tx) = started_tx_task
+                            .lock()
+                            .expect("started_tx mutex poisoned")
+                            .take()
+                        {
+                            let _ = started_tx.send(());
+                        }
+                        blocker_task.notified().await;
+                    }
+                },
+            )
+            .unwrap();
 
         started_rx.await.expect("task should start");
-        center.stop_task(task_id).await;
+        handle.stop().await;
 
         assert!(
             released.load(Ordering::Acquire),
             "running task should be aborted before stop_task returns"
         );
         blocker.notify_waiters();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn slow_task_abort_does_not_block_scheduler_actor() {
+        let center = Arc::new(TaskCenter::new());
+        let slow_started = Arc::new(Notify::new());
+        let slow_started_task = slow_started.clone();
+        let slow_handle = center
+            .spawn_fixed(
+                "slow-abort",
+                Duration::from_secs(60),
+                TaskOptions::default(),
+                move |_| {
+                    let slow_started_task = slow_started_task.clone();
+                    async move {
+                        slow_started_task.notify_one();
+                        std::thread::sleep(Duration::from_millis(300));
+                        std::future::pending::<()>().await;
+                    }
+                },
+            )
+            .unwrap();
+        let responsive_handle = center
+            .spawn_fixed(
+                "responsive",
+                Duration::from_secs(60),
+                TaskOptions::default(),
+                |_| async {},
+            )
+            .unwrap();
+
+        assert_eq!(slow_handle.trigger().await, TriggerOutcome::Started);
+        slow_started.notified().await;
+        let stop = tokio::spawn(async move {
+            slow_handle.stop().await;
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_millis(100), responsive_handle.trigger())
+                .await
+                .expect("another task should remain controllable while abort is reaped"),
+            TriggerOutcome::Started
+        );
+        tokio::time::timeout(Duration::from_secs(1), stop)
+            .await
+            .expect("slow task stop should eventually finish")
+            .expect("stop waiter should not panic");
+        responsive_handle.stop().await;
     }
 
     #[tokio::test(start_paused = true)]
@@ -1035,20 +1318,27 @@ mod tests {
         let running_task = running.clone();
         let started_task = started.clone();
 
-        let task_id = center.spawn_fixed("skip-test", Duration::from_millis(10), move || {
-            let blocker_task = blocker_task.clone();
-            let overlap_task = overlap_task.clone();
-            let running_task = running_task.clone();
-            let started_task = started_task.clone();
-            async move {
-                if running_task.fetch_add(1, Ordering::AcqRel) != 0 {
-                    overlap_task.store(true, Ordering::Release);
-                }
-                started_task.fetch_add(1, Ordering::AcqRel);
-                blocker_task.notified().await;
-                running_task.fetch_sub(1, Ordering::AcqRel);
-            }
-        });
+        let handle = center
+            .spawn_fixed(
+                "skip-test",
+                Duration::from_millis(10),
+                TaskOptions::default(),
+                move |_| {
+                    let blocker_task = blocker_task.clone();
+                    let overlap_task = overlap_task.clone();
+                    let running_task = running_task.clone();
+                    let started_task = started_task.clone();
+                    async move {
+                        if running_task.fetch_add(1, Ordering::AcqRel) != 0 {
+                            overlap_task.store(true, Ordering::Release);
+                        }
+                        started_task.fetch_add(1, Ordering::AcqRel);
+                        blocker_task.notified().await;
+                        running_task.fetch_sub(1, Ordering::AcqRel);
+                    }
+                },
+            )
+            .unwrap();
 
         flush_tasks().await;
         advance_and_flush(Duration::from_millis(10)).await;
@@ -1074,7 +1364,7 @@ mod tests {
         advance_and_flush(Duration::from_millis(10)).await;
         wait_until("second task start", || started.load(Ordering::Acquire) == 2).await;
 
-        center.stop_task(task_id).await;
+        handle.stop().await;
         assert!(
             !overlap.load(Ordering::Acquire),
             "stop_task should not introduce overlapping executions"
@@ -1095,40 +1385,54 @@ mod tests {
         let released_task_a = released_a.clone();
         let released_task_b = released_b.clone();
 
-        center.spawn_fixed("task-a", Duration::from_millis(10), move || {
-            let blocker_task_a = blocker_task_a.clone();
-            let started_task_a = started_task_a.clone();
-            let released_task_a = released_task_a.clone();
-            async move {
-                struct DropFlag(Arc<AtomicBool>);
-                impl Drop for DropFlag {
-                    fn drop(&mut self) {
-                        self.0.store(true, Ordering::Release);
-                    }
-                }
+        center
+            .spawn_fixed(
+                "task-a",
+                Duration::from_millis(10),
+                TaskOptions::default(),
+                move |_| {
+                    let blocker_task_a = blocker_task_a.clone();
+                    let started_task_a = started_task_a.clone();
+                    let released_task_a = released_task_a.clone();
+                    async move {
+                        struct DropFlag(Arc<AtomicBool>);
+                        impl Drop for DropFlag {
+                            fn drop(&mut self) {
+                                self.0.store(true, Ordering::Release);
+                            }
+                        }
 
-                let _drop_flag = DropFlag(released_task_a);
-                started_task_a.fetch_add(1, Ordering::AcqRel);
-                blocker_task_a.notified().await;
-            }
-        });
-        center.spawn_fixed("task-b", Duration::from_millis(10), move || {
-            let blocker_task_b = blocker_task_b.clone();
-            let started_task_b = started_task_b.clone();
-            let released_task_b = released_task_b.clone();
-            async move {
-                struct DropFlag(Arc<AtomicBool>);
-                impl Drop for DropFlag {
-                    fn drop(&mut self) {
-                        self.0.store(true, Ordering::Release);
+                        let _drop_flag = DropFlag(released_task_a);
+                        started_task_a.fetch_add(1, Ordering::AcqRel);
+                        blocker_task_a.notified().await;
                     }
-                }
+                },
+            )
+            .unwrap();
+        center
+            .spawn_fixed(
+                "task-b",
+                Duration::from_millis(10),
+                TaskOptions::default(),
+                move |_| {
+                    let blocker_task_b = blocker_task_b.clone();
+                    let started_task_b = started_task_b.clone();
+                    let released_task_b = released_task_b.clone();
+                    async move {
+                        struct DropFlag(Arc<AtomicBool>);
+                        impl Drop for DropFlag {
+                            fn drop(&mut self) {
+                                self.0.store(true, Ordering::Release);
+                            }
+                        }
 
-                let _drop_flag = DropFlag(released_task_b);
-                started_task_b.fetch_add(1, Ordering::AcqRel);
-                blocker_task_b.notified().await;
-            }
-        });
+                        let _drop_flag = DropFlag(released_task_b);
+                        started_task_b.fetch_add(1, Ordering::AcqRel);
+                        blocker_task_b.notified().await;
+                    }
+                },
+            )
+            .unwrap();
 
         flush_tasks().await;
         advance_and_flush(Duration::from_millis(10)).await;
@@ -1142,12 +1446,19 @@ mod tests {
 
         let rerun_count = Arc::new(AtomicUsize::new(0));
         let rerun_count_task = rerun_count.clone();
-        let rerun_id = center.spawn_fixed("task-c", Duration::from_millis(10), move || {
-            let rerun_count_task = rerun_count_task.clone();
-            async move {
-                rerun_count_task.fetch_add(1, Ordering::AcqRel);
-            }
-        });
+        let rerun_handle = center
+            .spawn_fixed(
+                "task-c",
+                Duration::from_millis(10),
+                TaskOptions::default(),
+                move |_| {
+                    let rerun_count_task = rerun_count_task.clone();
+                    async move {
+                        rerun_count_task.fetch_add(1, Ordering::AcqRel);
+                    }
+                },
+            )
+            .unwrap();
 
         flush_tasks().await;
         advance_and_flush(Duration::from_millis(10)).await;
@@ -1155,30 +1466,44 @@ mod tests {
             rerun_count.load(Ordering::Acquire) == 1
         })
         .await;
-        center.stop_task(rerun_id).await;
+        rerun_handle.stop().await;
         blocker.notify_waiters();
     }
 
     #[tokio::test(start_paused = true)]
-    async fn stop_task_detached_removes_only_target_task() {
+    async fn handle_stop_detached_removes_only_target_task() {
         let center = TaskCenter::new();
         let stopped_count = Arc::new(AtomicUsize::new(0));
         let kept_count = Arc::new(AtomicUsize::new(0));
         let stopped_count_task = stopped_count.clone();
         let kept_count_task = kept_count.clone();
 
-        let stopped_id = center.spawn_fixed("stopped", Duration::from_millis(10), move || {
-            let stopped_count_task = stopped_count_task.clone();
-            async move {
-                stopped_count_task.fetch_add(1, Ordering::AcqRel);
-            }
-        });
-        let kept_id = center.spawn_fixed("kept", Duration::from_millis(10), move || {
-            let kept_count_task = kept_count_task.clone();
-            async move {
-                kept_count_task.fetch_add(1, Ordering::AcqRel);
-            }
-        });
+        let stopped_handle = center
+            .spawn_fixed(
+                "stopped",
+                Duration::from_millis(10),
+                TaskOptions::default(),
+                move |_| {
+                    let stopped_count_task = stopped_count_task.clone();
+                    async move {
+                        stopped_count_task.fetch_add(1, Ordering::AcqRel);
+                    }
+                },
+            )
+            .unwrap();
+        let kept_handle = center
+            .spawn_fixed(
+                "kept",
+                Duration::from_millis(10),
+                TaskOptions::default(),
+                move |_| {
+                    let kept_count_task = kept_count_task.clone();
+                    async move {
+                        kept_count_task.fetch_add(1, Ordering::AcqRel);
+                    }
+                },
+            )
+            .unwrap();
 
         flush_tasks().await;
         advance_and_flush(Duration::from_millis(10)).await;
@@ -1187,7 +1512,7 @@ mod tests {
         })
         .await;
 
-        center.stop_task_detached(stopped_id);
+        stopped_handle.stop_detached();
         flush_tasks().await;
         for expected in 2..=4 {
             advance_and_flush(Duration::from_millis(10)).await;
@@ -1202,7 +1527,7 @@ mod tests {
             );
         }
 
-        center.stop_task(kept_id).await;
+        kept_handle.stop().await;
     }
 
     #[tokio::test(start_paused = true)]
@@ -1211,15 +1536,21 @@ mod tests {
         let started = Arc::new(AtomicUsize::new(0));
         let started_task = started.clone();
 
-        let task_id = center.spawn_fixed("pending", Duration::from_millis(10), move || {
-            let started_task = started_task.clone();
-            async move {
-                started_task.fetch_add(1, Ordering::AcqRel);
-            }
-        });
+        let handle = center
+            .spawn_fixed(
+                "pending",
+                Duration::from_millis(10),
+                TaskOptions::default(),
+                move |_| {
+                    let started_task = started_task.clone();
+                    async move {
+                        started_task.fetch_add(1, Ordering::AcqRel);
+                    }
+                },
+            )
+            .unwrap();
 
-        flush_tasks().await;
-        center.stop_task(task_id).await;
+        handle.stop().await;
         advance_and_flush(Duration::from_millis(100)).await;
 
         assert_eq!(
@@ -1237,17 +1568,24 @@ mod tests {
         let attempts_task = attempts.clone();
         let successes_task = successes.clone();
 
-        let task_id = center.spawn_fixed("panic-once", Duration::from_millis(10), move || {
-            let attempts_task = attempts_task.clone();
-            let successes_task = successes_task.clone();
-            async move {
-                let attempt = attempts_task.fetch_add(1, Ordering::AcqRel) + 1;
-                if attempt == 1 {
-                    panic!("intentional panic for scheduler recovery test");
-                }
-                successes_task.fetch_add(1, Ordering::AcqRel);
-            }
-        });
+        let handle = center
+            .spawn_fixed(
+                "panic-once",
+                Duration::from_millis(10),
+                TaskOptions::default(),
+                move |_| {
+                    let attempts_task = attempts_task.clone();
+                    let successes_task = successes_task.clone();
+                    async move {
+                        let attempt = attempts_task.fetch_add(1, Ordering::AcqRel) + 1;
+                        if attempt == 1 {
+                            panic!("intentional panic for scheduler recovery test");
+                        }
+                        successes_task.fetch_add(1, Ordering::AcqRel);
+                    }
+                },
+            )
+            .unwrap();
 
         flush_tasks().await;
         advance_and_flush(Duration::from_millis(10)).await;
@@ -1266,7 +1604,7 @@ mod tests {
         })
         .await;
 
-        center.stop_task(task_id).await;
+        handle.stop().await;
     }
 
     #[tokio::test(start_paused = true)]
@@ -1288,10 +1626,10 @@ mod tests {
         });
 
         let handle = center
-            .register_scheduled(
+            .spawn_fixed(
                 "managed-manual",
-                TaskSchedule::fixed(Duration::from_secs(60)),
-                Some(on_event),
+                Duration::from_secs(60),
+                TaskOptions::default().on_event(on_event),
                 move |context| {
                     let started_task = started_task.clone();
                     let blocker_task = blocker_task.clone();
@@ -1312,7 +1650,6 @@ mod tests {
                     }
                 },
             )
-            .await
             .unwrap();
 
         assert_eq!(handle.trigger().await, TriggerOutcome::Started);
@@ -1350,10 +1687,10 @@ mod tests {
         let runs_task = runs.clone();
         let triggers_task = triggers.clone();
         let handle = center
-            .register_scheduled(
+            .spawn_fixed(
                 "manual-reset",
-                TaskSchedule::fixed(Duration::from_secs(10)),
-                None,
+                Duration::from_secs(10),
+                TaskOptions::default(),
                 move |context| {
                     let runs_task = runs_task.clone();
                     let triggers_task = triggers_task.clone();
@@ -1363,7 +1700,6 @@ mod tests {
                     }
                 },
             )
-            .await
             .unwrap();
 
         advance_and_flush(Duration::from_secs(5)).await;
@@ -1389,7 +1725,6 @@ mod tests {
         handle.stop().await;
     }
 
-    #[cfg(feature = "plugin-cron")]
     #[test]
     fn cron_schedule_computes_timezone_aware_future_deadlines() {
         let instant = Instant::now();
@@ -1408,7 +1743,6 @@ mod tests {
         assert!(!utc.resets_after_manual_run());
     }
 
-    #[cfg(feature = "plugin-cron")]
     #[test]
     fn cron_schedule_handles_day_boundaries_and_dst_gaps() {
         fn deadline(timestamp: &str, instant: Instant) -> TaskDeadline {
@@ -1442,12 +1776,270 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "plugin-cron")]
+    #[test]
+    fn fixed_schedule_skips_large_missed_window_without_tick_iteration() {
+        let instant = Instant::now();
+        let previous = TaskDeadline {
+            instant,
+            unix_ms: 0,
+        };
+        let now = TaskDeadline {
+            instant: instant + Duration::from_secs(10_000),
+            unix_ms: 10_000_000,
+        };
+        let next = TaskSchedule::fixed(Duration::from_nanos(1))
+            .next_after(previous, now)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(next.instant, now.instant + Duration::from_nanos(1));
+        assert!(next.instant > now.instant);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cron_deadline_reanchors_after_wall_clock_jumps() {
+        let wall_unix_ms = Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let wall_clock_value = wall_unix_ms.clone();
+        let center =
+            TaskCenter::with_wall_clock(Arc::new(move || wall_clock_value.load(Ordering::Acquire)));
+        let contexts = Arc::new(Mutex::new(Vec::new()));
+        let contexts_task = contexts.clone();
+        let handle = center
+            .spawn_cron(
+                "wall-clock-jump",
+                "* * * * *",
+                "UTC",
+                TaskOptions::default(),
+                move |context| {
+                    let contexts_task = contexts_task.clone();
+                    async move {
+                        contexts_task.lock().unwrap().push(context);
+                    }
+                },
+            )
+            .unwrap();
+
+        wall_unix_ms.store(-60_000, Ordering::Release);
+        advance_and_flush(Duration::from_secs(60)).await;
+        assert!(
+            contexts.lock().unwrap().is_empty(),
+            "a backward wall-clock jump must postpone the calendar deadline"
+        );
+
+        wall_unix_ms.store(120_000, Ordering::Release);
+        advance_and_flush(CRON_WALL_CLOCK_RECHECK_INTERVAL).await;
+        wait_until("forward wall-clock jump", || {
+            contexts.lock().unwrap().len() == 1
+        })
+        .await;
+        let context = contexts.lock().unwrap()[0];
+        assert_eq!(context.trigger, TaskTriggerKind::Scheduled);
+        assert_eq!(context.scheduled_at_unix_ms, 60_000);
+        handle.stop().await;
+    }
+
+    #[test]
+    fn cron_reanchor_rebuilds_deadline_heap_without_stale_growth() {
+        AppClock::start();
+        let clock = TaskClock::new(Arc::new(|| 0));
+        let schedule = TaskSchedule::cron("* * * * *", "UTC").unwrap();
+        let now = clock.now_for(&schedule);
+        let next_run = schedule.next_after(now, now).unwrap();
+        let task: TaskFn = Arc::new(|_| Box::pin(async {}));
+        let mut tasks = HashMap::from([(
+            1,
+            ScheduledTask {
+                name: "bounded-cron-heap".to_string(),
+                clock,
+                schedule,
+                next_run,
+                task,
+                on_event: None,
+                running: None,
+            },
+        )]);
+        let mut deadlines = BinaryHeap::new();
+        deadlines.push(Reverse((next_run.unwrap().instant, 1)));
+
+        for _ in 0..1_000 {
+            refresh_cron_deadlines(&mut tasks, &mut deadlines);
+        }
+
+        assert_eq!(deadlines.len(), 1);
+        assert_eq!(
+            next_deadline(&tasks, &mut deadlines),
+            tasks[&1].next_run.map(|d| d.instant)
+        );
+    }
+
+    #[tokio::test]
+    async fn fixed_and_cron_share_managed_lifecycle_capabilities() {
+        for kind in [TestScheduleKind::Fixed, TestScheduleKind::Cron] {
+            let center = TaskCenter::with_wall_clock(Arc::new(|| 0));
+            let started = Arc::new(Notify::new());
+            let blocker = Arc::new(Notify::new());
+            let skipped = Arc::new(AtomicUsize::new(0));
+            let started_task = started.clone();
+            let blocker_task = blocker.clone();
+            let skipped_event = skipped.clone();
+            let handle = spawn_test_schedule(
+                &center,
+                kind,
+                "symmetric-running",
+                TaskOptions::default().on_event(Arc::new(move |_| {
+                    skipped_event.fetch_add(1, Ordering::Relaxed);
+                })),
+                move |context| {
+                    let started_task = started_task.clone();
+                    let blocker_task = blocker_task.clone();
+                    async move {
+                        assert_eq!(context.trigger, TaskTriggerKind::Manual);
+                        started_task.notify_one();
+                        blocker_task.notified().await;
+                    }
+                },
+            )
+            .unwrap();
+
+            assert_eq!(handle.trigger().await, TriggerOutcome::Started, "{kind:?}");
+            started.notified().await;
+            assert_eq!(
+                handle.trigger().await,
+                TriggerOutcome::AlreadyRunning,
+                "{kind:?}"
+            );
+            assert_eq!(skipped.load(Ordering::Relaxed), 1, "{kind:?}");
+            handle.stop().await;
+            assert_eq!(
+                handle.trigger().await,
+                TriggerOutcome::Unavailable,
+                "{kind:?}"
+            );
+            blocker.notify_waiters();
+
+            let detached = spawn_test_schedule(
+                &center,
+                kind,
+                "symmetric-detached",
+                TaskOptions::default(),
+                |_| async {},
+            )
+            .unwrap();
+            detached.stop_detached();
+            flush_tasks().await;
+            assert_eq!(
+                detached.trigger().await,
+                TriggerOutcome::Unavailable,
+                "{kind:?}"
+            );
+
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let attempts_task = attempts.clone();
+            let panic_handle = spawn_test_schedule(
+                &center,
+                kind,
+                "symmetric-panic",
+                TaskOptions::default(),
+                move |_| {
+                    let attempts_task = attempts_task.clone();
+                    async move {
+                        if attempts_task.fetch_add(1, Ordering::AcqRel) == 0 {
+                            panic!("intentional symmetric task panic");
+                        }
+                    }
+                },
+            )
+            .unwrap();
+            assert_eq!(panic_handle.trigger().await, TriggerOutcome::Started);
+            wait_until("first symmetric panic attempt", || {
+                attempts.load(Ordering::Acquire) == 1
+            })
+            .await;
+            assert_eq!(panic_handle.trigger().await, TriggerOutcome::Started);
+            wait_until("second symmetric panic attempt", || {
+                attempts.load(Ordering::Acquire) == 2
+            })
+            .await;
+            panic_handle.stop().await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cron_entrypoint_supports_manual_and_scheduled_contexts() {
+        let center = TaskCenter::with_wall_clock(advancing_wall_clock(0));
+        let contexts = Arc::new(Mutex::new(Vec::new()));
+        let contexts_task = contexts.clone();
+        let handle = center
+            .spawn_cron(
+                "cron-context",
+                "* * * * *",
+                "UTC",
+                TaskOptions::default(),
+                move |context| {
+                    let contexts_task = contexts_task.clone();
+                    async move {
+                        contexts_task.lock().unwrap().push(context);
+                    }
+                },
+            )
+            .unwrap();
+
+        assert_eq!(handle.trigger().await, TriggerOutcome::Started);
+        wait_until("manual cron run", || !contexts.lock().unwrap().is_empty()).await;
+        advance_and_flush(Duration::from_secs(61)).await;
+        wait_until("scheduled cron run", || contexts.lock().unwrap().len() >= 2).await;
+
+        let triggers = contexts
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|context| context.trigger)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            triggers,
+            [TaskTriggerKind::Manual, TaskTriggerKind::Scheduled]
+        );
+        handle.stop().await;
+        assert_eq!(handle.trigger().await, TriggerOutcome::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn spawn_entrypoints_validate_schedule_inputs() {
+        let center = TaskCenter::new();
+        assert!(
+            center
+                .spawn_fixed("zero", Duration::ZERO, TaskOptions::default(), |_| async {},)
+                .is_err()
+        );
+        assert!(
+            center
+                .spawn_cron(
+                    "invalid-cron",
+                    "0 0 * * * *",
+                    "UTC",
+                    TaskOptions::default(),
+                    |_| async {},
+                )
+                .is_err()
+        );
+        assert!(
+            center
+                .spawn_cron(
+                    "invalid-timezone",
+                    "0 0 * * *",
+                    "Not/AZone",
+                    TaskOptions::default(),
+                    |_| async {},
+                )
+                .is_err()
+        );
+    }
+
     #[tokio::test]
     async fn manual_trigger_preserves_existing_cron_deadline() {
         let schedule = TaskSchedule::cron("0 * * * *", "UTC").unwrap();
-        let clock = TaskClock::new();
-        let now = clock.now();
+        let clock = TaskClock::new(advancing_wall_clock(0));
+        let now = clock.now_for(&schedule);
         let next_run = schedule.next_after(now, now).unwrap();
         let task: TaskFn = Arc::new(|_| Box::pin(async {}));
         let mut tasks = HashMap::from([(
@@ -1495,6 +2087,42 @@ mod tests {
             .expect("queued trigger should remain");
     }
 
+    #[tokio::test]
+    async fn registration_retries_once_after_channel_close_race() {
+        let center = TaskCenter::new();
+        let (control_tx, control_rx) = mpsc::unbounded_channel();
+        let (trigger_tx, _trigger_rx) = mpsc::channel(1);
+        let channels = TaskCenterChannels {
+            control_tx,
+            trigger_tx,
+        };
+        *center.channels.lock().unwrap() = channels.clone();
+
+        let clock = TaskClock::new(advancing_wall_clock(0));
+        let now = clock.monotonic_now();
+        let schedule = TaskSchedule::fixed(Duration::from_secs(60));
+        let task: TaskFn = Arc::new(|_| Box::pin(async {}));
+        let command = Command::Register {
+            id: 1,
+            name: "retry-registration".to_string(),
+            clock,
+            next_run: schedule.next_after(now, now).unwrap(),
+            schedule,
+            task,
+            on_event: None,
+        };
+        drop(control_rx);
+
+        let retry_channels = center.send_registration(channels, command).unwrap();
+        let handle = ManagedTaskHandle {
+            id: 1,
+            control_tx: retry_channels.control_tx,
+            trigger_tx: retry_channels.trigger_tx,
+        };
+        assert_eq!(handle.trigger().await, TriggerOutcome::Started);
+        handle.stop().await;
+    }
+
     #[test]
     fn task_center_restarts_scheduler_after_runtime_replacement() {
         let first_runtime = tokio::runtime::Runtime::new().unwrap();
@@ -1506,10 +2134,10 @@ mod tests {
             let runs = Arc::new(AtomicUsize::new(0));
             let runs_task = runs.clone();
             let handle = center
-                .register_scheduled(
+                .spawn_fixed(
                     "runtime-replacement",
-                    TaskSchedule::fixed(Duration::from_secs(60)),
-                    None,
+                    Duration::from_secs(60),
+                    TaskOptions::default(),
                     move |_| {
                         let runs_task = runs_task.clone();
                         async move {
@@ -1517,7 +2145,6 @@ mod tests {
                         }
                     },
                 )
-                .await
                 .unwrap();
 
             assert_eq!(handle.trigger().await, TriggerOutcome::Started);

@@ -35,8 +35,8 @@ use crate::infra::observability::metrics::{
 };
 use crate::infra::system::{parse_simple_duration, system_timezone_name};
 use crate::infra::task::{
-    self as task_center, ManagedTaskHandle, TaskEvent, TaskEventHandler, TaskRunContext,
-    TaskSchedule, TaskTriggerKind,
+    self as task_center, ManagedTaskHandle, TaskEvent, TaskEventHandler, TaskOptions,
+    TaskRunContext, TaskTriggerKind,
 };
 use crate::plugin::dependency::DependencySpec;
 use crate::plugin::executor::{ExecStep, Executor};
@@ -80,9 +80,18 @@ enum ExecutorRef {
 #[derive(Debug, Clone)]
 struct PreparedJob {
     name: String,
-    schedule: TaskSchedule,
+    schedule: PreparedSchedule,
     scheduled_trigger_kind: &'static str,
     executors: Vec<Arc<dyn Executor>>,
+}
+
+#[derive(Debug, Clone)]
+enum PreparedSchedule {
+    Fixed(Duration),
+    Cron {
+        expression: String,
+        timezone: String,
+    },
 }
 
 #[derive(Debug)]
@@ -199,34 +208,38 @@ impl Plugin for CronExecutor {
                 }
             });
 
-            let handle = match task_center::register_scheduled(
-                task_name,
-                job.schedule,
-                Some(on_event),
-                move |context: TaskRunContext| {
-                    let plugin_tag = run_plugin_tag.clone();
-                    let job_name = run_job_name.clone();
-                    let executors = run_executors.clone();
-                    let metrics = run_metrics.clone();
-                    async move {
-                        let trigger_kind = match context.trigger {
-                            TaskTriggerKind::Scheduled => scheduled_trigger_kind,
-                            TaskTriggerKind::Manual => "manual",
-                        };
-                        run_job(
-                            plugin_tag,
-                            job_name,
-                            trigger_kind.to_string(),
-                            context.scheduled_at_unix_ms,
-                            executors,
-                            metrics,
-                        )
-                        .await;
-                    }
-                },
-            )
-            .await
-            {
+            let options = TaskOptions::default().on_event(on_event);
+            let run = move |context: TaskRunContext| {
+                let plugin_tag = run_plugin_tag.clone();
+                let job_name = run_job_name.clone();
+                let executors = run_executors.clone();
+                let metrics = run_metrics.clone();
+                async move {
+                    let trigger_kind = match context.trigger {
+                        TaskTriggerKind::Scheduled => scheduled_trigger_kind,
+                        TaskTriggerKind::Manual => "manual",
+                    };
+                    run_job(
+                        plugin_tag,
+                        job_name,
+                        trigger_kind.to_string(),
+                        context.scheduled_at_unix_ms,
+                        executors,
+                        metrics,
+                    )
+                    .await;
+                }
+            };
+            let handle = match job.schedule {
+                PreparedSchedule::Fixed(interval) => {
+                    task_center::spawn_fixed(task_name, interval, options, run)
+                }
+                PreparedSchedule::Cron {
+                    expression,
+                    timezone,
+                } => task_center::spawn_cron(task_name, &expression, &timezone, options, run),
+            };
+            let handle = match handle {
                 Ok(handle) => handle,
                 Err(error) => {
                     stop_registered_tasks(&task_handles).await;
@@ -483,7 +496,7 @@ fn validate_config(plugin_config: &PluginConfig, config: &CronConfig) -> Result<
 fn parse_job_trigger_with_timezone(
     job: &JobConfig,
     timezone_name: &str,
-) -> Result<(TaskSchedule, &'static str)> {
+) -> Result<(PreparedSchedule, &'static str)> {
     let has_schedule = job.schedule.as_ref().is_some_and(|v| !v.trim().is_empty());
     let has_interval = job.interval.as_ref().is_some_and(|v| !v.trim().is_empty());
 
@@ -514,20 +527,27 @@ fn parse_job_trigger_with_timezone(
             )));
         }
 
-        let task_schedule = TaskSchedule::cron(schedule, timezone_name).map_err(|e| {
+        task_center::validate_cron(schedule, timezone_name).map_err(|error| {
             DnsError::plugin(format!(
                 "failed to parse cron schedule for job '{}': {}",
-                job.name, e
+                job.name, error
             ))
         })?;
-        return Ok((task_schedule, "schedule"));
+
+        return Ok((
+            PreparedSchedule::Cron {
+                expression: schedule.to_string(),
+                timezone: timezone_name.to_string(),
+            },
+            "schedule",
+        ));
     }
 
     let interval = parse_interval(
         job.name.as_str(),
         job.interval.as_deref().unwrap_or_default(),
     )?;
-    Ok((TaskSchedule::fixed(interval), "interval"))
+    Ok((PreparedSchedule::Fixed(interval), "interval"))
 }
 
 fn parse_executor_ref(raw: &str) -> Result<ExecutorRef> {
@@ -870,8 +890,8 @@ jobs:
         let trigger =
             parse_job_trigger_with_timezone(&job, "Asia/Shanghai").expect("timezone should work");
         match trigger.0 {
-            TaskSchedule::Cron { timezone, .. } => assert_eq!(timezone, "Asia/Shanghai"),
-            TaskSchedule::FixedInterval { .. } => panic!("expected cron trigger"),
+            PreparedSchedule::Cron { timezone, .. } => assert_eq!(timezone, "Asia/Shanghai"),
+            PreparedSchedule::Fixed(_) => panic!("expected cron trigger"),
         }
         assert_eq!(trigger.1, "schedule");
     }
@@ -923,10 +943,10 @@ jobs:
         let started = Arc::new(Notify::new());
         let started_task = started.clone();
         let task_log = log.clone();
-        let handle = task_center::register_scheduled(
+        let handle = task_center::spawn_fixed(
             "cron-destroy-order",
-            TaskSchedule::fixed(Duration::from_secs(60)),
-            None,
+            Duration::from_secs(60),
+            TaskOptions::default(),
             move |_| {
                 let started_task = started_task.clone();
                 let task_log = task_log.clone();
@@ -945,7 +965,6 @@ jobs:
                 }
             },
         )
-        .await
         .unwrap();
         assert_eq!(handle.trigger().await, task_center::TriggerOutcome::Started);
         started.notified().await;

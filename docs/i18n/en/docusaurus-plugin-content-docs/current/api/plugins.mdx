@@ -59,7 +59,7 @@ Responses:
 * `409 Conflict`
   * The same job already has an active run. The request returns `cron_job_already_running` and is not queued.
 * `503 Service Unavailable`
-  * The cron scheduler is stopping or unavailable.
+  * The manual-trigger queue is full, TaskCenter is stopping, or the task handle is unavailable.
 
 The WebUI shows **Run now** for every job in the detail view of an applied cron plugin. The action is hidden while editing unsaved configuration so a name that has not been applied cannot target the old runtime.
 

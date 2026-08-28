@@ -406,6 +406,7 @@ plugins:
   - 仅支持 `minute hour day month day-of-week`。
   - 不支持秒级 cron。
   - 按 `args.timezone` 或系统本地时区计算下一次触发时间。
+  - TaskCenter 会重新校准系统墙钟；NTP 同步或手动校时会影响后续触发时间。
 
 #### `args.jobs[].interval`
 
@@ -418,6 +419,7 @@ plugins:
 - 运行影响：
   - 最小粒度为 `1m`。
   - 启动后会等待一个完整间隔再首次触发。
+  - 固定间隔使用单调时间，不受系统墙钟调整影响。
 
 #### `args.jobs[].executors`
 

@@ -96,7 +96,7 @@ impl Plugin for MikrotikExecutor {
         };
 
         register_metric_source(self.metrics.clone())?;
-        let runtime = AddressListManagerRuntime::start(self.tag.clone(), manager);
+        let runtime = AddressListManagerRuntime::start(self.tag.clone(), manager)?;
         let manager_handle = runtime.handle();
         let mut runtime = Some(runtime);
         if let Ok(mut slot) = self.runtime.lock() {
@@ -1286,7 +1286,8 @@ persistent:
             "oxidns_ipv4".to_string(),
         ));
         let manager = AddressListManager::new(api.clone(), cfg);
-        let runtime = AddressListManagerRuntime::start("startup-reconcile".to_string(), manager);
+        let runtime =
+            AddressListManagerRuntime::start("startup-reconcile".to_string(), manager).unwrap();
 
         tokio::time::timeout(Duration::from_millis(500), async {
             while api.entry_count() == 0 {

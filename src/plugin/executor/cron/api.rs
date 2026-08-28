@@ -140,7 +140,7 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::*;
-    use crate::infra::task::{TaskSchedule, register_scheduled};
+    use crate::infra::task::{TaskOptions, spawn_fixed};
 
     async fn run_handler(handle: ManagedTaskHandle) -> crate::api::ApiResponse {
         let handler = CronJobRunHandler {
@@ -160,13 +160,12 @@ mod tests {
 
     #[tokio::test]
     async fn manual_run_handler_returns_accepted_for_started_job() {
-        let handle = register_scheduled(
+        let handle = spawn_fixed(
             "cron-api-started",
-            TaskSchedule::fixed(Duration::from_secs(3600)),
-            None,
+            Duration::from_secs(3600),
+            TaskOptions::default(),
             |_| async {},
         )
-        .await
         .unwrap();
         let response = run_handler(handle.clone()).await;
         assert_eq!(response.status(), StatusCode::ACCEPTED);
@@ -189,10 +188,10 @@ mod tests {
         let blocker = Arc::new(Notify::new());
         let started_task = started.clone();
         let blocker_task = blocker.clone();
-        let handle = register_scheduled(
+        let handle = spawn_fixed(
             "cron-api-busy",
-            TaskSchedule::fixed(Duration::from_secs(3600)),
-            None,
+            Duration::from_secs(3600),
+            TaskOptions::default(),
             move |_| {
                 let started_task = started_task.clone();
                 let blocker_task = blocker_task.clone();
@@ -202,7 +201,6 @@ mod tests {
                 }
             },
         )
-        .await
         .unwrap();
         assert_eq!(handle.trigger().await, TriggerOutcome::Started);
         started.notified().await;
@@ -215,13 +213,12 @@ mod tests {
 
     #[tokio::test]
     async fn manual_run_handler_returns_unavailable_for_stopped_job() {
-        let handle = register_scheduled(
+        let handle = spawn_fixed(
             "cron-api-stopped",
-            TaskSchedule::fixed(Duration::from_secs(3600)),
-            None,
+            Duration::from_secs(3600),
+            TaskOptions::default(),
             |_| async {},
         )
-        .await
         .unwrap();
         handle.stop().await;
         let response = run_handler(handle).await;

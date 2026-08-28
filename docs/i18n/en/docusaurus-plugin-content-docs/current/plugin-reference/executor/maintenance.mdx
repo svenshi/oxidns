@@ -404,6 +404,7 @@ Schedules a list of executors in the background. It does not participate in the 
   - Only `minute hour day month day-of-week` is supported.
   - Second-level cron expressions are not supported.
   - Next runs are computed in `args.timezone` or the system local time zone.
+  - TaskCenter re-anchors deadlines to the system wall clock, so NTP or manual clock adjustments affect future runs.
 
 #### `args.jobs[].interval`
 
@@ -416,6 +417,7 @@ Schedules a list of executors in the background. It does not participate in the 
 - Runtime impact:
   - Minimum interval is `1m`.
   - The first run happens after one full interval elapses.
+  - Fixed intervals use monotonic time and are not affected by wall-clock adjustments.
 
 #### `args.jobs[].executors`
 

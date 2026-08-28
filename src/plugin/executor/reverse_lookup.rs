@@ -130,7 +130,7 @@ struct ReverseLookup {
     ttl: u32,
     handle_ptr: bool,
     cleanup_started: AtomicBool,
-    cleanup_task_id: Option<u64>,
+    cleanup_task_handle: Option<task_center::ManagedTaskHandle>,
     metrics: Arc<ReverseLookupMetrics>,
 }
 
@@ -150,39 +150,49 @@ impl Plugin for ReverseLookup {
 
         let cache = self.cache.clone();
         let size = self.size;
-        self.cleanup_task_id = Some(task_center::spawn_fixed(
-            format!("reverse_lookup:{}:cleanup", self.tag),
-            Duration::from_secs(CLEANUP_INTERVAL_SECS),
-            move || {
-                let cache = cache.clone();
-                async move {
-                    let now = AppClock::elapsed_millis();
+        self.cleanup_task_handle = Some(
+            match task_center::spawn_fixed(
+                format!("reverse_lookup:{}:cleanup", self.tag),
+                Duration::from_secs(CLEANUP_INTERVAL_SECS),
+                task_center::TaskOptions::default(),
+                move |_| {
+                    let cache = cache.clone();
+                    async move {
+                        let now = AppClock::elapsed_millis();
 
-                    while cache.remove_expired_batch(now, EVICTION_BATCH) > 0 {}
+                        while cache.remove_expired_batch(now, EVICTION_BATCH) > 0 {}
 
-                    if cache.len() <= size {
-                        return;
-                    }
-                    let overflow = cache.len().saturating_sub(size).min(EVICTION_BATCH);
-                    if overflow == 0 {
-                        return;
-                    }
+                        if cache.len() <= size {
+                            return;
+                        }
+                        let overflow = cache.len().saturating_sub(size).min(EVICTION_BATCH);
+                        if overflow == 0 {
+                            return;
+                        }
 
-                    let mut keys: Vec<(IpAddr, u64)> = cache.sample_last_access(overflow);
-                    keys.sort_unstable_by_key(|(_, last_access_ms)| *last_access_ms);
-                    for (key, _) in keys.into_iter().take(overflow) {
-                        let _ = cache.remove(&key);
+                        let mut keys: Vec<(IpAddr, u64)> = cache.sample_last_access(overflow);
+                        keys.sort_unstable_by_key(|(_, last_access_ms)| *last_access_ms);
+                        for (key, _) in keys.into_iter().take(overflow) {
+                            let _ = cache.remove(&key);
+                        }
                     }
+                },
+            ) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    self.cleanup_started.store(false, Ordering::Relaxed);
+                    unregister_metric_source(&self.tag);
+                    return Err(error);
                 }
             },
-        ));
+        );
         Ok(())
     }
 
     async fn destroy(&self) -> Result<()> {
         unregister_metric_source(&self.tag);
-        if let Some(task_id) = self.cleanup_task_id {
-            task_center::stop_task(task_id).await;
+        if let Some(handle) = &self.cleanup_task_handle {
+            handle.stop().await;
         }
         self.cleanup_started.store(false, Ordering::Relaxed);
         Ok(())
@@ -316,7 +326,7 @@ impl PluginFactory for ReverseLookupFactory {
             ttl,
             handle_ptr: cfg.handle_ptr.unwrap_or(false),
             cleanup_started: AtomicBool::new(false),
-            cleanup_task_id: None,
+            cleanup_task_handle: None,
             metrics,
         })))
     }
@@ -425,7 +435,7 @@ mod tests {
             ttl: 120,
             handle_ptr: true,
             cleanup_started: AtomicBool::new(false),
-            cleanup_task_id: None,
+            cleanup_task_handle: None,
             metrics: Arc::new(ReverseLookupMetrics::new(
                 "reverse_lookup".to_string(),
                 TtlCache::with_capacity(64),
@@ -471,7 +481,7 @@ mod tests {
             ttl: 120,
             handle_ptr: false,
             cleanup_started: AtomicBool::new(false),
-            cleanup_task_id: None,
+            cleanup_task_handle: None,
             metrics: Arc::new(ReverseLookupMetrics::new(
                 "reverse_lookup".to_string(),
                 TtlCache::with_capacity(64),

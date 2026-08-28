@@ -56,7 +56,7 @@ title: 插件扩展 API
 * `409 Conflict`
   * 同一任务已有一轮正在执行；请求返回 `cron_job_already_running`，不会排队。
 * `503 Service Unavailable`
-  * cron 调度器正在停止或已经不可用。
+  * 手动触发队列已满、TaskCenter 正在停止或对应任务已经不可用。
 
 WebUI 会在已应用的 cron 插件详情中为每个任务显示“手动运行”按钮。编辑未保存配置时按钮隐藏，避免用尚未应用的任务名称触发旧 runtime。
 

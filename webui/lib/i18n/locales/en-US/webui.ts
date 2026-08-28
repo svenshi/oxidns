@@ -396,6 +396,7 @@ export const enUSWebui = {
     runStarting: "Starting",
     runStarted: 'Job "{name}" started',
     runBusy: 'Job "{name}" is already running',
+    runUnavailable: 'Job "{name}" is temporarily unavailable',
     runFailed: 'Failed to start job "{name}"',
   },
   dynamicDomainSet: {

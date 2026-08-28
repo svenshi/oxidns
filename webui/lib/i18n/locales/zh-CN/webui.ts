@@ -379,6 +379,7 @@ export const zhCNWebui = {
     runStarting: "正在启动",
     runStarted: "任务“{name}”已开始运行",
     runBusy: "任务“{name}”正在运行，请稍后再试",
+    runUnavailable: "任务“{name}”暂时无法启动，请稍后再试",
     runFailed: "启动任务“{name}”失败",
   },
   dynamicDomainSet: {

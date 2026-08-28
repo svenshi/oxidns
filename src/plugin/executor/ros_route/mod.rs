@@ -95,7 +95,7 @@ impl Plugin for MikrotikExecutor {
         };
 
         register_metric_source(self.metrics.clone())?;
-        let runtime = RouteManagerRuntime::start(self.tag.clone(), manager);
+        let runtime = RouteManagerRuntime::start(self.tag.clone(), manager)?;
         let manager_handle = runtime.handle();
         let mut runtime = Some(runtime);
         if let Ok(mut slot) = self.runtime.lock() {

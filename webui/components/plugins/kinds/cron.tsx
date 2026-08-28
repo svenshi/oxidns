@@ -48,8 +48,13 @@ import type { PluginInstance } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
-import { CronJobAlreadyRunningError, runCronJob } from "@/lib/oxidns-api";
+import {
+  CronJobAlreadyRunningError,
+  CronJobUnavailableError,
+  runCronJob,
+} from "@/lib/oxidns-api";
 import { usePluginAppliedStatus } from "@/hooks/use-plugin-applied";
+import { cronManualRunRuntimeTag } from "@/lib/cron-manual-run";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -384,6 +389,8 @@ function CronJobCard({
         message:
           error instanceof CronJobAlreadyRunningError
             ? t(WEBUI.cron.runBusy, { name: job.name.trim() })
+            : error instanceof CronJobUnavailableError
+              ? t(WEBUI.cron.runUnavailable, { name: job.name.trim() })
             : error instanceof Error
               ? error.message
               : t(WEBUI.cron.runFailed, { name: job.name.trim() }),
@@ -745,11 +752,11 @@ function CronDetail({
               onChange={setConfigValues}
               plugins={plugins}
               readOnly={!editing}
-              runtimeTag={
-                !editing && appliedStatus !== "not-applied"
-                  ? plugin.name
-                  : undefined
-              }
+              runtimeTag={cronManualRunRuntimeTag(
+                editing,
+                appliedStatus,
+                plugin.name,
+              )}
             />
           </CardContent>
         </Card>

@@ -117,6 +117,8 @@ export interface CronJobRunResponse {
 
 export class CronJobAlreadyRunningError extends Error {}
 
+export class CronJobUnavailableError extends Error {}
+
 export type ProcessMemoryKind =
   | "rss"
   | "private_working_set"
@@ -595,6 +597,9 @@ export async function runCronJob(
   } catch (error) {
     if (response.status === 409) {
       throw new CronJobAlreadyRunningError();
+    }
+    if (response.status === 503) {
+      throw new CronJobUnavailableError();
     }
     throw error;
   }
