@@ -186,7 +186,8 @@ export function clearCronManualRunViewsAfterStatusFailure(
         jobName,
         {
           ...prior,
-          starting: false,
+          starting:
+            prior.starting || prior.trackedManualRunId !== null,
           currentRun: null,
           success: "none",
         },

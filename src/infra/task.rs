@@ -951,8 +951,14 @@ async fn handle_trigger(trigger: TriggerCommand, tasks: &mut HashMap<u64, Schedu
     };
     let run_id = context.run_id;
     let run = task.task.clone();
-    task.running = spawn_task_future(&task.name, run, context);
-    let _ = trigger.reply.send(TriggerOutcome::Started { run_id });
+    let outcome = match spawn_task_future(&task.name, run, context) {
+        Some(handle) => {
+            task.running = Some(handle);
+            TriggerOutcome::Started { run_id }
+        }
+        None => TriggerOutcome::Unavailable,
+    };
+    let _ = trigger.reply.send(outcome);
 }
 
 fn take_run_context(
@@ -1748,6 +1754,32 @@ mod tests {
         assert!(released.load(Ordering::Acquire));
         assert_eq!(handle.trigger().await, TriggerOutcome::Unavailable);
         blocker.notify_waiters();
+    }
+
+    #[tokio::test]
+    async fn manual_trigger_reports_unavailable_when_future_construction_panics() {
+        let center = TaskCenter::new();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_task = attempts.clone();
+        let handle = center
+            .spawn_fixed(
+                "manual-construction-panic",
+                Duration::from_secs(60),
+                TaskOptions::default(),
+                move |_| {
+                    if attempts_task.fetch_add(1, Ordering::AcqRel) == 0 {
+                        panic!("intentional future construction panic");
+                    }
+                    std::future::ready(())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(handle.trigger().await, TriggerOutcome::Unavailable);
+        assert_eq!(started_run_id(handle.trigger().await), 2);
+        assert_eq!(attempts.load(Ordering::Acquire), 2);
+
+        handle.stop().await;
     }
 
     #[tokio::test(start_paused = true)]

@@ -204,21 +204,34 @@ describe("cron manual run", () => {
   });
 
   it("preserves accepted run IDs while status synchronization is unavailable", () => {
+    const acceptedSuccess = acceptCronManualRun(
+      beginCronManualRun(undefined),
+      10,
+    );
+    const runningSuccess = reconcileCronManualRunViews(
+      { success: acceptedSuccess },
+      ["success"],
+      { success: runSnapshot(10, "running") },
+    ).views.success;
+    expect(cronRunButtonPhase(runningSuccess)).toBe("running");
+
     const failedViews = clearCronManualRunViewsAfterStatusFailure(
       {
-        success: acceptCronManualRun(beginCronManualRun(undefined), 10),
+        success: runningSuccess,
         failure: acceptCronManualRun(beginCronManualRun(undefined), 11),
       },
-      ["success", "failure"],
+      ["success", "failure", "idle"],
     );
 
-    expect(cronRunButtonPhase(failedViews.success)).toBe("idle");
+    expect(cronRunButtonPhase(failedViews.success)).toBe("starting");
+    expect(cronRunButtonPhase(failedViews.failure)).toBe("starting");
+    expect(cronRunButtonPhase(failedViews.idle)).toBe("idle");
     expect(failedViews.success.trackedManualRunId).toBe(10);
     expect(failedViews.failure.trackedManualRunId).toBe(11);
 
     const recovered = reconcileCronManualRunViews(
       failedViews,
-      ["success", "failure"],
+      ["success", "failure", "idle"],
       {
         success: completedSnapshot(10, "completed"),
         failure: completedSnapshot(11, "failed"),
