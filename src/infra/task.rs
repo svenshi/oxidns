@@ -911,7 +911,7 @@ async fn run_due_tasks(
     reap_finished_handles(finished).await;
     for (id, run, context) in to_spawn {
         if let Some(task) = tasks.get_mut(&id) {
-            task.running = spawn_task_future(&task.name, run, context);
+            task.running = Some(spawn_task_future(&task.name, run, context, None));
         }
     }
 }
@@ -949,16 +949,13 @@ async fn handle_trigger(trigger: TriggerCommand, tasks: &mut HashMap<u64, Schedu
         let _ = trigger.reply.send(TriggerOutcome::Unavailable);
         return;
     };
-    let run_id = context.run_id;
     let run = task.task.clone();
-    let outcome = match spawn_task_future(&task.name, run, context) {
-        Some(handle) => {
-            task.running = Some(handle);
-            TriggerOutcome::Started { run_id }
-        }
-        None => TriggerOutcome::Unavailable,
-    };
-    let _ = trigger.reply.send(outcome);
+    task.running = Some(spawn_task_future(
+        &task.name,
+        run,
+        context,
+        Some(trigger.reply),
+    ));
 }
 
 fn take_run_context(
@@ -975,22 +972,39 @@ fn take_run_context(
     })
 }
 
+/// Invoke the task factory inside its own Tokio task so synchronous setup
+/// cannot block the scheduler actor. Manual starts are acknowledged only after
+/// the factory returns, ensuring task-owned guards exist before `Started` is
+/// sent.
 fn spawn_task_future(
     task_name: &str,
     run: TaskFn,
     context: TaskRunContext,
-) -> Option<JoinHandle<()>> {
-    match catch_unwind(AssertUnwindSafe(|| run(context))) {
-        Ok(future) => Some(tokio::spawn(future)),
-        Err(_) => {
-            error!(
-                task = %task_name,
-                run_id = context.run_id,
-                "Periodic task panicked while creating its future"
-            );
-            None
+    manual_reply: Option<oneshot::Sender<TriggerOutcome>>,
+) -> JoinHandle<()> {
+    let task_name = task_name.to_owned();
+    tokio::spawn(async move {
+        let future = match catch_unwind(AssertUnwindSafe(|| run(context))) {
+            Ok(future) => future,
+            Err(_) => {
+                error!(
+                    task = %task_name,
+                    run_id = context.run_id,
+                    "Periodic task panicked while creating its future"
+                );
+                if let Some(reply) = manual_reply {
+                    let _ = reply.send(TriggerOutcome::Unavailable);
+                }
+                return;
+            }
+        };
+        if let Some(reply) = manual_reply {
+            let _ = reply.send(TriggerOutcome::Started {
+                run_id: context.run_id,
+            });
         }
-    }
+        future.await;
+    })
 }
 
 fn compute_next_deadline(
@@ -1174,8 +1188,8 @@ pub async fn stop_all() {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Barrier, Mutex};
 
     use tokio::sync::{Notify, oneshot};
 
@@ -1780,6 +1794,57 @@ mod tests {
         assert_eq!(attempts.load(Ordering::Acquire), 2);
 
         handle.stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn future_construction_does_not_block_scheduler_actor() {
+        let center = TaskCenter::new();
+        let factory_started = Arc::new(Notify::new());
+        let release_factory = Arc::new(Barrier::new(2));
+        let factory_started_task = factory_started.clone();
+        let release_factory_task = release_factory.clone();
+        let slow_handle = center
+            .spawn_fixed(
+                "slow-future-construction",
+                Duration::from_secs(60),
+                TaskOptions::default(),
+                move |_| {
+                    factory_started_task.notify_one();
+                    release_factory_task.wait();
+                    std::future::ready(())
+                },
+            )
+            .unwrap();
+        let responsive_handle = center
+            .spawn_fixed(
+                "responsive-future-construction",
+                Duration::from_secs(60),
+                TaskOptions::default(),
+                |_| std::future::ready(()),
+            )
+            .unwrap();
+
+        let slow_trigger = {
+            let slow_handle = slow_handle.clone();
+            tokio::spawn(async move { slow_handle.trigger().await })
+        };
+        factory_started.notified().await;
+        assert!(!slow_trigger.is_finished());
+
+        let responsive_outcome =
+            tokio::time::timeout(Duration::from_secs(1), responsive_handle.trigger()).await;
+        release_factory.wait();
+
+        assert_eq!(
+            started_run_id(
+                responsive_outcome.expect("slow construction must not block the scheduler actor")
+            ),
+            1
+        );
+        assert_eq!(started_run_id(slow_trigger.await.unwrap()), 1);
+
+        slow_handle.stop().await;
+        responsive_handle.stop().await;
     }
 
     #[tokio::test(start_paused = true)]
