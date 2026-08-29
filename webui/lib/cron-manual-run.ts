@@ -137,6 +137,16 @@ export function cronRunButtonPhase(
   return "idle";
 }
 
+export function hasCronManualRunLocalState(
+  view: CronManualRunView,
+): boolean {
+  return (
+    view.starting ||
+    view.trackedManualRunId !== null ||
+    view.success !== "none"
+  );
+}
+
 export function beginCronManualRun(
   view: CronManualRunView | undefined,
 ): CronManualRunView {
@@ -189,7 +199,6 @@ export function clearCronManualRunViewsAfterStatusFailure(
           starting:
             prior.starting || prior.trackedManualRunId !== null,
           currentRun: null,
-          success: "none",
         },
       ];
     }),

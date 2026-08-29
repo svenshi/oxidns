@@ -1104,6 +1104,7 @@ jobs:
 
     #[test]
     fn test_run_guard_tracks_pending_running_and_cancelled() {
+        AppClock::start();
         let state = Arc::new(CronJobRunState::default());
         let context = TaskRunContext {
             run_id: 7,
@@ -1133,6 +1134,7 @@ jobs:
 
     #[test]
     fn test_run_guard_records_panics_as_failed_and_ignores_scheduled_results() {
+        AppClock::start();
         let manual_state = Arc::new(CronJobRunState::default());
         let panic_state = manual_state.clone();
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
@@ -1165,6 +1167,7 @@ jobs:
 
     #[tokio::test]
     async fn test_run_job_continues_after_stop_and_error() {
+        AppClock::start();
         let log = Arc::new(StdMutex::new(Vec::new()));
         let executors: Vec<Arc<dyn Executor>> = vec![
             Arc::new(StubExecutor::new("first", StubBehavior::Stop, log.clone())),

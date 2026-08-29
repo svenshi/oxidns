@@ -69,6 +69,7 @@ import {
   cronRunButtonPhase,
   emptyCronManualRunView,
   expireCronManualRunSuccess,
+  hasCronManualRunLocalState,
   initializeCronManualRunViews,
   reconcileCronManualRunViews,
   rejectCronManualRun,
@@ -835,7 +836,7 @@ function CronDetail({
         if (!request.isCurrent()) return;
         pollFailureNotifiedRef.current = false;
         const hasLocalRun = Object.values(runViewsRef.current).some(
-          (view) => view.starting || view.trackedManualRunId !== null,
+          hasCronManualRunLocalState,
         );
         if (!initializedRunStatusRef.current && !hasLocalRun) {
           replaceRunViews(

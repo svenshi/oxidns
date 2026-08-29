@@ -9,6 +9,7 @@ import {
   cronConfigValuesForDisplay,
   cronManualRunRuntimeTag,
   cronRunButtonPhase,
+  hasCronManualRunLocalState,
   initializeCronManualRunViews,
   reconcileCronManualRunViews,
 } from "./cron-manual-run";
@@ -309,34 +310,48 @@ describe("cron manual run", () => {
   });
 
   it("keeps a completed flash queued behind a newer active run and drops removed jobs", () => {
+    const scheduledWhileCompleted: CronJobRunSnapshot = {
+      current_run: {
+        run_id: 6,
+        trigger: "schedule",
+        status: "running",
+        started_at_ms: 20,
+      },
+      last_manual_run: {
+        run_id: 5,
+        status: "completed",
+        executor_error_count: 0,
+        completed_at_ms: 10,
+      },
+    };
     const result = reconcileCronManualRunViews(
       {
         removed: acceptCronManualRun(beginCronManualRun(undefined), 4),
         kept: acceptCronManualRun(beginCronManualRun(undefined), 5),
       },
       ["kept"],
-      {
-        kept: {
-          current_run: {
-            run_id: 6,
-            trigger: "schedule",
-            status: "running",
-            started_at_ms: 20,
-          },
-          last_manual_run: {
-            run_id: 5,
-            status: "completed",
-            executor_error_count: 0,
-            completed_at_ms: 10,
-          },
-        },
-      },
+      { kept: scheduledWhileCompleted },
     );
     expect(result.views.removed).toBeUndefined();
     expect(result.views.kept.success).toBe("queued");
     expect(cronRunButtonPhase(result.views.kept)).toBe("running");
 
-    const idle = reconcileCronManualRunViews(result.views, ["kept"], {
+    const failedViews = clearCronManualRunViewsAfterStatusFailure(
+      result.views,
+      ["kept"],
+    );
+    expect(failedViews.kept.success).toBe("queued");
+    expect(hasCronManualRunLocalState(failedViews.kept)).toBe(true);
+
+    const recovered = reconcileCronManualRunViews(
+      failedViews,
+      ["kept"],
+      { kept: scheduledWhileCompleted },
+    );
+    expect(recovered.views.kept.success).toBe("queued");
+    expect(cronRunButtonPhase(recovered.views.kept)).toBe("running");
+
+    const idle = reconcileCronManualRunViews(recovered.views, ["kept"], {
       kept: completedSnapshot(5, "completed"),
     });
     expect(idle.views.kept.success).toBe("visible");
