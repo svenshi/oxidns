@@ -74,7 +74,7 @@ sha2 = "0.11.0"
 wincode = { version = "0.6", features = ["derive"] }
 oxidns-proto = { version = "0.1.5", path = "crates/proto" }
 oxidns-macros = { version = "0.1.0", path = "crates/macros" }
-hotpath = "0.23"
+hotpath = "0.24"
 
 # Optional: only needed by the `plugin-upgrade` feature (self-upgrade CLI +
 # `upgrade` executor). Pulled in by tarball / archive verification helpers.
