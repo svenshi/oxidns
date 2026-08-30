@@ -9,8 +9,10 @@ import {
   cronConfigValuesForDisplay,
   cronManualRunRuntimeTag,
   cronRunButtonPhase,
+  expireCronManualRunSuccess,
   hasCronManualRunLocalState,
   initializeCronManualRunViews,
+  markCronManualRunStartUncertain,
   reconcileCronManualRunViews,
 } from "./cron-manual-run";
 import {
@@ -286,6 +288,74 @@ describe("cron manual run", () => {
     expect(lost.effects).toEqual([
       { jobName: "job", type: "lost", executorErrorCount: 0 },
     ]);
+  });
+
+  it("reconciles an ambiguous POST failure against the previous manual result", () => {
+    const baseline = initializeCronManualRunViews(["job"], {
+      job: completedSnapshot(3, "completed"),
+    });
+    const posting = beginCronManualRun(baseline.job);
+    const observedWhilePosting = reconcileCronManualRunViews(
+      { job: posting },
+      ["job"],
+      { job: completedSnapshot(4, "completed") },
+    ).views.job;
+    expect(observedWhilePosting.lastObservedManualRunId).toBe(4);
+    expect(observedWhilePosting.manualStartBaselineRunId).toBe(3);
+    const uncertain = markCronManualRunStartUncertain(observedWhilePosting);
+
+    const completed = reconcileCronManualRunViews(
+      { job: uncertain },
+      ["job"],
+      { job: completedSnapshot(4, "completed") },
+    );
+    expect(cronRunButtonPhase(completed.views.job)).toBe("success");
+    expect(completed.effects).toEqual([]);
+
+    const notStarted = markCronManualRunStartUncertain(
+      beginCronManualRun(baseline.job),
+    );
+    const firstMiss = reconcileCronManualRunViews(
+      { job: notStarted },
+      ["job"],
+      { job: completedSnapshot(3, "completed") },
+    );
+    expect(cronRunButtonPhase(firstMiss.views.job)).toBe("starting");
+    expect(firstMiss.effects).toEqual([]);
+
+    const confirmedFailure = reconcileCronManualRunViews(
+      firstMiss.views,
+      ["job"],
+      { job: completedSnapshot(3, "completed") },
+    );
+    expect(cronRunButtonPhase(confirmedFailure.views.job)).toBe("idle");
+    expect(confirmedFailure.effects).toEqual([
+      { jobName: "job", type: "start_failed", executorErrorCount: 0 },
+    ]);
+  });
+
+  it("stores __proto__ as an own job key through completion and expiry", () => {
+    const jobName = "__proto__";
+    const previous = Object.fromEntries([
+      [jobName, acceptCronManualRun(beginCronManualRun(undefined), 7)],
+    ]);
+    const snapshots = Object.fromEntries([
+      [jobName, completedSnapshot(7, "completed")],
+    ]);
+
+    const completed = reconcileCronManualRunViews(
+      previous,
+      [jobName],
+      snapshots,
+    );
+    expect(
+      Object.prototype.hasOwnProperty.call(completed.views, jobName),
+    ).toBe(true);
+    expect(Object.keys(completed.views)).toEqual([jobName]);
+    expect(cronRunButtonPhase(completed.views[jobName])).toBe("success");
+
+    const expired = expireCronManualRunSuccess(completed.views[jobName]);
+    expect(cronRunButtonPhase(expired)).toBe("idle");
   });
 
   it("does not replay old results but adopts a manual run already in progress", () => {
