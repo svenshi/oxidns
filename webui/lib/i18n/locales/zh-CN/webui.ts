@@ -375,6 +375,12 @@ export const zhCNWebui = {
     createDepsBtn: "新建依赖插件",
     arrangement: "Cron 任务编排",
     taskCount: "任务数",
+    runNow: "手动运行",
+    runStarting: "正在启动",
+    runStarted: "任务“{name}”已开始运行",
+    runBusy: "任务“{name}”正在运行，请稍后再试",
+    runUnavailable: "任务“{name}”暂时无法启动，请稍后再试",
+    runFailed: "启动任务“{name}”失败",
   },
   dynamicDomainSet: {
     ruleFileLabel: "规则文件",

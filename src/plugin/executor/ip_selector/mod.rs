@@ -74,7 +74,7 @@ struct IpSelector {
     /// Shared runtime state used by foreground and background probe paths.
     runtime: Arc<ProbeRuntime>,
     /// Periodic cache cleanup task; absent when cache is disabled.
-    cleanup_task_id: Mutex<Option<u64>>,
+    cleanup_task_handle: Mutex<Option<task_center::ManagedTaskHandle>>,
 }
 
 #[async_trait]
@@ -93,10 +93,11 @@ impl Plugin for IpSelector {
             // keys are never queried again.
             let cache = self.runtime.cache.clone();
             let cache_size = self.settings.cache_size;
-            let task_id = task_center::spawn_fixed(
+            let task_handle = match task_center::spawn_fixed(
                 format!("ip_selector:{}:cleanup", self.tag),
                 Duration::from_secs(CLEANUP_INTERVAL_SECS),
-                move || {
+                task_center::TaskOptions::default(),
+                move |_| {
                     let cache = cache.clone();
                     async move {
                         let now = AppClock::elapsed_millis();
@@ -104,11 +105,17 @@ impl Plugin for IpSelector {
                         evict_probe_cache_if_needed(&cache, cache_size);
                     }
                 },
-            );
+            ) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    unregister_metric_source(&self.tag);
+                    return Err(error);
+                }
+            };
             *self
-                .cleanup_task_id
+                .cleanup_task_handle
                 .lock()
-                .expect("cleanup_task_id poisoned") = Some(task_id);
+                .expect("cleanup_task_handle poisoned") = Some(task_handle);
         }
         Ok(())
     }
@@ -117,13 +124,13 @@ impl Plugin for IpSelector {
         // Mirror init exactly: unregister metrics first so the registry stops
         // observing this instance before the cleanup task is torn down.
         unregister_metric_source(&self.tag);
-        let cleanup_task_id = self
-            .cleanup_task_id
+        let cleanup_task_handle = self
+            .cleanup_task_handle
             .lock()
-            .expect("cleanup_task_id poisoned")
+            .expect("cleanup_task_handle poisoned")
             .take();
-        if let Some(task_id) = cleanup_task_id {
-            task_center::stop_task(task_id).await;
+        if let Some(handle) = cleanup_task_handle {
+            handle.stop().await;
         }
         Ok(())
     }
@@ -411,6 +418,6 @@ fn build_ip_selector(
         tag,
         settings,
         runtime,
-        cleanup_task_id: Mutex::new(None),
+        cleanup_task_handle: Mutex::new(None),
     }
 }

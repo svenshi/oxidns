@@ -115,7 +115,7 @@ aho-corasick = "1.1.4"
 prost = { version = "0.14", optional = true }
 regex = "1.12.2"
 
-# Executor plugin dependencies, each gated by its own feature.
+# Optional TaskCenter calendar scheduling and executor plugin dependencies.
 cronexpr = { version = "1.5.0", optional = true }
 fast-socks5 = "1.0.0"
 mikrotik-rs = { package = "oxidns-mikrotik-rs", version = "0.8.1", optional = true }
@@ -285,7 +285,7 @@ plugin-query-recorder = ["api", "_sequence-step-recording", "dep:rusqlite"]
 plugin-ipset = ["dep:ripset"]
 
 # `cron` executor (cron-expression scheduled triggers).
-plugin-cron = ["dep:cronexpr"]
+plugin-cron = ["_task-cron"]
 
 # `dynamic_domain_set` provider + `learn_domain` executor (runtime-writable
 # domain rule set with background-flush persistence and pipeline learning).
@@ -337,6 +337,8 @@ provider-adguard-rule = []
 # --- Private aggregator features -------------------------------------------
 # These are pulled in by the public features above and should not be
 # enabled directly. They exist so each crate group is declared once.
+
+_task-cron = ["dep:cronexpr"]
 
 _tls-base = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]
 _tls-client = ["_tls-base", "dep:webpki-roots"]

@@ -287,16 +287,16 @@ pub(super) struct RouteManagerRuntime {
     handle: RouteManagerHandle,
     shutdown_tx: Option<oneshot::Sender<ShutdownRequest>>,
     worker_handle: Option<JoinHandle<()>>,
-    sweep_task_id: Option<u64>,
-    reconcile_task_id: Option<u64>,
+    sweep_task_handle: Option<task_center::ManagedTaskHandle>,
+    reconcile_task_handle: Option<task_center::ManagedTaskHandle>,
 }
 
 impl RouteManagerRuntime {
-    pub(super) fn start(tag: String, manager: RouteManager) -> Self {
+    pub(super) fn start(tag: String, manager: RouteManager) -> Result<Self> {
         let has_persistent = !manager.persistent.is_empty();
         let handle = RouteManagerHandle::new(&manager.cfg, manager.metrics.clone());
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let worker_handle = Some(tokio::spawn(run_manager_worker(
+        let mut worker_handle = Some(tokio::spawn(run_manager_worker(
             tag.clone(),
             manager,
             handle.clone(),
@@ -305,34 +305,55 @@ impl RouteManagerRuntime {
         handle.request_reconcile();
 
         let sweep_handle = handle.clone();
-        let sweep_task_id = Some(task_center::spawn_fixed(
+        let sweep_task_handle = match task_center::spawn_fixed(
             format!("ros_route:{tag}:sweep"),
             Duration::from_secs(SWEEP_INTERVAL_SECS),
-            move || {
+            task_center::TaskOptions::default(),
+            move |_| {
                 let sweep_handle = sweep_handle.clone();
                 async move { sweep_handle.request_sweep() }
             },
-        ));
-        let reconcile_task_id = has_persistent.then(|| {
+        ) {
+            Ok(handle) => handle,
+            Err(error) => {
+                if let Some(worker) = worker_handle.take() {
+                    abort_and_reap(worker);
+                }
+                return Err(error);
+            }
+        };
+        let reconcile_task_handle = if has_persistent {
             let reconcile_handle = handle.clone();
-            task_center::spawn_fixed(
+            match task_center::spawn_fixed(
                 format!("ros_route:{tag}:reconcile"),
                 Duration::from_secs(RECONCILE_INTERVAL_SECS),
-                move || {
+                task_center::TaskOptions::default(),
+                move |_| {
                     let reconcile_handle = reconcile_handle.clone();
                     async move {
                         reconcile_handle.request_reconcile();
                     }
                 },
-            )
-        });
-        Self {
+            ) {
+                Ok(handle) => Some(handle),
+                Err(error) => {
+                    sweep_task_handle.stop_detached();
+                    if let Some(worker) = worker_handle.take() {
+                        abort_and_reap(worker);
+                    }
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
+        Ok(Self {
             handle,
             shutdown_tx: Some(shutdown_tx),
             worker_handle,
-            sweep_task_id,
-            reconcile_task_id,
-        }
+            sweep_task_handle: Some(sweep_task_handle),
+            reconcile_task_handle,
+        })
     }
 
     pub(super) fn handle(&self) -> RouteManagerHandle {
@@ -349,17 +370,20 @@ impl RouteManagerRuntime {
         cleanup: bool,
         deadline: tokio::time::Instant,
     ) -> Result<()> {
-        let tasks = [self.sweep_task_id.take(), self.reconcile_task_id.take()]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-        for (index, task) in tasks.iter().copied().enumerate() {
-            if tokio::time::timeout_at(deadline, task_center::stop_task(task))
+        let tasks = [
+            self.sweep_task_handle.take(),
+            self.reconcile_task_handle.take(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        for (index, task) in tasks.iter().enumerate() {
+            if tokio::time::timeout_at(deadline, task.stop())
                 .await
                 .is_err()
             {
                 for remaining in &tasks[index..] {
-                    task_center::stop_task_detached(*remaining);
+                    remaining.stop_detached();
                 }
                 self.handle.close();
                 if let Some(worker) = self.worker_handle.take() {

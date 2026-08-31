@@ -50,7 +50,7 @@ Fall back to `register_plugin_factory!("type", expr)` only when:
 - Keep `mod.rs` focused on the package facade, plugin lifecycle, factory wiring, and high-level orchestration. Split stable responsibilities such as config parsing, models, metrics, persistence, protocol adapters, and management API integration into named sibling modules when the package grows.
 - Keep category-specific shared code inside its plugin category. Matcher rule parsing and provider binding belong under `plugin/matcher`; provider formats and selectors belong under `plugin/provider`; server request and connection behavior belong under `plugin/server`.
 - Move code into `infra` only when its API is subsystem-neutral and useful outside one plugin category. `infra` must not depend on plugin traits, registries, or plugin-specific models.
-- Preserve existing public paths through package facades or explicit re-exports when a structural split would otherwise break library consumers.
+- Treat root-crate Rust module paths as internal implementation details. Migrate all in-repository callers during structural changes; add a facade or re-export only for an explicitly documented supported Rust API, not for hypothetical downstream consumers.
 
 ### Hot-path rules
 

@@ -57,7 +57,7 @@ pub struct ReusePool<C: Connection> {
     /// Notify waiting threads when a connection becomes available
     release_notified: Notify,
     /// Background maintenance task registered in task center.
-    maintenance_task_id: Mutex<Option<u64>>,
+    maintenance_task_handle: Mutex<Option<task_center::ManagedTaskHandle>>,
 }
 
 #[async_trait]
@@ -207,7 +207,7 @@ impl<C: Connection> ReusePool<C> {
             active_count: AtomicUsize::new(0),
             next_id: AtomicU16::new(1),
             release_notified: Notify::new(),
-            maintenance_task_id: Mutex::new(None),
+            maintenance_task_handle: Mutex::new(None),
         });
 
         start_maintenance(&pool);
@@ -478,8 +478,8 @@ impl<C: Connection> Drop for BorrowedConnection<'_, C> {
 }
 
 impl<C: Connection> ManagedMaintenanceTask for ReusePool<C> {
-    fn maintenance_task_id(&self) -> &Mutex<Option<u64>> {
-        &self.maintenance_task_id
+    fn maintenance_task_handle(&self) -> &Mutex<Option<task_center::ManagedTaskHandle>> {
+        &self.maintenance_task_handle
     }
 
     fn maintenance_task_name(&self) -> String {
@@ -489,13 +489,13 @@ impl<C: Connection> ManagedMaintenanceTask for ReusePool<C> {
 
 impl<C: Connection> Drop for ReusePool<C> {
     fn drop(&mut self) {
-        let task_id = self
-            .maintenance_task_id
+        let task_handle = self
+            .maintenance_task_handle
             .lock()
             .ok()
             .and_then(|mut guard| guard.take());
-        if let Some(task_id) = task_id {
-            task_center::stop_task_detached(task_id);
+        if let Some(handle) = task_handle {
+            handle.stop_detached();
         }
     }
 }
@@ -620,7 +620,7 @@ mod tests {
             connect_timeout: Duration::from_secs(5),
             next_id: AtomicU16::new(1),
             release_notified: Notify::new(),
-            maintenance_task_id: Mutex::new(None),
+            maintenance_task_handle: Mutex::new(None),
         }
     }
 
