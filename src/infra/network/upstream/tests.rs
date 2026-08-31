@@ -837,9 +837,10 @@ fn test_parse_socks5_opt_ipv6_full_address() {
 
 #[test]
 fn test_parse_socks5_opt_ipv6_missing_bracket() {
-    // Test IPv6 without brackets - this actually succeeds for simple cases like ::1
-    // because rfind(':') correctly splits "::1:1080" into "::1" and "1080"
-    // However, brackets are still RECOMMENDED for clarity and standards compliance
+    // Test IPv6 without brackets - this actually succeeds for simple cases like
+    // ::1 because rfind(':') correctly splits "::1:1080" into "::1" and
+    // "1080" However, brackets are still RECOMMENDED for clarity and
+    // standards compliance
     let result = parse_socks5_opt("::1:1080");
     assert!(result.is_some());
 

@@ -75,8 +75,8 @@ pub(super) fn candidate_records(
     qtype: RecordType,
 ) -> Option<Vec<CandidateRecord>> {
     // Only answer-section records matching the query address family participate
-    // in selection. CNAMEs, authority records, additionals, and unrelated RRsets
-    // are preserved exactly as received.
+    // in selection. CNAMEs, authority records, additionals, and unrelated
+    // RRsets are preserved exactly as received.
     let candidates: Vec<CandidateRecord> = response
         .answers()
         .iter()

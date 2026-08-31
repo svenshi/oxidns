@@ -436,7 +436,8 @@ impl MikrotikApi for MikrotikRsClient {
 
         if let Some(existing) = canonical.take() {
             // RouterOS timed and timeless rows are different enough that the
-            // safest transition is delete-and-add when the timeout kind changes.
+            // safest transition is delete-and-add when the timeout kind
+            // changes.
             let timeout_kind_changed = existing.timeout.is_some() != timeout.is_some();
             if timeout_kind_changed {
                 if !self.delete_entry_if_matches(&existing).await? {

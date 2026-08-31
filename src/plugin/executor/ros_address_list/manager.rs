@@ -1047,7 +1047,8 @@ impl AddressListManager {
         // Cleanup bypasses reconnect backoff but retains per-operation
         // transport timeouts.
         self.api.begin_shutdown_cleanup();
-        // Cleanup only touches entries that match this plugin's comment ownership.
+        // Cleanup only touches entries that match this plugin's comment
+        // ownership.
         let entries = self
             .api
             .list_entries(

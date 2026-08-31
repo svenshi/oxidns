@@ -443,14 +443,15 @@ pub(crate) fn encode_message_with_limit(
     out: &mut Vec<u8>,
 ) -> Result<()> {
     if let Some(limit) = max_size {
-        // Fast path 1: the full uncompressed message already fits the requested budget.
+        // Fast path 1: the full uncompressed message already fits the requested
+        // budget.
         if message.bytes_len_with_compression(false) <= limit {
             encode_message_into(message, id, out)?;
             return Ok(());
         }
 
-        // Fast path 2: the compressed full message still fits, so no truncation is
-        // required.
+        // Fast path 2: the compressed full message still fits, so no truncation
+        // is required.
         let lens = message.compute_truncation_lens(true);
         if lens.total_len <= limit {
             encode_message_into_mode(message, id, out, true)?;
@@ -466,8 +467,9 @@ pub(crate) fn encode_message_with_limit(
             push_u16(out, u16::from(question.qclass()));
         }
 
-        // The main sections may consume only the remaining space after reserving the
-        // fixed trailer block calculated by `compute_truncation_lens`.
+        // The main sections may consume only the remaining space after
+        // reserving the fixed trailer block calculated by
+        // `compute_truncation_lens`.
         if lens.trailer_len > limit {
             return Err(DnsError::protocol(
                 "dns message cannot fit within UDP payload while preserving EDNS/signature trailer",

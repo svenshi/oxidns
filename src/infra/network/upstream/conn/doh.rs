@@ -120,8 +120,8 @@ pub fn build_doh_request_uri(connection_info: &ConnectionInfo) -> String {
         )
     };
 
-    // Pre-allocate space for base64url-encoded DNS query (~600 bytes for typical
-    // query)
+    // Pre-allocate space for base64url-encoded DNS query (~600 bytes for
+    // typical query)
     uri.reserve(512);
     uri
 }

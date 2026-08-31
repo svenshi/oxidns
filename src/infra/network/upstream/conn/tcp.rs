@@ -70,8 +70,9 @@ impl Connection for TcpConnection {
         if self.closed.swap(true, Ordering::AcqRel) {
             return; // Already closed, no-op
         }
-        // Cancel pending requests first so the reader task can terminate without
-        // waiting for per-query timeouts, and all callers are unblocked promptly.
+        // Cancel pending requests first so the reader task can terminate
+        // without waiting for per-query timeouts, and all callers are
+        // unblocked promptly.
         let cleared = self.request_map.clear();
         debug!(
             conn_id = self.id,
@@ -122,7 +123,8 @@ impl Connection for TcpConnection {
 
         let raw_id = request.id();
 
-        // Queue Message for background sender task (TcpTransportWriter will frame it)
+        // Queue Message for background sender task (TcpTransportWriter will
+        // frame it)
         if let Err(e) = self.sender.send(QueuedQuery {
             message: request,
             query_id,
