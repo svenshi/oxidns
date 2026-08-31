@@ -820,7 +820,12 @@ function CronDetail({
       jobNames.map((jobName) => [jobName, emptyCronManualRunView()]),
     );
     runViewsRef.current = resetViews;
-    const resetTimer = window.setTimeout(() => replaceRunViews(resetViews), 0);
+    const resetTimer = window.setTimeout(() => {
+      // The initial status request may finish before this deferred state reset.
+      if (!initializedRunStatusRef.current) {
+        replaceRunViews(resetViews);
+      }
+    }, 0);
 
     return () => {
       window.clearTimeout(resetTimer);
@@ -915,18 +920,14 @@ function CronDetail({
       runRequestControllersRef.current.set(jobName, controller);
       let postAttempted = false;
       try {
-        if (
-          runViewsRef.current[jobName]?.lastObservedManualRunId === undefined
-        ) {
-          const baseline = await fetchCronJobStatuses(
-            runtimeTag,
-            controller.signal,
-          );
-          if (controller.signal.aborted) return;
-          updateRunView(jobName, (view) =>
-            setCronManualRunStatusBaseline(view, baseline.jobs[jobName]),
-          );
-        }
+        const baseline = await fetchCronJobStatuses(
+          runtimeTag,
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
+        updateRunView(jobName, (view) =>
+          setCronManualRunStatusBaseline(view, baseline.jobs[jobName]),
+        );
         postAttempted = true;
         const response = await runCronJob(
           runtimeTag,

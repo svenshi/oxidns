@@ -14,6 +14,7 @@ import {
   initializeCronManualRunViews,
   markCronManualRunStartUncertain,
   reconcileCronManualRunViews,
+  setCronManualRunStatusBaseline,
 } from "./cron-manual-run";
 import {
   CronJobAlreadyRunningError,
@@ -332,6 +333,29 @@ describe("cron manual run", () => {
     expect(confirmedFailure.effects).toEqual([
       { jobName: "job", type: "start_failed", executorErrorCount: 0 },
     ]);
+  });
+
+  it("refreshes a stale manual-result baseline before starting a new run", () => {
+    const stale = initializeCronManualRunViews(["job"], {
+      job: completedSnapshot(3, "completed"),
+    });
+    const posting = beginCronManualRun(stale.job);
+    const refreshed = setCronManualRunStatusBaseline(
+      posting,
+      completedSnapshot(4, "completed"),
+    );
+
+    expect(refreshed.lastObservedManualRunId).toBe(4);
+    expect(refreshed.manualStartBaselineRunId).toBe(4);
+
+    const uncertain = markCronManualRunStartUncertain(refreshed);
+    const completed = reconcileCronManualRunViews(
+      { job: uncertain },
+      ["job"],
+      { job: completedSnapshot(5, "completed") },
+    );
+    expect(cronRunButtonPhase(completed.views.job)).toBe("success");
+    expect(completed.effects).toEqual([]);
   });
 
   it("stores __proto__ as an own job key through completion and expiry", () => {
