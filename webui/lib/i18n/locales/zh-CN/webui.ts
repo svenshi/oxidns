@@ -379,11 +379,10 @@ export const zhCNWebui = {
     runStarting: "正在启动",
     runExecuting: "执行中",
     runCompleted: "已完成",
-    runStarted: "任务“{name}”已开始运行",
     runBusy: "任务“{name}”正在运行，请稍后再试",
     runNotFound: "任务“{name}”已不存在，请刷新配置后重试",
     runUnavailable: "任务“{name}”暂时无法启动，请稍后再试",
-    runFailed: "启动任务“{name}”失败",
+    runStartUnconfirmed: "无法确认任务“{name}”是否已启动",
     runPartialFailure:
       "任务“{name}”已结束，但有 {count} 个执行器失败，请查看日志",
     runExecutionFailed: "任务“{name}”执行失败，请查看日志",

@@ -7,7 +7,6 @@ import type {
 
 export const CRON_STATUS_POLL_INTERVAL_MS = 2000;
 export const CRON_SUCCESS_DURATION_MS = 3000;
-const CRON_UNCERTAIN_START_MAX_STATUS_MISSES = 2;
 
 export type CronRunButtonPhase =
   | "idle"
@@ -20,18 +19,12 @@ export interface CronManualRunView {
   starting: boolean;
   currentRun: CronCurrentRun | null;
   trackedManualRunId: number | null;
-  lastObservedManualRunId: number | null | undefined;
-  manualStartBaselineRunId: number | null | undefined;
-  uncertainStartStatusMisses: number | null;
   success: "none" | "queued" | "visible";
 }
 
 export interface CronManualRunEffect {
   jobName: string;
-  type:
-    | Exclude<CronManualRunStatus, "completed">
-    | "lost"
-    | "start_failed";
+  type: Exclude<CronManualRunStatus, "completed"> | "lost";
   executorErrorCount: number;
 }
 
@@ -107,9 +100,6 @@ export function emptyCronManualRunView(): CronManualRunView {
     starting: false,
     currentRun: null,
     trackedManualRunId: null,
-    lastObservedManualRunId: undefined,
-    manualStartBaselineRunId: undefined,
-    uncertainStartStatusMisses: null,
     success: "none",
   };
 }
@@ -164,8 +154,6 @@ export function beginCronManualRun(
     ...(view ?? emptyCronManualRunView()),
     starting: true,
     trackedManualRunId: null,
-    manualStartBaselineRunId: view?.lastObservedManualRunId,
-    uncertainStartStatusMisses: null,
     success: "none",
   };
 }
@@ -178,30 +166,6 @@ export function acceptCronManualRun(
     ...(view ?? emptyCronManualRunView()),
     starting: true,
     trackedManualRunId: runId,
-    manualStartBaselineRunId: undefined,
-    uncertainStartStatusMisses: null,
-  };
-}
-
-export function setCronManualRunStatusBaseline(
-  view: CronManualRunView | undefined,
-  snapshot: CronJobRunSnapshot | undefined,
-): CronManualRunView {
-  return {
-    ...(view ?? emptyCronManualRunView()),
-    lastObservedManualRunId: snapshot?.last_manual_run?.run_id ?? null,
-    manualStartBaselineRunId: snapshot?.last_manual_run?.run_id ?? null,
-  };
-}
-
-export function markCronManualRunStartUncertain(
-  view: CronManualRunView | undefined,
-): CronManualRunView {
-  return {
-    ...(view ?? emptyCronManualRunView()),
-    starting: true,
-    trackedManualRunId: null,
-    uncertainStartStatusMisses: 0,
   };
 }
 
@@ -212,8 +176,6 @@ export function rejectCronManualRun(
     ...(view ?? emptyCronManualRunView()),
     starting: false,
     trackedManualRunId: null,
-    manualStartBaselineRunId: undefined,
-    uncertainStartStatusMisses: null,
   };
 }
 
@@ -234,10 +196,7 @@ export function clearCronManualRunViewsAfterStatusFailure(
         jobName,
         {
           ...prior,
-          starting:
-            prior.starting ||
-            prior.trackedManualRunId !== null ||
-            prior.uncertainStartStatusMisses !== null,
+          starting: prior.starting || prior.trackedManualRunId !== null,
           currentRun: null,
         },
       ];
@@ -257,11 +216,6 @@ export function initializeCronManualRunViews(
         {
           ...emptyCronManualRunView(),
           currentRun,
-          trackedManualRunId:
-            currentRun?.trigger === "manual" ? currentRun.run_id : null,
-          lastObservedManualRunId:
-            snapshots[jobName]?.last_manual_run?.run_id ?? null,
-          manualStartBaselineRunId: undefined,
         },
       ];
     }),
@@ -285,52 +239,31 @@ export function reconcileCronManualRunViews(
     const next: CronManualRunView = {
       ...prior,
       currentRun: snapshot.current_run,
-      lastObservedManualRunId: snapshot.last_manual_run?.run_id ?? null,
     };
     const trackedRunId = prior.trackedManualRunId;
 
     if (trackedRunId !== null) {
       if (snapshot.current_run?.run_id === trackedRunId) {
         next.starting = false;
-        next.manualStartBaselineRunId = undefined;
-        next.uncertainStartStatusMisses = null;
       } else if (snapshot.last_manual_run?.run_id === trackedRunId) {
-        applyCronManualRunResult(next, snapshot, jobName, effects);
-      } else {
         next.starting = false;
         next.trackedManualRunId = null;
-        next.manualStartBaselineRunId = undefined;
-        next.uncertainStartStatusMisses = null;
-        next.success = "none";
-        effects.push({ jobName, type: "lost", executorErrorCount: 0 });
-      }
-    } else if (prior.uncertainStartStatusMisses !== null) {
-      if (snapshot.current_run?.trigger === "manual") {
-        next.starting = false;
-        next.trackedManualRunId = snapshot.current_run.run_id;
-        next.manualStartBaselineRunId = undefined;
-        next.uncertainStartStatusMisses = null;
-      } else if (
-        snapshot.last_manual_run &&
-        snapshot.last_manual_run.run_id !== prior.manualStartBaselineRunId
-      ) {
-        applyCronManualRunResult(next, snapshot, jobName, effects);
-      } else {
-        const misses = prior.uncertainStartStatusMisses + 1;
-        if (misses >= CRON_UNCERTAIN_START_MAX_STATUS_MISSES) {
-          next.starting = false;
-          next.manualStartBaselineRunId = undefined;
-          next.uncertainStartStatusMisses = null;
+        const result = snapshot.last_manual_run;
+        if (result.status === "completed") {
+          next.success = snapshot.current_run ? "queued" : "visible";
+        } else {
           next.success = "none";
           effects.push({
             jobName,
-            type: "start_failed",
-            executorErrorCount: 0,
+            type: result.status,
+            executorErrorCount: result.executor_error_count,
           });
-        } else {
-          next.starting = true;
-          next.uncertainStartStatusMisses = misses;
         }
+      } else {
+        next.starting = false;
+        next.trackedManualRunId = null;
+        next.success = "none";
+        effects.push({ jobName, type: "lost", executorErrorCount: 0 });
       }
     }
 
@@ -340,40 +273,8 @@ export function reconcileCronManualRunViews(
       next.success = "visible";
     }
 
-    if (
-      !next.starting &&
-      next.trackedManualRunId === null &&
-      snapshot.current_run?.trigger === "manual"
-    ) {
-      next.trackedManualRunId = snapshot.current_run.run_id;
-    }
-
     viewEntries.push([jobName, next]);
   }
 
   return { views: Object.fromEntries(viewEntries), effects };
-}
-
-function applyCronManualRunResult(
-  view: CronManualRunView,
-  snapshot: CronJobRunSnapshot,
-  jobName: string,
-  effects: CronManualRunEffect[],
-) {
-  const result = snapshot.last_manual_run;
-  if (!result) return;
-  view.starting = false;
-  view.trackedManualRunId = null;
-  view.manualStartBaselineRunId = undefined;
-  view.uncertainStartStatusMisses = null;
-  if (result.status === "completed") {
-    view.success = snapshot.current_run ? "queued" : "visible";
-  } else {
-    view.success = "none";
-    effects.push({
-      jobName,
-      type: result.status,
-      executorErrorCount: result.executor_error_count,
-    });
-  }
 }

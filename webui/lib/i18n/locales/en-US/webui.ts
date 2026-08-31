@@ -396,11 +396,10 @@ export const enUSWebui = {
     runStarting: "Starting",
     runExecuting: "Running",
     runCompleted: "Completed",
-    runStarted: 'Job "{name}" started',
     runBusy: 'Job "{name}" is already running',
     runNotFound: 'Job "{name}" no longer exists; refresh the config and retry',
     runUnavailable: 'Job "{name}" is temporarily unavailable',
-    runFailed: 'Failed to start job "{name}"',
+    runStartUnconfirmed: 'Could not confirm whether job "{name}" started',
     runPartialFailure:
       'Job "{name}" finished with {count} executor failures; check the logs',
     runExecutionFailed: 'Job "{name}" failed; check the logs',

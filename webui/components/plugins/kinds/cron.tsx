@@ -71,10 +71,8 @@ import {
   expireCronManualRunSuccess,
   hasCronManualRunLocalState,
   initializeCronManualRunViews,
-  markCronManualRunStartUncertain,
   reconcileCronManualRunViews,
   rejectCronManualRun,
-  setCronManualRunStatusBaseline,
   type CronManualRunEffect,
   type CronManualRunView,
 } from "@/lib/cron-manual-run";
@@ -783,13 +781,6 @@ function CronDetail({
         });
         return;
       }
-      if (effect.type === "start_failed") {
-        toast({
-          variant: "error",
-          title: t(WEBUI.cron.runFailed, { name: effect.jobName }),
-        });
-        return;
-      }
       const title =
         effect.type === "cancelled"
           ? t(WEBUI.cron.runCancelled, { name: effect.jobName })
@@ -918,17 +909,7 @@ function CronDetail({
       const controller = new AbortController();
       runRequestControllersRef.current.get(jobName)?.abort();
       runRequestControllersRef.current.set(jobName, controller);
-      let postAttempted = false;
       try {
-        const baseline = await fetchCronJobStatuses(
-          runtimeTag,
-          controller.signal,
-        );
-        if (controller.signal.aborted) return;
-        updateRunView(jobName, (view) =>
-          setCronManualRunStatusBaseline(view, baseline.jobs[jobName]),
-        );
-        postAttempted = true;
         const response = await runCronJob(
           runtimeTag,
           jobName,
@@ -941,34 +922,28 @@ function CronDetail({
         refreshCronStatusesNow();
       } catch (error) {
         if (controller.signal.aborted || isAbortError(error)) return;
-        if (!postAttempted) {
-          updateRunView(jobName, rejectCronManualRun);
-          toast({
-            variant: "error",
-            title: t(WEBUI.cron.runStatusSyncFailed),
-          });
-        } else if (error instanceof CronJobAlreadyRunningError) {
-          updateRunView(jobName, rejectCronManualRun);
+        updateRunView(jobName, rejectCronManualRun);
+        if (error instanceof CronJobAlreadyRunningError) {
           toast({
             variant: "warning",
             title: t(WEBUI.cron.runBusy, { name: jobName }),
           });
           refreshCronStatusesNow();
         } else if (error instanceof CronJobNotFoundError) {
-          updateRunView(jobName, rejectCronManualRun);
           toast({
             variant: "error",
             title: t(WEBUI.cron.runNotFound, { name: jobName }),
           });
         } else if (error instanceof CronJobUnavailableError) {
-          updateRunView(jobName, rejectCronManualRun);
           toast({
             variant: "error",
             title: t(WEBUI.cron.runUnavailable, { name: jobName }),
           });
         } else {
-          updateRunView(jobName, markCronManualRunStartUncertain);
-          refreshCronStatusesNow();
+          toast({
+            variant: "error",
+            title: t(WEBUI.cron.runStartUnconfirmed, { name: jobName }),
+          });
         }
       } finally {
         if (runRequestControllersRef.current.get(jobName) === controller) {

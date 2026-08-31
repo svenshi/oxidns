@@ -12,9 +12,8 @@ import {
   expireCronManualRunSuccess,
   hasCronManualRunLocalState,
   initializeCronManualRunViews,
-  markCronManualRunStartUncertain,
   reconcileCronManualRunViews,
-  setCronManualRunStatusBaseline,
+  rejectCronManualRun,
 } from "./cron-manual-run";
 import {
   CronJobAlreadyRunningError,
@@ -291,70 +290,15 @@ describe("cron manual run", () => {
     ]);
   });
 
-  it("reconciles an ambiguous POST failure against the previous manual result", () => {
-    const baseline = initializeCronManualRunViews(["job"], {
-      job: completedSnapshot(3, "completed"),
-    });
-    const posting = beginCronManualRun(baseline.job);
-    const observedWhilePosting = reconcileCronManualRunViews(
-      { job: posting },
-      ["job"],
-      { job: completedSnapshot(4, "completed") },
-    ).views.job;
-    expect(observedWhilePosting.lastObservedManualRunId).toBe(4);
-    expect(observedWhilePosting.manualStartBaselineRunId).toBe(3);
-    const uncertain = markCronManualRunStartUncertain(observedWhilePosting);
-
+  it("does not infer completion from a terminal-only snapshot after start failure", () => {
+    const rejected = rejectCronManualRun(beginCronManualRun(undefined));
     const completed = reconcileCronManualRunViews(
-      { job: uncertain },
+      { job: rejected },
       ["job"],
       { job: completedSnapshot(4, "completed") },
     );
-    expect(cronRunButtonPhase(completed.views.job)).toBe("success");
-    expect(completed.effects).toEqual([]);
 
-    const notStarted = markCronManualRunStartUncertain(
-      beginCronManualRun(baseline.job),
-    );
-    const firstMiss = reconcileCronManualRunViews(
-      { job: notStarted },
-      ["job"],
-      { job: completedSnapshot(3, "completed") },
-    );
-    expect(cronRunButtonPhase(firstMiss.views.job)).toBe("starting");
-    expect(firstMiss.effects).toEqual([]);
-
-    const confirmedFailure = reconcileCronManualRunViews(
-      firstMiss.views,
-      ["job"],
-      { job: completedSnapshot(3, "completed") },
-    );
-    expect(cronRunButtonPhase(confirmedFailure.views.job)).toBe("idle");
-    expect(confirmedFailure.effects).toEqual([
-      { jobName: "job", type: "start_failed", executorErrorCount: 0 },
-    ]);
-  });
-
-  it("refreshes a stale manual-result baseline before starting a new run", () => {
-    const stale = initializeCronManualRunViews(["job"], {
-      job: completedSnapshot(3, "completed"),
-    });
-    const posting = beginCronManualRun(stale.job);
-    const refreshed = setCronManualRunStatusBaseline(
-      posting,
-      completedSnapshot(4, "completed"),
-    );
-
-    expect(refreshed.lastObservedManualRunId).toBe(4);
-    expect(refreshed.manualStartBaselineRunId).toBe(4);
-
-    const uncertain = markCronManualRunStartUncertain(refreshed);
-    const completed = reconcileCronManualRunViews(
-      { job: uncertain },
-      ["job"],
-      { job: completedSnapshot(5, "completed") },
-    );
-    expect(cronRunButtonPhase(completed.views.job)).toBe("success");
+    expect(cronRunButtonPhase(completed.views.job)).toBe("idle");
     expect(completed.effects).toEqual([]);
   });
 
@@ -382,14 +326,14 @@ describe("cron manual run", () => {
     expect(cronRunButtonPhase(expired)).toBe("idle");
   });
 
-  it("does not replay old results but adopts a manual run already in progress", () => {
+  it("restores active loading without attributing its terminal result", () => {
     const initialized = initializeCronManualRunViews(["done", "active"], {
       done: completedSnapshot(2, "failed"),
       active: runSnapshot(3, "running"),
     });
     expect(cronRunButtonPhase(initialized.done)).toBe("idle");
     expect(cronRunButtonPhase(initialized.active)).toBe("running");
-    expect(initialized.active.trackedManualRunId).toBe(3);
+    expect(initialized.active.trackedManualRunId).toBeNull();
 
     const completed = reconcileCronManualRunViews(
       initialized,
@@ -399,7 +343,7 @@ describe("cron manual run", () => {
         active: completedSnapshot(3, "completed"),
       },
     );
-    expect(cronRunButtonPhase(completed.views.active)).toBe("success");
+    expect(cronRunButtonPhase(completed.views.active)).toBe("idle");
     expect(completed.effects).toEqual([]);
   });
 
