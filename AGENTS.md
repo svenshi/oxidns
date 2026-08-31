@@ -3,13 +3,19 @@
 ## Project Focus
 
 - OxiDNS is a high-performance, plugin-driven DNS server written in Rust.
-- The current project already includes UDP/TCP/DoT/DoQ/DoH server and upstream support, sequence-based policy orchestration, TTL-aware cache with negative caching, fallback chains, local and synthetic answers, query/response rewriting, ECS handling, dual-stack selection, provider-backed domain/IP rule sets, management APIs, health endpoints, metrics, and system integrations such as `ipset`, `nftset`, and MikroTik route sync.
 - Prefer designs that preserve the core request path: `server -> DnsContext -> matcher/executor/provider pipeline -> upstream or side effects -> response`.
+- Derive the current capability set from `Cargo.toml` features, `src/plugin/*/mod.rs`, `src/build_info.rs`, and the runnable configuration files. Do not treat capability inventories in prose as authoritative.
+
+## Sources of Truth
+
+- Prefer executable project state over AI prose when facts can change: `Cargo.toml` for features and dependencies, `justfile` for local quality gates, `.github/workflows/` for CI and release behavior, `src/plugin/*/mod.rs` and registration code for compiled plugins, `src/config/` plus `config*.yaml` for configuration, and workspace `package.json` files for frontend/docs commands.
+- `AGENTS.md` and `ai/*.md` define stable intent, architecture constraints, decision criteria, and workflow rationale. They should point to project files instead of duplicating evolving inventories, versions, command bodies, or target matrices.
+- If prose disagrees with code, configuration, tests, or workflows, use the executable source for the current fact and update the stale guidance as part of the same change when it is in scope.
 
 ## Project Structure & Module Organization
 
 - `src/main.rs` parses top-level CLI options, dispatches foreground startup or service mode, and keeps binary-only entry concerns thin.
-- `src/lib.rs` exposes the library surface used by tests and embedding scenarios, including `api`, `app`, `build_info`, `cli`, `config`, `core`, `infra`, `plugin`, and the re-exported `proto` crate.
+- `src/lib.rs` declares the library surface used by the binary, tests, and embedding scenarios; its exports are authoritative.
 - `src/build_info.rs` reports compiled bundles, enabled features, and runtime plugin capabilities. It lives at the crate root because it depends on both infrastructure constants and the plugin catalog; do not move plugin-aware capability reporting into `infra`.
 - `src/cli/` contains command definitions, parsing, command dispatch, CLI output, and option-to-runtime adapter code.
 - `src/app/` contains foreground startup orchestration for wiring config, runtime, API, plugins, and graceful shutdown/reload flows.
@@ -21,50 +27,40 @@
 - `src/infra/network/` contains listeners, protocol transports, TLS setup, upstream resolution, bootstrap logic, pooling, and networking helpers.
 - `src/infra/io/` contains reusable file and stream helpers, including line-oriented rule loading shared by providers.
 - `src/infra/upgrade/` separates release discovery, download, archive handling, progress reporting, and binary/WebUI installation while exposing upgrade orchestration through `mod.rs`.
-- `src/plugin/` is the main extension surface and is split into server, executor, matcher, and provider categories.
-- `src/plugin/server/` handles inbound DNS protocols, including UDP, TCP, QUIC, and HTTP-based DNS. Category-local connection lifecycle, request handling, and metrics stay in this package; dedicated HTTP/2 and HTTP/3 support lives under `src/plugin/server/http/`.
-- `src/plugin/executor/` contains request processors such as `sequence`, `forward`, `cache`, `fallback`, `hosts`, `arbitrary`, `redirect`, `ecs_handler`, `ttl`, `dual_selector`, observability plugins, and system-integration plugins.
-- `src/plugin/matcher/` contains rule matchers for qname/qtype/qclass, client IP, response IP, CNAME, response presence, RCODE, marks, env, random rollout, rate limits, and related predicates. Shared matcher parsing, source classification, and provider binding stay under `src/plugin/matcher/rules/`.
-- `src/plugin/provider/` contains reusable domain/IP datasets consumed by matchers and executors. Provider API wiring and V2Ray model/parser/selector helpers remain provider-local because they encode provider semantics.
+- `src/plugin/` is the main extension surface and is split into server, executor, matcher, and provider categories. The category `mod.rs` files and factory registration are the authoritative plugin inventory.
+- Category-local lifecycle, parsing, metrics, and protocol/provider semantics stay within their owning plugin package unless the abstraction is genuinely subsystem-neutral.
 - Service-management implementation lives in `src/infra/service.rs`; `src/cli/service.rs` only adapts CLI service options.
-- `crates/macros/` provides proc-macros used by the plugin registration system (`register_plugin_factory!` and related derives).
-- `crates/ripset/` is a pure-Rust Linux netlink implementation for ipset/nftset operations, used by the ipset and nftset executor plugins.
-- `crates/proto/` contains OxiDNS's DNS message model and wire codec types (header, name, question, record, and rdata), re-exported by `src/lib.rs` as `proto`.
-- `crates/zoneparser/` is a standalone zone-file parser used for loading hosts and local zone data.
+- Workspace members and their dependency relationships are declared by the root and member `Cargo.toml` files. Each member owns its local API and stability policy.
 - `tests/plugin_integration.rs` covers config parsing, plugin registry wiring, sequence quick-setup, and live server integration.
 - `tests/message_hickory_compat.rs` validates message codec compatibility behavior against Hickory.
-- `config.yaml` is the canonical runnable default configuration for the current plugin composition.
+- `config*.yaml` files are the canonical runnable configuration profiles for their corresponding bundles.
 - `README.md` and `README_EN.md` describe the architecture and capability set; keep them aligned with behavior changes.
 - Detailed internal architecture and dependency-boundary guidance lives in `ai/architecture.md`.
 - WebUI-specific guidance lives in `ai/webui.md`; follow it for changes under `webui/`.
 
 ## Build, Test, and Development Commands
 
-**Toolchain note:** `rustfmt.toml` uses `unstable_features = true`, so formatting and the pre-commit hook both require the nightly toolchain (`cargo +nightly fmt`). Install it with `rustup toolchain install nightly` if needed.
+`justfile`, `rustfmt.toml`, and the active CI workflows are the source of truth for toolchains and quality-gate command bodies. Inspect the relevant recipe before running or documenting a gate.
 
-**Git hooks:** Run `just install-hooks` once per clone to activate the pre-commit hook (`cargo +nightly fmt --check` + `cargo +nightly clippy -- -D warnings`).
+**Git hooks:** Run `just install-hooks` once per clone. The installed files under
+`.githooks/` define the actual pre-commit checks.
 
 **Preferred quality gates (via `just`):**
-- `just check` — full gate: fmt check + clippy (`-D warnings`) + tests. Run this before opening a PR.
-- `just fix` — auto-applies fmt and Clippy fixes; use during active development.
-- `just lint` — fmt check + clippy only, no tests; faster iteration cycle.
+- `just check` — normal pre-PR gate.
+- `just fix` — repository-managed formatting and lint fixes during development.
+- `just lint` — faster lint-only iteration.
+- Use the feature/bundle recipes declared in `justfile` when `Cargo.toml` feature wiring changes.
 
-**Individual commands:**
-- `cargo check` — fastest sanity check during iteration.
-- `cargo build --release` — builds the optimized binary.
-- `cargo run -- start -c config.yaml` — runs OxiDNS with the default config.
-- `cargo run --release -- start -c config.yaml` — preferred for performance-sensitive validation.
-- `cargo run -- start -c config.yaml -l debug` — overrides the log level for local debugging.
-- `cargo test` — runs all unit and integration tests.
-- `cargo test --test plugin_integration` — runs the end-to-end plugin/config integration suite.
-- `cargo test <filter>` — runs tests whose names match the filter string (e.g., `cargo test cache` runs all cache-related tests).
-- `cargo test --test plugin_integration <filter>` — runs a specific integration test by name.
-- `cargo +nightly fmt` — formats code; nightly is required due to unstable rustfmt features.
-- `cargo +nightly clippy --all-targets --all-features -- -D warnings` — lints with warnings as errors; required to match CI and the pre-commit hook.
+Use `cargo check` for a fast compile sanity check and focused `cargo test`
+filters while iterating. For exact runtime CLI syntax, inspect `src/cli/` or
+`oxidns --help`; use `config*.yaml` as runnable examples. Copy formatting,
+linting, bundle, and full-gate invocations from `justfile` or `.githooks/`
+rather than maintaining command variants here.
 
 ## Coding Style & Naming Conventions
 
-- Rust 2024 edition; format with `cargo +nightly fmt`.
+- Follow the Rust edition declared in the root `Cargo.toml` and format through
+  the repository recipe in `justfile`.
 - Use `snake_case` for functions and fields, `CamelCase` for types, and `SCREAMING_SNAKE_CASE` for constants.
 - Keep modules cohesive and place helpers close to the feature they serve.
 - Comments should be written in English.
@@ -83,20 +79,22 @@
 
 - Use Rust's built-in test framework and keep focused unit tests close to logic-heavy modules.
 - Prefer ephemeral ports, bounded timeouts, and deterministic inputs for network-facing tests.
-- Run at least `cargo test` for behavior changes.
-- Use `ai/testing-strategy.md` to select focused, bundle, feature-matrix, platform, WebUI, and docs validation.
+- Select validation proportionally from the recipes in `justfile`, workspace `package.json` scripts, and affected CI workflow. Run focused checks while iterating and the applicable repository gate before handoff.
+- Use `ai/testing-strategy.md` only for selection criteria and correctness invariants, not as a command inventory.
 - For plugin-specific testing rules (integration test placement, feature gating, trigger conditions), see [ai/plugin-dev.md](ai/plugin-dev.md).
 
 ## Configuration & Documentation
 
-- If a change adds or renames plugin types, config fields, default behaviors, or supported protocols, update `README.md` and `README_EN.md` in the same change when applicable.
-- Use `ai/change-impact-matrix.md` to identify required Rust, WebUI, docs, config, packaging, API, and release synchronization.
-- When preparing a release, follow the standalone workflow in `ai/release-process.md` for tag-based changelog generation, Cargo version bumps, and release-note updates.
-- For the full plugin documentation and WebUI sync checklist (`docs/`, `webui/lib/plugin-definitions/`, `config.yaml`), see [ai/plugin-dev.md](ai/plugin-dev.md).
+- Update `README.md` and `README_EN.md` only when their user-facing capability or
+  prominent-default summaries are affected; detailed config fields belong in
+  the plugin reference and schema-driven surfaces.
+- Use the changed contract and its maintained representations—Rust schema, WebUI definitions, examples, API docs, and translations—to determine synchronization. `ai/change-impact-matrix.md` provides trigger criteria only.
+- When preparing a release, treat `.github/workflows/release.yml`, related workflows, Cargo manifests, and packaging scripts as the executable release contract; use `ai/release-process.md` for sequencing and review criteria.
+- For plugin changes, inspect the actual Rust registration/config, `webui/lib/plugin-definitions/`, locale trees, documentation trees, and `config*.yaml`; update only representations triggered by the change.
 
 ## Cargo Feature Conventions
 
-See [ai/plugin-dev.md](ai/plugin-dev.md) for the full feature system description, naming rules, the four-step checklist for adding a feature-gated plugin, and the required build verification commands.
+`Cargo.toml` is the authoritative feature graph and bundle definition. Category module `cfg` guards, `src/build_info.rs`, `tests/feature_gating.rs`, `justfile`, and `.github/workflows/rust-ci.yml` are the authoritative integration and validation surfaces. `ai/plugin-dev.md` explains the stable design rules behind them.
 
 ## Operations & Maintenance
 

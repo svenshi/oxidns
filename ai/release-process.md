@@ -3,11 +3,12 @@
 This file documents the repository-local workflow to follow when preparing an
 OxiDNS release. It is maintainer-facing guidance, not end-user documentation.
 
-The release contract spans `.github/workflows/release.yml`,
-`.github/workflows/docker.yml`, `.github/workflows/custom-build.yml`, Cargo
-manifests, packaging files, the upgrade asset selector, and the public docs.
-Changing artifact names or bundle contents in only one of these places is a
-release regression.
+The executable release contract is the active set of release, Docker, and
+custom-build workflows under `.github/workflows/`, together with Cargo
+manifests, packaging files, the upgrade asset selector, and release tests. This
+guide defines review order and invariants; it does not duplicate workflow job,
+target, artifact, or publication-command inventories. Changing a contract in
+only one maintained surface is a release regression.
 
 ## 1. Build The Release Story From Tags
 
@@ -41,22 +42,10 @@ Update the root package version for every release:
 
 - `Cargo.toml` at the repository root, `[package].version`
 
-If any crate under `crates/` has code changes since the latest release tag, bump
-that crate's own `Cargo.toml` too:
-
-- `crates/macros/Cargo.toml`
-- `crates/proto/Cargo.toml`
-- `crates/ripset/Cargo.toml`
-- `crates/zoneparser/Cargo.toml`
-
-Use path-level diffs to decide which crate versions need to change:
-
-```bash
-git diff --name-only "$LATEST_TAG"..HEAD -- crates/macros
-git diff --name-only "$LATEST_TAG"..HEAD -- crates/proto
-git diff --name-only "$LATEST_TAG"..HEAD -- crates/ripset
-git diff --name-only "$LATEST_TAG"..HEAD -- crates/zoneparser
-```
+For each changed publishable workspace member declared by the root
+`Cargo.toml`, decide whether its own manifest version or published dependency
+metadata must change. Use the latest-tag path diff and current workspace
+membership rather than a crate list copied into this guide.
 
 When a crate version changes:
 
@@ -106,51 +95,17 @@ step 1. The upgrade notes must mention:
 Update `.github/release-notes.md` for the intended tag. This fixed file is
 overwritten during every release preparation, while Git history retains the
 previous versions. The reviewed release description therefore becomes part of
-the tagged source instead of a manual post-publication edit. The first line
-must be `# OxiDNS vX.Y.Z`; the tag workflow rejects a missing, empty, or
-mismatched file.
+the tagged source instead of a manual post-publication edit.
 
-Keep this file shorter than the full documentation release notes, but make it
-complete enough for operators deciding whether to upgrade. The tag workflow
-uses it in two places:
+Derive the required heading/version validation, delivery destinations,
+rendering rules, and length handling from `.github/workflows/release.yml` plus
+the notification scripts and tests it invokes. Use the current
+`.github/release-notes.md` and documentation release card as structural
+references instead of maintaining another template here.
 
-- `softprops/action-gh-release` prepends it to GitHub's generated release notes,
-  which remain at the end for merged pull requests, contributors, and the full
-  changelog link.
-- The Telegram notification renders the same file as Telegram-compatible HTML,
-  followed by the GitHub Release URL. Headings, lists, bold text, inline code,
-  and Markdown links are preserved. If the resulting message exceeds
-  Telegram's 4096-character limit, the workflow truncates the curated text
-  while preserving a truncation notice and the full Release link.
-
-Use this standard Chinese template. A small number of emoji is allowed when it
-improves scanability:
-
-```markdown
-# OxiDNS v1.3.0
-
-## 🚀 发布概览
-
-- 用一到两句话说明本次发布的定位、版本影响和最重要的变化。
-- 说明适合升级的人群或主要收益。
-
-## ✨ 主要亮点
-
-- 重要功能、行为变化或兼容性改进。
-- 关键 bug 修复、稳定性增强或运维体验改善。
-- 如适用，补充 WebUI、打包、文档或平台相关变化。
-
-## ⚠️ 升级说明
-
-- 现有配置是否可以直接升级。
-- 如有迁移步骤，在这里明确列出。
-- 如有服务管理、WebUI、平台或配置兼容性风险，在这里说明。
-
-## 📦 下载与校验
-
-- 根据平台和 bundle 选择对应 archive。
-- 替换生产环境二进制前，请使用 release assets 中的校验信息确认文件完整性。
-```
+Keep the curated text shorter than the full documentation release notes but
+complete enough for an upgrade decision. Cover release scope, important
+changes, compatibility/migration risk, and download verification.
 
 Generation rules:
 
@@ -158,9 +113,10 @@ Generation rules:
   step 1 and the docs release notes from step 3.
 - Do not include items that were not shipped in the tagged commit.
 - Keep `Validation` limited to commands actually run for this release.
-- Write the final GitHub Release body in Chinese.
-- Mention breaking changes or config migrations in both `发布概览` and
-  `升级说明`.
+- Follow the language and section structure established by the current release
+  note file and validated by the workflow.
+- Make breaking changes or config migrations prominent in both the summary and
+  compatibility guidance.
 - Do not paste the full website release card verbatim; GitHub Release text
   should be concise and action-oriented.
 
@@ -170,56 +126,23 @@ workflow.
 
 ## 5. Confirm The Release Artifact Contract
 
-The tag workflow publishes the following artifacts.
+Read the current build matrices, bundle inputs, archive assembly, and asset
+names directly from `.github/workflows/release.yml` and reusable packaging
+workflows. Cross-check them against `Cargo.toml` bundle definitions,
+`config*.yaml`, the upgrade asset selector and its tests, Docker download
+patterns, and user installation/custom-build documentation.
 
-### Full bundle
-
-Full archives include the binary, `config.yaml`, `LICENSE`, and WebUI files.
-
-- Linux: `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`,
-  `aarch64-unknown-linux-gnu`, `aarch64-unknown-linux-musl`,
-  `i686-unknown-linux-musl`, `arm-unknown-linux-musleabihf`, and
-  `armv7-unknown-linux-musleabihf`.
-- macOS: `x86_64-apple-darwin` and `aarch64-apple-darwin`.
-- FreeBSD: `x86_64-unknown-freebsd`.
-- Windows: `x86_64-pc-windows-msvc`, `i686-pc-windows-msvc`, and
-  `aarch64-pc-windows-msvc`.
-- Debian packages: x86_64 and aarch64 GNU Linux targets.
-
-Full archive names remain compatible with the upgrade selector:
-
-```text
-oxidns-<target>.tar.gz
-oxidns-<target>.zip
-```
-
-### Slim bundles
-
-- `minimal`: x86_64 and aarch64 Linux musl archives, using
-  `config.minimal.yaml` and shipping no WebUI.
-- `standard`: x86_64 and aarch64 Linux musl archives, including `config.yaml`
-  and WebUI files.
-
-Slim names include the bundle:
-
-```text
-oxidns-minimal-<target>.tar.gz
-oxidns-standard-<target>.tar.gz
-```
+The stable invariant is that every published archive name and content policy
+must be understood consistently by release production, self-upgrade, Docker,
+documentation, and smoke tests. Platform and target membership is deliberately
+not listed here.
 
 ### Downstream publication
 
-- The root Rust package is published to crates.io after the GitHub Release.
-- Docker images are built from the published full musl archives for amd64 and
-  arm64, then combined into multi-architecture manifests for Docker Hub and
-  GHCR.
-- The Telegram release notification is sent to the `Announcements` forum topic
-  using `.github/release-notes.md`, then pinned there.
-  Configure `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, and the topic's numeric
-  `TELEGRAM_ANNOUNCEMENTS_THREAD_ID` as repository Actions secrets. The bot
-  must be an administrator with permission to post and pin messages.
-- The reusable custom-build workflow must keep target-to-runner, build-tool,
-  archive naming, and WebUI packaging rules aligned with `release.yml`.
+Derive publication order, registries, image sources, notification behavior,
+required secrets, and reusable workflow inputs from the active workflow jobs.
+Keep downstream consumers aligned with the release workflow; do not retain a
+second job inventory in this guide.
 
 Before tagging, compare any workflow, feature, target, packaging, or upgrade
 changes against this contract. If the contract intentionally changes, update
@@ -241,12 +164,8 @@ dependency, bundle, protocol, or broad cfg changes:
 just check-matrix
 ```
 
-Also run these when the corresponding areas changed:
-
-```bash
-cd webui && pnpm typecheck
-cd docs && npm run build
-```
+When WebUI or docs changed, run the applicable scripts declared in their
+`package.json` files and required by their active CI workflows.
 
 Also verify before tagging:
 
@@ -260,10 +179,11 @@ Also verify before tagging:
   built release candidate.
 - `oxidns check` accepts the packaged full and minimal example configs under
   their corresponding bundles.
-- `cargo publish --locked --dry-run --no-verify` succeeds. The temporary
-  `--no-verify` is required while the RouterOS response-channel fix is supplied
-  through `[patch.crates-io]`; remove it after upgrading to a fixed upstream
-  release.
+- The local package dry-run uses the same verification policy and dependency
+  assumptions as the publish job in `.github/workflows/release.yml`. Any
+  verification bypass must be visible in the workflow, justified by the current
+  manifests, and called out as release risk; do not encode temporary dependency
+  state here.
 - No release-note claim depends on uncommitted working-tree changes.
 
 ## 7. Hand Off For Commit And Tag
@@ -290,9 +210,9 @@ release-prep changes:
 git tag vX.Y.Z
 ```
 
-The GitHub release workflow is triggered by pushing tags matching `v*`.
-The maintainer should only push the tag after reviewing the release-prep commit
-and versioned release-notes file.
+The active release workflow defines its tag/ref trigger. The maintainer should
+only push a matching tag after reviewing the release-prep commit and versioned
+release-notes file.
 
 Before pushing, verify the tag points at the reviewed release commit:
 
@@ -302,38 +222,34 @@ git show --no-patch --decorate vX.Y.Z
 
 ## 8. Verify Publication
 
-Do not consider the release complete when the tag is pushed. Wait for and check
-these workflow stages:
+Do not consider the release complete when the tag is pushed. Wait for every
+required job and downstream publication declared by the tag-triggered workflows
+to finish successfully.
 
-1. WebUI build.
-2. Full and slim archive matrices.
-3. GitHub Release publication.
-4. crates.io publication.
-5. amd64/arm64 Docker builds and multi-architecture manifests.
-6. Release notification.
-
-Inspect the release and download at least one representative archive:
+Inspect the release asset inventory and download at least one representative
+archive selected from that inventory:
 
 ```bash
-gh release view vX.Y.Z
+gh release view vX.Y.Z --json assets
 release_tmp="$(mktemp -d)"
-gh release download vX.Y.Z --pattern 'oxidns-x86_64-unknown-linux-musl.tar.gz' --dir "$release_tmp"
-tar -tzf "$release_tmp/oxidns-x86_64-unknown-linux-musl.tar.gz"
+gh release download vX.Y.Z --pattern '<asset-name-from-release-workflow>' --dir "$release_tmp"
 ```
 
 Verify that:
 
-- Expected full, slim, and Debian assets exist with correct names.
+- Every asset expected by the release workflow matrix exists with the generated
+  name.
 - The archive contains the expected config, license, and WebUI policy for its
   bundle.
 - The extracted binary reports the intended version and build bundle.
 - The example config validates with that binary.
 - GitHub reports a digest for downloadable assets; the self-upgrade path relies
   on the release asset digest for SHA256 verification.
-- Docker Hub and GHCR expose the expected version and architecture manifests.
-- The published crate version and repository/tag metadata are correct.
-- The curated prefix of the final GitHub Release, its versioned release-notes
-  file, the Telegram announcement, and both documentation release cards agree.
+- Every downstream registry/publication job exposes the expected version and
+  target metadata.
+- Published package metadata agrees with the repository and tag.
+- Release notes, documentation release cards, and workflow-generated
+  notifications agree wherever those outputs are enabled by the workflow.
 
 Keep a short publication record with the tag commit, workflow URL, validation
 commands, and any platform not manually smoke-tested.

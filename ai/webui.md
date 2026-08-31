@@ -12,11 +12,10 @@ Paths in this guide are relative to `webui/` unless stated otherwise.
 - `lib/plugin-definitions/docs.ts` holds fallback field-level documentation keyed by plugin kind; it is merged automatically via `withFieldDocs()`. Localized user-facing docs live under `lib/i18n/locales/*/docs.ts`.
 - `lib/i18n/` contains locale state, translation keys, localized WebUI copy, localized plugin definitions, and localized plugin field docs. Keep it aligned whenever adding user-facing UI text or plugin metadata.
 - `lib/store.ts` contains the current client state model with Zustand. Backend API wiring should replace mock actions behind this store shape where possible instead of scattering fetch logic through views.
-- `pnpm dev` runs the WebUI development server with Turbopack.
-- `pnpm build` builds the WebUI for production.
-- `pnpm typecheck` runs TypeScript validation.
-- `pnpm lint` runs ESLint for the WebUI.
-- `pnpm format` formats TypeScript and TSX with Prettier and Tailwind class ordering.
+- `package.json`, the lockfile, and the repository-root
+  `.github/workflows/webui-ci.yml` define the supported package manager, scripts,
+  build mode, and CI checks. Invoke scripts from the manifest instead of copying
+  their command bodies into this guide.
 
 ## Coding Style
 
@@ -29,7 +28,9 @@ Paths in this guide are relative to `webui/` unless stated otherwise.
 
 ## Internationalization
 
-- Default locale is `zh-CN`, with `en-US` support. When adding or changing WebUI text, update `lib/i18n/keys.ts`, `lib/i18n/locales/zh-CN/webui.ts`, and `lib/i18n/locales/en-US/webui.ts` in the same change.
+- The locale registry and resources under `lib/i18n/` define supported locales
+  and fallback behavior. When adding or changing WebUI text, update the key and
+  every maintained locale implementation discovered there.
 - Use `useI18n()` inside React components and read `t`, `locale`, `formatNumber`, and `formatDateTime` from that hook. Use `tClient()` only in non-component code that cannot access the provider, such as Zustand store actions, API helpers, or pure utility paths.
 - Keep interpolation placeholders stable across locales (`{name}`, `{count}`, `{version}`, etc.) and pass values through `t(key, params)`. Do not build translated sentences by concatenating fragments in JSX.
 - Use `formatNumber()` and `formatDateTime()` for user-visible numbers and timestamps when the active locale matters. Avoid direct `toLocaleString()` calls unless the locale is explicitly supplied.
@@ -41,10 +42,12 @@ Paths in this guide are relative to `webui/` unless stated otherwise.
 
 ## Architecture & Extension Principles
 
-- Preserve the console shell flow: `app/(console)/layout.tsx -> AppSidebar/AppHeader -> page content -> PluginDetailSheet`, with `ConfigEditorView` taking over the main area when `editorMode` is enabled.
+- Keep console-shell ownership centralized in `app/(console)/layout.tsx` and the
+  shell components it imports; derive the current component flow from those
+  imports instead of preserving a copied chain here.
 - Keep global UI state in `useAppStore` until backend integration introduces a clearer API boundary. Avoid duplicating selected plugin, drawer state, editor mode, or restart/save flags in page-local stores.
 - Treat `PluginInstance` in `lib/types.ts` as the UI model for live plugin instances. Keep its `type` aligned with OxiDNS plugin categories: `server`, `executor`, `matcher`, and `provider`.
-- **Adding a new plugin kind to the schema registry requires one definition-file change.** Add the definition to the appropriate category file in `lib/plugin-definitions/` (`executor.ts`, `matcher.ts`, `provider.ts`, or `server.ts`). Everything below auto-derives from that definition with no further registration:
+- **Schema registration for a new plugin kind requires one definition-file change.** Add the definition to the category file selected by the current exports under `lib/plugin-definitions/`. The following behavior auto-derives from that definition without another schema registry:
   - Plugin catalog and type-filtered lists (`pluginCatalog`, `getPluginCatalogItemsByType`)
   - Create-plugin dialog (search, listing, schema-driven form)
   - Default card and detail drawer (`PluginCardTemplate`, `PluginDetailTemplate`)
@@ -64,9 +67,16 @@ Paths in this guide are relative to `webui/` unless stated otherwise.
 
 ### Shared Toasts and asynchronous runtime actions
 
-- Mount the shared Radix Toast provider inside the root i18n provider. Operational warnings and errors use the shared programmatic toast API, appear in the top-right, remain dismissible, and default to five seconds; do not add per-card notice blocks that change repeated-item height.
+- Use the shared toast provider and programmatic API implemented by the root
+  providers for operational warnings and errors. Keep notices dismissible and
+  avoid per-card blocks that change repeated-item height; presentation defaults
+  belong in the shared implementation.
 - For asynchronous runtime actions, an accepted mutation response is not completion. Correlate the returned operation ID with a lightweight status endpoint, keep the initiating control loading until the matching terminal result arrives, and reserve inline success styling for confirmed success.
-- Poll one batch endpoint per visible detail surface instead of one request per card. Start immediately, serialize rounds, abort requests and timers when the runtime tag, config version, connection session, edit mode, or component lifetime changes, and deduplicate consecutive polling-failure toasts.
+- Follow the runtime-operation transport implemented by `lib/store.ts` and
+  `lib/oxidns-api.ts`. Avoid per-card N+1 requests; when polling is used, batch
+  visible state, serialize rounds, cancel stale sessions, and deduplicate
+  consecutive failure feedback. A push transport may replace polling while
+  preserving those lifecycle properties.
 - On a new polling session, restore active loading states but treat existing terminal results as a baseline so reopening a view does not replay stale success or error feedback. Backend-active state takes visual priority over transient success feedback.
 
 ## Design Principles
@@ -85,7 +95,10 @@ Paths in this guide are relative to `webui/` unless stated otherwise.
 
 ## Testing & Documentation
 
-- For WebUI behavior changes, run at least `pnpm typecheck`. Also run `pnpm lint` when changing shared components, route layouts, or plugin form logic.
+- For WebUI behavior changes, select the applicable scripts from `package.json`;
+  its script definitions and the repository-root
+  `.github/workflows/webui-ci.yml` are authoritative for exact commands and CI
+  coverage.
 - For visual WebUI changes, verify the affected route in both light and dark themes, and check narrow and desktop widths for overflow, clipped labels, and broken grid/card layouts.
 - If a Rust plugin is added, renamed, or its config shape changes, update the appropriate file in `lib/plugin-definitions/`, the matching i18n resources under `lib/i18n/locales/*/plugin-defined.ts` and `lib/i18n/locales/*/docs.ts`, and optionally `lib/plugin-definitions/docs.ts` in the same change so the console stays aligned with runtime behavior. Custom kind components under `components/plugins/kinds/` only need updating if they reference removed or renamed fields.
 - If WebUI architecture, styling tokens, plugin schema conventions, or console workflows change, update this `ai/webui.md` file.

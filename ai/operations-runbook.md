@@ -1,5 +1,11 @@
 # Operations Runbook
 
+Commands below illustrate the operational sequence. Resolve current CLI flags
+from `src/cli/` or `oxidns --help`, service behavior from
+`src/infra/service.rs`, API routes from `src/api/` and the generated API docs,
+and configuration/defaults from `src/config/` plus `config*.yaml`. Those project
+surfaces override copied examples in this runbook.
+
 This runbook is for maintaining a deployed OxiDNS instance. User-facing command
 and API references remain under `docs/docs/`; this document defines the order
 of checks, safe change procedures, and recovery expectations for maintainers.
@@ -24,81 +30,44 @@ upgrades.
 
 ## Preflight and Identity
 
-Before starting or reloading:
+Before starting or reloading, use the current CLI commands to record binary
+identity/build capabilities and validate the deployed config with its real
+working directory and dependency graph. `src/cli/`, `oxidns --help`, and the CLI
+user documentation define the exact syntax. A config may be valid in the
+repository but unsupported by the deployed binary's compiled capabilities.
 
-```bash
-oxidns --version
-oxidns build-info
-oxidns check -c /etc/oxidns/config.yaml -d /var/lib/oxidns --graph
-```
-
-Adjust paths for the installation. `build-info` is the source of truth for the
-compiled bundle, features, and available plugin types. A config may be valid in
-the repository but unsupported by a slim deployed binary.
-
-For foreground diagnosis:
-
-```bash
-oxidns start -c /etc/oxidns/config.yaml -d /var/lib/oxidns -l debug
-```
+For foreground diagnosis, use the start command and log-level options exposed
+by the installed binary, substituting the deployment's actual config and
+working-directory paths.
 
 Do not run a second foreground instance on production listener ports while the
 service is active.
 
 ## Service Operations
 
-The built-in service commands are:
-
-```bash
-sudo oxidns service install -d /var/lib/oxidns -c /etc/oxidns/config.yaml
-sudo oxidns service start
-sudo oxidns service stop
-sudo oxidns service restart
-sudo oxidns service uninstall
-```
-
-Installation registers autostart but does not start the service. The working
-directory must be absolute. The generated service uses restart-on-failure with
-a short delay; repeated restarts indicate a persistent startup problem and
-must not be treated as recovery.
-
-The packaged Linux unit starts:
-
-```text
-/usr/bin/oxidns start -c /etc/oxidns/config.yaml -d /var/lib/oxidns
-```
+Use the service operations exposed by `oxidns service --help`. Their supported
+actions and generated definitions come from `src/infra/service.rs`; packaged
+unit files and installation scripts define distribution-specific behavior.
+Inspect the installed definition rather than relying on copied defaults.
+Repeated restarts indicate a persistent startup problem and must not be treated
+as recovery.
 
 When diagnosing a service, compare its actual command line with the intended
 config and working directory before investigating plugin behavior.
 
 ## Health and Readiness
 
-With the management API enabled, probe the configured API base:
-
-```bash
-curl -fsS http://127.0.0.1:9199/api/healthz
-curl -fsS http://127.0.0.1:9199/api/readyz
-curl -fsS http://127.0.0.1:9199/api/health
-curl -fsS http://127.0.0.1:9199/api/build
-```
+With the management API enabled, probe the configured API base using the
+liveness, readiness, detailed health, and build-capability routes registered by
+`src/api/` and documented under `docs/docs/api/`.
 
 Use HTTPS and configured authentication in protected deployments. Avoid
 placing long-lived credentials directly in shared shell history.
 
-Endpoint meanings:
-
-- `/api/healthz`: the management API listener is up. It does not prove DNS
-  plugins are ready.
-- `/api/readyz`: plugin initialization completed and at least one server plugin
-  started.
-- `/api/health`: detailed state, version, bundle, uptime, instance ID, and
-  plugin/server counts. It returns a status document even when DNS is not
-  ready; inspect the JSON fields.
-- `/api/build`: compiled features and supported plugin types.
-
-For orchestration, use `healthz` as liveness and `readyz` as readiness. If the
-binary is built without the `api` feature, use DNS probes and service/process
-state instead.
+Do not confuse API liveness with DNS readiness. Use the route semantics and
+response fields implemented by the current handlers for orchestration. If the
+deployed binary has no management API, use DNS probes and service/process state
+instead.
 
 ## Safe Configuration Change
 
@@ -108,9 +77,10 @@ state instead.
 4. Review the dependency graph for missing, wrong-kind, or circular plugin
    references.
 5. Replace or save the config atomically.
-6. Request reload through `POST /api/reload` or restart the service when reload
-   is not available.
-7. Poll `GET /api/reload/status`, then verify readiness and perform DNS probes.
+6. Request reload through the currently documented control route, or restart
+   the service when reload is unavailable.
+7. Follow the operation/status contract exposed by the API, then verify
+   readiness and perform DNS probes.
 8. Keep the previous config until the observation window completes.
 
 The config API supports validation and version-aware saves. API clients should
@@ -133,22 +103,12 @@ dependency error before retrying. Do not loop reload requests.
 
 ### Metrics
 
-Prometheus text is served at `/api/metrics` when the `metrics` feature is
-enabled. Start with:
-
-- `server_request_total`, completion/failure counters, inflight, and latency
-  sum/count.
-- `query_total`, `query_error_total`, inflight, and latency sum/count.
-- Cache hit/miss/expired/skip/refresh counters and entry count.
-- Forward success/error/timeout and per-upstream counters.
-- Fallback, rate-limit, and local-answer counters.
-- External integration queue, rejection, reconnect, degraded, and sync error
-  metrics.
-
-Metrics expose counters and sum/count pairs, not a complete latency histogram.
-Calculate rates over time and compare with a known baseline. Labels must remain
-low cardinality; use query recorder data rather than metrics for individual
-domains or clients.
+The metrics route and current metric catalog are documented in
+`docs/docs/api/metrics.mdx` and implemented by metric-source registration in
+Rust. Start with request/error/inflight/latency signals, then inspect the owning
+cache, upstream, policy, or side-effect subsystem. Calculate rates over time and
+compare with a known baseline. Labels must remain low cardinality; use record or
+query APIs rather than metrics for individual domains or clients.
 
 ## Incident Triage Order
 
@@ -156,7 +116,7 @@ Use this order to avoid changing multiple layers at once:
 
 1. Confirm process/service state and restart loop status.
 2. Confirm version, bundle, config path, and working directory.
-3. Check API liveness and readiness, then inspect `/api/health`.
+3. Check API liveness and DNS readiness, then inspect detailed health state.
 4. Read startup/reload logs for the first causal error.
 5. Probe the configured DNS listener locally over the affected protocol.
 6. Probe upstream connectivity with `oxidns probe upstream`, using the deployed
@@ -170,10 +130,11 @@ Use this order to avoid changing multiple layers at once:
 
 ### API is live but DNS is not ready
 
-- Inspect `checks.plugin_init`, `checks.server_startup`, and server plugin count.
+- Inspect the current readiness diagnostics and server/plugin state returned by
+  the health handler.
 - Verify at least one server plugin exists and its entry executor resolves.
 - Check listener address conflicts, permissions, TLS files, and feature support.
-- Do not use `/healthz` alone as DNS readiness.
+- Do not use API liveness alone as DNS readiness.
 
 ### DNS listener responds but queries time out or fail
 
@@ -211,18 +172,10 @@ Use this order to avoid changing multiple layers at once:
 
 ## Upgrade and Rollback
 
-Use the staged workflow when risk is material:
-
-```bash
-oxidns upgrade check
-oxidns upgrade download
-sudo oxidns upgrade apply --no-restart
-```
-
-The download path verifies the GitHub release asset SHA256 digest. Apply uses an
-upgrade lock, creates a binary backup, and can back up/replace WebUI assets.
-Default cache and backup directories are relative to the working directory
-unless explicit paths are supplied.
+Use the staged check, download, and apply operations exposed by the installed
+CLI when risk is material. Exact flags and current verification/backup behavior
+come from `src/cli/`, `src/infra/upgrade/`, CLI documentation, and upgrade tests;
+review them before production use.
 
 Before applying:
 

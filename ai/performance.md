@@ -47,10 +47,10 @@ without a concrete ownership model and a clearly identified request-path cost.
 
 ## Profiling and Instrumentation
 
-The Cargo features `hotpath` and `hotpath-alloc` expose diagnostic
-instrumentation attached to request, matcher, executor, provider, transport,
-and codec paths. They are development-only features and must not be added to
-release bundles or treated as production defaults.
+The profiling features declared in the profiling section of `Cargo.toml` expose
+diagnostic instrumentation on request-path components. Their feature edges and
+names come from the manifest. They are development-only and must not be added
+to release bundles or treated as production defaults.
 
 Use instrumentation to locate call paths, allocation ownership, lock pressure,
 and unexpected repeated work. Instrumentation overhead changes absolute timing,

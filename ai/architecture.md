@@ -6,6 +6,11 @@ rules for changing the request path. User-facing architecture belongs in
 `docs/docs/architecture-and-design.md`; concise repository instructions remain
 in `AGENTS.md`.
 
+Directory ownership and dependency direction below are stable contracts. For
+the current module, plugin, feature, and runtime inventories, inspect `src/lib.rs`,
+the relevant `mod.rs` files, `Cargo.toml`, `src/build_info.rs`, and runnable
+configuration rather than extending this guide with lists.
+
 ## Core Request Path
 
 All DNS transports converge on one processing model:
@@ -188,6 +193,7 @@ Before merging an architectural change, verify:
 - Plugin lifecycle code owns all tasks, registrations, and teardown.
 - Hot-path impact is measured when allocations, locks, cloning, parsing, or
   dispatch change.
-- Required Rust, WebUI, docs, config, packaging, and release artifacts are
-  identified through `ai/change-impact-matrix.md`.
-- Relevant tests from `ai/testing-strategy.md` have been run and reported.
+- Maintained representations are identified from the changed code/schema and
+  the project surfaces listed in `ai/change-impact-matrix.md`.
+- Relevant checks are selected from `justfile`, workspace package scripts, and
+  affected CI workflows using the criteria in `ai/testing-strategy.md`.

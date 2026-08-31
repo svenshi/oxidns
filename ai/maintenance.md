@@ -14,14 +14,14 @@ release preparation. Release-specific versioning and publication remain in
 
 ## Toolchain Contract
 
-- Rust edition: 2024.
-- Stable Rust: normal builds, tests, docs, and release binaries.
-- Nightly Rust: rustfmt and strict Clippy commands because `rustfmt.toml` uses
-  unstable features.
-- WebUI CI: Node.js 22 and pnpm 10.
-- Docs CI: Node.js 20 and npm with `package-lock.json`.
-- `Cargo.lock`, `webui/pnpm-lock.yaml`, and `docs/package-lock.json` are
-  reproducibility artifacts and must be updated with their manifests.
+- Rust edition and dependency requirements come from workspace Cargo manifests.
+- Formatting options come from `rustfmt.toml`; local toolchain invocations come
+  from `justfile` and `.githooks/`; CI and release toolchains come from the
+  active workflows under `.github/workflows/`.
+- JavaScript runtime and package-manager versions come from the WebUI/docs
+  manifests, lockfiles, and their CI workflows.
+- Committed lockfiles are reproducibility artifacts and must be updated through
+  the package manager that owns the corresponding manifest.
 
 Do not change toolchain versions in only one workflow. Check local guidance,
 all CI workflows, installer/build documentation, and reusable custom builds.
@@ -50,10 +50,11 @@ For each dependency update:
 6. Run affected focused tests, then the validation required below.
 7. Call out generated-code, wire-format, TLS, database, or persistence changes.
 
-The `mikrotik-rs` dependency is currently mapped to the OxiDNS-maintained
-`oxidns-mikrotik-rs` package because the upstream Tokio response-channel fix has
-not been released. Treat updates to that package as source changes, review the
-exact release, and run RouterOS transport/manager tests.
+Derive renamed packages, forks, patches, and source overrides from the current
+Cargo manifests and lockfile. Treat changes to any such dependency as source
+changes: review the exact release/source diff and run the owning subsystem's
+tests. Do not preserve a temporary dependency explanation in this guide after
+the manifest no longer expresses it.
 
 ## Validation by Dependency Type
 
@@ -63,9 +64,9 @@ exact release, and run RouterOS transport/manager tests.
 just check
 ```
 
-Use `just check-matrix` for optional dependencies, feature graph changes,
-proc-macros, async runtime/networking, TLS/HTTP/QUIC, serialization, or platform
-integration updates.
+Use the feature-matrix recipe currently declared in `justfile` for optional
+dependencies, feature graph changes, proc-macros, async runtime/networking,
+TLS/HTTP/QUIC, serialization, or platform integration updates.
 
 ### Rust major updates
 
@@ -78,27 +79,15 @@ integration updates.
 
 ### WebUI dependencies
 
-```bash
-cd webui
-pnpm install
-pnpm typecheck
-pnpm lint
-pnpm test
-pnpm build
-```
-
-Use the repository's pinned pnpm major. Review Next.js, React, Tailwind, Radix,
+Use the package manager and scripts declared by `webui/package.json` and its
+lockfile. Match CI coverage in `.github/workflows/webui-ci.yml`. Review framework
 and build-output changes for runtime and static export impact.
 
 ### Docs dependencies
 
-```bash
-cd docs
-npm install
-npm run build
-```
-
-Prefer `npm ci` when validating the committed lockfile exactly.
+Use the package manager and scripts declared by `docs/package.json` and its
+lockfile. Match CI coverage in `.github/workflows/docs-ci.yml`; use the
+lockfile-preserving install mode selected there when validating reproducibility.
 
 ### GitHub Actions and Docker
 
@@ -109,35 +98,26 @@ Prefer `npm ci` when validating the committed lockfile exactly.
 
 ## Feature and Bundle Hygiene
 
-At least periodically, and whenever features change:
-
-```bash
-just check-each-feature
-just check-minimal
-just check-standard
-just check-full
-```
-
-Use `just check-powerset` before or after broad feature-graph changes when local
-time permits; nightly CI provides the recurring depth-2 sweep.
+Whenever features change, select the per-feature, bundle, and powerset recipes
+currently declared in `justfile`. The active schedule and CI depth are defined
+by `.github/workflows/rust-ci.yml`.
 
 Check that:
 
 - Public features follow category naming rules.
 - Private `_` aggregators are not documented as user-facing switches.
 - Optional dependencies are reachable only from intended features.
-- Bundle membership matches `ai/plugin-dev.md`, custom-build documentation,
-  build info, and release packaging.
+- Bundle membership in `Cargo.toml` matches `src/build_info.rs`, custom-build
+  documentation, feature-gating tests, and release packaging workflows.
 - Disabled-feature fallback paths remain warning-free.
 
-CI also runs `cargo-shear`. Review removals manually: proc-macro, build-script,
-platform-only, and feature-only dependencies may not look used in the active
-configuration.
+When the active workflow runs unused-dependency analysis, review suggested
+removals manually: proc-macro, build-script, platform-only, and feature-only
+dependencies may not look used in the active configuration.
 
 ## Workspace Crate Maintenance
 
-The workspace includes the root package and crates for macros, protocol types,
-ripset, and zone parsing.
+The workspace members declared in the root `Cargo.toml` are authoritative.
 
 - Keep each crate's manifest metadata and version internally consistent.
 - Update root path dependency version requirements when a child crate version

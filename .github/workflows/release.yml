@@ -486,12 +486,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Verify package
-        run: cargo publish --locked --dry-run --no-verify
+        run: cargo publish --locked --dry-run
 
       - name: Publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-        run: cargo publish --locked --no-verify
+        run: cargo publish --locked
 
   docker:
     name: Publish Docker Images
