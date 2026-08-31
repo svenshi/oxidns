@@ -3,7 +3,7 @@
 
 //! Management API for manually triggering configured cron jobs.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -11,15 +11,17 @@ use bytes::Bytes;
 use http::{Request, StatusCode};
 use serde::Serialize;
 
+use super::{CronApiJob, CronJobRunSnapshot};
 use crate::api::{ApiHandler, json_error, json_ok};
 use crate::infra::error::Result;
-use crate::infra::task::{ManagedTaskHandle, TriggerOutcome};
+use crate::infra::task::TriggerOutcome;
 use crate::register_plugin_api;
 
-pub(super) fn register(tag: &str, jobs: Arc<HashMap<String, ManagedTaskHandle>>) -> Result<()> {
+pub(super) fn register(tag: &str, jobs: Arc<HashMap<String, CronApiJob>>) -> Result<()> {
     register_plugin_api!(
         tag,
         |plugin_api|
+        GET "/jobs/status" => CronJobsStatusHandler { jobs: jobs.clone() },
         POST_PREFIX "/jobs/" => CronJobRunHandler {
             jobs,
             path_prefix: plugin_api.path("/jobs/")?,
@@ -30,8 +32,13 @@ pub(super) fn register(tag: &str, jobs: Arc<HashMap<String, ManagedTaskHandle>>)
 
 #[derive(Debug)]
 struct CronJobRunHandler {
-    jobs: Arc<HashMap<String, ManagedTaskHandle>>,
+    jobs: Arc<HashMap<String, CronApiJob>>,
     path_prefix: String,
+}
+
+#[derive(Debug)]
+struct CronJobsStatusHandler {
+    jobs: Arc<HashMap<String, CronApiJob>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -40,6 +47,13 @@ struct CronJobRunResponse {
     job: String,
     status: &'static str,
     trigger: &'static str,
+    run_id: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct CronJobsStatusResponse {
+    ok: bool,
+    jobs: BTreeMap<String, CronJobRunSnapshot>,
 }
 
 #[async_trait]
@@ -60,14 +74,15 @@ impl ApiHandler for CronJobRunHandler {
             );
         };
 
-        match handle.trigger().await {
-            TriggerOutcome::Started => json_ok(
+        match handle.handle.trigger().await {
+            TriggerOutcome::Started { run_id } => json_ok(
                 StatusCode::ACCEPTED,
                 &CronJobRunResponse {
                     ok: true,
                     job: job_name,
                     status: "started",
                     trigger: "manual",
+                    run_id,
                 },
             ),
             TriggerOutcome::AlreadyRunning => json_error(
@@ -81,6 +96,18 @@ impl ApiHandler for CronJobRunHandler {
                 "cron scheduler is not available",
             ),
         }
+    }
+}
+
+#[async_trait]
+impl ApiHandler for CronJobsStatusHandler {
+    async fn handle(&self, _request: Request<Bytes>) -> crate::api::ApiResponse {
+        let jobs = self
+            .jobs
+            .iter()
+            .map(|(name, job)| (name.clone(), job.state.snapshot()))
+            .collect();
+        json_ok(StatusCode::OK, &CronJobsStatusResponse { ok: true, jobs })
     }
 }
 
@@ -140,11 +167,25 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::*;
-    use crate::infra::task::{TaskOptions, spawn_fixed};
+    use crate::infra::task::{ManagedTaskHandle, TaskOptions, spawn_fixed_isolated};
+    use crate::plugin::executor::cron::{
+        CronCurrentRun, CronCurrentRunStatus, CronManualRunResult, CronManualRunStatus,
+        CronRunTrigger,
+    };
+
+    fn api_job(handle: ManagedTaskHandle) -> CronApiJob {
+        CronApiJob {
+            handle,
+            state: Arc::default(),
+        }
+    }
 
     async fn run_handler(handle: ManagedTaskHandle) -> crate::api::ApiResponse {
         let handler = CronJobRunHandler {
-            jobs: Arc::new(HashMap::from([("refresh sets/a+b".to_string(), handle)])),
+            jobs: Arc::new(HashMap::from([(
+                "refresh sets/a+b".to_string(),
+                api_job(handle),
+            )])),
             path_prefix: "/plugins/cron_main/jobs/".to_string(),
         };
         handler
@@ -160,7 +201,7 @@ mod tests {
 
     #[tokio::test]
     async fn manual_run_handler_returns_accepted_for_started_job() {
-        let handle = spawn_fixed(
+        let handle = spawn_fixed_isolated(
             "cron-api-started",
             Duration::from_secs(3600),
             TaskOptions::default(),
@@ -179,6 +220,7 @@ mod tests {
             serde_json::from_slice(&body).expect("response should be valid json");
         assert_eq!(payload["job"], "refresh sets/a+b");
         assert_eq!(payload["trigger"], "manual");
+        assert_eq!(payload["run_id"], 1);
         handle.stop().await;
     }
 
@@ -188,7 +230,7 @@ mod tests {
         let blocker = Arc::new(Notify::new());
         let started_task = started.clone();
         let blocker_task = blocker.clone();
-        let handle = spawn_fixed(
+        let handle = spawn_fixed_isolated(
             "cron-api-busy",
             Duration::from_secs(3600),
             TaskOptions::default(),
@@ -202,7 +244,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(handle.trigger().await, TriggerOutcome::Started);
+        assert!(matches!(
+            handle.trigger().await,
+            TriggerOutcome::Started { run_id: 1 }
+        ));
         started.notified().await;
 
         let response = run_handler(handle.clone()).await;
@@ -213,7 +258,7 @@ mod tests {
 
     #[tokio::test]
     async fn manual_run_handler_returns_unavailable_for_stopped_job() {
-        let handle = spawn_fixed(
+        let handle = spawn_fixed_isolated(
             "cron-api-stopped",
             Duration::from_secs(3600),
             TaskOptions::default(),
@@ -241,6 +286,78 @@ mod tests {
             )
             .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn jobs_status_handler_returns_all_job_snapshots_by_name() {
+        let active_handle = spawn_fixed_isolated(
+            "cron-api-status-active",
+            Duration::from_secs(3600),
+            TaskOptions::default(),
+            |_| async {},
+        )
+        .unwrap();
+        let idle_handle = spawn_fixed_isolated(
+            "cron-api-status-idle",
+            Duration::from_secs(3600),
+            TaskOptions::default(),
+            |_| async {},
+        )
+        .unwrap();
+        let active = api_job(active_handle.clone());
+        active.state.with_snapshot(|snapshot| {
+            snapshot.current_run = Some(CronCurrentRun {
+                run_id: 4,
+                trigger: CronRunTrigger::Schedule,
+                status: CronCurrentRunStatus::Pending,
+                started_at_ms: 100,
+            });
+            snapshot.last_manual_run = Some(CronManualRunResult {
+                run_id: 3,
+                status: CronManualRunStatus::CompletedWithErrors,
+                executor_error_count: 2,
+                completed_at_ms: 90,
+            });
+        });
+        let handler = CronJobsStatusHandler {
+            jobs: Arc::new(HashMap::from([
+                ("z-active".to_string(), active),
+                ("a-idle".to_string(), api_job(idle_handle.clone())),
+            ])),
+        };
+
+        let response = handler
+            .handle(
+                Request::builder()
+                    .method("GET")
+                    .uri("/plugins/cron_main/jobs/status")
+                    .body(Bytes::new())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            payload["jobs"]["a-idle"]["current_run"],
+            serde_json::Value::Null
+        );
+        assert_eq!(payload["jobs"]["z-active"]["current_run"]["run_id"], 4);
+        assert_eq!(
+            payload["jobs"]["z-active"]["current_run"]["trigger"],
+            "schedule"
+        );
+        assert_eq!(
+            payload["jobs"]["z-active"]["last_manual_run"]["status"],
+            "completed_with_errors"
+        );
+        assert_eq!(
+            payload["jobs"]["z-active"]["last_manual_run"]["executor_error_count"],
+            2
+        );
+
+        active_handle.stop().await;
+        idle_handle.stop().await;
     }
 
     #[test]

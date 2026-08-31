@@ -69,7 +69,8 @@ pub(super) fn open_writer_database(path: &Path) -> rusqlite::Result<Connection> 
     // - auto_vacuum must be selected before WAL or schema creation for a fresh
     //   database; otherwise SQLite keeps the default NONE mode until a manual
     //   VACUUM rewrites the file.
-    // - WAL + synchronous=NORMAL keeps the writer fast and readers non-blocking.
+    // - WAL + synchronous=NORMAL keeps the writer fast and readers
+    //   non-blocking.
     conn.execute_batch(
         "PRAGMA auto_vacuum=INCREMENTAL;
          PRAGMA journal_mode=WAL;

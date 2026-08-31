@@ -323,7 +323,8 @@ pub fn analyze_dependencies(
         )));
     }
 
-    // Kahn's algorithm: start with nodes that have no dependencies (in-degree 0).
+    // Kahn's algorithm: start with nodes that have no dependencies (in-degree
+    // 0).
     let queue_sorted = {
         let mut queue = in_degree
             .iter()

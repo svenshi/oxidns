@@ -40,8 +40,9 @@ impl Plugin for LearnDomainExecutor {
 
     async fn init(&mut self, context: &crate::plugin::PluginInitContext<'_>) -> Result<()> {
         // DependencySpec already enforces the tag and plugin type during graph
-        // analysis. The downcast here is an extra guard and gives the executor a
-        // concrete mutation API without extending the generic Provider trait.
+        // analysis. The downcast here is an extra guard and gives the executor
+        // a concrete mutation API without extending the generic
+        // Provider trait.
         let provider = context.provider_of_type(
             "args.provider",
             &self.config.provider_tag,
@@ -186,8 +187,8 @@ impl LearnDomainExecutor {
                 continue;
             }
             // Only the request qname is learned in v1. CNAME target learning is
-            // intentionally left out because it broadens policy side effects and
-            // needs separate operator controls.
+            // intentionally left out because it broadens policy side effects
+            // and needs separate operator controls.
             let rule =
                 learned_rule_for_domain(question.name().normalized(), self.config.rule_kind)?;
             if seen.insert(rule.clone()) {

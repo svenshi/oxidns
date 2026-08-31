@@ -271,7 +271,8 @@ impl PluginFactory for UdpServerFactory {
             ))
         })?;
 
-        // Resolve and type-check the entry executor using contextual diagnostics.
+        // Resolve and type-check the entry executor using contextual
+        // diagnostics.
         let entry_executor = init_context.executor("args.entry", &udp_config.entry)?;
 
         let metrics = Arc::new(ServerMetrics::new(plugin_config.tag.clone(), "udp"));

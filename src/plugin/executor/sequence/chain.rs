@@ -544,7 +544,8 @@ impl<'a> ChainBuilder<'a> {
             .as_ref()
             .ok_or_else(|| DnsError::plugin("rule must have 'exec' field"))?;
 
-        // Builtin syntax has priority; otherwise resolve as normal executor reference.
+        // Builtin syntax has priority; otherwise resolve as normal executor
+        // reference.
         let op = if let Some(op) = self.parse_builtin(exec, node_index).await? {
             InstructionOp::Builtin(op)
         } else {
@@ -647,7 +648,8 @@ impl<'a> ChainBuilder<'a> {
         match PluginRef::from_str(expr)? {
             PluginRef::PluginTag(tag) => self.context.matcher_ref(field, &tag, reverse),
             PluginRef::QuickSetup { plugin_type, param } => {
-                // Generate deterministic synthetic runtime tag for quick-setup matcher.
+                // Generate deterministic synthetic runtime tag for quick-setup
+                // matcher.
                 let quick_tag = format!(
                     "qs.match.{}.{}.{}.{}",
                     self.sequence_tag, node_index, match_index, plugin_type

@@ -158,8 +158,9 @@ async fn handle_h3_connection(
             }
             Err(e) => {
                 warn!("HTTP/3 connection accept error from {}: {}", src, e);
-                // `h3::server::Connection::accept` reports connection-level errors. The h3
-                // crate caches handled connection errors, so retrying accept can complete
+                // `h3::server::Connection::accept` reports connection-level
+                // errors. The h3 crate caches handled
+                // connection errors, so retrying accept can complete
                 // immediately with the same error and spin the task.
                 return;
             }

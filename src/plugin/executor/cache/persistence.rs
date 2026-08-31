@@ -161,8 +161,8 @@ fn to_cache_key(entry: &PersistedCacheEntry, ecs_in_key: bool) -> Option<CacheKe
             _ => return None,
         }
     } else {
-        // Runtime config disabled ECS dimension; intentionally merge all persisted
-        // ECS variants into one non-ECS cache key bucket.
+        // Runtime config disabled ECS dimension; intentionally merge all
+        // persisted ECS variants into one non-ECS cache key bucket.
         None
     };
 

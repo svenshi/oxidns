@@ -717,7 +717,8 @@ mod tests {
     use super::*;
 
     #[test]
-    // Basic byte-for-byte name roundtrips, including root and an escaped dot label.
+    // Basic byte-for-byte name roundtrips, including root and an escaped dot
+    // label.
     fn parse_wire_name_roundtrip_cases() {
         let cases: &[(&[u8], &str)] = &[
             (&[0], "."),
@@ -742,7 +743,8 @@ mod tests {
     }
 
     #[test]
-    // Reserved label type prefixes 01xxxxxx and 10xxxxxx are forbidden by RFC 1035.
+    // Reserved label type prefixes 01xxxxxx and 10xxxxxx are forbidden by RFC
+    // 1035.
     fn parse_wire_name_rejects_reserved_label_types() {
         for packet in [
             [7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 0x80],
@@ -754,8 +756,8 @@ mod tests {
     }
 
     #[test]
-    // Reverse-lookup helpers are used by matchers and should stay stable for both
-    // IPv4 and IPv6 nibble-style names.
+    // Reverse-lookup helpers are used by matchers and should stay stable for
+    // both IPv4 and IPv6 nibble-style names.
     fn parse_arpa_name_roundtrip_examples() {
         let v4 = Name::from_ascii("4.3.2.1.in-addr.arpa.").unwrap();
         assert_eq!(

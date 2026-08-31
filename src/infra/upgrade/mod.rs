@@ -192,8 +192,9 @@ pub(crate) async fn apply_unchecked(
             return Err(err);
         }
     }
-    // Windows: rename running exe to backup then place new binary at original path.
-    // replace_binary_windows() handles backup creation and rollback atomically.
+    // Windows: rename running exe to backup then place new binary at original
+    // path. replace_binary_windows() handles backup creation and rollback
+    // atomically.
     #[cfg(windows)]
     replace_binary_windows(&extracted, &current_exe, &backup_path)?;
     print_cli_apply_step(context, "Binary replacement completed.");

@@ -320,7 +320,8 @@ impl<C: Connection> Upstream for BootstrapUpstream<C> {
     async fn inner_query(&self, request: Message, deadline: QueryDeadline) -> Result<Message> {
         // Ensure connection pool is initialized with current IP
         // Fast path: just checks atomic, no allocation
-        // Slow path: resolves DNS + creates pool (only on first query or IP change)
+        // Slow path: resolves DNS + creates pool (only on first query or IP
+        // change)
         self.init_pool_if_needed(deadline).await?;
 
         // Get current connection pool (lock-free atomic load)

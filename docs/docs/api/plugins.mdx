@@ -50,7 +50,7 @@ title: 插件扩展 API
 返回：
 
 * `202 Accepted`
-  * 任务已在后台启动，响应中的 `status` 为 `started`、`trigger` 为 `manual`。
+  * 任务已被后台接受，响应中的 `status` 为 `started`、`trigger` 为 `manual`，并包含本轮 `run_id`。`202` 不代表 executor 链已经成功结束。
 * `404 Not Found`
   * 当前 cron runtime 中不存在该任务。
 * `409 Conflict`
@@ -58,7 +58,55 @@ title: 插件扩展 API
 * `503 Service Unavailable`
   * 手动触发队列已满、TaskCenter 正在停止或对应任务已经不可用。
 
-WebUI 会在当前配置版本已经运行时为 cron 插件中的每个任务显示“手动运行”按钮。编辑配置或保存后尚未应用时按钮隐藏，避免用页面中的新配置触发旧 runtime。
+成功响应示例：
+
+```json
+{
+  "ok": true,
+  "job": "refresh_sets",
+  "status": "started",
+  "trigger": "manual",
+  "run_id": 12
+}
+```
+
+`run_id` 在单个已注册 job 的生命周期内从 `1` 递增，定时与手动运行共用同一序列；插件重新注册或进程重启后会重新计数。
+
+#### `GET /api/plugins/<cron_tag>/jobs/status`
+
+批量读取当前 cron runtime 中所有 job 的轻量状态，job 名称作为 `jobs` 对象的键：
+
+```json
+{
+  "ok": true,
+  "jobs": {
+    "refresh_sets": {
+      "current_run": {
+        "run_id": 12,
+        "trigger": "manual",
+        "status": "running",
+        "started_at_ms": 1780000000000
+      },
+      "last_manual_run": null
+    },
+    "cleanup": {
+      "current_run": null,
+      "last_manual_run": {
+        "run_id": 8,
+        "status": "completed_with_errors",
+        "executor_error_count": 2,
+        "completed_at_ms": 1780000001000
+      }
+    }
+  }
+}
+```
+
+- `current_run.trigger` 为 `manual`、`schedule` 或 `interval`，`status` 为 `pending` 或 `running`。
+- `last_manual_run.status` 为 `completed`、`completed_with_errors`、`failed` 或 `cancelled`；正常返回错误的 executor 会计入 `executor_error_count`，但不会阻止后续 executor。
+- 时间字段都是 Unix 毫秒。接口只保留当前运行和最近一次手动结果，不提供历史、日志内容、结果详情或停止能力。
+
+WebUI 会在当前配置版本已经运行时显示“手动运行”按钮，并每 2 秒批量同步真实状态。编辑配置或保存后尚未应用时按钮隐藏；重新打开详情不会重放已经结束的旧结果。
 
 ### matcher
 

@@ -375,7 +375,8 @@ impl PluginFactory for QuicServerFactory {
             ))
         })?;
 
-        // Resolve and type-check the entry executor using contextual diagnostics.
+        // Resolve and type-check the entry executor using contextual
+        // diagnostics.
         let entry_executor = init_context.executor("args.entry", &quic_config.entry)?;
 
         // Load TLS configuration if cert and key are provided

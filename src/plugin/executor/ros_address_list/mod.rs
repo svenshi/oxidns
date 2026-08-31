@@ -147,7 +147,8 @@ impl Executor for MikrotikExecutor {
             return Ok(step);
         };
 
-        // This executor only reacts to successful final answers containing A/AAAA data.
+        // This executor only reacts to successful final answers containing
+        // A/AAAA data.
         let Some(addrs) = extract_observation(context, &self.config) else {
             return Ok(step);
         };
