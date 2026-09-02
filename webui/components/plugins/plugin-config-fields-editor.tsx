@@ -67,6 +67,17 @@ interface SchemaArrayOptionValue {
   value: unknown;
 }
 
+export function shouldShowSchemaArrayEntryHeader(
+  field: Pick<ConfigField, "itemOptions">,
+  child: ConfigFieldChild,
+) {
+  return (
+    child.type === "object" ||
+    child.type === "array" ||
+    Boolean(field.itemOptions)
+  );
+}
+
 interface RecordItemValue {
   id: string;
   key: string;
@@ -706,7 +717,7 @@ function ConfigFieldRow({
   readOnly: boolean;
 }) {
   return (
-    <Field className="grid min-w-0 gap-2.5 border-b border-border/60 px-3 py-3.5 last:border-b-0 @md/field-group:grid-cols-[minmax(9rem,0.8fr)_minmax(0,1.4fr)] @md/field-group:gap-5">
+    <Field className="grid min-w-0 gap-2.5 border-b border-border/60 px-3 py-2.5 last:border-b-0 @md/field-group:grid-cols-[minmax(9rem,0.8fr)_minmax(0,1.4fr)] @md/field-group:gap-5">
       <div className="min-w-0 space-y-1">
         <ConfigFieldLabel field={field} />
         {field.description && (
@@ -1689,7 +1700,7 @@ function TimeRangeFieldEditor({
   };
 
   return (
-    <Field className="grid min-w-0 gap-2.5 border-b border-border/60 px-3 py-3.5 last:border-b-0 @md/field-group:grid-cols-[minmax(9rem,0.8fr)_minmax(0,1.4fr)] @md/field-group:gap-5">
+    <Field className="grid min-w-0 gap-2.5 border-b border-border/60 px-3 py-2.5 last:border-b-0 @md/field-group:grid-cols-[minmax(9rem,0.8fr)_minmax(0,1.4fr)] @md/field-group:gap-5">
       <div className="min-w-0 space-y-1">
         <FieldLabel className="font-normal">
           {t(WEBUI.plugins.timeRange)}
@@ -2319,93 +2330,137 @@ function SchemaArrayFieldEditor({
     onChange(value.filter((_, entryIndex) => entryIndex !== index));
   };
 
+  const singleItem = itemOptions.length === 1 ? itemOptions[0] : undefined;
+  if (
+    readOnly &&
+    !field.itemOptions &&
+    singleItem &&
+    singleItem.type !== "object" &&
+    singleItem.type !== "array"
+  ) {
+    return (
+      <ConfigReadCollection
+        values={displayedValue}
+        inherited={inheritedDefault}
+      />
+    );
+  }
+
   return (
     <div className="space-y-2">
       {displayedValue.length > 0 ? (
-        displayedValue.map((entry, index) => {
-          const entryKey = getArrayEntryKey(entry, index);
-          const child = getArrayEntryChild(entry, field);
-          const entryValue = getArrayEntryValue(entry, field);
-          const canCollapse = child.type === "object";
-          const isCollapsed =
-            canCollapse &&
-            (collapsedItems[entryKey] ?? defaultArrayObjectCollapsed);
+        <div className="divide-y divide-border/60 overflow-hidden rounded-lg border border-border/70 bg-background/35">
+          {displayedValue.map((entry, index) => {
+            const entryKey = getArrayEntryKey(entry, index);
+            const child = getArrayEntryChild(entry, field);
+            const entryValue = getArrayEntryValue(entry, field);
+            const canCollapse = child.type === "object";
+            const structuralEntry = canCollapse || child.type === "array";
+            const showEntryHeader = shouldShowSchemaArrayEntryHeader(
+              field,
+              child,
+            );
+            const entryLabel = getArrayEntryLabel(entry, field, index, t);
+            const isCollapsed =
+              canCollapse &&
+              (collapsedItems[entryKey] ?? defaultArrayObjectCollapsed);
+            const control = (
+              <SchemaArrayItemControl
+                item={child}
+                plugins={plugins}
+                value={entryValue}
+                configuredValue={configuredEntries[index]}
+                configured={!inheritedDefault}
+                example={getConfigFieldExample(field)}
+                onChange={(nextValue) =>
+                  updateItem(index, setArrayEntryValue(entry, field, nextValue))
+                }
+                defaultArrayObjectCollapsed={defaultArrayObjectCollapsed}
+                readOnly={readOnly}
+              />
+            );
 
-          return (
-            <div
-              key={entryKey}
-              className="rounded-lg border border-border bg-background/60 px-3 py-2"
-            >
-              <div
-                className={`flex min-h-8 items-center justify-between gap-3 ${
-                  isCollapsed ? "" : "mb-2"
-                }`}
-              >
-                <div className="min-w-0 flex-1">
-                  {canCollapse ? (
-                    <button
-                      type="button"
-                      className="flex w-full min-w-0 items-center gap-2 text-left text-xs font-medium text-muted-foreground hover:text-foreground"
-                      onClick={() =>
-                        setCollapsedItems((current) => ({
-                          ...current,
-                          [entryKey]: !isCollapsed,
-                        }))
-                      }
-                    >
-                      <ChevronDown
-                        className={`h-4 w-4 shrink-0 transition-transform ${
-                          isCollapsed ? "-rotate-90" : ""
-                        }`}
-                      />
-                      <span className="truncate">
-                        {getArrayEntryLabel(entry, field, index, t)}
-                      </span>
-                      {isCollapsed && (
-                        <span className="min-w-0 flex-1 truncate text-foreground">
-                          {getObjectSummary(child, entryValue, t)}
+            if (structuralEntry) {
+              return (
+                <div key={entryKey} className="min-w-0">
+                  <div className="flex min-h-9 items-center gap-2 px-2.5 py-1.5">
+                    <div className="min-w-0 flex-1">
+                      {canCollapse ? (
+                        <button
+                          type="button"
+                          className="flex w-full min-w-0 items-center gap-2 text-left text-xs font-medium text-muted-foreground hover:text-foreground"
+                          onClick={() =>
+                            setCollapsedItems((current) => ({
+                              ...current,
+                              [entryKey]: !isCollapsed,
+                            }))
+                          }
+                        >
+                          <ChevronDown
+                            className={`h-4 w-4 shrink-0 transition-transform ${
+                              isCollapsed ? "-rotate-90" : ""
+                            }`}
+                          />
+                          <span className="truncate">{entryLabel}</span>
+                          {isCollapsed && (
+                            <span className="min-w-0 flex-1 truncate font-normal text-foreground">
+                              {getObjectSummary(child, entryValue, t)}
+                            </span>
+                          )}
+                        </button>
+                      ) : (
+                        <span className="text-xs font-medium text-muted-foreground">
+                          {entryLabel}
                         </span>
                       )}
-                    </button>
-                  ) : (
-                    <div className="text-xs font-medium text-muted-foreground">
-                      {getArrayEntryLabel(entry, field, index, t)}
+                    </div>
+                    {!readOnly && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        className="shrink-0 text-muted-foreground"
+                        onClick={() => removeItem(index)}
+                      >
+                        <Minus className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+                  {!isCollapsed && (
+                    <div className="border-t border-border/60 bg-muted/5 p-2">
+                      {control}
                     </div>
                   )}
                 </div>
+              );
+            }
+
+            return (
+              <div
+                key={entryKey}
+                className="flex min-w-0 items-start gap-2 px-2.5 py-1.5"
+              >
+                {showEntryHeader && (
+                  <span className="mt-1.5 inline-flex h-6 shrink-0 items-center rounded-md bg-muted px-2 text-[0.7rem] font-medium text-muted-foreground">
+                    {entryLabel}
+                  </span>
+                )}
+                <div className="min-w-0 flex-1">{control}</div>
                 {!readOnly && (
                   <Button
                     type="button"
-                    variant="outline"
-                    size="icon"
-                    className="h-8 w-8 shrink-0"
+                    variant="ghost"
+                    size="icon-sm"
+                    className="mt-0.5 shrink-0 text-muted-foreground"
                     onClick={() => removeItem(index)}
                   >
                     <Minus className="h-4 w-4" />
                   </Button>
                 )}
               </div>
-              {!isCollapsed && (
-                <SchemaArrayItemControl
-                  item={child}
-                  plugins={plugins}
-                  value={entryValue}
-                  configuredValue={configuredEntries[index]}
-                  configured={!inheritedDefault}
-                  example={getConfigFieldExample(field)}
-                  onChange={(nextValue) =>
-                    updateItem(
-                      index,
-                      setArrayEntryValue(entry, field, nextValue),
-                    )
-                  }
-                  defaultArrayObjectCollapsed={defaultArrayObjectCollapsed}
-                  readOnly={readOnly}
-                />
-              )}
-            </div>
-          );
-        })
+            );
+          })}
+        </div>
       ) : (
         <ConfigArrayEmptyState
           field={field}

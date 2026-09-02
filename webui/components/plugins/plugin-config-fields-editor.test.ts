@@ -20,7 +20,43 @@ import {
   omitConfigFieldValues,
   resolveConfigFieldDisplayValue,
   serializePluginConfigValues,
+  shouldShowSchemaArrayEntryHeader,
 } from "./plugin-config-fields-editor";
+
+describe("schema array entry headers", () => {
+  it("hides redundant headers for single primitive item types", () => {
+    expect(
+      shouldShowSchemaArrayEntryHeader({}, { type: "text", label: "输入值" }),
+    ).toBe(false);
+    expect(
+      shouldShowSchemaArrayEntryHeader(
+        {},
+        { type: "reference", label: "引用 provider" },
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps headers for structural and multi-type items", () => {
+    expect(
+      shouldShowSchemaArrayEntryHeader(
+        {},
+        { type: "object", label: "任务", fields: [] },
+      ),
+    ).toBe(true);
+    expect(
+      shouldShowSchemaArrayEntryHeader(
+        {},
+        { type: "array", label: "嵌套列表" },
+      ),
+    ).toBe(true);
+    expect(
+      shouldShowSchemaArrayEntryHeader(
+        { itemOptions: [{ type: "text" }, { type: "reference" }] },
+        { type: "text", label: "输入值" },
+      ),
+    ).toBe(true);
+  });
+});
 
 describe("schema form config merging", () => {
   it("preserves unknown keys recursively while removing reset known keys", () => {
