@@ -741,6 +741,15 @@ export const WEBUI = {
     restartDialogDesc: "webui.configSync.restartDialogDesc",
     confirmRestart: "webui.configSync.confirmRestart",
   },
+  configPatch: {
+    title: "webui.configPatch.title",
+    description: "webui.configPatch.description",
+    affectedPath: "webui.configPatch.affectedPath",
+    review: "webui.configPatch.review",
+    force: "webui.configPatch.force",
+    forceWarning: "webui.configPatch.forceWarning",
+    forceUnavailable: "webui.configPatch.forceUnavailable",
+  },
   configEditor: {
     title: "webui.configEditor.title",
     offlineMode: "webui.configEditor.offlineMode",

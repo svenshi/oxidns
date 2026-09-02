@@ -16,10 +16,71 @@ import {
   getConfigFieldExample,
   hasConfiguredAdvancedFields,
   isPluginConfigFormValid,
+  mergePluginConfigFormValues,
   omitConfigFieldValues,
   resolveConfigFieldDisplayValue,
   serializePluginConfigValues,
 } from "./plugin-config-fields-editor";
+
+describe("schema form config merging", () => {
+  it("preserves unknown keys recursively while removing reset known keys", () => {
+    const schema: ConfigField[] = [
+      { key: "known", label: "Known", type: "text" },
+      {
+        key: "nested",
+        label: "Nested",
+        type: "object",
+        fields: [{ key: "managed", label: "Managed", type: "number" }],
+      },
+    ];
+
+    expect(
+      mergePluginConfigFormValues(
+        schema,
+        {
+          known: "remove me",
+          extension: "keep",
+          nested: { managed: 1, extension: "nested keep" },
+        },
+        { nested: { managed: 2 } },
+      ),
+    ).toEqual({
+      extension: "keep",
+      nested: { managed: 2, extension: "nested keep" },
+    });
+  });
+
+  it("preserves unknown fields in matching array objects", () => {
+    const schema: ConfigField[] = [
+      {
+        key: "jobs",
+        label: "Jobs",
+        type: "array",
+        item: {
+          type: "object",
+          fields: [
+            { key: "name", label: "Name", type: "text" },
+            { key: "interval", label: "Interval", type: "duration" },
+          ],
+        },
+      },
+    ];
+
+    expect(
+      mergePluginConfigFormValues(
+        schema,
+        {
+          jobs: [
+            { name: "refresh", interval: "1m", extension: { keep: true } },
+          ],
+        },
+        { jobs: [{ name: "refresh", interval: "5m" }] },
+      ),
+    ).toEqual({
+      jobs: [{ name: "refresh", interval: "5m", extension: { keep: true } }],
+    });
+  });
+});
 
 const timeDefinition = matcherPluginDefinitions.find(
   (definition) => definition.kind === "time",

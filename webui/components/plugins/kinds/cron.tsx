@@ -23,7 +23,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { YamlEditor } from "@/components/config/yaml-editor";
-import { useAppStore } from "@/lib/store";
+import { shouldPersistPluginMutation, useAppStore } from "@/lib/store";
 import {
   parseArgsLevelPluginConfigYaml,
   stringifyArgsLevelPluginConfigYaml,
@@ -991,10 +991,10 @@ function CronDetail({
   };
 
   const handleSave = async () => {
-    updatePluginConfig(plugin.id, configValues);
     try {
-      await saveConfig();
-      setEditing(false);
+      const resolution = await updatePluginConfig(plugin.id, configValues);
+      if (shouldPersistPluginMutation(resolution)) await saveConfig();
+      if (resolution !== "cancelled") setEditing(false);
     } catch {
       // Store-level config errors are surfaced in the full config editor.
     }

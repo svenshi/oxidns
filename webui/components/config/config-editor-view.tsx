@@ -43,6 +43,7 @@ import { useI18n } from "@/lib/i18n/provider";
 export function ConfigEditorView() {
   const { t } = useI18n();
   const yamlConfig = useAppStore((s) => s.configText);
+  const configEditorBaseline = useAppStore((s) => s.configEditorBaseline);
   const setYamlConfig = useAppStore((s) => s.setYamlConfig);
   const saveConfig = useAppStore((s) => s.saveConfig);
   const isConfigLoading = useAppStore((s) => s.isConfigLoading);
@@ -57,7 +58,9 @@ export function ConfigEditorView() {
   const exitOfflineMode = useAppStore((s) => s.exitOfflineMode);
 
   const yamlEditorRef = useRef<YamlEditorHandle>(null);
-  const [originalConfig, setOriginalConfig] = useState(yamlConfig);
+  const [originalConfig, setOriginalConfig] = useState(
+    configEditorBaseline ?? yamlConfig,
+  );
   const [saveStatus, setSaveStatus] = useState<"idle" | "success" | "error">(
     "idle",
   );
@@ -87,13 +90,13 @@ export function ConfigEditorView() {
   // changes (after load or save) — NOT on every keystroke, otherwise
   // hasChanges collapses immediately and Save stays disabled.
   useEffect(() => {
-    if (!configVersion) return;
+    if (!configVersion || configEditorBaseline !== null) return;
     const timer = window.setTimeout(
       () => setOriginalConfig(useAppStore.getState().configText),
       0,
     );
     return () => window.clearTimeout(timer);
-  }, [configVersion]);
+  }, [configEditorBaseline, configVersion]);
 
   const handleSave = async () => {
     setSaveStatus("idle");

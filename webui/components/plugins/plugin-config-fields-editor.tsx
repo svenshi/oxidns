@@ -416,6 +416,99 @@ export function serializePluginConfigValues(
   return config;
 }
 
+/**
+ * Merge values owned by a schema-driven form into the full plugin config.
+ * Unknown keys are intentionally retained; omitting a known key still means
+ * that the operator reset it and removes it from the serialized config.
+ */
+export function mergePluginConfigFormValues(
+  fields: ConfigField[],
+  base: Record<string, unknown>,
+  serialized: Record<string, unknown>,
+) {
+  const merged: Record<string, unknown> = { ...base };
+  fields.forEach((field) => {
+    if (!Object.prototype.hasOwnProperty.call(serialized, field.key)) {
+      delete merged[field.key];
+      return;
+    }
+    merged[field.key] = mergeKnownFieldValue(
+      field,
+      base[field.key],
+      serialized[field.key],
+    );
+  });
+  return merged;
+}
+
+function mergeKnownFieldValue(
+  field: ConfigField,
+  base: unknown,
+  serialized: unknown,
+): unknown {
+  if (
+    field.type === "object" &&
+    field.fields &&
+    isPlainObject(base) &&
+    isPlainObject(serialized)
+  ) {
+    return mergePluginConfigFormValues(field.fields, base, serialized);
+  }
+
+  if (
+    field.type === "array" &&
+    Array.isArray(base) &&
+    Array.isArray(serialized)
+  ) {
+    return serialized.map((entry, index) => {
+      if (!isPlainObject(entry)) return entry;
+      const itemFields = arrayObjectFields(field, entry);
+      if (!itemFields) return entry;
+      const baseEntry = findMatchingArrayObject(base, entry, index);
+      return isPlainObject(baseEntry)
+        ? mergePluginConfigFormValues(itemFields, baseEntry, entry)
+        : entry;
+    });
+  }
+
+  return serialized;
+}
+
+function arrayObjectFields(field: ConfigField, value: Record<string, unknown>) {
+  const candidates = [field.item, ...(field.itemOptions ?? [])].filter(
+    (item): item is Extract<NonNullable<typeof item>, { type: "object" }> =>
+      item?.type === "object",
+  );
+  if (candidates.length === 0) return null;
+  return candidates
+    .map((candidate) => ({
+      fields: candidate.fields,
+      score: candidate.fields.filter((child) => child.key in value).length,
+    }))
+    .sort((left, right) => right.score - left.score)[0].fields;
+}
+
+function findMatchingArrayObject(
+  base: unknown[],
+  value: Record<string, unknown>,
+  index: number,
+) {
+  for (const identityKey of ["name", "tag", "id", "key"]) {
+    const identity = value[identityKey];
+    if (identity === undefined) continue;
+    const match = base.find(
+      (candidate) =>
+        isPlainObject(candidate) && candidate[identityKey] === identity,
+    );
+    if (match) return match;
+  }
+  return base[index];
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
 export function isPluginConfigFormValid(
   fields: ConfigField[],
   values: Record<string, unknown>,

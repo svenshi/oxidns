@@ -7,11 +7,14 @@ import {
   createDefaultOxiDnsConfig,
   parseOxiDnsYaml,
   pluginsFromConfig,
-  serializePluginsPreserving,
   stringifyOxiDnsConfig,
   topLevelConfigChanged,
   type OxiDnsConfig,
 } from "./oxidns-config";
+import {
+  patchPluginsYaml,
+  type PluginYamlPatchResult,
+} from "./oxidns-config-patch";
 import {
   fetchBuildInfo,
   fetchConfigFile,
@@ -108,12 +111,26 @@ export type PluginDeletePreview =
   | { status: "blocked"; message: string };
 
 export type PluginRenameResult =
-  | { status: "renamed" }
+  | { status: PluginMutationResolution }
   | {
       status: "needs-confirmation";
       references: PluginReferenceImpact[];
     }
   | { status: "invalid"; message: string };
+
+export type PluginMutationResolution =
+  | "patched"
+  | "forced"
+  | "review"
+  | "cancelled";
+
+export type ConfigPatchConfirmationChoice = "cancel" | "review" | "force";
+
+export interface ConfigPatchConfirmation {
+  reason: string;
+  affectedPath: string;
+  canForce: boolean;
+}
 
 interface AppState {
   plugins: PluginInstance[];
@@ -151,16 +168,22 @@ interface AppState {
   configPath: string;
   configError: string | null;
   yamlConfig: string;
+  /** Persisted/editor-reset baseline used by a staged local rebuild review. */
+  configEditorBaseline: string | null;
   /** Editing a pasted/uploaded config with no backend connection. */
   isOfflineMode: boolean;
   /** Name of the uploaded file, used as the export download name. */
   offlineFileName: string | null;
+  configPatchConfirmation: ConfigPatchConfirmation | null;
 
   setSelectedPlugin: (plugin: PluginInstance | null) => void;
   setDetailOpen: (open: boolean) => void;
   setEditorMode: (mode: boolean) => void;
   setHistoryOpen: (open: boolean) => void;
   setYamlConfig: (config: string) => void;
+  resolveConfigPatchConfirmation: (
+    choice: ConfigPatchConfirmationChoice,
+  ) => void;
   enterOfflineConfig: (text: string, fileName?: string) => void;
   exitOfflineMode: () => void;
   loadConfig: () => Promise<void>;
@@ -182,16 +205,26 @@ interface AppState {
   setMatcherMode: (id: string, mode: MatcherRuntimeMode) => Promise<void>;
   reloadProvider: (id: string) => Promise<void>;
   clearProviderReloadResult: (id: string) => void;
-  reorderPlugins: (orderedVisibleIds: string[]) => Promise<void>;
-  updatePluginConfig: (id: string, config: Record<string, unknown>) => void;
+  reorderPlugins: (
+    orderedVisibleIds: string[],
+  ) => Promise<PluginMutationResolution>;
+  updatePluginConfig: (
+    id: string,
+    config: Record<string, unknown>,
+  ) => Promise<PluginMutationResolution>;
   previewPluginDelete: (id: string) => Promise<PluginDeletePreview>;
-  confirmDeletePlugin: (id: string) => Promise<void>;
-  replaceAndDeletePlugin: (id: string, replacementTag: string) => Promise<void>;
-  removeReferencesAndDeletePlugin: (id: string) => Promise<void>;
+  confirmDeletePlugin: (id: string) => Promise<PluginMutationResolution>;
+  replaceAndDeletePlugin: (
+    id: string,
+    replacementTag: string,
+  ) => Promise<PluginMutationResolution>;
+  removeReferencesAndDeletePlugin: (
+    id: string,
+  ) => Promise<PluginMutationResolution>;
   enterEditorForPluginReferences: () => void;
   addPlugin: (
     plugin: Omit<PluginInstance, "id" | "createdAt" | "updatedAt" | "metrics">,
-  ) => void;
+  ) => Promise<PluginMutationResolution>;
   renamePlugin: (
     id: string,
     name: string,
@@ -217,6 +250,15 @@ let matcherRefreshGeneration = 0;
 let configLoadGeneration = 0;
 let configValidationGeneration = 0;
 let activeBackendKey: string | null = null;
+
+interface PendingConfigPatch {
+  result: Extract<PluginYamlPatchResult, { status: "needs_confirmation" }>;
+  source: string;
+  apply: (content: string) => void;
+  resolve: (resolution: PluginMutationResolution) => void;
+}
+
+let pendingConfigPatch: PendingConfigPatch | null = null;
 
 function currentBackendKey(): string {
   const { connectionEpoch, serverConfig } = useAuthStore.getState();
@@ -284,13 +326,42 @@ export const useAppStore = create<AppState>((set, get) => ({
   configPath: "/etc/oxidns/config.yaml",
   configError: null,
   yamlConfig: initialConfigText,
+  configEditorBaseline: null,
   isOfflineMode: false,
   offlineFileName: null,
+  configPatchConfirmation: null,
 
   setSelectedPlugin: (plugin) => set({ selectedPlugin: plugin }),
   setDetailOpen: (open) => set({ detailOpen: open }),
   setEditorMode: (mode) => set({ editorMode: mode }),
   setHistoryOpen: (open) => set({ historyOpen: open }),
+  resolveConfigPatchConfirmation: (choice) => {
+    const pending = pendingConfigPatch;
+    if (!pending) return;
+    pendingConfigPatch = null;
+    set({ configPatchConfirmation: null });
+
+    if (choice === "cancel") {
+      pending.resolve("cancelled");
+      return;
+    }
+
+    const candidate = pending.result.candidate?.content;
+    if (!candidate) {
+      if (choice === "review") set({ editorMode: true });
+      pending.resolve(choice === "review" ? "review" : "cancelled");
+      return;
+    }
+
+    pending.apply(candidate);
+    if (choice === "review") {
+      set({
+        configEditorBaseline: pending.source,
+        editorMode: true,
+      });
+    }
+    pending.resolve(choice === "review" ? "review" : "forced");
+  },
   setYamlConfig: (config) => {
     const parsed = parseOxiDnsYaml(config);
     if (!parsed.config) {
@@ -325,9 +396,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   // existing client-side parse path; its set() payload omits the offline
   // keys so the flags below survive.
   enterOfflineConfig: (text, fileName) => {
+    cancelPendingConfigPatch(set);
     set({
       isOfflineMode: true,
       offlineFileName: fileName ?? null,
+      configEditorBaseline: null,
       configPath: fileName ?? tClient(WEBUI.storeErrors.unnamedOfflineConfig),
       configVersion: null,
       runningVersion: null,
@@ -350,6 +423,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   exitOfflineMode: () => set({ isOfflineMode: false, offlineFileName: null }),
 
   loadConfig: async () => {
+    cancelPendingConfigPatch(set);
     const backendKey = currentBackendKey();
     const generation = ++configLoadGeneration;
     if (activeBackendKey !== backendKey) {
@@ -709,6 +783,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         });
         set({
           configVersion: response.version,
+          configEditorBaseline: null,
           configPath: response.path,
           reloadStatus: response.reload ?? get().reloadStatus,
           configHistory: listSnapshots(scope),
@@ -1039,43 +1114,40 @@ export const useAppStore = create<AppState>((set, get) => ({
   // surfaced as an "apply changes" pill for the operator to hot-reload.
   reorderPlugins: async (orderedVisibleIds) => {
     const state = get();
-    if (state.configError) return;
+    if (state.configError) return "cancelled";
 
     const visible = new Set(orderedVisibleIds);
     const byId = new Map(state.plugins.map((p) => [p.id, p] as const));
     const queue = orderedVisibleIds
       .map((id) => byId.get(id))
       .filter((p): p is PluginInstance => Boolean(p));
-    if (queue.length === 0) return;
+    if (queue.length === 0) return "cancelled";
 
     let next = 0;
     const reordered = state.plugins.map((p) =>
       visible.has(p.id) ? queue[next++] : p,
     );
     const unchanged = reordered.every((p, i) => p.id === state.plugins[i].id);
-    if (unchanged) return;
+    if (unchanged) return "cancelled";
 
-    // No tags are passed as changed: every plugin reuses its original YAML
-    // node verbatim (comments/blank lines preserved) — only the node order
-    // changes.
-    set(syncPluginsToConfig(state, () => reordered, []));
-    if (!get().isOfflineMode) await get().saveConfig();
+    // The CST patcher moves the original sequence-item tokens, so comments,
+    // blank lines, scalar styles, and plugin-local formatting move with them.
+    const resolution = await stagePluginListMutation(set, get, reordered);
+    if (shouldPersistPluginMutation(resolution) && !get().isOfflineMode) {
+      await get().saveConfig();
+    }
+    return resolution;
   },
 
-  updatePluginConfig: (id, config) =>
-    set((state) => {
-      const tag = state.plugins.find((p) => p.id === id)?.name;
-      return syncPluginsToConfig(
-        state,
-        (plugins) =>
-          plugins.map((p) =>
-            p.id === id
-              ? { ...p, config, updatedAt: new Date().toISOString() }
-              : p,
-          ),
-        tag ? [tag] : [],
-      );
-    }),
+  updatePluginConfig: async (id, config) => {
+    const state = get();
+    const plugins = state.plugins.map((plugin) =>
+      plugin.id === id
+        ? { ...plugin, config, updatedAt: new Date().toISOString() }
+        : plugin,
+    );
+    return stagePluginListMutation(set, get, plugins);
+  },
 
   previewPluginDelete: async (id) => {
     const state = get();
@@ -1115,8 +1187,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (references.length > 0) {
       throw new Error(tClient(WEBUI.storeErrors.pluginStillReferenced));
     }
-    set((current) => deletePluginFromState(current, id));
-    await get().saveConfig();
+    const configModel = removePluginConfig(state.configModel, plugin.name);
+    const resolution = await stageConfigModelMutation(set, get, configModel, {
+      selectedTag: state.selectedPlugin?.id === id ? null : undefined,
+      closeDetail: state.selectedPlugin?.id === id,
+    });
+    if (shouldPersistPluginMutation(resolution)) await get().saveConfig();
+    return resolution;
   },
 
   replaceAndDeletePlugin: async (id, replacementTag) => {
@@ -1142,14 +1219,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       plugin.name,
       replacementTag,
     );
-    set((current) => {
-      const applied = applyConfigModelToState(current, replaced.config, [
-        ...replaced.changedTags,
-        plugin.name,
-      ]);
-      return deletePluginFromState({ ...current, ...applied }, id);
+    const configModel = removePluginConfig(replaced.config, plugin.name);
+    const resolution = await stageConfigModelMutation(set, get, configModel, {
+      selectedTag: state.selectedPlugin?.id === id ? null : undefined,
+      closeDetail: state.selectedPlugin?.id === id,
     });
-    await get().saveConfig();
+    if (shouldPersistPluginMutation(resolution)) await get().saveConfig();
+    return resolution;
   },
 
   removeReferencesAndDeletePlugin: async (id) => {
@@ -1159,40 +1235,44 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!plugin) throw new Error(tClient(WEBUI.storeErrors.pluginMissing));
     const references = incomingReferences(state, plugin.name);
     if (references.length === 0) {
-      set((current) => deletePluginFromState(current, id));
-      await get().saveConfig();
-      return;
+      const configModel = removePluginConfig(state.configModel, plugin.name);
+      const resolution = await stageConfigModelMutation(set, get, configModel, {
+        selectedTag: state.selectedPlugin?.id === id ? null : undefined,
+        closeDetail: state.selectedPlugin?.id === id,
+      });
+      if (shouldPersistPluginMutation(resolution)) await get().saveConfig();
+      return resolution;
     }
     if (!references.every((edge) => edge.removable)) {
       throw new Error(tClient(WEBUI.storeErrors.unsafeReferences));
     }
 
     const removed = removeSafePluginReferences(state.configModel, references);
-    set((current) => {
-      const applied = applyConfigModelToState(current, removed.config, [
-        ...removed.changedTags,
-        plugin.name,
-      ]);
-      return deletePluginFromState({ ...current, ...applied }, id);
+    const configModel = removePluginConfig(removed.config, plugin.name);
+    const resolution = await stageConfigModelMutation(set, get, configModel, {
+      selectedTag: state.selectedPlugin?.id === id ? null : undefined,
+      closeDetail: state.selectedPlugin?.id === id,
     });
-    await get().saveConfig();
+    if (shouldPersistPluginMutation(resolution)) await get().saveConfig();
+    return resolution;
   },
 
   enterEditorForPluginReferences: () => set({ editorMode: true }),
 
-  addPlugin: (plugin) =>
-    set((state) =>
-      syncPluginsToConfig(state, (plugins) => [
-        ...plugins,
-        {
-          ...plugin,
-          id: plugin.name,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          metrics: { calls: 0, avgLatency: 0, errorRate: 0, qps: 0 },
-        },
-      ]),
-    ),
+  addPlugin: async (plugin) => {
+    const state = get();
+    const plugins = [
+      ...state.plugins,
+      {
+        ...plugin,
+        id: plugin.name,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        metrics: { calls: 0, avgLatency: 0, errorRate: 0, qps: 0 },
+      },
+    ];
+    return stagePluginListMutation(set, get, plugins);
+  },
 
   renamePlugin: async (id, name, options) => {
     const nextName = name.trim();
@@ -1260,16 +1340,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       plugin.name,
       nextName,
     );
-    set((current) =>
-      applyConfigModelToState(
-        current,
-        renamed.config,
-        [...replaced.changedTags, ...renamed.changedTags],
-        nextName,
-      ),
+    const resolution = await stageConfigModelMutation(
+      set,
+      get,
+      renamed.config,
+      {
+        selectedTag: nextName,
+        renamedTags: new Map([[plugin.name, nextName]]),
+      },
     );
-    await get().saveConfig();
-    return { status: "renamed" };
+    if (shouldPersistPluginMutation(resolution)) await get().saveConfig();
+    return { status: resolution };
   },
 }));
 
@@ -1283,6 +1364,7 @@ function applyConfigFileResponse(
     set({
       configText: response.content,
       yamlConfig: response.content,
+      configEditorBaseline: null,
       configVersion: response.version,
       configPath: response.path,
       configError:
@@ -1297,6 +1379,7 @@ function applyConfigFileResponse(
     configModel: parsed.config,
     configText: response.content,
     yamlConfig: response.content,
+    configEditorBaseline: null,
     configVersion: response.version,
     configPath: response.path,
     plugins,
@@ -1340,45 +1423,74 @@ function applyConfigValidationResponse(
   });
 }
 
-function syncPluginsToConfig(
-  state: AppState,
-  update: (plugins: PluginInstance[]) => PluginInstance[],
-  changedTags: string[] = [],
+interface ConfigModelMutationOptions {
+  plugins?: PluginInstance[];
+  selectedTag?: string | null;
+  renamedTags?: ReadonlyMap<string, string>;
+  closeDetail?: boolean;
+}
+
+async function stagePluginListMutation(
+  set: StoreSet,
+  get: () => AppState,
+  plugins: PluginInstance[],
 ) {
-  const plugins = update(state.plugins);
+  const state = get();
   const configModel = configFromPlugins(state.configModel, plugins);
-  // Preserve comments/blank lines: only the explicitly changed tags are
-  // regenerated; every other plugin keeps its original YAML node verbatim.
-  const configText = serializePluginsPreserving(
+  return stageConfigModelMutation(set, get, configModel, { plugins });
+}
+
+async function stageConfigModelMutation(
+  set: StoreSet,
+  get: () => AppState,
+  configModel: OxiDnsConfig,
+  options: ConfigModelMutationOptions = {},
+): Promise<PluginMutationResolution> {
+  if (pendingConfigPatch) return "cancelled";
+  const state = get();
+  const result = patchPluginsYaml(
     state.configText,
+    state.configModel,
     configModel,
-    new Set(changedTags),
+    {
+      renamedTags: options.renamedTags,
+    },
   );
-  return {
-    plugins,
-    matcherControls: reconcileMatcherControls(plugins, state.matcherControls),
-    providerReloads: reconcileProviderReloads(plugins, state.providerReloads),
-    configModel,
-    configText,
-    yamlConfig: configText,
-    selectedPlugin: syncSelectedPlugin(state.selectedPlugin, plugins),
-    configError: null,
-    configDiagnostics: [],
-  };
+  const apply = (content: string) =>
+    set((current) =>
+      applyConfigModelToState(current, configModel, content, options),
+    );
+
+  if (result.status === "patched") {
+    apply(result.content);
+    return "patched";
+  }
+
+  return new Promise<PluginMutationResolution>((resolve) => {
+    pendingConfigPatch = {
+      result,
+      source: state.configText,
+      apply,
+      resolve,
+    };
+    set({
+      configPatchConfirmation: {
+        reason: result.reason,
+        affectedPath: result.affectedPath,
+        canForce: Boolean(result.candidate),
+      },
+    });
+  });
 }
 
 function applyConfigModelToState(
   state: AppState,
   configModel: OxiDnsConfig,
-  changedTags: string[],
-  selectedTag?: string | null,
+  configText: string,
+  options: ConfigModelMutationOptions,
 ) {
-  const plugins = restorePinnedState(pluginsFromConfig(configModel));
-  const configText = serializePluginsPreserving(
-    state.configText,
-    configModel,
-    new Set(changedTags),
-  );
+  const plugins =
+    options.plugins ?? restorePinnedState(pluginsFromConfig(configModel));
   return {
     plugins,
     matcherControls: reconcileMatcherControls(plugins, state.matcherControls),
@@ -1387,33 +1499,37 @@ function applyConfigModelToState(
     configText,
     yamlConfig: configText,
     selectedPlugin:
-      selectedTag === null
+      options.selectedTag === null
         ? null
-        : selectedTag
-          ? (plugins.find((plugin) => plugin.name === selectedTag) ?? null)
+        : options.selectedTag
+          ? (plugins.find((plugin) => plugin.name === options.selectedTag) ??
+            null)
           : syncSelectedPlugin(state.selectedPlugin, plugins),
+    detailOpen: options.closeDetail ? false : state.detailOpen,
     configError: null,
     configDiagnostics: [],
   };
 }
 
-function deletePluginFromState(state: AppState, id: string) {
-  const plugin = state.plugins.find((p) => p.id === id);
-  if (!plugin) return {};
-  const configModel: OxiDnsConfig = {
-    ...state.configModel,
-    plugins: state.configModel.plugins.filter((p) => p.tag !== plugin.name),
-  };
-  const selectedWasDeleted = state.selectedPlugin?.id === id;
+function removePluginConfig(config: OxiDnsConfig, tag: string): OxiDnsConfig {
   return {
-    ...applyConfigModelToState(
-      state,
-      configModel,
-      [plugin.name],
-      selectedWasDeleted ? null : undefined,
-    ),
-    detailOpen: selectedWasDeleted ? false : state.detailOpen,
+    ...config,
+    plugins: config.plugins.filter((plugin) => plugin.tag !== tag),
   };
+}
+
+export function shouldPersistPluginMutation(
+  resolution: PluginMutationResolution,
+) {
+  return resolution === "patched" || resolution === "forced";
+}
+
+function cancelPendingConfigPatch(set: StoreSet) {
+  const pending = pendingConfigPatch;
+  if (!pending) return;
+  pendingConfigPatch = null;
+  set({ configPatchConfirmation: null });
+  pending.resolve("cancelled");
 }
 
 function incomingReferences(state: AppState, tag: string) {

@@ -26,7 +26,7 @@ import {
   ArrowLeft,
   Search,
 } from "lucide-react";
-import { useAppStore } from "@/lib/store";
+import { shouldPersistPluginMutation, useAppStore } from "@/lib/store";
 import { extractOutboundProfileNames } from "@/lib/oxidns-config-schema";
 import type { PluginType } from "@/lib/types";
 import {
@@ -224,20 +224,21 @@ export function CreatePluginDialog({
     const processedConfig = configValues;
 
     const tag = normalizedInstanceName;
-    addPlugin({
-      name: tag,
-      type: selectedKind.type,
-      pluginKind: selectedKind.kind,
-      status: "stopped",
-      enabled: false,
-      pinned: false,
-      config: processedConfig,
-    });
-
     try {
-      await saveConfig();
-      onCreated?.(tag);
-      handleClose();
+      const resolution = await addPlugin({
+        name: tag,
+        type: selectedKind.type,
+        pluginKind: selectedKind.kind,
+        status: "stopped",
+        enabled: false,
+        pinned: false,
+        config: processedConfig,
+      });
+      if (shouldPersistPluginMutation(resolution)) await saveConfig();
+      if (resolution !== "cancelled") {
+        onCreated?.(tag);
+        handleClose();
+      }
     } catch {
       // Store-level config error remains visible in the config editor.
     }

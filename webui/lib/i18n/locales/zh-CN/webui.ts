@@ -677,6 +677,17 @@ export const zhCNWebui = {
       "将以新进程替换正在运行的服务。期间 DNS 解析会短暂中断，所有内存中的状态（如缓存）将被清空。配置会先保存到磁盘再触发重启。",
     confirmRestart: "确认重启",
   },
+  configPatch: {
+    title: "无法无损应用此修改",
+    description:
+      "当前 YAML 结构无法在完整保留源格式的前提下安全修改。你可以在 YAML 编辑器中检查最小局部替换，或确认强制替换并立即保存；文件其他区域不会改变。",
+    affectedPath: "影响路径：{path}",
+    review: "在 YAML 编辑器中检查",
+    force: "强制局部替换",
+    forceWarning: "强制执行会重建上述局部，该局部的注释和排版可能发生变化。",
+    forceUnavailable:
+      "无法生成边界明确且有效的局部替换，请在 YAML 编辑器中手动修改此路径。",
+  },
   configEditor: {
     title: "配置文件编辑器",
     offlineMode: "离线模式",
