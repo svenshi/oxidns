@@ -88,10 +88,15 @@ export interface ConfigField {
   key: string;
   label: string;
   type: ConfigFieldType;
+  /** Machine-readable example shown as input guidance, never as an effective value. */
+  example?: string;
+  /** @deprecated Use `example`; retained for third-party schema compatibility. */
   placeholder?: string;
   description?: string;
   docs?: string;
   required?: boolean;
+  /** Form value intentionally written for a new config, distinct from a runtime default. */
+  initialValue?: unknown;
   default?: unknown;
   /** Render this field inside the collapsed advanced-settings section. */
   advanced?: boolean;
@@ -119,9 +124,7 @@ export interface ConfigField {
   /** Preserve an enabled optional object even when all of its child fields are empty. */
   preserveEmptyObject?: boolean;
   summaryFields?: string[];
-  // Force the field to span both columns in the 2-col config grid. Use this
-  // for inherently long single-line values (file paths, URLs) so they do not
-  // leave an empty half-row next to them.
+  /** @deprecated Settings rows now give every control the full value column. */
   fullWidth?: boolean;
 }
 export type ConfigFieldChild =
@@ -145,6 +148,8 @@ export type ConfigFieldChild =
       type: "array";
       optionKey?: string;
       label?: string;
+      example?: string;
+      /** @deprecated Use `example`; retained for third-party schema compatibility. */
       placeholder?: string;
       description?: string;
       item?: ConfigFieldChild;
@@ -154,6 +159,8 @@ export type ConfigFieldChild =
       type: "object";
       optionKey?: string;
       label?: string;
+      example?: string;
+      /** @deprecated Use `example`; retained for third-party schema compatibility. */
       placeholder?: string;
       description?: string;
       fields: ConfigField[];
@@ -182,7 +189,7 @@ export const matcherListField = (
   label: "匹配表达式",
   type: "array",
   required: true,
-  placeholder: "$match_tag\nqname domain:example.com\n!$blocked",
+  example: "$match_tag\nqname domain:example.com\n!$blocked",
   description,
   itemOptions: [
     {
@@ -192,20 +199,20 @@ export const matcherListField = (
       referenceTypes: ["matcher"],
       referencePrefix: "$",
       allowInvert: true,
-      placeholder: "match_tag",
+      example: "match_tag",
     },
     {
       optionKey: "input",
       type: "text",
       label: "输入值",
-      placeholder: "qname domain:example.com",
+      example: "qname domain:example.com",
     },
   ],
 });
 export const stringArrayField = (
   key: string,
   label: string,
-  placeholder: string,
+  example: string,
   required = false,
   description = "每行一项",
   item?: ConfigFieldChild,
@@ -215,66 +222,64 @@ export const stringArrayField = (
   label,
   type: "array",
   required,
-  placeholder,
+  example,
   description,
-  item: itemOptions
-    ? item
-    : (item ?? inputArrayItem(placeholder.split("\n")[0])),
+  item: itemOptions ? item : (item ?? inputArrayItem(example.split("\n")[0])),
   itemOptions,
 });
-export const inputArrayItem = (placeholder: string): ConfigFieldChild => ({
+export const inputArrayItem = (example: string): ConfigFieldChild => ({
   optionKey: "input",
   type: "text",
   label: "输入值",
-  placeholder,
+  example,
 });
 export const providerReferenceArrayItem = (
-  placeholder: string,
+  example: string,
 ): ConfigFieldChild => ({
   optionKey: "provider_ref",
   type: "reference",
   label: "引用 provider",
   referenceTypes: ["provider"],
   referencePrefix: "$",
-  placeholder,
+  example,
 });
 export const executorReferenceArrayItem = (
-  placeholder: string,
+  example: string,
 ): ConfigFieldChild => ({
   optionKey: "executor_ref",
   type: "reference",
   label: "引用 executor",
   referenceTypes: ["executor"],
   referencePrefix: "$",
-  placeholder,
+  example,
 });
 export const nftSetTargetFields: ConfigField[] = [
   {
     key: "table_family",
     label: "表 Family",
     type: "text",
-    placeholder: "ip",
+    example: "ip",
     required: true,
   },
   {
     key: "table_name",
     label: "表名",
     type: "text",
-    placeholder: "mangle",
+    example: "mangle",
     required: true,
   },
   {
     key: "set_name",
     label: "Set 名称",
     type: "text",
-    placeholder: "dns_v4",
+    example: "dns_v4",
     required: true,
   },
   {
     key: "mask",
     label: "前缀长度",
     type: "number",
-    placeholder: "24",
+    example: "24",
     advanced: true,
   },
 ];

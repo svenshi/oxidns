@@ -85,9 +85,11 @@ export function PluginConfigModeEditor({
   };
 
   const handleFieldChange = (nextValues: Record<string, unknown>) => {
+    const serializedValues = serializePluginConfigValues(fields, nextValues);
     setFieldValues(nextValues);
+    setConfiguredValues(serializedValues);
     onValidityChange?.(isPluginConfigFormValid(fields, nextValues));
-    onChange(serializePluginConfigValues(fields, nextValues));
+    onChange(serializedValues);
   };
 
   const handleYamlChange = (nextYaml: string) => {

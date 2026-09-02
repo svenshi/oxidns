@@ -58,7 +58,7 @@ export const matcherPluginDefinitions: PluginKindDefinition[] = [
           label: "引用 provider",
           referenceTypes: ["provider"],
           referencePrefix: "$",
-          placeholder: "ad_rules",
+          example: "ad_rules",
         },
       ),
     ],
@@ -304,7 +304,7 @@ export const matcherPluginDefinitions: PluginKindDefinition[] = [
         key: "timezone",
         label: "时区",
         type: "text",
-        placeholder: "Asia/Shanghai",
+        example: "Asia/Shanghai",
         advanced: true,
         description:
           "留空时使用系统时区；填写有效 IANA 时区可固定策略判断时区。",
@@ -314,7 +314,7 @@ export const matcherPluginDefinitions: PluginKindDefinition[] = [
         label: "时间周期",
         type: "array",
         required: true,
-        placeholder:
+        example:
           '[{"start":"09:00","end":"18:00","weekdays":["mon","tue","wed","thu","fri"]}]',
         description:
           "任一周期命中即返回 true；同一周期内的时间、星期和月日条件需要同时满足。",
@@ -327,7 +327,7 @@ export const matcherPluginDefinitions: PluginKindDefinition[] = [
               key: "start",
               label: "开始时间",
               type: "time",
-              placeholder: "09:00",
+              example: "09:00",
               description: "使用 HH:MM；与结束时间同时填写。",
               timeRange: {
                 id: "period-time-range",
@@ -339,7 +339,7 @@ export const matcherPluginDefinitions: PluginKindDefinition[] = [
               key: "end",
               label: "结束时间",
               type: "time",
-              placeholder: "18:00",
+              example: "18:00",
               description: "使用 HH:MM；早于开始时间时表示跨午夜。",
               timeRange: {
                 id: "period-time-range",
@@ -351,7 +351,7 @@ export const matcherPluginDefinitions: PluginKindDefinition[] = [
               key: "weekdays",
               label: "星期",
               type: "array",
-              placeholder: "mon\ntue\nwed\nthu\nfri",
+              example: "mon\ntue\nwed\nthu\nfri",
               description: "默认每天；使用 ISO 周序 1（周一）到 7（周日）。",
               arrayPresentation: "weekday-chips",
               item: {
@@ -371,12 +371,12 @@ export const matcherPluginDefinitions: PluginKindDefinition[] = [
               key: "monthdays",
               label: "每月日期",
               type: "array",
-              placeholder: "1\n15",
+              example: "1\n15",
               description: "默认不限日期；选择指定日期后可勾选 1 到 31。",
               arrayPresentation: "calendar-grid",
               item: {
                 type: "number",
-                placeholder: "1",
+                example: "1",
                 options: Array.from({ length: 31 }, (_, index) => ({
                   label: String(index + 1),
                   value: index + 1,
@@ -465,7 +465,7 @@ export const matcherPluginDefinitions: PluginKindDefinition[] = [
         label: "表达式",
         type: "text",
         required: true,
-        placeholder: "url_path prefix /dns-",
+        example: "url_path prefix /dns-",
       },
     ],
     quickSetup: {

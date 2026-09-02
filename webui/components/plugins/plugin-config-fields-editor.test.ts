@@ -2,13 +2,21 @@ import { describe, expect, it } from "vitest";
 
 import { matcherPluginDefinitions } from "@/lib/plugin-definitions/matcher";
 import { executorPluginDefinitions } from "@/lib/plugin-definitions/executor";
-import { getLocalizedPluginKindDefinition } from "@/lib/plugin-definitions";
+import {
+  getLocalizedPluginKindDefinition,
+  pluginKindDefinitions,
+  type ConfigField,
+  type ConfigFieldChild,
+} from "@/lib/plugin-definitions";
 
 import {
   createDefaultPluginConfigValues,
   createPluginConfigFormValues,
+  formatConfigFieldDefaultValue,
+  getConfigFieldExample,
   hasConfiguredAdvancedFields,
   isPluginConfigFormValid,
+  omitConfigFieldValues,
   resolveConfigFieldDisplayValue,
   serializePluginConfigValues,
 } from "./plugin-config-fields-editor";
@@ -64,13 +72,18 @@ const forwardDefinition = executorPluginDefinitions.find(
 const fallbackDefinition = executorPluginDefinitions.find(
   (definition) => definition.kind === "fallback",
 );
+const httpRequestDefinition = executorPluginDefinitions.find(
+  (definition) => definition.kind === "http_request",
+);
 const preferDefinitions = executorPluginDefinitions.filter(
   (definition) =>
     definition.kind === "prefer_ipv4" || definition.kind === "prefer_ipv6",
 );
 
-if (!forwardDefinition || !fallbackDefinition) {
-  throw new Error("forward and fallback executor definitions must exist");
+if (!forwardDefinition || !fallbackDefinition || !httpRequestDefinition) {
+  throw new Error(
+    "forward, fallback, and http_request executor definitions must exist",
+  );
 }
 
 describe("client_ip_from_ecs plugin definition", () => {
@@ -93,7 +106,7 @@ describe("client_ip_from_ecs plugin definition", () => {
           optionKey: "input",
           type: "text",
           label: "输入值",
-          placeholder: "127.0.0.1",
+          example: "127.0.0.1",
         },
       ],
     });
@@ -111,6 +124,143 @@ describe("client_ip_from_ecs plugin definition", () => {
     expect(
       getLocalizedPluginKindDefinition("client_ip_from_ecs", "en-US")?.name,
     ).toBe("Client IP From ECS");
+  });
+});
+
+function collectLegacyPlaceholders(
+  fields: ConfigField[],
+  parentPath = "",
+): string[] {
+  const paths: string[] = [];
+
+  const visitChild = (child: ConfigFieldChild, path: string) => {
+    if (child.placeholder !== undefined) paths.push(path);
+    if (child.type === "object") {
+      paths.push(...collectLegacyPlaceholders(child.fields, path));
+    }
+    if (child.type === "array") {
+      if (child.item) visitChild(child.item, `${path}[]`);
+      child.itemOptions?.forEach((item) =>
+        visitChild(item, `${path}.$${item.optionKey ?? item.type}`),
+      );
+    }
+  };
+
+  fields.forEach((field) => {
+    const path = parentPath ? `${parentPath}.${field.key}` : field.key;
+    if (field.placeholder !== undefined) paths.push(path);
+    if (field.fields) {
+      paths.push(...collectLegacyPlaceholders(field.fields, path));
+    }
+    if (field.item) visitChild(field.item, `${path}[]`);
+    field.itemOptions?.forEach((item) =>
+      visitChild(item, `${path}.$${item.optionKey ?? item.type}`),
+    );
+  });
+
+  return paths;
+}
+
+function collectUndeclaredDocumentedDefaults(
+  fields: ConfigField[],
+  parentPath = "",
+): string[] {
+  const paths: string[] = [];
+
+  fields.forEach((field) => {
+    const path = parentPath ? `${parentPath}.${field.key}` : field.key;
+    const documentedDefault = field.docs
+      ?.split("\n", 1)[0]
+      ?.match(/默认值：`([^`]+)`/)?.[1];
+    const isDynamicDefault = documentedDefault === "network.outbound.default";
+
+    if (documentedDefault && !isDynamicDefault && field.default === undefined) {
+      paths.push(path);
+    }
+    if (field.fields) {
+      paths.push(...collectUndeclaredDocumentedDefaults(field.fields, path));
+    }
+    if (field.item?.type === "object") {
+      paths.push(
+        ...collectUndeclaredDocumentedDefaults(field.item.fields, `${path}[]`),
+      );
+    }
+    field.itemOptions?.forEach((item) => {
+      if (item.type === "object") {
+        paths.push(
+          ...collectUndeclaredDocumentedDefaults(
+            item.fields,
+            `${path}.$${item.optionKey ?? item.type}`,
+          ),
+        );
+      }
+    });
+  });
+
+  return paths;
+}
+
+describe("config field guidance semantics", () => {
+  it("uses examples in every built-in schema while retaining legacy fallback", () => {
+    const legacyPaths = pluginKindDefinitions.flatMap((definition) =>
+      collectLegacyPlaceholders(definition.configSchema).map(
+        (path) => `${definition.kind}.${path}`,
+      ),
+    );
+
+    expect(legacyPaths).toEqual([]);
+    expect(
+      getConfigFieldExample({
+        example: "new-example",
+        placeholder: "legacy-example",
+      }),
+    ).toBe("new-example");
+    expect(getConfigFieldExample({ placeholder: "legacy-example" })).toBe(
+      "legacy-example",
+    );
+  });
+
+  it("formats scalar and structured defaults without turning them into examples", () => {
+    expect(formatConfigFieldDefaultValue(false)).toBe("false");
+    expect(formatConfigFieldDefaultValue(0)).toBe("0");
+    expect(formatConfigFieldDefaultValue("")).toBe('""');
+    expect(formatConfigFieldDefaultValue(["a", "b"])).toBe('["a","b"]');
+    expect(formatConfigFieldDefaultValue({ mode: "safe" })).toBe(
+      '{"mode":"safe"}',
+    );
+  });
+
+  it("declares every literal documented default in the field schema", () => {
+    const missingDefaults = pluginKindDefinitions.flatMap((definition) =>
+      collectUndeclaredDocumentedDefaults(definition.configSchema).map(
+        (path) => `${definition.kind}.${path}`,
+      ),
+    );
+
+    expect(missingDefaults).toEqual([]);
+  });
+
+  it("restores inheritance by removing only the explicit field values", () => {
+    const values = { timeout: "10s", enabled: false, tag: "main" };
+    const restored = omitConfigFieldValues(values, ["timeout", "enabled"]);
+
+    expect(restored).toEqual({ tag: "main" });
+    expect(values).toEqual({ timeout: "10s", enabled: false, tag: "main" });
+  });
+
+  it("serializes intentional initial values without materializing runtime defaults", () => {
+    const values = createDefaultPluginConfigValues(
+      httpRequestDefinition.configSchema,
+    );
+    const serialized = serializePluginConfigValues(
+      httpRequestDefinition.configSchema,
+      values,
+    );
+
+    expect(values).toMatchObject({ method: "POST" });
+    expect(values).not.toHaveProperty("phase");
+    expect(values).not.toHaveProperty("async");
+    expect(serialized).toEqual({ method: "POST" });
   });
 });
 

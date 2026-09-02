@@ -8,7 +8,12 @@ import zhCN from "antd/locale/zh_CN";
 import dayjs from "dayjs";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
   Popover,
@@ -35,7 +40,7 @@ import type { PluginInstance, PluginType } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
-import { ChevronDown, Info, Minus, Plus, X } from "lucide-react";
+import { ChevronDown, Info, Minus, Plus, RotateCcw, X } from "lucide-react";
 import {
   Fragment,
   useEffect,
@@ -131,25 +136,15 @@ function InvertCheckbox({
   );
 }
 
-// Free-text / numeric inputs show defaults via placeholders. Advanced fields
-// also stay unset until the operator interacts with them, so collapsed tuning
-// defaults are never materialized into the config.
-const PLACEHOLDER_INPUT_TYPES = new Set([
-  "text",
-  "time",
-  "number",
-  "textarea",
-  "duration",
-  "string",
-]);
-
 export function createDefaultPluginConfigValues(fields: ConfigField[]) {
   const defaults: Record<string, unknown> = {};
   fields.forEach((field) => {
     if (field.advanced) {
       return;
     }
-    if (field.type === "array") {
+    if (field.initialValue !== undefined) {
+      defaults[field.key] = field.initialValue;
+    } else if (field.type === "array") {
       defaults[field.key] = [];
     } else if (field.type === "time" && field.timeRange) {
       defaults[field.key] = field.timeRange.defaultValue;
@@ -163,11 +158,6 @@ export function createDefaultPluginConfigValues(fields: ConfigField[]) {
       defaults[field.key] = [];
     } else if (field.type === "json") {
       defaults[field.key] = "";
-    } else if (
-      field.default !== undefined &&
-      !PLACEHOLDER_INPUT_TYPES.has(field.type)
-    ) {
-      defaults[field.key] = field.default;
     }
   });
   return defaults;
@@ -178,6 +168,151 @@ export function resolveConfigFieldDisplayValue(
   defaultValue: unknown,
 ) {
   return value === undefined ? defaultValue : value;
+}
+
+export function getConfigFieldExample(
+  field: Pick<ConfigField, "example" | "placeholder">,
+) {
+  return field.example ?? field.placeholder;
+}
+
+export function formatConfigFieldDefaultValue(value: unknown): string {
+  if (typeof value === "string") return value || '""';
+  if (value === undefined) return "";
+  if (value === null) return "null";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+export function omitConfigFieldValues(
+  values: Record<string, unknown>,
+  keys: string[],
+) {
+  const nextValues = { ...values };
+  keys.forEach((key) => delete nextValues[key]);
+  return nextValues;
+}
+
+function formatConfigFieldDefaultSummary(
+  field: ConfigField,
+  t: (key: string, params?: Record<string, string | number>) => string,
+) {
+  if (Array.isArray(field.default)) {
+    return t(WEBUI.common.itemCount, { count: field.default.length });
+  }
+  if (typeof field.default === "boolean") {
+    return t(field.default ? WEBUI.common.enabled : WEBUI.common.disabled);
+  }
+  return formatConfigFieldDefaultValue(field.default);
+}
+
+function ConfigFieldResetButton({
+  field,
+  configured,
+  onReset,
+  readOnly,
+}: {
+  field: ConfigField;
+  configured: boolean;
+  onReset: () => void;
+  readOnly: boolean;
+}) {
+  const { t } = useI18n();
+  const hasDefault = field.default !== undefined;
+  const canReset = configured && !readOnly && (hasDefault || !field.required);
+  if (!canReset) return null;
+
+  const label = hasDefault
+    ? t(WEBUI.plugins.restoreDefaultValue, {
+        value: formatConfigFieldDefaultSummary(field, t),
+      })
+    : t(WEBUI.plugins.clearConfigValue);
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          className="shrink-0 text-muted-foreground opacity-60 transition-opacity hover:text-primary focus-visible:opacity-100 sm:opacity-0 sm:group-hover/field:opacity-100"
+          aria-label={label}
+          onClick={onReset}
+        >
+          <RotateCcw />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent sideOffset={6}>{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function ConfigFieldReadValue({
+  field,
+  value,
+  configured,
+}: {
+  field: ConfigField;
+  value: unknown;
+  configured: boolean;
+}) {
+  const { t } = useI18n();
+  const configModel = useAppStore((state) => state.configModel);
+  const displayValue = resolveConfigFieldDisplayValue(value, field.default);
+  const inherited = !configured && field.default !== undefined;
+
+  if (isEmptyConfigValue(displayValue)) {
+    return (
+      <span className="block py-1 text-sm text-muted-foreground">
+        {t(WEBUI.common.unconfigured)}
+      </span>
+    );
+  }
+
+  let renderedValue: ReactNode;
+  if (field.type === "switch" && typeof displayValue === "boolean") {
+    renderedValue = t(
+      displayValue ? WEBUI.common.enabled : WEBUI.common.disabled,
+    );
+  } else if (field.type === "select") {
+    const option = resolveSelectOptions(field, configModel).find(
+      (candidate) => String(candidate.value) === String(displayValue),
+    );
+    renderedValue =
+      option?.label ?? formatConfigFieldDefaultValue(displayValue);
+  } else if (field.type === "password") {
+    renderedValue = "••••••••";
+  } else {
+    renderedValue = formatConfigFieldDefaultValue(displayValue);
+  }
+
+  return (
+    <code
+      className={cn(
+        "block min-w-0 whitespace-pre-wrap break-all py-1 font-mono text-sm leading-5",
+        inherited ? "text-muted-foreground" : "text-foreground",
+      )}
+    >
+      {renderedValue}
+    </code>
+  );
+}
+
+function ConfigFieldExample({ field }: { field: ConfigField }) {
+  const { t } = useI18n();
+  const example = getConfigFieldExample(field);
+  if (!example || (field.type !== "time" && field.type !== "reference")) {
+    return null;
+  }
+
+  return (
+    <FieldDescription className="text-config-example text-xs leading-4">
+      {t(WEBUI.plugins.configExampleLabel)}:
+      <code className="ml-1 whitespace-pre-wrap break-all font-mono">
+        {example}
+      </code>
+    </FieldDescription>
+  );
 }
 
 export function createPluginConfigFormValues(
@@ -383,6 +518,9 @@ export function PluginConfigFieldsEditor({
   const updateConfig = (key: string, value: unknown) => {
     onChange({ ...values, [key]: value });
   };
+  const resetConfig = (key: string) => {
+    onChange(omitConfigFieldValues(values, [key]));
+  };
 
   if (fields.length === 0) {
     return (
@@ -392,40 +530,46 @@ export function PluginConfigFieldsEditor({
     );
   }
 
-  const renderFields = (items: ConfigField[]) => (
-    <div className="oxidns-config-fields-grid w-full">
-      {items.map((field) => (
-        <Field
-          key={field.key}
-          className={cn(
-            isFullWidthConfigField(field) && "@md/field-group:col-span-2",
-          )}
-        >
-          <ConfigFieldLabel field={field} />
-          <ConfigFieldControl
+  const renderFields = (items: ConfigField[], framed = true) => (
+    <div
+      className={cn(
+        "w-full",
+        framed &&
+          "overflow-hidden rounded-lg border border-border/70 bg-background/25",
+      )}
+    >
+      {items.map((field) => {
+        const configured = Object.prototype.hasOwnProperty.call(
+          configuredValues,
+          field.key,
+        );
+        return (
+          <ConfigFieldRow
+            key={field.key}
             field={field}
             plugins={plugins}
             value={values[field.key]}
             configuredValue={configuredValues[field.key]}
+            configured={configured}
             onChange={(value) => updateConfig(field.key, value)}
+            onReset={() => resetConfig(field.key)}
             defaultArrayObjectCollapsed={defaultArrayObjectCollapsed}
             readOnly={readOnly}
           />
-        </Field>
-      ))}
+        );
+      })}
     </div>
   );
 
   return (
     <FieldGroup>
-      {/* Grid layout lives on a child element rather than on FieldGroup
-          itself, because FieldGroup establishes `@container/field-group`
-          and CSS container queries cannot match the container element they
-          establish — only its descendants. */}
-      {renderFields(regularFields)}
+      {regularFields.length > 0 && renderFields(regularFields)}
       {advancedFields.length > 0 && (
-        <AdvancedSettingsSection defaultOpen={hasConfiguredAdvancedValue}>
-          {renderFields(advancedFields)}
+        <AdvancedSettingsSection
+          defaultOpen={hasConfiguredAdvancedValue}
+          contentClassName="p-0"
+        >
+          {renderFields(advancedFields, false)}
         </AdvancedSettingsSection>
       )}
     </FieldGroup>
@@ -443,26 +587,74 @@ export function hasConfiguredAdvancedFields(
   );
 }
 
-function isFullWidthConfigField(field: ConfigField): boolean {
-  if (field.fullWidth) return true;
-  switch (field.type) {
-    case "textarea":
-    case "json":
-    case "object":
-    case "array":
-    case "record":
-      return true;
-    default:
-      return false;
-  }
+function isStructuralConfigField(field: ConfigField): boolean {
+  return ["array", "object", "record"].includes(field.type);
+}
+
+function ConfigFieldRow({
+  field,
+  plugins,
+  value,
+  configuredValue,
+  configured,
+  onChange,
+  onReset,
+  defaultArrayObjectCollapsed,
+  readOnly,
+}: {
+  field: ConfigField;
+  plugins: PluginInstance[];
+  value: unknown;
+  configuredValue?: unknown;
+  configured: boolean;
+  onChange: (value: unknown) => void;
+  onReset: () => void;
+  defaultArrayObjectCollapsed: boolean;
+  readOnly: boolean;
+}) {
+  return (
+    <Field className="grid min-w-0 gap-2.5 border-b border-border/60 px-3 py-3.5 last:border-b-0 @md/field-group:grid-cols-[minmax(9rem,0.8fr)_minmax(0,1.4fr)] @md/field-group:gap-5">
+      <div className="min-w-0 space-y-1">
+        <ConfigFieldLabel field={field} />
+        {field.description && (
+          <p className="text-xs leading-5 font-normal text-muted-foreground">
+            {field.description}
+          </p>
+        )}
+      </div>
+      <div className="min-w-0 space-y-1.5">
+        <div className="flex min-w-0 items-start gap-1.5">
+          <div className="min-w-0 flex-1">
+            <ConfigFieldControl
+              field={field}
+              plugins={plugins}
+              value={value}
+              configuredValue={configuredValue}
+              configured={configured}
+              onChange={onChange}
+              defaultArrayObjectCollapsed={defaultArrayObjectCollapsed}
+              readOnly={readOnly}
+            />
+          </div>
+          <ConfigFieldResetButton
+            field={field}
+            configured={configured}
+            onReset={onReset}
+            readOnly={readOnly}
+          />
+        </div>
+        {!readOnly && <ConfigFieldExample field={field} />}
+      </div>
+    </Field>
+  );
 }
 
 function ConfigFieldLabel({ field }: { field: ConfigField }) {
   const { t } = useI18n();
-  const docs = field.docs ?? field.description;
+  const docs = field.docs;
 
   return (
-    <FieldLabel className="flex items-center gap-1.5">
+    <FieldLabel className="flex items-center gap-1.5 font-normal">
       <span>{field.label}</span>
       {field.required && <span className="text-destructive">*</span>}
       {docs && (
@@ -657,41 +849,69 @@ function renderInlineCode(text: string): ReactNode {
   });
 }
 
-function ConfigFieldControl({
-  field,
-  plugins,
-  value,
-  configuredValue,
-  onChange,
-  defaultArrayObjectCollapsed,
-  readOnly,
-}: {
+interface ConfigFieldControlProps {
   field: ConfigField;
   plugins: PluginInstance[];
   value: unknown;
   configuredValue?: unknown;
+  configured?: boolean;
   onChange: (value: unknown) => void;
   defaultArrayObjectCollapsed: boolean;
   readOnly: boolean;
-}) {
+}
+
+function ConfigFieldControl(props: ConfigFieldControlProps) {
+  if (props.readOnly && !isStructuralConfigField(props.field)) {
+    return (
+      <ConfigFieldReadValue
+        field={props.field}
+        value={props.value}
+        configured={props.configured ?? props.configuredValue !== undefined}
+      />
+    );
+  }
+  return <ConfigFieldInput {...props} />;
+}
+
+function ConfigFieldInput({
+  field,
+  plugins,
+  value,
+  configuredValue,
+  configured = configuredValue !== undefined,
+  onChange,
+  defaultArrayObjectCollapsed,
+  readOnly,
+}: ConfigFieldControlProps) {
   const { t } = useI18n();
   const configModel = useAppStore((s) => s.configModel);
-  // Unset fields show their schema default as a placeholder (never pre-filled)
-  // so an untouched default is not materialized into the saved config.
-  const defaultPlaceholder =
-    field.placeholder ??
-    (field.default !== undefined && field.default !== ""
-      ? String(field.default)
-      : undefined);
+  const example =
+    getConfigFieldExample(field) ??
+    (field.type === "duration" ? "3s" : undefined);
+  const examplePlaceholder = example
+    ? t(WEBUI.plugins.examplePlaceholder, { value: example })
+    : undefined;
+  const displayValue = resolveConfigFieldDisplayValue(value, field.default);
+  const inherited = !configured && field.default !== undefined;
+  const inheritedControlClassName = inherited
+    ? "border-border/70 bg-muted/20 text-muted-foreground"
+    : undefined;
+  const examplePlaceholderClassName = example
+    ? "placeholder:text-config-example/80"
+    : undefined;
 
   switch (field.type) {
     case "text":
       return (
         <Input
-          value={(value as string) || ""}
+          value={(displayValue as string) || ""}
           onChange={(e) => onChange(e.target.value)}
-          placeholder={defaultPlaceholder}
-          className="font-mono text-sm"
+          placeholder={examplePlaceholder}
+          className={cn(
+            "font-mono text-sm",
+            inheritedControlClassName,
+            examplePlaceholderClassName,
+          )}
           disabled={readOnly}
         />
       );
@@ -699,10 +919,14 @@ function ConfigFieldControl({
       return (
         <Input
           type="password"
-          value={(value as string) || ""}
+          value={(displayValue as string) || ""}
           onChange={(e) => onChange(e.target.value)}
-          placeholder={defaultPlaceholder}
-          className="font-mono text-sm"
+          placeholder={examplePlaceholder}
+          className={cn(
+            "font-mono text-sm",
+            inheritedControlClassName,
+            examplePlaceholderClassName,
+          )}
           disabled={readOnly}
           autoComplete="new-password"
         />
@@ -712,10 +936,14 @@ function ConfigFieldControl({
         <Input
           type="time"
           step={60}
-          value={typeof value === "string" ? value : ""}
+          value={typeof displayValue === "string" ? displayValue : ""}
           onChange={(event) => onChange(event.target.value)}
-          placeholder={defaultPlaceholder}
-          className="font-mono text-sm"
+          placeholder={examplePlaceholder}
+          className={cn(
+            "font-mono text-sm",
+            inheritedControlClassName,
+            examplePlaceholderClassName,
+          )}
           disabled={readOnly}
         />
       );
@@ -723,22 +951,30 @@ function ConfigFieldControl({
       return (
         <Input
           type="number"
-          value={(value as number) ?? ""}
+          value={(displayValue as number) ?? ""}
           onChange={(e) =>
             onChange(e.target.value ? Number(e.target.value) : "")
           }
-          placeholder={defaultPlaceholder}
-          className="font-mono text-sm"
+          placeholder={examplePlaceholder}
+          className={cn(
+            "font-mono text-sm",
+            inheritedControlClassName,
+            examplePlaceholderClassName,
+          )}
           disabled={readOnly}
         />
       );
     case "textarea":
       return (
         <Textarea
-          value={(value as string) || ""}
+          value={(displayValue as string) || ""}
           onChange={(e) => onChange(e.target.value)}
-          placeholder={defaultPlaceholder}
-          className="min-h-[80px] font-mono text-sm"
+          placeholder={examplePlaceholder}
+          className={cn(
+            "min-h-[80px] font-mono text-sm",
+            inheritedControlClassName,
+            examplePlaceholderClassName,
+          )}
           disabled={readOnly}
         />
       );
@@ -772,6 +1008,7 @@ function ConfigFieldControl({
           field={field}
           plugins={plugins}
           value={normalizeArrayValue(value)}
+          configuredValue={configuredValue}
           onChange={onChange}
           readOnly={readOnly}
         />
@@ -779,20 +1016,34 @@ function ConfigFieldControl({
     case "duration":
       return (
         <Input
-          value={(value as string) || ""}
+          value={(displayValue as string) || ""}
           onChange={(e) => onChange(e.target.value)}
-          placeholder={defaultPlaceholder || "3s"}
-          className="font-mono text-sm"
+          placeholder={examplePlaceholder}
+          className={cn(
+            "font-mono text-sm",
+            inheritedControlClassName,
+            examplePlaceholderClassName,
+          )}
           disabled={readOnly}
         />
       );
     case "json":
       return (
         <Textarea
-          value={(value as string) || ""}
+          value={
+            typeof displayValue === "string"
+              ? displayValue
+              : displayValue === undefined
+                ? ""
+                : JSON.stringify(displayValue, null, 2)
+          }
           onChange={(e) => onChange(e.target.value)}
-          placeholder={field.placeholder}
-          className="min-h-[120px] font-mono text-sm"
+          placeholder={examplePlaceholder}
+          className={cn(
+            "min-h-[120px] font-mono text-sm",
+            inheritedControlClassName,
+            examplePlaceholderClassName,
+          )}
           disabled={readOnly}
         />
       );
@@ -804,24 +1055,32 @@ function ConfigFieldControl({
           : createDefaultPluginConfigValues(field.fields);
       if (field.preserveEmptyObject) {
         const present = isPresentOptionalObject(objectValue);
+        if (readOnly && !present) {
+          return (
+            <span className="block py-1 text-sm text-muted-foreground">
+              {t(WEBUI.common.unconfigured)}
+            </span>
+          );
+        }
         return (
           <div className="space-y-4">
-            <div className="flex items-center gap-2">
-              <Switch
-                checked={present}
-                onCheckedChange={(checked) =>
-                  onChange({
-                    ...objectValue,
-                    [OBJECT_PRESENCE_KEY]: checked,
-                  })
-                }
-                disabled={readOnly}
-                aria-label={`${field.label}: ${t(WEBUI.common.enabled)}`}
-              />
-              <span className="text-sm text-muted-foreground">
-                {t(WEBUI.common.enabled)}
-              </span>
-            </div>
+            {!readOnly && (
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={present}
+                  onCheckedChange={(checked) =>
+                    onChange({
+                      ...objectValue,
+                      [OBJECT_PRESENCE_KEY]: checked,
+                    })
+                  }
+                  aria-label={`${field.label}: ${t(WEBUI.common.enabled)}`}
+                />
+                <span className="text-sm text-muted-foreground">
+                  {t(WEBUI.common.enabled)}
+                </span>
+              </div>
+            )}
             {present && (
               <ObjectFieldEditor
                 fields={field.fields}
@@ -857,10 +1116,7 @@ function ConfigFieldControl({
         />
       );
     case "select":
-      const selectDisplayValue = resolveConfigFieldDisplayValue(
-        value,
-        field.default,
-      );
+      const selectDisplayValue = displayValue;
       const selectValue =
         selectDisplayValue == null || selectDisplayValue === ""
           ? OPTIONAL_SELECT_VALUE
@@ -882,7 +1138,7 @@ function ConfigFieldControl({
           }}
           disabled={readOnly}
         >
-          <SelectTrigger>
+          <SelectTrigger className={cn("w-full", inheritedControlClassName)}>
             <SelectValue placeholder={t(WEBUI.plugins.selectPlaceholder)} />
           </SelectTrigger>
           <SelectContent>
@@ -902,11 +1158,10 @@ function ConfigFieldControl({
     case "switch":
       return (
         <Switch
-          checked={Boolean(
-            resolveConfigFieldDisplayValue(value, field.default),
-          )}
+          checked={Boolean(displayValue)}
           onCheckedChange={onChange}
           disabled={readOnly}
+          className={cn(inherited && "opacity-75")}
         />
       );
     case "reference":
@@ -968,20 +1223,122 @@ function ConfigFieldControl({
   }
 }
 
+function ConfigArrayEmptyState({
+  field,
+  inherited,
+}: {
+  field: ConfigField;
+  inherited: boolean;
+}) {
+  const { t } = useI18n();
+  const example = getConfigFieldExample(field);
+  const defaultItems =
+    inherited && Array.isArray(field.default) ? field.default : [];
+  const primitiveDefaultItems = defaultItems.filter(
+    (item): item is string | number | boolean =>
+      ["string", "number", "boolean"].includes(typeof item),
+  );
+
+  return (
+    <div className="rounded-lg border border-dashed border-border/70 bg-muted/10 px-3 py-3 text-sm text-muted-foreground">
+      {primitiveDefaultItems.length === defaultItems.length &&
+      primitiveDefaultItems.length > 0 ? (
+        <div className="flex flex-wrap gap-x-3 gap-y-1.5">
+          {primitiveDefaultItems.map((item, index) => (
+            <code
+              key={`${String(item)}-${index}`}
+              className="font-mono text-xs text-muted-foreground"
+            >
+              {String(item)}
+            </code>
+          ))}
+        </div>
+      ) : (
+        <p>
+          {defaultItems.length > 0
+            ? t(WEBUI.common.itemCount, { count: defaultItems.length })
+            : t(WEBUI.plugins.emptyConfigItems)}
+        </p>
+      )}
+      {example && (
+        <div className="mt-2 flex min-w-0 items-start gap-2 text-xs">
+          <span className="text-config-example/80 shrink-0">
+            {t(WEBUI.plugins.configExampleLabel)}
+          </span>
+          <code className="text-config-example min-w-0 whitespace-pre-wrap break-all font-mono">
+            {example}
+          </code>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConfigReadCollection({
+  values,
+  inherited = false,
+}: {
+  values: unknown[];
+  inherited?: boolean;
+}) {
+  const { t } = useI18n();
+  if (values.length === 0) {
+    return (
+      <span className="block py-1 text-sm text-muted-foreground">
+        {t(WEBUI.common.unconfigured)}
+      </span>
+    );
+  }
+
+  return (
+    <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1.5 py-1">
+      {values.map((value, index) => (
+        <code
+          key={`${formatConfigFieldDefaultValue(value)}-${index}`}
+          className={cn(
+            "min-w-0 whitespace-pre-wrap break-all font-mono text-sm leading-5",
+            inherited ? "text-muted-foreground" : "text-foreground",
+          )}
+        >
+          {formatConfigFieldDefaultValue(value)}
+        </code>
+      ))}
+    </div>
+  );
+}
+
 function ArrayFieldEditor({
   field,
   plugins,
   value,
+  configuredValue,
   onChange,
   readOnly,
 }: {
   field: ConfigField;
   plugins: PluginInstance[];
   value: ArrayItemValue[];
+  configuredValue?: unknown;
   onChange: (items: ArrayItemValue[]) => void;
   readOnly: boolean;
 }) {
   const { t } = useI18n();
+  if (readOnly) {
+    const inheritedItems =
+      configuredValue === undefined && Array.isArray(field.default)
+        ? field.default
+        : undefined;
+    const displayItems =
+      inheritedItems ??
+      value.map((item) => serializeArrayItem(item)).filter(Boolean);
+    return (
+      <ConfigReadCollection
+        values={displayItems}
+        inherited={inheritedItems !== undefined}
+      />
+    );
+  }
+
   const addItem = () => {
     onChange([
       ...value,
@@ -1060,9 +1417,12 @@ function ArrayFieldEditor({
           </div>
         ))
       ) : (
-        <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-          {t(WEBUI.plugins.emptyConfigItems)}
-        </div>
+        <ConfigArrayEmptyState
+          field={field}
+          inherited={
+            field.default !== undefined && configuredValue === undefined
+          }
+        />
       )}
 
       {!readOnly && (
@@ -1113,6 +1473,16 @@ function ObjectFieldEditor({
               startField={field}
               endField={endField}
               value={value}
+              configured={
+                Object.prototype.hasOwnProperty.call(
+                  configuredValues,
+                  field.key,
+                ) ||
+                Object.prototype.hasOwnProperty.call(
+                  configuredValues,
+                  endField.key,
+                )
+              }
               onChange={onChange}
               readOnly={readOnly}
             />
@@ -1120,38 +1490,49 @@ function ObjectFieldEditor({
         }
       }
 
+      const configured = Object.prototype.hasOwnProperty.call(
+        configuredValues,
+        field.key,
+      );
       return (
-        <Field key={field.key}>
-          <ConfigFieldLabel field={field} />
-          <ConfigFieldControl
-            field={field}
-            plugins={plugins}
-            value={value[field.key]}
-            configuredValue={configuredValues[field.key]}
-            onChange={(nextFieldValue) =>
-              onChange({ ...value, [field.key]: nextFieldValue })
-            }
-            defaultArrayObjectCollapsed={defaultArrayObjectCollapsed}
-            readOnly={readOnly}
-          />
-        </Field>
+        <ConfigFieldRow
+          key={field.key}
+          field={field}
+          plugins={plugins}
+          value={value[field.key]}
+          configuredValue={configuredValues[field.key]}
+          configured={configured}
+          onChange={(nextFieldValue) =>
+            onChange({ ...value, [field.key]: nextFieldValue })
+          }
+          onReset={() => {
+            onChange(omitConfigFieldValues(value, [field.key]));
+          }}
+          defaultArrayObjectCollapsed={defaultArrayObjectCollapsed}
+          readOnly={readOnly}
+        />
       );
     });
 
   return (
-    <div className="space-y-4">
-      {renderFields(regularFields)}
+    <FieldGroup className="gap-3">
+      {regularFields.length > 0 && (
+        <div className="overflow-hidden rounded-lg border border-border/60 bg-muted/10">
+          {renderFields(regularFields)}
+        </div>
+      )}
       {advancedFields.length > 0 && (
         <AdvancedSettingsSection
           defaultOpen={hasConfiguredAdvancedFields(
             advancedFields,
             configuredValues,
           )}
+          contentClassName="p-0"
         >
-          <div className="space-y-4">{renderFields(advancedFields)}</div>
+          <div>{renderFields(advancedFields)}</div>
         </AdvancedSettingsSection>
       )}
-    </div>
+    </FieldGroup>
   );
 }
 
@@ -1159,12 +1540,14 @@ function TimeRangeFieldEditor({
   startField,
   endField,
   value,
+  configured,
   onChange,
   readOnly,
 }: {
   startField: ConfigField;
   endField: ConfigField;
   value: Record<string, unknown>;
+  configured: boolean;
   onChange: (value: Record<string, unknown>) => void;
   readOnly: boolean;
 }) {
@@ -1173,6 +1556,8 @@ function TimeRangeFieldEditor({
   const rawEnd = value[endField.key];
   const defaultStart = startField.timeRange?.defaultValue ?? "09:00";
   const defaultEnd = endField.timeRange?.defaultValue ?? "18:00";
+  const startExample = getConfigFieldExample(startField) ?? defaultStart;
+  const endExample = getConfigFieldExample(endField) ?? defaultEnd;
   const rawStartValue = typeof rawStart === "string" ? rawStart : "";
   const rawEndValue = typeof rawEnd === "string" ? rawEnd : "";
   const hasStart = Boolean(rawStartValue);
@@ -1206,75 +1591,119 @@ function TimeRangeFieldEditor({
     return dayjs().hour(hour).minute(minute).second(0).millisecond(0);
   };
 
+  const resetRange = () => {
+    onChange(omitConfigFieldValues(value, [startField.key, endField.key]));
+  };
+
   return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        <span className="text-sm font-medium">
+    <Field className="grid min-w-0 gap-2.5 border-b border-border/60 px-3 py-3.5 last:border-b-0 @md/field-group:grid-cols-[minmax(9rem,0.8fr)_minmax(0,1.4fr)] @md/field-group:gap-5">
+      <div className="min-w-0 space-y-1">
+        <FieldLabel className="font-normal">
           {t(WEBUI.plugins.timeRange)}
-        </span>
-        {hasStart && hasEnd && start > end && (
-          <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-            {t(WEBUI.plugins.nextDay)}
-          </span>
+        </FieldLabel>
+        {startField.description && (
+          <p className="text-xs leading-5 font-normal text-muted-foreground">
+            {startField.description}
+          </p>
         )}
       </div>
-      {isUnrestricted ? (
-        <div className="flex items-center gap-2">
-          <span className="rounded-md border border-dashed px-2.5 py-1.5 text-sm text-muted-foreground">
-            {t(WEBUI.plugins.unrestrictedTime)}
-          </span>
-          {!readOnly && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => updateRange(defaultStart, defaultEnd)}
-            >
-              {t(WEBUI.plugins.setTimeRange)}
-            </Button>
-          )}
-        </div>
-      ) : (
-        <ConfigProvider
-          locale={locale === "zh-CN" ? zhCN : enUS}
-          theme={{
-            token: {
-              borderRadius: 8,
-              controlHeight: 32,
-              fontFamily: "var(--font-mono)",
-              fontSize: 14,
-            },
-          }}
-        >
-          <TimePicker.RangePicker
-            value={[toPickerValue(start), toPickerValue(end)]}
-            onChange={(_, timeStrings) => {
-              const [nextStart, nextEnd] = timeStrings;
-              if (!nextStart && !nextEnd) {
-                const nextValue = { ...value };
-                delete nextValue[startField.key];
-                delete nextValue[endField.key];
-                onChange(nextValue);
-                return;
-              }
-              if (!nextStart || !nextEnd) return;
-              updateRange(nextStart.slice(0, 5), nextEnd.slice(0, 5));
-            }}
-            className="oxidns-time-range-picker"
-            popupClassName="oxidns-time-range-picker-popup"
-            allowClear
-            disabled={readOnly}
-            format="HH:mm"
-            inputReadOnly
-            minuteStep={1}
-            needConfirm={false}
-            order={false}
-            placeholder={[startField.label, endField.label]}
-          />
-        </ConfigProvider>
-      )}
-      {error && <p className="text-xs text-destructive">{error}</p>}
-    </div>
+      <div className="min-w-0 space-y-1.5">
+        {readOnly ? (
+          <div className="flex min-w-0 flex-wrap items-center gap-2 py-1">
+            {isUnrestricted ? (
+              <span className="text-sm text-muted-foreground">
+                {t(WEBUI.plugins.unrestrictedTime)}
+              </span>
+            ) : (
+              <>
+                <code className="font-mono text-sm text-foreground">
+                  {start} – {end}
+                </code>
+                {start > end && (
+                  <span className="text-xs text-muted-foreground">
+                    {t(WEBUI.plugins.nextDay)}
+                  </span>
+                )}
+              </>
+            )}
+          </div>
+        ) : (
+          <>
+            <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
+              {isUnrestricted ? (
+                <div className="flex items-center gap-2">
+                  <span className="rounded-md border border-dashed px-2.5 py-1.5 text-sm text-muted-foreground">
+                    {t(WEBUI.plugins.unrestrictedTime)}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => updateRange(defaultStart, defaultEnd)}
+                  >
+                    {t(WEBUI.plugins.setTimeRange)}
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <ConfigProvider
+                    locale={locale === "zh-CN" ? zhCN : enUS}
+                    theme={{
+                      token: {
+                        borderRadius: 8,
+                        controlHeight: 32,
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 14,
+                      },
+                    }}
+                  >
+                    <TimePicker.RangePicker
+                      value={[toPickerValue(start), toPickerValue(end)]}
+                      onChange={(_, timeStrings) => {
+                        const [nextStart, nextEnd] = timeStrings;
+                        if (!nextStart && !nextEnd) {
+                          resetRange();
+                          return;
+                        }
+                        if (!nextStart || !nextEnd) return;
+                        updateRange(nextStart.slice(0, 5), nextEnd.slice(0, 5));
+                      }}
+                      className="oxidns-time-range-picker"
+                      popupClassName="oxidns-time-range-picker-popup"
+                      allowClear
+                      format="HH:mm"
+                      inputReadOnly
+                      minuteStep={1}
+                      needConfirm={false}
+                      order={false}
+                      placeholder={[startField.label, endField.label]}
+                    />
+                  </ConfigProvider>
+                  {hasStart && hasEnd && start > end && (
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                      {t(WEBUI.plugins.nextDay)}
+                    </span>
+                  )}
+                </div>
+              )}
+              <ConfigFieldResetButton
+                field={startField}
+                configured={configured}
+                onReset={resetRange}
+                readOnly={readOnly}
+              />
+            </div>
+            <FieldDescription className="text-config-example text-xs leading-4">
+              {t(WEBUI.plugins.configExampleLabel)}:
+              <code className="ml-1 font-mono">
+                {startExample} – {endExample}
+              </code>
+            </FieldDescription>
+          </>
+        )}
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </div>
+    </Field>
   );
 }
 
@@ -1417,6 +1846,17 @@ function ArrayChoiceFieldEditor({
       : value.length === 0
         ? t(WEBUI.plugins.unrestricted)
         : t(WEBUI.plugins.selectedCount, { count: value.length });
+
+  if (readOnly) {
+    const selectedLabels = options
+      .filter((option) => selected.has(String(option.value)))
+      .map((option) => option.label);
+    return selectedLabels.length > 0 && value.length > 0 ? (
+      <ConfigReadCollection values={selectedLabels} />
+    ) : (
+      <span className="block py-1 text-sm text-muted-foreground">{status}</span>
+    );
+  }
 
   return (
     <div className="space-y-2.5 rounded-lg border border-border/70 bg-background/40 p-3">
@@ -1613,6 +2053,26 @@ function RecordFieldEditor({
   readOnly: boolean;
 }) {
   const { t } = useI18n();
+  if (readOnly) {
+    if (value.length === 0) {
+      return <ConfigReadCollection values={[]} />;
+    }
+    return (
+      <dl className="grid min-w-0 gap-x-4 gap-y-1.5 py-1 @sm/field-group:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
+        {value.map((item) => (
+          <Fragment key={item.id}>
+            <dt className="truncate font-mono text-sm text-muted-foreground">
+              {item.key}
+            </dt>
+            <dd className="min-w-0 whitespace-pre-wrap break-all font-mono text-sm text-foreground">
+              {item.value}
+            </dd>
+          </Fragment>
+        ))}
+      </dl>
+    );
+  }
+
   const addItem = () => {
     onChange([...value, { id: createArrayItemId(), key: "", value: "" }]);
   };
@@ -1636,8 +2096,17 @@ function RecordFieldEditor({
               onChange={(event) =>
                 updateItem(item.id, { key: event.target.value })
               }
-              placeholder={field.keyPlaceholder ?? t(WEBUI.common.key)}
-              className="font-mono text-sm"
+              placeholder={
+                field.keyPlaceholder
+                  ? t(WEBUI.plugins.examplePlaceholder, {
+                      value: field.keyPlaceholder,
+                    })
+                  : t(WEBUI.common.key)
+              }
+              className={cn(
+                "font-mono text-sm",
+                field.keyPlaceholder && "placeholder:text-config-example/80",
+              )}
               disabled={readOnly}
             />
             <Input
@@ -1646,9 +2115,16 @@ function RecordFieldEditor({
                 updateItem(item.id, { value: event.target.value })
               }
               placeholder={
-                field.valuePlaceholder ?? t(WEBUI.plugins.valueLabel)
+                field.valuePlaceholder
+                  ? t(WEBUI.plugins.examplePlaceholder, {
+                      value: field.valuePlaceholder,
+                    })
+                  : t(WEBUI.plugins.valueLabel)
               }
-              className="font-mono text-sm"
+              className={cn(
+                "font-mono text-sm",
+                field.valuePlaceholder && "placeholder:text-config-example/80",
+              )}
               disabled={readOnly}
             />
             {!readOnly && (
@@ -1667,9 +2143,7 @@ function RecordFieldEditor({
           </div>
         ))
       ) : (
-        <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-          {t(WEBUI.plugins.emptyConfigItems)}
-        </div>
+        <ConfigArrayEmptyState field={field} inherited={false} />
       )}
 
       {!readOnly && (
@@ -1710,6 +2184,12 @@ function SchemaArrayFieldEditor({
   const configuredEntries = Array.isArray(configuredValue)
     ? configuredValue
     : [];
+  const inheritedDefault =
+    configuredValue === undefined && Array.isArray(field.default);
+  const displayedValue =
+    readOnly && value.length === 0 && inheritedDefault
+      ? normalizeArrayFieldValue(field.default, field)
+      : value;
 
   const addItem = () => {
     const selectedOption =
@@ -1748,8 +2228,8 @@ function SchemaArrayFieldEditor({
 
   return (
     <div className="space-y-2">
-      {value.length > 0 ? (
-        value.map((entry, index) => {
+      {displayedValue.length > 0 ? (
+        displayedValue.map((entry, index) => {
           const entryKey = getArrayEntryKey(entry, index);
           const child = getArrayEntryChild(entry, field);
           const entryValue = getArrayEntryValue(entry, field);
@@ -1818,7 +2298,8 @@ function SchemaArrayFieldEditor({
                   plugins={plugins}
                   value={entryValue}
                   configuredValue={configuredEntries[index]}
-                  placeholder={field.placeholder}
+                  configured={!inheritedDefault}
+                  example={getConfigFieldExample(field)}
                   onChange={(nextValue) =>
                     updateItem(
                       index,
@@ -1833,9 +2314,12 @@ function SchemaArrayFieldEditor({
           );
         })
       ) : (
-        <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-          {t(WEBUI.plugins.emptyConfigItems)}
-        </div>
+        <ConfigArrayEmptyState
+          field={field}
+          inherited={
+            field.default !== undefined && configuredValue === undefined
+          }
+        />
       )}
 
       {!readOnly && (
@@ -1875,7 +2359,8 @@ function SchemaArrayItemControl({
   plugins,
   value,
   configuredValue,
-  placeholder,
+  configured,
+  example,
   onChange,
   defaultArrayObjectCollapsed,
   readOnly,
@@ -1884,7 +2369,8 @@ function SchemaArrayItemControl({
   plugins: PluginInstance[];
   value: unknown;
   configuredValue?: unknown;
-  placeholder?: string;
+  configured?: boolean;
+  example?: string;
   onChange: (value: unknown) => void;
   defaultArrayObjectCollapsed: boolean;
   readOnly: boolean;
@@ -1914,7 +2400,7 @@ function SchemaArrayItemControl({
       <SchemaArrayFieldEditor
         field={arrayItemToConfigField(
           item,
-          placeholder,
+          example,
           t(WEBUI.plugins.valueLabel),
         )}
         plugins={plugins}
@@ -1929,14 +2415,11 @@ function SchemaArrayItemControl({
 
   return (
     <ConfigFieldControl
-      field={arrayItemToConfigField(
-        item,
-        placeholder,
-        t(WEBUI.plugins.valueLabel),
-      )}
+      field={arrayItemToConfigField(item, example, t(WEBUI.plugins.valueLabel))}
       plugins={plugins}
       value={value}
       configuredValue={configuredValue}
+      configured={configured}
       onChange={onChange}
       defaultArrayObjectCollapsed={defaultArrayObjectCollapsed}
       readOnly={readOnly}
@@ -1958,6 +2441,7 @@ function ArrayItemInput({
   readOnly: boolean;
 }) {
   const { t } = useI18n();
+  const example = getConfigFieldExample(field)?.split("\n")[0];
 
   if (item.syntax === "plugin") {
     const referenceTypes = item.referenceTypes ?? inferReferenceTypes(field);
@@ -2001,9 +2485,14 @@ function ArrayItemInput({
       value={item.value}
       onChange={(event) => onChange({ value: event.target.value })}
       placeholder={
-        field.placeholder?.split("\n")[0] ?? t(WEBUI.plugins.valueLabel)
+        example
+          ? t(WEBUI.plugins.examplePlaceholder, { value: example })
+          : t(WEBUI.plugins.valueLabel)
       }
-      className="font-mono text-sm"
+      className={cn(
+        "font-mono text-sm",
+        example && "placeholder:text-config-example/80",
+      )}
       disabled={readOnly}
     />
   );
@@ -2221,14 +2710,14 @@ function createDefaultArrayItemValue(item: ConfigFieldChild): unknown {
 
 function arrayItemToConfigField(
   item: ConfigFieldChild,
-  placeholder?: string,
+  example?: string,
   fallbackLabel?: string,
 ): ConfigField {
   return {
     key: "value",
     ...item,
     label: item.label ?? fallbackLabel ?? "",
-    placeholder: item.placeholder ?? placeholder,
+    example: getConfigFieldExample(item) ?? example,
   };
 }
 
@@ -2239,7 +2728,7 @@ function getArrayFieldItemOptions(field: ConfigField): ConfigFieldChild[] {
     {
       optionKey: "input",
       type: "text",
-      placeholder: field.placeholder?.split("\n")[0],
+      example: getConfigFieldExample(field)?.split("\n")[0],
     },
   ];
 }
@@ -2550,7 +3039,7 @@ function serializeArrayItem(item: ArrayItemValue) {
 
 function getSyntaxOptions(field: ConfigField): ArrayItemSyntax[] {
   const text =
-    `${field.key} ${field.label} ${field.description ?? ""} ${field.placeholder ?? ""}`.toLowerCase();
+    `${field.key} ${field.label} ${field.description ?? ""} ${getConfigFieldExample(field) ?? ""}`.toLowerCase();
 
   if (text.includes("provider 引用") || text.includes("只接受 $tag")) {
     return ["plugin"];
@@ -2598,7 +3087,7 @@ function inferSyntaxFromValue(value: string): ArrayItemSyntax {
 
 function inferReferenceTypes(field: ConfigField): PluginType[] {
   const text =
-    `${field.key} ${field.label} ${field.description ?? ""} ${field.placeholder ?? ""}`.toLowerCase();
+    `${field.key} ${field.label} ${field.description ?? ""} ${getConfigFieldExample(field) ?? ""}`.toLowerCase();
 
   if (text.includes("executor")) return ["executor"];
   if (text.includes("matcher")) return ["matcher"];
