@@ -9,7 +9,7 @@ import { useState } from "react";
 import { Pencil, Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useAppStore } from "@/lib/store";
+import { shouldPersistPluginMutation, useAppStore } from "@/lib/store";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
 import type {
@@ -43,10 +43,10 @@ function SequenceDetail({
   };
 
   const handleSave = async () => {
-    updatePluginConfig(plugin.id, configValues);
     try {
-      await saveConfig();
-      setEditing(false);
+      const resolution = await updatePluginConfig(plugin.id, configValues);
+      if (shouldPersistPluginMutation(resolution)) await saveConfig();
+      if (resolution !== "cancelled") setEditing(false);
     } catch {
       // Store-level config errors are surfaced in the full config editor.
     }

@@ -31,7 +31,7 @@ export const zhCNPluginDefined = {
         listen: {
           label: "监听地址",
           description: "指定 UDP 监听地址。",
-          placeholder: "0.0.0.0:53",
+          example: "0.0.0.0:53",
         },
       },
       metrics: {
@@ -71,17 +71,17 @@ export const zhCNPluginDefined = {
         listen: {
           label: "监听地址",
           description: "指定 TCP 监听地址。",
-          placeholder: ":53",
+          example: ":53",
         },
         cert: {
           label: "TLS 证书",
           description: "指定 TLS 证书文件路径。",
-          placeholder: "/etc/oxidns/server.crt",
+          example: "/etc/oxidns/server.crt",
         },
         key: {
           label: "TLS 私钥",
           description: "指定 TLS 私钥文件路径。",
-          placeholder: "/etc/oxidns/server.key",
+          example: "/etc/oxidns/server.key",
         },
         idle_timeout: {
           label: "空闲超时(秒)",
@@ -121,7 +121,7 @@ export const zhCNPluginDefined = {
         entries: {
           label: "路径映射",
           description: "定义 HTTP 路径到执行器的映射关系。",
-          placeholder: '[{"path":"/dns-query","exec":"seq_main"}]',
+          example: '[{"path":"/dns-query","exec":"seq_main"}]',
         },
         "entries[]": {
           label: "路径映射",
@@ -129,12 +129,12 @@ export const zhCNPluginDefined = {
         "entries[].path": {
           label: "路径",
           description: "指定 DoH 请求路径。",
-          placeholder: "/dns-query",
+          example: "/dns-query",
         },
         "entries[].exec": {
           label: "执行器",
           description: "指定处理该路径请求的执行器。",
-          placeholder: "seq_main",
+          example: "seq_main",
         },
         "entries[].json_api": {
           label: "JSON DNS API",
@@ -144,22 +144,22 @@ export const zhCNPluginDefined = {
         listen: {
           label: "监听地址",
           description: "指定 HTTP/HTTPS 监听地址。",
-          placeholder: ":443",
+          example: ":443",
         },
         src_ip_header: {
           label: "来源 IP Header",
           description: "指定从请求头中读取真实客户端来源地址的字段名。",
-          placeholder: "X-Forwarded-For",
+          example: "X-Forwarded-For",
         },
         cert: {
           label: "HTTPS 证书",
           description: "指定 HTTPS 证书文件路径。",
-          placeholder: "/etc/oxidns/server.crt",
+          example: "/etc/oxidns/server.crt",
         },
         key: {
           label: "HTTPS 私钥",
           description: "指定 HTTPS 私钥文件路径。",
-          placeholder: "/etc/oxidns/server.key",
+          example: "/etc/oxidns/server.key",
         },
         idle_timeout: {
           label: "空闲超时(秒)",
@@ -207,17 +207,17 @@ export const zhCNPluginDefined = {
         listen: {
           label: "监听地址",
           description: "指定 QUIC 监听地址。",
-          placeholder: ":853",
+          example: ":853",
         },
         cert: {
           label: "TLS 证书",
           description: "指定 DoQ 所需 TLS 证书文件。",
-          placeholder: "/etc/oxidns/server.crt",
+          example: "/etc/oxidns/server.crt",
         },
         key: {
           label: "TLS 私钥",
           description: "指定 DoQ 所需 TLS 私钥文件。",
-          placeholder: "/etc/oxidns/server.key",
+          example: "/etc/oxidns/server.key",
         },
         idle_timeout: {
           label: "空闲超时(秒)",
@@ -257,7 +257,7 @@ export const zhCNPluginDefined = {
         args: {
           label: "规则链",
           description: "定义 sequence 的规则链。",
-          placeholder: "$cache_main\nmatches: !$has_resp, exec: $forward_main",
+          example: "$cache_main\nmatches: !$has_resp, exec: $forward_main",
         },
         "args[]": {
           label: "规则",
@@ -265,21 +265,21 @@ export const zhCNPluginDefined = {
         "args[].matches": {
           label: "匹配条件",
           description: "定义当前规则的匹配条件。",
-          placeholder: "$has_resp\nqname domain:example.com\n!$blocked",
+          example: "$has_resp\nqname domain:example.com\n!$blocked",
         },
         "args[].matches.$matcher_ref": {
           label: "引用 matcher",
-          placeholder: "has_resp",
+          example: "has_resp",
         },
         "args[].matches.$input": {
           label: "输入值",
-          placeholder: "qname domain:example.com",
+          example: "qname domain:example.com",
         },
         "args[].exec": {
           label: "执行动作",
           description:
             "定义规则命中后要执行的动作，可引用执行器或使用 accept、return、reject、jump、goto、mark、set_mark 等内置动作；mark 追加标记，set_mark 完整替换标记集合；reject 支持大小写不敏感的 RCODE 名称和数字。",
-          placeholder:
+          example:
             "$forward_main / accept / reject SERVFAIL / mark 1,2 / set_mark 2,3 / jump seq_tag",
         },
       },
@@ -305,40 +305,40 @@ export const zhCNPluginDefined = {
         upstreams: {
           label: "上游列表",
           description: "定义一个或多个上游目标。",
-          placeholder: "udp://1.1.1.1:53",
+          example: "udp://1.1.1.1:53",
         },
         "upstreams[].tag": {
           label: "上游标识",
           description: "为单个上游提供日志标识，便于排查多上游竞争结果。",
-          placeholder: "cf_udp",
+          example: "cf_udp",
         },
         "upstreams[].addr": {
           label: "上游地址",
           description: "定义上游地址、协议类型以及目标主机。",
-          placeholder: "udp://1.1.1.1:53",
+          example: "udp://1.1.1.1:53",
         },
         "upstreams[].outbound": {
           label: "出站配置",
           description:
             "引用 network.outbound.profiles 中的出站配置，为该上游注入 resolver 和 proxy；本地 dial_addr、bootstrap、socks5 优先生效。",
-          placeholder: "profile-1",
+          example: "profile-1",
         },
         "upstreams[].dial_addr": {
           label: "拨号 IP",
           description:
             "指定实际连接 IP，同时保留 addr 中的主机名用于 SNI、Host 和证书校验；与 bootstrap 同时配置时本字段优先生效。",
-          placeholder: "203.0.113.53",
+          example: "203.0.113.53",
         },
         "upstreams[].port": {
           label: "端口覆盖",
           description: "覆盖协议默认端口。",
-          placeholder: "443",
+          example: "443",
         },
         "upstreams[].bootstrap": {
           label: "Bootstrap",
           description:
             "为域名型上游提供引导解析服务器，必须写为 IP:port；未配置时会在首次建连时使用系统解析；与 dial_addr 同时配置时会被忽略。",
-          placeholder: "8.8.8.8:53",
+          example: "8.8.8.8:53",
         },
         "upstreams[].bootstrap_version": {
           label: "Bootstrap IP 版本",
@@ -351,23 +351,22 @@ export const zhCNPluginDefined = {
         "upstreams[].socks5": {
           label: "SOCKS5 代理",
           description: "为上游连接指定 SOCKS5 代理。",
-          placeholder: "user:pass@127.0.0.1:1080",
+          example: "user:pass@127.0.0.1:1080",
         },
         "upstreams[].idle_timeout": {
           label: "连接空闲超时(秒)",
           description: "定义连接池空闲连接保留时间。",
-          placeholder: "30",
+          example: "30",
         },
         "upstreams[].max_conns": {
           label: "最大连接数",
           description: "定义连接池连接上限，范围 1..4096。",
-          placeholder: "256",
+          example: "256",
         },
         "upstreams[].min_conns": {
           label: "最小连接数",
           description:
             "定义连接池最小预热连接数，默认 0，范围 0..4096，且不能大于 max_conns。",
-          placeholder: "0",
         },
         "upstreams[].insecure_skip_verify": {
           label: "跳过 TLS 校验",
@@ -376,7 +375,7 @@ export const zhCNPluginDefined = {
         "upstreams[].timeout": {
           label: "查询超时",
           description: "定义单次上游查询超时。",
-          placeholder: "3s",
+          example: "3s",
         },
         "upstreams[].enable_pipeline": {
           label: "启用 Pipeline",
@@ -389,12 +388,12 @@ export const zhCNPluginDefined = {
         "upstreams[].so_mark": {
           label: "SO_MARK",
           description: "设置 Linux SO_MARK。",
-          placeholder: "100",
+          example: "100",
         },
         "upstreams[].bind_to_device": {
           label: "绑定网卡",
           description: "设置 Linux SO_BINDTODEVICE。",
-          placeholder: "eth0",
+          example: "eth0",
         },
         short_circuit: {
           label: "成功后停止后续执行",
@@ -455,7 +454,7 @@ export const zhCNPluginDefined = {
         dump_file: {
           label: "持久化文件",
           description: "指定缓存持久化文件路径。",
-          placeholder: "./dns_cache.dump",
+          example: "./dns_cache.dump",
         },
         dump_interval: {
           label: "落盘周期(秒)",
@@ -571,21 +570,21 @@ export const zhCNPluginDefined = {
         entries: {
           label: "内联 hosts 规则",
           description: "定义内联 hosts 规则。",
-          placeholder:
+          example:
             "router.local 192.168.1.1\nfull:gateway.local 192.168.1.2\ndomain:svc.local 10.0.0.10\nkeyword:nas 192.168.1.20\nregexp:^api[0-9]+\\.corp\\.local$ 10.10.0.5",
         },
         "entries[]": {
           label: "输入值",
-          placeholder: "router.local 192.168.1.1",
+          example: "router.local 192.168.1.1",
         },
         files: {
           label: "hosts 文件",
           description: "指定外部 hosts 规则文件列表。",
-          placeholder: "/etc/oxidns/hosts.txt",
+          example: "/etc/oxidns/hosts.txt",
         },
         "files[]": {
           label: "输入值",
-          placeholder: "/etc/oxidns/hosts.txt",
+          example: "/etc/oxidns/hosts.txt",
         },
         short_circuit: {
           label: "命中后停止后续执行",
@@ -614,21 +613,21 @@ export const zhCNPluginDefined = {
         rules: {
           label: "静态记录",
           description: "定义内联静态记录列表。",
-          placeholder:
+          example:
             'example.com. 60 IN TXT "hello world"\nwww.example.com. 120 IN A 192.0.2.10',
         },
         "rules[]": {
           label: "输入值",
-          placeholder: 'example.com. 60 IN TXT "hello world"',
+          example: 'example.com. 60 IN TXT "hello world"',
         },
         files: {
           label: "记录文件",
           description: "指定静态记录文件列表。",
-          placeholder: "/etc/oxidns/zone.txt",
+          example: "/etc/oxidns/zone.txt",
         },
         "files[]": {
           label: "输入值",
-          placeholder: "/etc/oxidns/zone.txt",
+          example: "/etc/oxidns/zone.txt",
         },
         short_circuit: {
           label: "命中后停止后续执行",
@@ -643,7 +642,7 @@ export const zhCNPluginDefined = {
         rcode: {
           label: "响应码",
           description: "基础 DNS RCODE，支持十进制数字或大小写不敏感的助记名。",
-          placeholder: "NOERROR / NXDOMAIN / 3",
+          example: "NOERROR / NXDOMAIN / 3",
         },
         authoritative: {
           label: "权威应答 (AA)",
@@ -657,32 +656,32 @@ export const zhCNPluginDefined = {
           label: "Answer 记录",
           description:
             "每项一条 zone 风格 RR；{qname} 和 {qclass} 分别引用首个查询名称和类别。",
-          placeholder: "{qname} 300 {qclass} A 192.0.2.10",
+          example: "{qname} 300 {qclass} A 192.0.2.10",
         },
         "answers[]": {
           label: "输入值",
-          placeholder: "{qname} 300 {qclass} A 192.0.2.10",
+          example: "{qname} 300 {qclass} A 192.0.2.10",
         },
         authorities: {
           label: "Authority 记录",
           description:
             "每项一条 zone 风格 RR；NODATA 负缓存通常在此处配置 SOA。",
-          placeholder:
+          example:
             "{qname} 300 {qclass} SOA ns.example. hostmaster.example. 1 7200 1800 86400 300",
         },
         "authorities[]": {
           label: "输入值",
-          placeholder:
+          example:
             "{qname} 300 {qclass} SOA ns.example. hostmaster.example. 1 7200 1800 86400 300",
         },
         additionals: {
           label: "Additional 记录",
           description: "每项一条 zone 风格 RR。",
-          placeholder: "mail.example.com. 300 IN A 192.0.2.25",
+          example: "mail.example.com. 300 IN A 192.0.2.25",
         },
         "additionals[]": {
           label: "输入值",
-          placeholder: "mail.example.com. 300 IN A 192.0.2.25",
+          example: "mail.example.com. 300 IN A 192.0.2.25",
         },
         short_circuit: {
           label: "生成后停止后续执行",
@@ -697,21 +696,21 @@ export const zhCNPluginDefined = {
         rules: {
           label: "重定向规则",
           description: "定义内联重定向规则。",
-          placeholder:
+          example:
             "full:old.example.com new.example.net\ndomain:legacy.example.com modern.example.net\nkeyword:staging staging-gateway.example.net\nregexp:^api[0-9]+\\.legacy\\.example\\.com$ api-gateway.example.net",
         },
         "rules[]": {
           label: "输入值",
-          placeholder: "full:old.example.com new.example.net",
+          example: "full:old.example.com new.example.net",
         },
         files: {
           label: "规则文件",
           description: "指定外部重定向规则文件列表。",
-          placeholder: "/etc/oxidns/redirect.txt",
+          example: "/etc/oxidns/redirect.txt",
         },
         "files[]": {
           label: "输入值",
-          placeholder: "/etc/oxidns/redirect.txt",
+          example: "/etc/oxidns/redirect.txt",
         },
       },
     },
@@ -724,11 +723,11 @@ export const zhCNPluginDefined = {
           label: "可信来源 IP / CIDR",
           description:
             "仅当原始客户端 IP 命中该列表时，才采用请求中的 ECS 地址；留空默认允许 127.0.0.1 和 ::1。",
-          placeholder: "127.0.0.1\n10.0.0.0/24\n::1",
+          example: "127.0.0.1\n10.0.0.0/24\n::1",
         },
         "args.$input": {
           label: "IP 或 CIDR",
-          placeholder: "127.0.0.1",
+          example: "127.0.0.1",
         },
       },
       quickSetup: {
@@ -750,7 +749,7 @@ export const zhCNPluginDefined = {
         preset: {
           label: "预设 ECS 地址",
           description: "指定固定的 ECS 来源地址。",
-          placeholder: "203.0.113.10",
+          example: "203.0.113.10",
         },
         mask4: {
           label: "IPv4 前缀长度",
@@ -772,11 +771,11 @@ export const zhCNPluginDefined = {
         codes: {
           label: "Option Code",
           description: "定义允许从请求复制到响应中的 EDNS0 option code 集合。",
-          placeholder: "10\n12",
+          example: "10\n12",
         },
         "codes[]": {
           label: "输入值",
-          placeholder: "10",
+          example: "10",
         },
       },
       quickSetup: {
@@ -821,23 +820,23 @@ export const zhCNPluginDefined = {
           label: "测速方式",
           description:
             "定义用于评分响应 IP 的探测方式，支持 tcp:<port>、ping、none。",
-          placeholder: "tcp:443\ntcp:80",
+          example: "ping\nnone",
         },
         "probe_methods[]": {
           label: "输入值",
-          placeholder: "tcp:443",
+          example: "tcp:443",
         },
         outbound: {
           label: "出站配置",
           description:
             "引用 network.outbound.profiles 中的出站配置，为 TCP 探测复用 profile proxy。",
-          placeholder: "profile-1",
+          example: "profile-1",
         },
         socks5: {
           label: "SOCKS5 代理",
           description:
             "为 TCP 探测指定局部 SOCKS5 代理，优先于 outbound profile proxy。",
-          placeholder: "127.0.0.1:1080",
+          example: "127.0.0.1:1080",
         },
         probe_stagger: {
           label: "测速错峰(ms)",
@@ -919,7 +918,7 @@ export const zhCNPluginDefined = {
         probe_executor: {
           label: "探针执行器",
           description: "指定仅用于 preferred QTYPE 内部探针的执行器。",
-          placeholder: "probe_v4",
+          example: "probe_v4",
         },
         cache: {
           label: "缓存偏好状态",
@@ -938,7 +937,7 @@ export const zhCNPluginDefined = {
         probe_executor: {
           label: "探针执行器",
           description: "指定仅用于 preferred QTYPE 内部探针的执行器。",
-          placeholder: "probe_v6",
+          example: "probe_v6",
         },
         cache: {
           label: "缓存偏好状态",
@@ -969,11 +968,11 @@ export const zhCNPluginDefined = {
         ips: {
           label: "自定义返回地址",
           description: "定义 custom 模式使用的本地合成返回地址集合。",
-          placeholder: "0.0.0.0\n::",
+          example: "0.0.0.0\n::",
         },
         "ips[]": {
           label: "输入值",
-          placeholder: "0.0.0.0",
+          example: "0.0.0.0",
         },
         short_circuit: {
           label: "命中后停止后续执行",
@@ -1036,7 +1035,7 @@ export const zhCNPluginDefined = {
         msg: {
           label: "日志标题",
           description: "定义摘要日志标题。",
-          placeholder: "main pipeline",
+          example: "main pipeline",
         },
       },
       quickSetup: {
@@ -1050,7 +1049,7 @@ export const zhCNPluginDefined = {
         provider: {
           label: "目标 Provider",
           description: "引用目标 dynamic_domain_set provider。",
-          placeholder: "learned_allow",
+          example: "learned_allow",
         },
         phase: {
           label: "学习阶段",
@@ -1071,11 +1070,11 @@ export const zhCNPluginDefined = {
         qtypes: {
           label: "查询类型",
           description: "只学习指定 DNS 查询类型。",
-          placeholder: "A\nAAAA",
+          example: "HTTPS\nSVCB",
         },
         "qtypes[]": {
           label: "输入值",
-          placeholder: "A",
+          example: "A",
         },
         success_only: {
           label: "仅成功响应",
@@ -1119,7 +1118,7 @@ export const zhCNPluginDefined = {
         path: {
           label: "SQLite 文件",
           description: "指定当前 recorder 的 SQLite 文件路径。",
-          placeholder: "./data/query-recorder-main.sqlite",
+          example: "./data/query-recorder-main.sqlite",
         },
         queue_size: {
           label: "队列大小",
@@ -1230,7 +1229,7 @@ export const zhCNPluginDefined = {
         url: {
           label: "目标 URL",
           description: "目标 URL。",
-          placeholder: "https://hooks.example.com/dns",
+          example: "https://hooks.example.com/dns",
         },
         phase: {
           label: "触发阶段",
@@ -1274,12 +1273,12 @@ export const zhCNPluginDefined = {
         body: {
           label: "原始 Body",
           description: "原始字符串请求体。",
-          placeholder: "qname=${qname}",
+          example: "qname=${qname}",
         },
         json: {
           label: "JSON Body",
           description: "以 JSON 方式发送请求体。",
-          placeholder: '{"qname":"${qname}","client_ip":"${client_ip}"}',
+          example: '{"qname":"${qname}","client_ip":"${client_ip}"}',
         },
         form: {
           label: "表单 Body",
@@ -1295,12 +1294,12 @@ export const zhCNPluginDefined = {
           label: "出站配置",
           description:
             "引用 network.outbound.profiles 中的出站配置，用于统一控制解析器和代理。",
-          placeholder: "profile-1",
+          example: "profile-1",
         },
         socks5: {
           label: "SOCKS5 代理",
           description: "指定 SOCKS5 代理。",
-          placeholder: "127.0.0.1:1080",
+          example: "127.0.0.1:1080",
         },
         insecure_skip_verify: {
           label: "跳过 HTTPS 证书校验",
@@ -1338,16 +1337,16 @@ export const zhCNPluginDefined = {
         command: {
           label: "命令",
           description: "要执行的命令路径或命令名。",
-          placeholder: "bash",
+          example: "bash",
         },
         args: {
           label: "命令参数",
           description: "传给命令的参数数组。",
-          placeholder: "/etc/oxidns/notify.sh\n${qname}",
+          example: "/etc/oxidns/notify.sh\n${qname}",
         },
         "args[]": {
           label: "输入值",
-          placeholder: "/etc/oxidns/notify.sh",
+          example: "/etc/oxidns/notify.sh",
         },
         env: {
           label: "环境变量",
@@ -1358,7 +1357,7 @@ export const zhCNPluginDefined = {
         cwd: {
           label: "工作目录",
           description: "指定脚本运行时的工作目录。",
-          placeholder: "/etc/oxidns",
+          example: "/etc/oxidns",
         },
         timeout: {
           label: "超时",
@@ -1444,19 +1443,19 @@ export const zhCNPluginDefined = {
         },
         "ipv4.table_family": {
           label: "表 Family",
-          placeholder: "ip",
+          example: "ip",
         },
         "ipv4.table_name": {
           label: "表名",
-          placeholder: "mangle",
+          example: "mangle",
         },
         "ipv4.set_name": {
           label: "Set 名称",
-          placeholder: "dns_v4",
+          example: "dns_v4",
         },
         "ipv4.mask": {
           label: "前缀长度",
-          placeholder: "24",
+          example: "24",
         },
         ipv6: {
           label: "IPv6 目标",
@@ -1464,19 +1463,19 @@ export const zhCNPluginDefined = {
         },
         "ipv6.table_family": {
           label: "表 Family",
-          placeholder: "ip6",
+          example: "ip6",
         },
         "ipv6.table_name": {
           label: "表名",
-          placeholder: "mangle",
+          example: "mangle",
         },
         "ipv6.set_name": {
           label: "Set 名称",
-          placeholder: "dns_v6",
+          example: "dns_v6",
         },
         "ipv6.mask": {
           label: "前缀长度",
-          placeholder: "24",
+          example: "24",
         },
         table_family4: {
           label: "IPv4 表 family",
@@ -1533,7 +1532,7 @@ export const zhCNPluginDefined = {
       name: "RouterOS Route",
       description: "把应答 IP 同步为 RouterOS routing table 中的逐 IP 静态路由",
       fields: {
-        address: { label: "RouterOS API 地址", placeholder: "172.16.1.1:8728" },
+        address: { label: "RouterOS API 地址", example: "172.16.1.1:8728" },
         username: { label: "用户名" },
         password: { label: "密码" },
         tls: {
@@ -1556,9 +1555,9 @@ export const zhCNPluginDefined = {
           label: "队列容量",
           description: "分别限制入口队列和重试积压中的不同路由 key。",
         },
-        routing_table: { label: "路由表", placeholder: "via_proxy" },
-        gateway4: { label: "IPv4 网关", placeholder: "192.168.88.2@main" },
-        gateway6: { label: "IPv6 网关", placeholder: "fe80::2%ether1" },
+        routing_table: { label: "路由表", example: "via_proxy" },
+        gateway4: { label: "IPv4 网关", example: "192.168.88.2@main" },
+        gateway6: { label: "IPv6 网关", example: "fe80::2%ether1" },
         distance: { label: "路由距离" },
         comment_prefix: { label: "注释前缀" },
         persistent: {
@@ -1569,17 +1568,17 @@ export const zhCNPluginDefined = {
         "persistent.ips": {
           label: "IP / CIDR",
           description: "以内联方式声明常驻 IP 或 CIDR 路由。",
-          placeholder: "1.1.1.1\n100.64.1.0/24",
+          example: "1.1.1.1\n100.64.1.0/24",
         },
-        "persistent.ips[]": { label: "输入值", placeholder: "1.1.1.1" },
+        "persistent.ips[]": { label: "输入值", example: "1.1.1.1" },
         "persistent.files": {
           label: "文件",
           description: "从外部文件加载常驻 IP 或 CIDR 路由。",
-          placeholder: "/etc/oxidns/persistent_routes.txt",
+          example: "/etc/oxidns/persistent_routes.txt",
         },
         "persistent.files[]": {
           label: "输入值",
-          placeholder: "/etc/oxidns/persistent_routes.txt",
+          example: "/etc/oxidns/persistent_routes.txt",
         },
         min_ttl: { label: "动态路由最小 TTL" },
         max_ttl: { label: "动态路由最大 TTL" },
@@ -1661,7 +1660,7 @@ export const zhCNPluginDefined = {
         address: {
           label: "RouterOS API 地址",
           description: "指定 RouterOS API 服务地址，通常写为 host:port。",
-          placeholder: "172.16.1.1:8728",
+          example: "172.16.1.1:8728",
         },
         username: {
           label: "用户名",
@@ -1723,20 +1722,20 @@ export const zhCNPluginDefined = {
         "persistent.ips": {
           label: "IP / CIDR",
           description: "以内联方式声明常驻 IP 或 CIDR 网段。",
-          placeholder: "1.1.1.1\n100.64.1.0/24",
+          example: "1.1.1.1\n100.64.1.0/24",
         },
         "persistent.ips[]": {
           label: "输入值",
-          placeholder: "1.1.1.1",
+          example: "1.1.1.1",
         },
         "persistent.files": {
           label: "文件",
           description: "从外部文件加载常驻地址集合。",
-          placeholder: "/etc/oxidns/persistent_ips.txt",
+          example: "/etc/oxidns/persistent_ips.txt",
         },
         "persistent.files[]": {
           label: "输入值",
-          placeholder: "/etc/oxidns/persistent_ips.txt",
+          example: "/etc/oxidns/persistent_ips.txt",
         },
         min_ttl: {
           label: "动态项最小 TTL",
@@ -1842,17 +1841,17 @@ export const zhCNPluginDefined = {
         cache_dir: {
           label: "下载缓存目录",
           description: "下载缓存目录。",
-          placeholder: "./upgrade/cache",
+          example: "./upgrade/cache",
         },
         backup_dir: {
           label: "备份目录",
           description: "替换前备份目录。",
-          placeholder: "./upgrade/backups",
+          example: "./upgrade/backups",
         },
         webui_dir: {
           label: "WebUI 目录",
           description: "升级时安装 WebUI 静态资源的目录。",
-          placeholder: "./webui",
+          example: "/opt/oxidns/webui",
         },
         skip_webui: {
           label: "跳过 WebUI 升级",
@@ -1870,12 +1869,12 @@ export const zhCNPluginDefined = {
           label: "出站配置",
           description:
             "引用 network.outbound.profiles 中的出站配置，用于升级下载。",
-          placeholder: "profile-1",
+          example: "profile-1",
         },
         socks5: {
           label: "SOCKS5 代理",
           description: "升级下载时使用的 SOCKS5 代理。",
-          placeholder: "127.0.0.1:1080",
+          example: "127.0.0.1:1080",
         },
         insecure_skip_verify: {
           label: "跳过 HTTPS 证书校验",
@@ -1894,7 +1893,7 @@ export const zhCNPluginDefined = {
           label: "下载项",
           description:
             "下载一个或多个 http/https 文件到本地目录，并在新内容完整写入后覆盖目标文件。",
-          placeholder:
+          example:
             '[{"url":"https://example.com/geosite.dat","dir":"/etc/oxidns","filename":"geosite.dat"}]',
         },
         "downloads[]": {
@@ -1903,17 +1902,17 @@ export const zhCNPluginDefined = {
         "downloads[].url": {
           label: "URL",
           description: "下载项的 http/https URL。",
-          placeholder: "https://example.com/geosite.dat",
+          example: "https://example.com/geosite.dat",
         },
         "downloads[].dir": {
           label: "目录",
           description: "下载项的目标目录。",
-          placeholder: "/etc/oxidns",
+          example: "/etc/oxidns",
         },
         "downloads[].filename": {
           label: "文件名",
           description: "下载项的目标文件名。",
-          placeholder: "geosite.dat",
+          example: "geosite.dat",
         },
         timeout: {
           label: "超时",
@@ -1923,12 +1922,12 @@ export const zhCNPluginDefined = {
           label: "出站配置",
           description:
             "引用 network.outbound.profiles 中的出站配置，用于统一控制下载解析器和代理。",
-          placeholder: "profile-1",
+          example: "profile-1",
         },
         socks5: {
           label: "SOCKS5 代理",
           description: "所有下载连接都会通过该 SOCKS5 代理发起。",
-          placeholder: "127.0.0.1:1080",
+          example: "127.0.0.1:1080",
         },
         startup_if_missing: {
           label: "启动时补齐缺失文件",
@@ -1959,10 +1958,10 @@ export const zhCNPluginDefined = {
         args: {
           label: "Provider 引用",
           description: "按 args 中声明顺序逐个执行 targeted provider reload。",
-          placeholder: "$geosite_cn\n$geoip_cn",
+          example: "$geosite_cn\n$geoip_cn",
         },
         "args[]": {
-          placeholder: "geosite_cn",
+          example: "geosite_cn",
         },
       },
       quickSetup: {
@@ -2002,7 +2001,7 @@ export const zhCNPluginDefined = {
         jobs: {
           label: "任务列表",
           description: "定义一个或多个后台任务。",
-          placeholder:
+          example:
             '[{"name":"refresh_sets","interval":"5m","executors":["$seq_refresh"]}]',
         },
         "jobs[]": {
@@ -2011,35 +2010,35 @@ export const zhCNPluginDefined = {
         "jobs[].name": {
           label: "任务名称",
           description: "任务名称，用于日志与运行时标识。",
-          placeholder: "refresh_sets",
+          example: "refresh_sets",
         },
         "jobs[].schedule": {
           label: "Cron 表达式",
           description: "使用标准 5 字段 cron 表达式调度任务。",
-          placeholder: "0 */6 * * *",
+          example: "0 */6 * * *",
         },
         "jobs[].interval": {
           label: "固定间隔",
           description: "用简单固定间隔调度任务。",
-          placeholder: "5m",
+          example: "5m",
         },
         "jobs[].executors": {
           label: "执行器",
           description: "定义任务触发时顺序执行的 executor 列表。",
-          placeholder: "$seq_refresh\ndebug_print cron refresh",
+          example: "$seq_refresh\ndebug_print cron refresh",
         },
         "jobs[].executors.$executor_ref": {
           label: "引用 executor",
-          placeholder: "seq_refresh",
+          example: "seq_refresh",
         },
         "jobs[].executors.$input": {
           label: "输入值",
-          placeholder: "debug_print cron refresh",
+          example: "debug_print cron refresh",
         },
         timezone: {
           label: "时区",
           description: "为当前 cron 插件下的所有 schedule 任务指定时区。",
-          placeholder: "Asia/Shanghai",
+          example: "Asia/Shanghai",
         },
       },
       metrics: {
@@ -2063,15 +2062,15 @@ export const zhCNPluginDefined = {
           label: "匹配表达式",
           description:
             "每行一个 matcher 表达式，支持 $tag、快捷表达式和 ! 取反",
-          placeholder: "$match_tag\nqname domain:example.com\n!$blocked",
+          example: "$match_tag\nqname domain:example.com\n!$blocked",
         },
         "args.$matcher_ref": {
           label: "引用 matcher",
-          placeholder: "match_tag",
+          example: "match_tag",
         },
         "args.$input": {
           label: "输入值",
-          placeholder: "qname domain:example.com",
+          example: "qname domain:example.com",
         },
       },
     },
@@ -2082,16 +2081,16 @@ export const zhCNPluginDefined = {
         args: {
           label: "域名规则",
           description: "定义域名匹配规则来源。",
-          placeholder:
+          example:
             "full:login.example.com\ndomain:example.com\nkeyword:cdn\nregexp:^api[0-9]+\\.example\\.net$\n$core_domains\n&/etc/oxidns/domains.txt",
         },
         "args.$provider_ref": {
           label: "引用 provider",
-          placeholder: "core_domains",
+          example: "core_domains",
         },
         "args.$input": {
           label: "输入值",
-          placeholder: "regexp:^api[0-9]+\\.example\\.net$",
+          example: "regexp:^api[0-9]+\\.example\\.net$",
         },
       },
       quickSetup: {
@@ -2106,11 +2105,11 @@ export const zhCNPluginDefined = {
           label: "Provider 引用",
           description:
             "使用 $provider_tag 形式引用实现了 contains_question 的 provider。",
-          placeholder: "$ad_rules\n$shared_domains",
+          example: "$ad_rules\n$shared_domains",
         },
         "args[]": {
           label: "引用 provider",
-          placeholder: "ad_rules",
+          example: "ad_rules",
         },
       },
       quickSetup: {
@@ -2125,11 +2124,11 @@ export const zhCNPluginDefined = {
           label: "QType 文本或数值",
           description:
             "定义允许命中的查询类型集合，同时支持 A/AAAA 等文本和对应数值。",
-          placeholder: "A\nAAAA\n1\n28",
+          example: "A\nAAAA\n1\n28",
         },
         "args[]": {
           label: "输入值",
-          placeholder: "A",
+          example: "A",
         },
       },
       quickSetup: {
@@ -2144,11 +2143,11 @@ export const zhCNPluginDefined = {
           label: "QClass 文本或数值",
           description:
             "定义允许命中的查询类别集合，同时支持 IN/CH 等文本和对应数值。",
-          placeholder: "IN\n1",
+          example: "IN\n1",
         },
         "args[]": {
           label: "输入值",
-          placeholder: "IN",
+          example: "IN",
         },
       },
       quickSetup: {
@@ -2162,15 +2161,15 @@ export const zhCNPluginDefined = {
         args: {
           label: "IP / CIDR / ip_set",
           description: "定义客户端来源地址匹配条件。",
-          placeholder: "192.168.0.0/16\n$lan_ip_set",
+          example: "192.168.0.0/16\n$lan_ip_set",
         },
         "args.$provider_ref": {
           label: "引用 provider",
-          placeholder: "lan_ip_set",
+          example: "lan_ip_set",
         },
         "args.$input": {
           label: "输入值",
-          placeholder: "192.168.0.0/16",
+          example: "192.168.0.0/16",
         },
       },
       quickSetup: {
@@ -2184,15 +2183,15 @@ export const zhCNPluginDefined = {
         args: {
           label: "IP / CIDR / ip_set",
           description: "定义应答地址匹配条件。",
-          placeholder: "100.64.0.0/10\n$special_targets",
+          example: "100.64.0.0/10\n$special_targets",
         },
         "args.$provider_ref": {
           label: "引用 provider",
-          placeholder: "special_targets",
+          example: "special_targets",
         },
         "args.$input": {
           label: "输入值",
-          placeholder: "100.64.0.0/10",
+          example: "100.64.0.0/10",
         },
       },
       quickSetup: {
@@ -2206,15 +2205,15 @@ export const zhCNPluginDefined = {
         args: {
           label: "IP / CIDR / ip_set",
           description: "定义 PTR 反查地址匹配条件。",
-          placeholder: "192.168.0.0/16\n$lan_ip_set",
+          example: "192.168.0.0/16\n$lan_ip_set",
         },
         "args.$provider_ref": {
           label: "引用 provider",
-          placeholder: "lan_ip_set",
+          example: "lan_ip_set",
         },
         "args.$input": {
           label: "输入值",
-          placeholder: "192.168.0.0/16",
+          example: "192.168.0.0/16",
         },
       },
       quickSetup: {
@@ -2228,16 +2227,16 @@ export const zhCNPluginDefined = {
         args: {
           label: "CNAME 规则",
           description: "定义响应 CNAME 目标域名匹配规则来源。",
-          placeholder:
+          example:
             "full:alias.example.com\ndomain:example.com\nkeyword:cdn\nregexp:^edge[0-9]+\\.example\\.net$\n$core_domains\n&/etc/oxidns/cnames.txt",
         },
         "args.$provider_ref": {
           label: "引用 provider",
-          placeholder: "core_domains",
+          example: "core_domains",
         },
         "args.$input": {
           label: "输入值",
-          placeholder: "regexp:^edge[0-9]+\\.example\\.net$",
+          example: "regexp:^edge[0-9]+\\.example\\.net$",
         },
       },
       quickSetup: {
@@ -2252,11 +2251,11 @@ export const zhCNPluginDefined = {
           label: "RCode 文本或数值",
           description:
             "定义允许命中的响应码集合，同时支持 SERVFAIL/NXDOMAIN 等文本和对应数值。",
-          placeholder: "NOERROR\nSERVFAIL\nNXDOMAIN\n0\n2\n3",
+          example: "NOERROR\nSERVFAIL\nNXDOMAIN\n0\n2\n3",
         },
         "args[]": {
           label: "输入值",
-          placeholder: "NOERROR",
+          example: "NOERROR",
         },
       },
       quickSetup: {
@@ -2280,11 +2279,11 @@ export const zhCNPluginDefined = {
         args: {
           label: "Mark",
           description: "定义允许命中的 mark 集合。",
-          placeholder: "100\n200",
+          example: "100\n200",
         },
         "args[]": {
           label: "输入值",
-          placeholder: "100",
+          example: "100",
         },
       },
       quickSetup: {
@@ -2298,11 +2297,11 @@ export const zhCNPluginDefined = {
         args: {
           label: "环境变量条件",
           description: "定义需要同时满足的环境变量条件。",
-          placeholder: "PROFILE=prod\nFEATURE_X",
+          example: "PROFILE=prod\nFEATURE_X",
         },
         "args[]": {
           label: "输入值",
-          placeholder: "PROFILE=prod",
+          example: "PROFILE=prod",
         },
       },
       quickSetup: {
@@ -2316,11 +2315,11 @@ export const zhCNPluginDefined = {
         args: {
           label: "概率",
           description: "定义 matcher 命中概率。",
-          placeholder: "0.1",
+          example: "0.1",
         },
         "args[]": {
           label: "输入值",
-          placeholder: "0.1",
+          example: "0.1",
         },
       },
       quickSetup: {
@@ -2335,13 +2334,13 @@ export const zhCNPluginDefined = {
           label: "时区",
           description:
             "留空时使用系统时区；填写有效 IANA 时区可固定策略判断时区。",
-          placeholder: "Asia/Shanghai",
+          example: "Asia/Shanghai",
         },
         periods: {
           label: "时间周期",
           description:
             "任一周期命中即返回 true；同一周期内的时间、星期和月日条件需要同时满足。",
-          placeholder:
+          example:
             '[{"start":"09:00","end":"18:00","weekdays":["mon","tue","wed","thu","fri"]}]',
         },
         "periods[]": {
@@ -2350,17 +2349,17 @@ export const zhCNPluginDefined = {
         "periods[].start": {
           label: "开始时间",
           description: "使用 HH:MM；与结束时间同时填写。",
-          placeholder: "09:00",
+          example: "09:00",
         },
         "periods[].end": {
           label: "结束时间",
           description: "使用 HH:MM；早于开始时间时表示跨午夜。",
-          placeholder: "18:00",
+          example: "18:00",
         },
         "periods[].weekdays": {
           label: "星期",
           description: "留空则不限制星期。",
-          placeholder: "mon\ntue\nwed\nthu\nfri",
+          example: "mon\ntue\nwed\nthu\nfri",
         },
         "periods[].weekdays[]": {
           options: {
@@ -2376,10 +2375,10 @@ export const zhCNPluginDefined = {
         "periods[].monthdays": {
           label: "每月日期",
           description: "填写 1 到 31；留空则不限制每月日期。",
-          placeholder: "1\n15",
+          example: "1\n15",
         },
         "periods[].monthdays[]": {
-          placeholder: "1",
+          example: "1",
         },
       },
       quickSetup: {
@@ -2432,7 +2431,7 @@ export const zhCNPluginDefined = {
         args: {
           label: "表达式",
           description: "通用字符串表达式匹配器表达式。",
-          placeholder: "url_path prefix /dns-",
+          example: "url_path prefix /dns-",
         },
       },
       quickSetup: {
@@ -2456,30 +2455,30 @@ export const zhCNPluginDefined = {
         exps: {
           label: "内联域名规则",
           description: "定义内联域名表达式列表。",
-          placeholder:
+          example:
             "full:login.example.com\ndomain:example.com\nkeyword:cdn\nregexp:^api[0-9]+\\.example\\.net$",
         },
         "exps[]": {
           label: "输入值",
-          placeholder: "full:login.example.com",
+          example: "full:login.example.com",
         },
         files: {
           label: "域名规则文件",
           description: "指定外部规则文件路径列表。",
-          placeholder: "/etc/oxidns/domains.txt",
+          example: "/etc/oxidns/domains.txt",
         },
         "files[]": {
           label: "输入值",
-          placeholder: "/etc/oxidns/domains.txt",
+          example: "/etc/oxidns/domains.txt",
         },
         sets: {
           label: "下游 Provider",
           description: "引用其它具备域名匹配能力的 provider。",
-          placeholder: "shared_domains\nshared_geosite",
+          example: "shared_domains\nshared_geosite",
         },
         "sets[]": {
           label: "引用 provider",
-          placeholder: "shared_domains",
+          example: "shared_domains",
         },
       },
     },
@@ -2490,16 +2489,16 @@ export const zhCNPluginDefined = {
         path: {
           label: "规则文件",
           description: "指定该动态 provider 管理的本地规则文件路径。",
-          placeholder: "/etc/oxidns/learned-allow.txt",
+          example: "/etc/oxidns/learned-allow.txt",
         },
         bootstrap_rules: {
           label: "初始规则",
           description: "仅当规则文件不存在时写入初始规则。",
-          placeholder: "full:login.example.com\ndomain:example.com",
+          example: "full:login.example.com\ndomain:example.com",
         },
         "bootstrap_rules[]": {
           label: "输入值",
-          placeholder: "full:login.example.com",
+          example: "full:login.example.com",
         },
         queue_size: {
           label: "队列大小",
@@ -2522,17 +2521,17 @@ export const zhCNPluginDefined = {
         file: {
           label: "geosite.dat",
           description: "指定 geosite.dat 文件路径。",
-          placeholder: "/etc/oxidns/geosite.dat",
+          example: "/etc/oxidns/geosite.dat",
         },
         selectors: {
           label: "Selector",
           description:
             "按 code 提取部分规则，也支持 code@attribute 语法按 attribute 进一步过滤。",
-          placeholder: "cn\ngeolocation-!cn",
+          example: "cn\ngeolocation-!cn",
         },
         "selectors[]": {
           label: "输入值",
-          placeholder: "cn",
+          example: "cn",
         },
       },
     },
@@ -2543,20 +2542,20 @@ export const zhCNPluginDefined = {
         rules: {
           label: "内联规则",
           description: "提供 AdGuard Home DNS 规则子集。",
-          placeholder: "||ads.example.com^\n@@||safe.ads.example.com^",
+          example: "||ads.example.com^\n@@||safe.ads.example.com^",
         },
         "rules[]": {
           label: "输入值",
-          placeholder: "||ads.example.com^",
+          example: "||ads.example.com^",
         },
         files: {
           label: "规则文件",
           description: "从外部规则文件加载。",
-          placeholder: "/etc/oxidns/adguard.txt",
+          example: "/etc/oxidns/adguard.txt",
         },
         "files[]": {
           label: "输入值",
-          placeholder: "/etc/oxidns/adguard.txt",
+          example: "/etc/oxidns/adguard.txt",
         },
       },
     },
@@ -2567,29 +2566,29 @@ export const zhCNPluginDefined = {
         ips: {
           label: "IP / CIDR",
           description: "定义内联 IP 或 CIDR 规则列表。",
-          placeholder: "192.168.0.0/16\nfd00::/8",
+          example: "192.168.0.0/16\nfd00::/8",
         },
         "ips[]": {
           label: "输入值",
-          placeholder: "192.168.0.0/16",
+          example: "192.168.0.0/16",
         },
         files: {
           label: "IP 规则文件",
           description: "指定外部 IP 规则文件路径列表。",
-          placeholder: "/etc/oxidns/ips.txt",
+          example: "/etc/oxidns/ips.txt",
         },
         "files[]": {
           label: "输入值",
-          placeholder: "/etc/oxidns/ips.txt",
+          example: "/etc/oxidns/ips.txt",
         },
         sets: {
           label: "下游 Provider",
           description: "引用其它 ip_set 实例。",
-          placeholder: "shared_ip_set\nshared_geoip",
+          example: "shared_ip_set\nshared_geoip",
         },
         "sets[]": {
           label: "引用 provider",
-          placeholder: "shared_ip_set",
+          example: "shared_ip_set",
         },
       },
     },
@@ -2600,16 +2599,16 @@ export const zhCNPluginDefined = {
         file: {
           label: "geoip.dat",
           description: "指定 geoip.dat 文件路径。",
-          placeholder: "/etc/oxidns/geoip.dat",
+          example: "/etc/oxidns/geoip.dat",
         },
         selectors: {
           label: "Selector",
           description: "按 code 提取 IP / CIDR 集合。",
-          placeholder: "cn",
+          example: "cn",
         },
         "selectors[]": {
           label: "输入值",
-          placeholder: "cn",
+          example: "cn",
         },
       },
     },

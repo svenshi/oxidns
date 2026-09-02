@@ -59,7 +59,7 @@ export const serverPluginDefinitions: PluginKindDefinition[] = [
         description: "指定 UDP 监听地址。",
         label: "监听地址",
         type: "text",
-        placeholder: "0.0.0.0:53",
+        example: "0.0.0.0:53",
         required: true,
       },
     ],
@@ -84,7 +84,7 @@ export const serverPluginDefinitions: PluginKindDefinition[] = [
         description: "指定 TCP 监听地址。",
         label: "监听地址",
         type: "text",
-        placeholder: ":53",
+        example: ":53",
         required: true,
       },
       {
@@ -92,14 +92,14 @@ export const serverPluginDefinitions: PluginKindDefinition[] = [
         description: "指定 TLS 证书文件路径。",
         label: "TLS 证书",
         type: "text",
-        placeholder: "/etc/oxidns/server.crt",
+        example: "/etc/oxidns/server.crt",
       },
       {
         key: "key",
         description: "指定 TLS 私钥文件路径。",
         label: "TLS 私钥",
         type: "text",
-        placeholder: "/etc/oxidns/server.key",
+        example: "/etc/oxidns/server.key",
       },
       {
         key: "idle_timeout",
@@ -125,7 +125,7 @@ export const serverPluginDefinitions: PluginKindDefinition[] = [
         label: "路径映射",
         type: "array",
         required: true,
-        placeholder: '[{"path":"/dns-query","exec":"seq_main"}]',
+        example: '[{"path":"/dns-query","exec":"seq_main"}]',
         item: {
           type: "object",
           label: "路径映射",
@@ -137,7 +137,7 @@ export const serverPluginDefinitions: PluginKindDefinition[] = [
               label: "路径",
               type: "text",
               required: true,
-              placeholder: "/dns-query",
+              example: "/dns-query",
             },
             {
               key: "exec",
@@ -147,7 +147,7 @@ export const serverPluginDefinitions: PluginKindDefinition[] = [
               required: true,
               referenceTypes: ["executor"],
               referencePrefix: "",
-              placeholder: "seq_main",
+              example: "seq_main",
             },
             {
               key: "json_api",
@@ -166,7 +166,7 @@ export const serverPluginDefinitions: PluginKindDefinition[] = [
         description: "指定 HTTP/HTTPS 监听地址。",
         label: "监听地址",
         type: "text",
-        placeholder: ":443",
+        example: ":443",
         required: true,
       },
       {
@@ -174,21 +174,21 @@ export const serverPluginDefinitions: PluginKindDefinition[] = [
         description: "指定从请求头中读取真实客户端来源地址的字段名。",
         label: "来源 IP Header",
         type: "text",
-        placeholder: "X-Forwarded-For",
+        example: "X-Forwarded-For",
       },
       {
         key: "cert",
         description: "指定 HTTPS 证书文件路径。",
         label: "HTTPS 证书",
         type: "text",
-        placeholder: "/etc/oxidns/server.crt",
+        example: "/etc/oxidns/server.crt",
       },
       {
         key: "key",
         description: "指定 HTTPS 私钥文件路径。",
         label: "HTTPS 私钥",
         type: "text",
-        placeholder: "/etc/oxidns/server.key",
+        example: "/etc/oxidns/server.key",
       },
       {
         key: "idle_timeout",
@@ -228,7 +228,7 @@ export const serverPluginDefinitions: PluginKindDefinition[] = [
         description: "指定 QUIC 监听地址。",
         label: "监听地址",
         type: "text",
-        placeholder: ":853",
+        example: ":853",
         required: true,
       },
       {
@@ -236,7 +236,7 @@ export const serverPluginDefinitions: PluginKindDefinition[] = [
         description: "指定 DoQ 所需 TLS 证书文件。",
         label: "TLS 证书",
         type: "text",
-        placeholder: "/etc/oxidns/server.crt",
+        example: "/etc/oxidns/server.crt",
         required: true,
       },
       {
@@ -244,7 +244,7 @@ export const serverPluginDefinitions: PluginKindDefinition[] = [
         description: "指定 DoQ 所需 TLS 私钥文件。",
         label: "TLS 私钥",
         type: "text",
-        placeholder: "/etc/oxidns/server.key",
+        example: "/etc/oxidns/server.key",
         required: true,
       },
       {

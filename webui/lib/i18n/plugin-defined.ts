@@ -34,6 +34,7 @@ type FieldMessages = Record<
     Record<
       | "label"
       | "description"
+      | "example"
       | "placeholder"
       | "keyPlaceholder"
       | "valuePlaceholder",
@@ -232,6 +233,7 @@ function applyFieldMessages<T extends ConfigField | ConfigFieldChild>(
   for (const key of [
     "label",
     "description",
+    "example",
     "placeholder",
     "keyPlaceholder",
     "valuePlaceholder",
@@ -321,6 +323,7 @@ function collectSingleFieldSearchText(field: ConfigField): string {
     field.key,
     field.label,
     field.description,
+    field.example,
     field.placeholder,
     field.docs,
     field.options?.map((option) => option.label).join(" "),
@@ -336,6 +339,7 @@ function collectChildFieldSearchText(field: ConfigFieldChild): string {
   return [
     field.label,
     field.description,
+    field.example,
     field.placeholder,
     "fields" in field ? collectFieldSearchText(field.fields) : undefined,
     "item" in field && field.item

@@ -20,7 +20,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { AlertTriangle, Pencil, Pin, PinOff, Rocket, Save } from "lucide-react";
-import { useAppStore } from "@/lib/store";
+import { shouldPersistPluginMutation, useAppStore } from "@/lib/store";
 import { extractOutboundProfileNames } from "@/lib/oxidns-config-schema";
 import { isPluginKindSupported } from "@/lib/build-capabilities";
 import { cn } from "@/lib/utils";
@@ -124,10 +124,10 @@ export function PluginDetailTemplate({
   const handleSaveConfig = async () => {
     if (!configValid) return;
     if (definition) {
-      updatePluginConfig(plugin.id, configValues);
       try {
-        await saveConfig();
-        setEditingConfig(false);
+        const resolution = await updatePluginConfig(plugin.id, configValues);
+        if (shouldPersistPluginMutation(resolution)) await saveConfig();
+        if (resolution !== "cancelled") setEditingConfig(false);
       } catch {
         // Store-level error badge is shown in the full config editor.
       }
@@ -135,9 +135,12 @@ export function PluginDetailTemplate({
     }
 
     try {
-      updatePluginConfig(plugin.id, JSON.parse(configJson));
-      await saveConfig();
-      setEditingConfig(false);
+      const resolution = await updatePluginConfig(
+        plugin.id,
+        JSON.parse(configJson),
+      );
+      if (shouldPersistPluginMutation(resolution)) await saveConfig();
+      if (resolution !== "cancelled") setEditingConfig(false);
     } catch {
       // Invalid JSON. Validation UI can be added once backend config errors are wired in.
     }
@@ -173,7 +176,7 @@ export function PluginDetailTemplate({
         });
         return;
       }
-      setEditingName(false);
+      if (result.status !== "cancelled") setEditingName(false);
     } catch (error) {
       setNameError(
         error instanceof Error ? error.message : t(WEBUI.plugins.renameFailed),
@@ -192,8 +195,10 @@ export function PluginDetailTemplate({
         setNameError(result.message);
         return;
       }
-      setPendingRename(null);
-      setEditingName(false);
+      if (result.status !== "cancelled") {
+        setPendingRename(null);
+        setEditingName(false);
+      }
     } catch (error) {
       setNameError(
         error instanceof Error ? error.message : t(WEBUI.plugins.renameFailed),

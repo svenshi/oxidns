@@ -148,6 +148,10 @@ export const enUSWebui = {
     emptyConfigItems: "No config items yet. Click below to add one.",
     addConfigItem: "Add config item",
     selectPlaceholder: "Select",
+    examplePlaceholder: "Example: {value}",
+    configExampleLabel: "Example",
+    restoreDefaultValue: "Restore default: {value}",
+    clearConfigValue: "Clear explicit value",
     configHelpLabel: "{label} configuration help",
     arraySyntaxValue: "Value",
     arraySyntaxPlugin: "Plugin",
@@ -694,6 +698,18 @@ export const enUSWebui = {
     restartDialogDesc:
       "The running service will be replaced with a new process. DNS resolution will be briefly interrupted and all in-memory state (such as cache) will be cleared. The config will be saved to disk before the restart is triggered.",
     confirmRestart: "Confirm restart",
+  },
+  configPatch: {
+    title: "This edit cannot be applied losslessly",
+    description:
+      "The selected YAML structure cannot be changed safely while preserving all of its source formatting. Review the smallest local replacement in the YAML editor, or force the replacement and save it now. The rest of the file will remain unchanged.",
+    affectedPath: "Affected path: {path}",
+    review: "Review in YAML editor",
+    force: "Force local replacement",
+    forceWarning:
+      "Forcing this edit rebuilds the affected section, so its comments and formatting may change.",
+    forceUnavailable:
+      "A bounded, valid local replacement could not be generated. Edit this path manually in the YAML editor.",
   },
   configEditor: {
     title: "Config File Editor",
