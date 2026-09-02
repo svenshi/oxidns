@@ -19,7 +19,13 @@ export function PluginCardItemSurface({ children }: { children: ReactNode }) {
   );
 }
 
-export function PluginCardItemGrid({ items }: { items: PluginCardItem[] }) {
+export function PluginCardItemGrid({
+  items,
+  emphasizeValues = false,
+}: {
+  items: PluginCardItem[];
+  emphasizeValues?: boolean;
+}) {
   return (
     <div
       className={cn(
@@ -30,7 +36,7 @@ export function PluginCardItemGrid({ items }: { items: PluginCardItem[] }) {
       {items.map((item) => (
         <div
           key={item.key}
-          className="grid h-5 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 text-[11px] leading-5"
+          className="grid h-5 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 text-xs leading-5"
         >
           <span
             className="min-w-0 truncate text-muted-foreground"
@@ -39,7 +45,10 @@ export function PluginCardItemGrid({ items }: { items: PluginCardItem[] }) {
             {item.label}
           </span>
           <span
-            className="max-w-[9.5rem] min-w-0 truncate text-right font-mono text-[11px] font-semibold tracking-[-0.01em] text-foreground tabular-nums"
+            className={cn(
+              "max-w-[9.5rem] min-w-0 truncate text-right font-mono text-xs tracking-[-0.01em] text-foreground tabular-nums",
+              emphasizeValues ? "font-semibold" : "font-normal",
+            )}
             title={item.value}
           >
             {item.value}

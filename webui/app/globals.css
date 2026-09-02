@@ -54,6 +54,10 @@
 }
 
 :root {
+  /* Keep the console comfortably readable as the available desktop canvas
+     grows. Percentages preserve the user's browser font-size preference, and
+     CSS viewport breakpoints already account for OS-level display scaling. */
+  font-size: 100%;
   --font-serif: Georgia, Cambria, "Times New Roman", Times, serif;
   --background: oklch(0.982 0.006 205);
   --foreground: oklch(0.22 0.028 235);
@@ -90,6 +94,27 @@
   --sidebar-accent-foreground: oklch(0.22 0.028 235);
   --sidebar-border: oklch(0.87 0.018 215);
   --sidebar-ring: oklch(0.56 0.155 160);
+}
+
+/* Keep 1080p and smaller workspaces at the original density. Scale only when
+   the browser exposes a genuinely larger CSS workspace; OS display scaling
+   naturally reduces that viewport and avoids applying the increase twice. */
+@media (min-width: 2400px) {
+  :root {
+    font-size: 112.5%;
+  }
+}
+
+@media (min-width: 3200px) {
+  :root {
+    font-size: 118.75%;
+  }
+}
+
+@media (min-width: 3800px) {
+  :root {
+    font-size: 125%;
+  }
 }
 
 /* Two-column responsive grid for plugin config field forms. Declared

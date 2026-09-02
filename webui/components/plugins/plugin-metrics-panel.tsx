@@ -24,7 +24,7 @@ export function PluginMetricsPanel({ tag }: { tag: string }) {
         <CardTitle className="text-sm">
           {t(WEBUI.plugins.metricsTitle)}
         </CardTitle>
-        <Badge variant="outline" className="font-mono text-[11px]">
+        <Badge variant="outline" className="font-mono text-xs">
           {t(WEBUI.plugins.metricCount, { count: rows.length })}
         </Badge>
       </CardHeader>
@@ -52,20 +52,17 @@ function MetricRowItem({
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
             <span className="text-sm font-medium">{row.label}</span>
             {row.kind && (
-              <Badge
-                variant="outline"
-                className="h-5 px-1.5 font-mono text-[10px]"
-              >
+              <Badge variant="outline" className="h-5 px-1.5 font-mono text-xs">
                 {row.kind}
               </Badge>
             )}
             {row.highValue && (
-              <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+              <Badge variant="secondary" className="h-5 px-1.5 text-xs">
                 {t(WEBUI.plugins.cardBadge)}
               </Badge>
             )}
           </div>
-          <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
+          <div className="mt-0.5 truncate font-mono text-xs text-muted-foreground">
             {row.name}
           </div>
           {row.help && (
