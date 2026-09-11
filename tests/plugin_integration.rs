@@ -1973,6 +1973,217 @@ plugins:
     Ok(())
 }
 
+/// Exercise actual DNS responses, including concurrent queries from one source
+/// socket to different local server addresses. The runtime is destroyed even
+/// when an exchange or a wire/source-address assertion fails.
+async fn check_udp_reply_profile(
+    listen_ip: IpAddr,
+    client_ip: IpAddr,
+    destinations: &[IpAddr],
+) -> Result<()> {
+    let mut started = None;
+    for _ in 0..16 {
+        let reserved =
+            oxidns::plugin::server::udp::build_udp_socket(SocketAddr::new(listen_ip, 0))?;
+        let listen = reserved.local_addr()?;
+        drop(reserved);
+        let large_answers = (1..=64)
+            .map(|i| format!("192.0.2.{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let config = parse_config(&format!(
+            r#"
+log:
+  level: error
+plugins:
+  - tag: reply_hosts
+    type: hosts
+    args:
+      entries:
+        - "full:example.test 192.0.2.10"
+        - "full:large.test {large_answers}"
+  - tag: reply_udp
+    type: udp_server
+    args:
+      entry: reply_hosts
+      listen: "{listen}"
+"#
+        ))?;
+        match plugin::init(config).await {
+            Ok(runtime) => {
+                started = Some((runtime, listen));
+                break;
+            }
+            Err(err) if err.to_string().contains("Failed to bind UDP socket") => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    let (runtime, listen) =
+        started.ok_or_else(|| DnsError::runtime("Failed to reserve UDP reply test port"))?;
+    let exchange = async {
+        let client = UdpSocket::bind(SocketAddr::new(client_ip, 0)).await?;
+        let mut request = Message::new();
+        request.add_question(Question::new(
+            Name::from_ascii("example.test.").unwrap(),
+            RecordType::A,
+            DNSClass::IN,
+        ));
+        // Keep multiple destinations in flight before collecting any replies.
+        const QUERIES: usize = 32;
+        for id in 0..QUERIES {
+            request.set_id(id as u16);
+            client
+                .send_to(
+                    &request.to_bytes()?,
+                    SocketAddr::new(destinations[id % destinations.len()], listen.port()),
+                )
+                .await?;
+        }
+        let mut seen = [false; QUERIES];
+        let mut buf = [0u8; 4096];
+        for _ in 0..QUERIES {
+            let (len, source) = timeout(Duration::from_secs(2), client.recv_from(&mut buf))
+                .await
+                .map_err(|_| DnsError::runtime("UDP reply source test timed out"))??;
+            let response = Message::from_bytes(&buf[..len])?;
+            let id = usize::from(response.id());
+            if id >= QUERIES || seen[id] {
+                return Err(DnsError::runtime("Unexpected or duplicate UDP reply ID"));
+            }
+            let expected = SocketAddr::new(destinations[id % destinations.len()], listen.port());
+            if source != expected
+                || response.questions() != request.questions()
+                || response.message_type() != oxidns::proto::MessageType::Response
+                || response.rcode() != Rcode::NoError
+                || response.answers().len() != 1
+                || response.answers()[0].data().ip_addr() != Some("192.0.2.10".parse().unwrap())
+            {
+                return Err(DnsError::runtime(format!(
+                    "Invalid UDP reply: source {source}, expected {expected}, id {id}"
+                )));
+            }
+            seen[id] = true;
+        }
+        // Connected UDP filters out packets with the wrong source in the
+        // kernel.
+        for destination in destinations {
+            let client = UdpSocket::bind(SocketAddr::new(client_ip, 0)).await?;
+            client
+                .connect(SocketAddr::new(*destination, listen.port()))
+                .await?;
+            for payload in [None, Some(1232u16)] {
+                let mut request = Message::new();
+                request.set_id(0x341);
+                request.add_question(Question::new(
+                    Name::from_ascii("large.test.").unwrap(),
+                    RecordType::A,
+                    DNSClass::IN,
+                ));
+                if let Some(payload) = payload {
+                    let mut edns = oxidns::proto::Edns::new();
+                    edns.set_udp_payload_size(payload);
+                    request.set_edns(edns);
+                }
+                client.send(&request.to_bytes()?).await?;
+                let len = timeout(Duration::from_secs(2), client.recv(&mut buf))
+                    .await
+                    .map_err(|_| DnsError::runtime("Connected UDP reply test timed out"))??;
+                let response = Message::from_bytes(&buf[..len])?;
+                let limit = usize::from(payload.unwrap_or(512));
+                if len > limit
+                    || response.id() != request.id()
+                    || response.questions() != request.questions()
+                    || response.rcode() != Rcode::NoError
+                    || response.message_type() != oxidns::proto::MessageType::Response
+                    || response.truncated() != payload.is_none()
+                    || (payload.is_some() && response.answers().len() != 64)
+                {
+                    return Err(DnsError::runtime(
+                        "UDP reply changed DNS or EDNS truncation semantics",
+                    ));
+                }
+            }
+        }
+        Ok::<(), DnsError>(())
+    }
+    .await;
+    timeout(Duration::from_secs(3), runtime.destroy())
+        .await
+        .map_err(|_| DnsError::runtime("UDP reply test shutdown timed out"))?;
+    exchange?;
+    // Shutdown must release the listener even with concurrent requests.
+    let rebound = StdUdpSocket::bind(listen)?;
+    drop(rebound);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_udp_server_reply_sources_and_payload_limits() -> Result<()> {
+    for (listen, client) in [
+        ("0.0.0.0", "127.0.0.1"),
+        ("::", "127.0.0.1"),
+        ("::", "::1"),
+        ("127.0.0.1", "127.0.0.1"),
+        ("::1", "::1"),
+    ] {
+        let client = client.parse().unwrap();
+        check_udp_reply_profile(listen.parse().unwrap(), client, &[client]).await?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn test_udp_server_reply_sources_on_secondary_loopback() -> Result<()> {
+    let destinations = ["127.0.0.2".parse().unwrap(), "127.0.0.3".parse().unwrap()];
+    for listen in ["0.0.0.0", "::"] {
+        check_udp_reply_profile(
+            listen.parse().unwrap(),
+            "127.0.0.1".parse().unwrap(),
+            &destinations,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore = "requires the isolated network namespace created by scripts/test-udp-reply-source.sh"]
+async fn test_udp_server_multihomed_reply_sources() -> Result<()> {
+    let v4 = [
+        "192.0.2.1".parse().unwrap(),
+        "198.51.100.1".parse().unwrap(),
+    ];
+    let v6 = [
+        "fd00:341::1".parse().unwrap(),
+        "fd00:341::2".parse().unwrap(),
+    ];
+    for listen in ["0.0.0.0", "::", "192.0.2.1"] {
+        let targets = if listen == "192.0.2.1" {
+            &v4[..1]
+        } else {
+            &v4[..]
+        };
+        check_udp_reply_profile(
+            listen.parse().unwrap(),
+            "198.51.100.10".parse().unwrap(),
+            targets,
+        )
+        .await?;
+    }
+    for listen in ["::", "fd00:341::2"] {
+        let targets = if listen == "::" { &v6[..] } else { &v6[1..] };
+        check_udp_reply_profile(
+            listen.parse().unwrap(),
+            "fd00:341::10".parse().unwrap(),
+            targets,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_hosts_short_circuit_stops_sequence_after_local_answer() -> Result<()> {
     let mut registry_and_addr = None;

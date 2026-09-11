@@ -44,4 +44,5 @@ pub(crate) mod resolver;
 #[cfg(any(feature = "_tls-client", feature = "_tls-server"))]
 pub mod tls_config;
 pub mod transport;
+pub(crate) mod udp_socket;
 pub mod upstream;
