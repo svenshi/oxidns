@@ -49,6 +49,7 @@ export interface PluginDetailTemplateProps extends PluginDetailComponentProps {
   summaryItems?: PluginSummaryItem[];
   configContent?: ReactNode;
   metricsContent?: ReactNode;
+  runtimeContent?: ReactNode;
   /**
    * Extra top-level tabs rendered after the metrics tab and before built-in metrics.
    * Use this when a plugin wants to expose a view that is conceptually peer to

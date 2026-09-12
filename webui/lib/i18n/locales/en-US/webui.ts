@@ -369,6 +369,23 @@ export const enUSWebui = {
     paramOptional: "Parameter (optional)",
     notCompiled: "Not compiled",
   },
+  download: {
+    title: "Download files",
+    download: "Download",
+    downloadAll: "Download all",
+    downloading: "Downloading…",
+    loading: "Loading downloads…",
+    empty: "No files to download",
+    loadFailed: "Failed to load downloads",
+    runFailed: "Download request failed",
+    busy: "A download is already running. Try again shortly.",
+    success: "Download complete: {count} succeeded",
+    partialFailure:
+      "Download finished: {succeeded} succeeded, {failed} failed. See logs for details.",
+    runtimeHint:
+      "This is the live download list. Downloads replace target files; reload the relevant providers separately to refresh rules.",
+    retry: "Refresh list",
+  },
   cron: {
     yamlMustBeObject: "Cron config must be a YAML object",
     taskTab: "Tasks",
