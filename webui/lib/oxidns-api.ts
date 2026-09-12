@@ -1262,3 +1262,55 @@ function previewResponseText(text: string) {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
+
+export interface DownloadItem {
+  index: number;
+  url: string;
+  path: string;
+}
+
+export interface DownloadListResponse {
+  ok: boolean;
+  running: boolean;
+  downloads: DownloadItem[];
+}
+
+export interface DownloadResult {
+  ok: boolean;
+  total: number;
+  succeeded: number;
+  failed: number;
+}
+
+export async function fetchDownloads(
+  tag: string,
+  signal?: AbortSignal,
+): Promise<DownloadListResponse> {
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/downloads`),
+    {
+      headers: apiHeaders(),
+      cache: "no-store",
+      signal,
+    },
+  );
+  return readJsonResponse<DownloadListResponse>(response);
+}
+
+export async function runDownload(
+  tag: string,
+  index?: number,
+): Promise<DownloadResult> {
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/download`),
+    {
+      method: "POST",
+      headers: { ...apiHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify(index === undefined ? {} : { index }),
+    },
+  );
+  if (response.status === 409) {
+    throw new Error(tClient(WEBUI.download.busy));
+  }
+  return readJsonResponse<DownloadResult>(response);
+}

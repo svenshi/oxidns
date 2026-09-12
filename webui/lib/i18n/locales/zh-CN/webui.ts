@@ -355,6 +355,23 @@ export const zhCNWebui = {
     paramOptional: "参数 (可选)",
     notCompiled: "未编译",
   },
+  download: {
+    title: "下载文件",
+    download: "下载",
+    downloadAll: "下载全部",
+    downloading: "下载中…",
+    loading: "正在读取下载清单…",
+    empty: "没有可下载的文件",
+    loadFailed: "无法读取下载清单",
+    runFailed: "下载请求失败",
+    busy: "已有下载正在运行，请稍后再试",
+    success: "下载完成：成功 {count} 项",
+    partialFailure:
+      "下载结束：成功 {succeeded} 项，失败 {failed} 项。详情请查看日志。",
+    runtimeHint:
+      "以下为正在运行的下载清单。下载会覆盖目标文件；需要重新加载规则时，请另行刷新对应 provider。",
+    retry: "刷新清单",
+  },
   cron: {
     yamlMustBeObject: "cron 配置必须是 YAML 对象",
     taskTab: "任务",

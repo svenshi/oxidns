@@ -51,6 +51,7 @@ export function PluginDetailTemplate({
   summaryItems,
   configContent,
   metricsContent,
+  runtimeContent,
   extraTabs,
 }: PluginDetailTemplateProps) {
   const { locale, t } = useI18n();
@@ -368,6 +369,7 @@ export function PluginDetailTemplate({
         defaultValue="config"
         className="mx-auto min-h-0 w-full max-w-6xl flex-1 overflow-y-auto px-5 py-5 [scrollbar-gutter:stable]"
       >
+        {runtimeContent}
         <TabsList
           className={cn(
             "grid w-full",
