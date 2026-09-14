@@ -143,7 +143,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y ipset nftables
+          sudo apt-get install -y ipset nftables iproute2 util-linux
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -170,7 +170,7 @@ jobs:
       - name: Install system packages on Linux
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y ipset nftables
+          sudo apt-get install -y ipset nftables iproute2 util-linux
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

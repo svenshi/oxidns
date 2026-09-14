@@ -2149,16 +2149,142 @@ async fn test_udp_server_reply_sources_on_secondary_loopback() -> Result<()> {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-#[ignore = "requires the isolated network namespace created by scripts/test-udp-reply-source.sh"]
 async fn test_udp_server_multihomed_reply_sources() -> Result<()> {
-    let v4 = [
+    const PARENT_NAMESPACE: &str = "OXIDNS_UDP_TEST_PARENT_NETNS";
+    let namespace = fs::read_link("/proc/self/ns/net")?;
+    if let Some(parent_namespace) = std::env::var_os(PARENT_NAMESPACE) {
+        // Refuse to configure addresses if the subprocess was not isolated.
+        if namespace.as_os_str() == parent_namespace.as_os_str() {
+            return Err(DnsError::runtime(
+                "UDP test requires a new network namespace",
+            ));
+        }
+    } else {
+        // Re-execute only this test in a new process: changing a test runner's
+        // namespace in place would affect unrelated tests or runtime threads.
+        let is_root = running_as_root();
+        // Prefer an unprivileged user namespace where the host permits one.
+        // Hosted Linux CI also provides passwordless sudo for restricted hosts.
+        let user_namespace = !is_root
+            && Command::new("unshare")
+                .args(["--user", "--map-root-user", "--net", "--", "true"])
+                .output()?
+                .status
+                .success();
+        let needs_sudo = !is_root && !user_namespace;
+        let mut command = tokio::process::Command::new(if needs_sudo { "sudo" } else { "timeout" });
+        if needs_sudo {
+            command.args(["-n", "--", "timeout"]);
+        }
+        // Bound the privileged process group as well as the parent wait.
+        command.args(["--kill-after=5s", "20s", "unshare"]);
+        if user_namespace {
+            command.args(["--user", "--map-root-user"]);
+        }
+        command
+            .args(["--net", "--", "env"])
+            // Set the child marker after sudo's environment filtering.
+            .arg(format!("{PARENT_NAMESPACE}={}", namespace.display()))
+            .arg(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "test_udp_server_multihomed_reply_sources",
+                "--nocapture",
+            ])
+            .kill_on_drop(true);
+        let mut child = command.spawn()?;
+        let status = timeout(Duration::from_secs(30), child.wait())
+            .await
+            .map_err(|_| DnsError::runtime("UDP network namespace test timed out"))??;
+        if !status.success() {
+            return Err(DnsError::runtime(format!(
+                "UDP network namespace test failed: {status}"
+            )));
+        }
+        return Ok(());
+    }
+
+    // This anonymous namespace is owned by the child process. The kernel
+    // removes its interfaces and addresses on exit, including test failures.
+    let setup: &[&[&str]] = &[
+        &["link", "set", "lo", "up"],
+        &["link", "add", "lan", "type", "dummy"],
+        &["link", "add", "bridge", "type", "dummy"],
+        &["link", "set", "lan", "up"],
+        &["link", "set", "bridge", "up"],
+        &["addr", "add", "192.0.2.1/24", "dev", "lan"],
+        &["addr", "add", "198.51.100.1/24", "dev", "bridge"],
+        &["addr", "add", "198.51.100.10/24", "dev", "bridge"],
+        &["-6", "addr", "add", "fd00:341::1/64", "dev", "lan", "nodad"],
+        // The target remains valid, but is excluded from preferred sources.
+        &[
+            "-6",
+            "addr",
+            "add",
+            "fd00:341::2/64",
+            "dev",
+            "lan",
+            "nodad",
+            "preferred_lft",
+            "0",
+        ],
+        &[
+            "-6",
+            "addr",
+            "add",
+            "fd00:341::10/64",
+            "dev",
+            "lan",
+            "nodad",
+        ],
+    ];
+    for args in setup {
+        run_command("ip", args)?;
+    }
+    let v4: [IpAddr; 2] = [
         "192.0.2.1".parse().unwrap(),
         "198.51.100.1".parse().unwrap(),
     ];
-    let v6 = [
+    let v6: [IpAddr; 2] = [
         "fd00:341::1".parse().unwrap(),
         "fd00:341::2".parse().unwrap(),
     ];
+    // A passing DNS exchange only proves the fix if the same fixture makes
+    // ordinary wildcard recv_from/send_to choose a different source address.
+    for (client_ip, destination) in [("198.51.100.10", v4[0]), ("fd00:341::10", v6[1])] {
+        let client_ip: IpAddr = client_ip.parse().unwrap();
+        let wildcard = if client_ip.is_ipv4() {
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        } else {
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+        };
+        let source = timeout(Duration::from_secs(2), async {
+            let server = UdpSocket::bind(SocketAddr::new(wildcard, 0)).await?;
+            let client = UdpSocket::bind(SocketAddr::new(client_ip, 0)).await?;
+            client
+                .send_to(
+                    b"fixture",
+                    SocketAddr::new(destination, server.local_addr()?.port()),
+                )
+                .await?;
+            let mut buf = [0; 64];
+            let (len, peer) = server.recv_from(&mut buf).await?;
+            server.send_to(&buf[..len], peer).await?;
+            let (len, source) = client.recv_from(&mut buf).await?;
+            if &buf[..len] != b"fixture" {
+                return Err(DnsError::runtime("Unexpected UDP fixture reply"));
+            }
+            Ok::<_, DnsError>(source)
+        })
+        .await
+        .map_err(|_| DnsError::runtime("UDP source selection fixture timed out"))??;
+        if source.ip() == destination {
+            return Err(DnsError::runtime(format!(
+                "Fixture does not reproduce source mismatch for {destination}"
+            )));
+        }
+        println!("Verified default source mismatch: query={destination}, reply={source}");
+    }
     for listen in ["0.0.0.0", "::", "192.0.2.1"] {
         let targets = if listen == "192.0.2.1" {
             &v4[..1]
