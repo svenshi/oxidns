@@ -6,6 +6,11 @@ rules for changing the request path. User-facing architecture belongs in
 `docs/docs/architecture-and-design.md`; concise repository instructions remain
 in `AGENTS.md`.
 
+Directory ownership and dependency direction below are stable contracts. For
+the current module, plugin, feature, and runtime inventories, inspect `src/lib.rs`,
+the relevant `mod.rs` files, `Cargo.toml`, `src/build_info.rs`, and runnable
+configuration rather than extending this guide with lists.
+
 ## Core Request Path
 
 All DNS transports converge on one processing model:
@@ -95,8 +100,23 @@ layer. Split stable responsibilities into names such as `config`, `model`,
 split solely to reduce line count; split when a module owns an independently
 testable policy or lifecycle.
 
-When moving public items, preserve established paths with explicit re-exports
-unless a breaking library API change is intentional and documented.
+### Root crate API stability
+
+OxiDNS is maintained and released as a binary application, not as a Rust SDK.
+The root `src/lib.rs` exists to share implementation with the binary, workspace
+tests, and internal tooling; `pub` visibility in the root crate does not by
+itself create a supported downstream Rust API contract.
+
+- Do not add compatibility facades, deprecated aliases, or duplicate lifecycle
+  paths solely to preserve old root-crate Rust imports.
+- Internal refactors may rename, move, or remove root-crate items when all
+  in-repository callers are migrated and the architecture improves.
+- Compatibility review remains mandatory for operator-facing contracts:
+  configuration, management HTTP APIs, persisted data, DNS wire behavior,
+  command-line behavior, service paths, and release artifacts.
+- A Rust API requires source-compatibility handling only when the project has
+  explicitly documented that API as supported. Independently published
+  workspace crates must define and follow their own stability policy.
 
 Detailed plugin registration and feature rules live in `ai/plugin-dev.md`.
 
@@ -167,11 +187,13 @@ Before merging an architectural change, verify:
 
 - The core request path and ownership of request-local state remain clear.
 - Dependency direction does not introduce `infra -> plugin` coupling.
-- A moved public item keeps a compatible facade or has an explicit migration.
+- Root-crate Rust items do not retain compatibility facades unless they belong
+  to an explicitly supported API; all in-repository callers are migrated.
 - Feature-gated modules compile with the feature both enabled and disabled.
 - Plugin lifecycle code owns all tasks, registrations, and teardown.
 - Hot-path impact is measured when allocations, locks, cloning, parsing, or
   dispatch change.
-- Required Rust, WebUI, docs, config, packaging, and release artifacts are
-  identified through `ai/change-impact-matrix.md`.
-- Relevant tests from `ai/testing-strategy.md` have been run and reported.
+- Maintained representations are identified from the changed code/schema and
+  the project surfaces listed in `ai/change-impact-matrix.md`.
+- Relevant checks are selected from `justfile`, workspace package scripts, and
+  affected CI workflows using the criteria in `ai/testing-strategy.md`.

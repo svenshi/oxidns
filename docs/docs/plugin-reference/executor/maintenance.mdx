@@ -260,6 +260,14 @@ plugins:
 
 ---
 
+
+### 手动下载
+
+WebUI 的 download 插件详情页在运行清单上方提供 **下载全部**，每个下载项提供 **下载** 按钮。运行期间按钮显示忙碌状态并禁用重复触发；完成后显示成功和失败数量，单项失败不阻止后续下载。修改配置后需先应用，才能使用更新后的清单。
+
+对应的[管理 API](../../api/plugins.mdx#download) 支持单项和批量下载。手动下载只更新文件，需要刷新规则时请另行重新加载对应 provider。
+
+
 ## `reload_provider`
 
 ### 作用
@@ -406,6 +414,7 @@ plugins:
   - 仅支持 `minute hour day month day-of-week`。
   - 不支持秒级 cron。
   - 按 `args.timezone` 或系统本地时区计算下一次触发时间。
+  - TaskCenter 会重新校准系统墙钟；NTP 同步或手动校时会影响后续触发时间。
 
 #### `args.jobs[].interval`
 
@@ -418,6 +427,7 @@ plugins:
 - 运行影响：
   - 最小粒度为 `1m`。
   - 启动后会等待一个完整间隔再首次触发。
+  - 固定间隔使用单调时间，不受系统墙钟调整影响。
 
 #### `args.jobs[].executors`
 
@@ -435,6 +445,9 @@ plugins:
 
 - `schedule` 和 `interval` 必须二选一。
 - 同一个 job 若上一轮仍在运行，本轮会被跳过，不补跑。
+- 管理 API 和 WebUI 可以手动启动单个 job，并与定时触发共享重叠保护。手动运行不会改变 `interval` 或 cron 表达式任务的原定计划。
+- 每个 job 的定时与手动运行共用递增的运行编号；运行时只保留当前运行和最近一次手动结果，不保存历史。
+- executor 返回错误时会记录失败数量并继续执行后续 executor；全部 executor 正常结束才算 `completed`，存在普通错误时为 `completed_with_errors`，panic 为 `failed`，任务因销毁、reload 或停止而中断时为 `cancelled`。
 - 任务使用空的 `DnsContext`，适合副作用类 executor 或后台编排的 `sequence`。
 - `cron` 本身不能放进普通请求 `sequence` 里执行。
 
@@ -442,6 +455,7 @@ plugins:
 
 - 定时触发后台副作用逻辑。
 - 定时执行一个专门的 `sequence` 编排。
+- 在 WebUI 中按需验证或立即执行某个维护任务。
 - 为未来的 `reload` 之类后台动作提供统一调度入口。
 
 <Admonition type="note" title="注意事项">

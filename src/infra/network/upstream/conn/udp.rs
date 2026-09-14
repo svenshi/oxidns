@@ -62,9 +62,10 @@ impl Connection for UdpConnection {
         if self.closed.swap(true, Ordering::SeqCst) {
             return; // Already closed, no-op
         }
-        // Cancel every pending query before waking the listener so the background
-        // task can observe an empty request map and drop the socket immediately
-        // instead of waiting for per-query timeouts to age out.
+        // Cancel every pending query before waking the listener so the
+        // background task can observe an empty request map and drop the
+        // socket immediately instead of waiting for per-query timeouts
+        // to age out.
         let cleared = self.request_map.clear();
         debug!(
             conn_id = self.id,

@@ -118,7 +118,8 @@ fn run_windows_service() -> Result<()> {
             .join()
             .unwrap_or_else(|_| Err(DnsError::runtime("app thread panicked")))
     } else {
-        // App is still running after receiving stop — exit so SCM marks us stopped.
+        // App is still running after receiving stop — exit so SCM marks us
+        // stopped.
         let _ = report(ServiceState::Stopped, ServiceControlAccept::empty(), 0);
         std::process::exit(0);
     };

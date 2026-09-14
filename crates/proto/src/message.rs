@@ -219,14 +219,16 @@ impl Message {
     pub fn truncate(&mut self, max_size: usize) -> Result<()> {
         let size = max_size.max(512);
 
-        // Fast path 1: the full uncompressed message already fits the UDP budget.
+        // Fast path 1: the full uncompressed message already fits the UDP
+        // budget.
         if self.bytes_len_with_compression(false) <= size {
             self.compress = false;
             self.header.set_truncated(false);
             return Ok(());
         }
 
-        // Fast path 2: the fully compressed message fits, so no RR elision is needed.
+        // Fast path 2: the fully compressed message fits, so no RR elision is
+        // needed.
         let lens = self.compute_truncation_lens(true);
         if lens.total_len <= size {
             self.compress = true;
@@ -253,8 +255,9 @@ impl Message {
             authority_len_full,
         );
 
-        // Even the smallest valid truncated response must keep the header, questions,
-        // and the trailer block (OPT plus detached signature records).
+        // Even the smallest valid truncated response must keep the header,
+        // questions, and the trailer block (OPT plus detached signature
+        // records).
         let minimal_len = lens.questions_end_len + lens.trailer_len;
         if minimal_len > size {
             return Err(DnsError::protocol(
@@ -262,11 +265,13 @@ impl Message {
             ));
         }
 
-        // Preserve a contiguous prefix of each section while dropping from the tail in
-        // DNS truncation priority order: Additional, then Authority, then Answer.
+        // Preserve a contiguous prefix of each section while dropping from the
+        // tail in DNS truncation priority order: Additional, then
+        // Authority, then Answer.
         //
         // The search therefore tries, in order:
-        // 1. all answers + all authorities + the largest fitting additional prefix,
+        // 1. all answers + all authorities + the largest fitting additional
+        //    prefix,
         // 2. all answers + the largest fitting authority prefix,
         // 3. the largest fitting answer prefix.
 
@@ -952,8 +957,8 @@ mod tests {
     }
 
     #[test]
-    // A previous truncate call must not leave stale TC behind once the message fits
-    // again.
+    // A previous truncate call must not leave stale TC behind once the message
+    // fits again.
     fn truncate_clears_tc_when_message_now_fits() {
         let mut message = Message::new();
         message.add_question(Question::new(
@@ -970,8 +975,8 @@ mod tests {
     }
 
     #[test]
-    // Verifies that truncation stays inside the requested budget while preserving
-    // the OPT record for the decoder.
+    // Verifies that truncation stays inside the requested budget while
+    // preserving the OPT record for the decoder.
     fn truncate_keeps_edns_last_and_honors_limit() {
         let mut message = Message::new();
         message.add_question(Question::new(
@@ -1006,8 +1011,8 @@ mod tests {
     }
 
     #[test]
-    // Length prediction is used by truncate and preallocation; it should continue
-    // to match the actual encoder across common message shapes.
+    // Length prediction is used by truncate and preallocation; it should
+    // continue to match the actual encoder across common message shapes.
     fn bytes_len_matches_encoded_size_matrix() {
         let mut query = Message::new();
         query.add_question(Question::new(
