@@ -118,7 +118,7 @@ regex = "1.12.2"
 # Optional TaskCenter calendar scheduling and executor plugin dependencies.
 cronexpr = { version = "1.5.0", optional = true }
 fast-socks5 = "1.0.0"
-mikrotik-rs = { package = "oxidns-mikrotik-rs", version = "0.8.1", optional = true }
+mikrotik-rs = { version = "0.9.0", optional = true }
 rusqlite = { version = "0.40.1", features = ["bundled"], optional = true }
 zoneparser = { package = "oxidns-zoneparser", version = "0.1.2", path = "crates/zoneparser", optional = true }
 
