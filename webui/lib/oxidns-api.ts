@@ -108,6 +108,52 @@ export interface ProviderReloadResponse {
 
 export class ProviderReloadBusyError extends Error {}
 
+export interface CronJobRunResponse {
+  ok: boolean;
+  job: string;
+  status: "started";
+  trigger: "manual";
+  run_id: number;
+}
+
+export type CronJobRunTrigger = "manual" | "schedule" | "interval";
+export type CronCurrentRunStatus = "pending" | "running";
+export type CronManualRunStatus =
+  | "completed"
+  | "completed_with_errors"
+  | "failed"
+  | "cancelled";
+
+export interface CronCurrentRun {
+  run_id: number;
+  trigger: CronJobRunTrigger;
+  status: CronCurrentRunStatus;
+  started_at_ms: number;
+}
+
+export interface CronManualRunResult {
+  run_id: number;
+  status: CronManualRunStatus;
+  executor_error_count: number;
+  completed_at_ms: number;
+}
+
+export interface CronJobRunSnapshot {
+  current_run: CronCurrentRun | null;
+  last_manual_run: CronManualRunResult | null;
+}
+
+export interface CronJobsStatusResponse {
+  ok: boolean;
+  jobs: Record<string, CronJobRunSnapshot>;
+}
+
+export class CronJobAlreadyRunningError extends Error {}
+
+export class CronJobNotFoundError extends Error {}
+
+export class CronJobUnavailableError extends Error {}
+
 export type ProcessMemoryKind =
   | "rss"
   | "private_working_set"
@@ -566,6 +612,60 @@ export async function reloadProvider(
     }
     throw error;
   }
+}
+
+export async function runCronJob(
+  tag: string,
+  jobName: string,
+  signal?: AbortSignal,
+): Promise<CronJobRunResponse> {
+  const response = await fetch(
+    apiUrl(
+      `/plugins/${encodeURIComponent(tag)}/jobs/${encodeURIComponent(jobName)}/run`,
+    ),
+    {
+      method: "POST",
+      headers: apiHeaders(),
+      signal,
+    },
+  );
+  try {
+    return await readJsonResponse<CronJobRunResponse>(response);
+  } catch (error) {
+    if (response.status === 409) {
+      throw new CronJobAlreadyRunningError(
+        error instanceof Error ? error.message : "Cron job is already running",
+      );
+    }
+    if (response.status === 404) {
+      throw new CronJobNotFoundError(
+        error instanceof Error ? error.message : "Cron job was not found",
+      );
+    }
+    if (response.status === 503) {
+      throw new CronJobUnavailableError(
+        error instanceof Error
+          ? error.message
+          : "Cron scheduler is unavailable",
+      );
+    }
+    throw error;
+  }
+}
+
+export async function fetchCronJobStatuses(
+  tag: string,
+  signal?: AbortSignal,
+): Promise<CronJobsStatusResponse> {
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/jobs/status`),
+    {
+      method: "GET",
+      headers: apiHeaders(),
+      signal,
+    },
+  );
+  return readJsonResponse<CronJobsStatusResponse>(response);
 }
 
 export async function fetchCacheEntries(
@@ -1161,4 +1261,58 @@ function previewResponseText(text: string) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+export interface DownloadItem {
+  index: number;
+  url: string;
+  path: string;
+}
+
+export interface DownloadListResponse {
+  ok: boolean;
+  running: boolean;
+  downloads: DownloadItem[];
+}
+
+export interface DownloadResult {
+  ok: boolean;
+  total: number;
+  succeeded: number;
+  failed: number;
+}
+
+export class DownloadBusyError extends Error {}
+
+export async function fetchDownloads(
+  tag: string,
+  signal?: AbortSignal,
+): Promise<DownloadListResponse> {
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/downloads`),
+    {
+      headers: apiHeaders(),
+      cache: "no-store",
+      signal,
+    },
+  );
+  return readJsonResponse<DownloadListResponse>(response);
+}
+
+export async function runDownload(
+  tag: string,
+  index?: number,
+): Promise<DownloadResult> {
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/download`),
+    {
+      method: "POST",
+      headers: { ...apiHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify(index === undefined ? {} : { index }),
+    },
+  );
+  if (response.status === 409) {
+    throw new DownloadBusyError(tClient(WEBUI.download.busy));
+  }
+  return readJsonResponse<DownloadResult>(response);
 }

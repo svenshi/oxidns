@@ -119,9 +119,10 @@ pub(crate) fn exec_restart() -> Result<()> {
     #[cfg(windows)]
     {
         if windows_running_as_service() {
-            // Under Windows SCM: do not spawn a duplicate — SCM will restart the
-            // service on our behalf. Exit with a non-zero code to trigger the
-            // OnFailure restart policy configured at install time.
+            // Under Windows SCM: do not spawn a duplicate — SCM will restart
+            // the service on our behalf. Exit with a non-zero code
+            // to trigger the OnFailure restart policy configured at
+            // install time.
             std::process::exit(1);
         } else {
             // Foreground mode: spawn the replacement process then exit cleanly.

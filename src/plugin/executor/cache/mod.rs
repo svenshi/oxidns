@@ -444,11 +444,11 @@ pub struct Cache {
     /// Low-overhead cache metrics.
     metrics: Arc<CacheMetrics>,
 
-    /// Periodic dump task id, if dump persistence is enabled.
-    dump_task_id: Mutex<Option<u64>>,
+    /// Periodic dump task handle, if dump persistence is enabled.
+    dump_task_handle: Mutex<Option<task_center::ManagedTaskHandle>>,
 
-    /// Periodic cleanup task id.
-    cleanup_task_id: Mutex<Option<u64>>,
+    /// Periodic cleanup task handle.
+    cleanup_task_handle: Mutex<Option<task_center::ManagedTaskHandle>>,
 
     /// Deduplicates background refreshes for stale lazy cache hits.
     lazy_refresh_inflight: Arc<Mutex<AHashSet<CacheKey>>>,
@@ -497,18 +497,20 @@ impl Cache {
         dump_path: String,
         dump_interval: u64,
         updated_keys: Arc<AtomicU64>,
-    ) -> u64 {
+    ) -> Result<task_center::ManagedTaskHandle> {
         task_center::spawn_fixed(
             format!("cache:{}:dump", self.tag),
             Duration::from_secs(dump_interval),
-            move || {
+            task_center::TaskOptions::default(),
+            move |_| {
                 let cache_map = cache_map.clone();
                 let dump_path = dump_path.clone();
                 let updated_keys = updated_keys.clone();
                 async move {
                     let changed = updated_keys.swap(0, Ordering::Relaxed);
                     if changed < MINIMUM_CHANGES_TO_DUMP {
-                        // Keep sparse updates accumulated so low-write workloads still persist
+                        // Keep sparse updates accumulated so low-write
+                        // workloads still persist
                         // eventually without triggering dump every interval.
                         if changed > 0 {
                             updated_keys.fetch_add(changed, Ordering::Relaxed);
@@ -523,11 +525,16 @@ impl Cache {
         )
     }
 
-    fn spawn_cleanup_task(&self, cache_map: CacheMap, cache_size: usize) -> u64 {
+    fn spawn_cleanup_task(
+        &self,
+        cache_map: CacheMap,
+        cache_size: usize,
+    ) -> Result<task_center::ManagedTaskHandle> {
         task_center::spawn_fixed(
             format!("cache:{}:cleanup", self.tag),
             Duration::from_secs(DEFAULT_CLEANUP_INTERVAL),
-            move || {
+            task_center::TaskOptions::default(),
+            move |_| {
                 let cache_map = cache_map.clone();
                 async move {
                     let stats = Cache::prune_cache_periodic(
@@ -661,7 +668,8 @@ impl Cache {
                 break;
             }
 
-            // Approximate LRU: sort sampled keys by last-access and evict oldest subset.
+            // Approximate LRU: sort sampled keys by last-access and evict
+            // oldest subset.
             sample.sort_unstable_by_key(|(_, last)| *last);
             let wanted = (evict_target - evicted_total).min(sample.len());
             let mut evicted_batch = 0usize;
@@ -1276,41 +1284,64 @@ impl Plugin for Cache {
                 self.cache_size,
             );
             let dump_interval = self.config.dump_interval.unwrap_or(DEFAULT_DUMP_INTERVAL);
-            let task_id = self.spawn_dump_task(
+            let task_handle = match self.spawn_dump_task(
                 cache_map.clone(),
                 dump_file.clone(),
                 dump_interval,
                 self.updated_keys.clone(),
-            );
-            *self.dump_task_id.lock().expect("dump_task_id poisoned") = Some(task_id);
+            ) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    unregister_metric_source(&self.tag);
+                    return Err(error);
+                }
+            };
+            *self
+                .dump_task_handle
+                .lock()
+                .expect("dump_task_handle poisoned") = Some(task_handle);
         }
 
-        let cleanup_task_id = self.spawn_cleanup_task(cache_map, self.cache_size);
+        let cleanup_task_handle = match self.spawn_cleanup_task(cache_map, self.cache_size) {
+            Ok(handle) => handle,
+            Err(error) => {
+                let dump_task_handle = self
+                    .dump_task_handle
+                    .lock()
+                    .expect("dump_task_handle poisoned")
+                    .take();
+                if let Some(handle) = dump_task_handle {
+                    handle.stop().await;
+                }
+                unregister_metric_source(&self.tag);
+                return Err(error);
+            }
+        };
         *self
-            .cleanup_task_id
+            .cleanup_task_handle
             .lock()
-            .expect("cleanup_task_id poisoned") = Some(cleanup_task_id);
+            .expect("cleanup_task_handle poisoned") = Some(cleanup_task_handle);
         Ok(())
     }
 
     async fn destroy(&self) -> Result<()> {
         unregister_metric_source(&self.tag);
-        let dump_task_id = self
-            .dump_task_id
+        let dump_task_handle = self
+            .dump_task_handle
             .lock()
-            .expect("dump_task_id poisoned")
+            .expect("dump_task_handle poisoned")
             .take();
-        let cleanup_task_id = self
-            .cleanup_task_id
+        let cleanup_task_handle = self
+            .cleanup_task_handle
             .lock()
-            .expect("cleanup_task_id poisoned")
+            .expect("cleanup_task_handle poisoned")
             .take();
 
-        if let Some(task_id) = dump_task_id {
-            task_center::stop_task(task_id).await;
+        if let Some(handle) = dump_task_handle {
+            handle.stop().await;
         }
-        if let Some(task_id) = cleanup_task_id {
-            task_center::stop_task(task_id).await;
+        if let Some(handle) = cleanup_task_handle {
+            handle.stop().await;
         }
         if let Some(dump_file) = &self.config.dump_file
             && let Some(cache_map) = self.cache_map.get()
@@ -1690,8 +1721,8 @@ impl CacheFactory {
             config: cache_config,
             updated_keys: Arc::new(AtomicU64::new(0)),
             metrics,
-            dump_task_id: Mutex::new(None),
-            cleanup_task_id: Mutex::new(None),
+            dump_task_handle: Mutex::new(None),
+            cleanup_task_handle: Mutex::new(None),
             lazy_refresh_inflight: Arc::new(Mutex::new(AHashSet::new())),
             next_inline_maintenance_ms: AtomicU64::new(0),
             touch_interval_ms: AtomicU64::new(0),
@@ -1808,8 +1839,8 @@ mod tests {
             updated_keys: Arc::new(AtomicU64::new(0)),
             metrics: Arc::new(CacheMetrics::new("cache_test".to_string())),
             cache_size,
-            dump_task_id: Mutex::new(None),
-            cleanup_task_id: Mutex::new(None),
+            dump_task_handle: Mutex::new(None),
+            cleanup_task_handle: Mutex::new(None),
             lazy_refresh_inflight: Arc::new(Mutex::new(AHashSet::new())),
             next_inline_maintenance_ms: AtomicU64::new(0),
             touch_interval_ms: AtomicU64::new(0),

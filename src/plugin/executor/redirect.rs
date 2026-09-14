@@ -474,7 +474,8 @@ mod tests {
         let response = ctx.response().expect("response should exist");
         assert_eq!(response.questions()[0].name().to_fqdn(), "example.com.");
         assert_eq!(response.answers().len(), 2);
-        // CNAME must be first so glibc resolvers can follow the chain correctly.
+        // CNAME must be first so glibc resolvers can follow the chain
+        // correctly.
         assert_eq!(response.answers()[0].rr_type(), RecordType::CNAME);
         assert_eq!(response.answers()[1].rr_type(), RecordType::A);
     }

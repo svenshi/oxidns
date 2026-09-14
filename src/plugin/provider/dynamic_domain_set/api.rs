@@ -110,8 +110,9 @@ impl ApiHandler for RulesAddHandler {
             Ok(body) => body,
             Err(err) => return json_error(StatusCode::BAD_REQUEST, "invalid_body", err),
         };
-        // API writes are synchronous by design: the caller receives success only
-        // after the file is durable and the hot snapshot has been replaced.
+        // API writes are synchronous by design: the caller receives success
+        // only after the file is durable and the hot snapshot has been
+        // replaced.
         match self
             .backend
             .append_rules_sync(

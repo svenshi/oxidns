@@ -44,6 +44,73 @@ Exports a cache dump.
 
 Imports a cache dump.
 
+### cron
+
+#### `POST /api/plugins/<cron_tag>/jobs/<job_name>/run`
+
+Starts one configured cron job immediately. `job_name` is the URL-encoded `args.jobs[].name`. A manual trigger uses the same executor list and overlap protection as scheduled triggers, but does not change the existing interval or cron-expression schedule.
+
+Responses:
+
+* `202 Accepted`
+  * The background runtime accepted the job. The response contains `status: "started"`, `trigger: "manual"`, and the new `run_id`. A `202` does not mean the executor chain completed successfully.
+* `404 Not Found`
+  * The job does not exist in the active cron runtime.
+* `409 Conflict`
+  * The same job already has an active run. The request returns `cron_job_already_running` and is not queued.
+* `503 Service Unavailable`
+  * The manual-trigger queue is full, TaskCenter is stopping, or the task handle is unavailable.
+
+Example accepted response:
+
+```json
+{
+  "ok": true,
+  "job": "refresh_sets",
+  "status": "started",
+  "trigger": "manual",
+  "run_id": 12
+}
+```
+
+`run_id` starts at `1` and increases within one registered job lifetime. Scheduled and manual runs share the same sequence; re-registering the plugin or restarting the process resets it.
+
+#### `GET /api/plugins/<cron_tag>/jobs/status`
+
+Returns lightweight status for every job in the active cron runtime, keyed by job name:
+
+```json
+{
+  "ok": true,
+  "jobs": {
+    "refresh_sets": {
+      "current_run": {
+        "run_id": 12,
+        "trigger": "manual",
+        "status": "running",
+        "started_at_ms": 1780000000000
+      },
+      "last_manual_run": null
+    },
+    "cleanup": {
+      "current_run": null,
+      "last_manual_run": {
+        "run_id": 8,
+        "status": "completed_with_errors",
+        "executor_error_count": 2,
+        "completed_at_ms": 1780000001000
+      }
+    }
+  }
+}
+```
+
+- `current_run.trigger` is `manual`, `schedule`, or `interval`; its `status` is `pending` or `running`.
+- `last_manual_run.status` is `completed`, `completed_with_errors`, `failed`, or `cancelled`. Executor errors increment `executor_error_count` without stopping later executors.
+- Timestamps are Unix milliseconds. The API retains only the current run and latest manual result; it does not expose history, log content, result details, or a stop action.
+
+The WebUI shows **Run now** only when the displayed config version is active and batch-syncs real status every two seconds. The action is hidden while editing or after saving an unapplied version, and reopening the detail view does not replay old terminal results.
+
 ### matcher
 
 Every matcher declared in `plugins:` with a stable tag registers these runtime-control endpoints:
@@ -125,6 +192,17 @@ Responses:
 * Hit: domain text, usually a fully-qualified domain name
 * Miss: empty response body
 * Invalid parameter: `400 Bad Request`
+
+
+### download
+
+`GET /api/plugins/<tag>/downloads` returns the live download list (`index`, `url`, `path`) and a `running` flag. Indices are zero-based and refer to the running configuration.
+
+`POST /api/plugins/<tag>/download` downloads one item with `{"index": 0}`, or all items with `{}`. The request waits for completion and returns HTTP 200 with `{"ok": true, "total": 1, "succeeded": 1, "failed": 0}`. A partial or complete download failure sets `ok` to `false`; `failed` includes timeouts. Remaining items still run in declaration order. Details are recorded in the server logs and existing download metrics.
+
+Malformed input returns 400, an out-of-range index returns 404, and an overlapping download returns 409. Manual requests share a lock with pipeline/cron downloads; pipeline executions wait for the active batch. These routes require both the `api` and `plugin-download` features and use the management API's authentication.
+
+Only configured targets can be downloaded; URLs and output paths cannot be supplied by this API. Downloads replace files using the plugin's existing behavior. Provider reloads and other steps in a surrounding sequence are not triggered.
 
 ### query_recorder
 

@@ -94,7 +94,7 @@ export function PluginCardTemplate({
           <div className="flex min-w-0 items-center gap-2">
             <span
               className={cn(
-                "flex size-5 shrink-0 items-center justify-center [&>svg]:size-[18px]",
+                "flex size-5 shrink-0 items-center justify-center [&>svg]:size-[1.125rem]",
                 pluginTypeIconText[plugin.type],
               )}
             >
@@ -102,7 +102,7 @@ export function PluginCardTemplate({
             </span>
             <div className="flex min-w-0 items-center gap-1.5">
               <span
-                className="min-w-0 truncate font-mono text-[13px] font-semibold leading-5 tracking-[-0.01em]"
+                className="min-w-0 truncate font-mono text-sm font-semibold leading-5 tracking-[-0.01em]"
                 title={plugin.name}
               >
                 {plugin.name}
@@ -116,7 +116,7 @@ export function PluginCardTemplate({
             <Badge
               variant="outline"
               className={cn(
-                "h-[18px] max-w-[45%] rounded-md px-1.5 py-0 text-[10px] leading-none font-medium",
+                "h-5 max-w-[45%] rounded-md px-1.5 py-0 text-xs leading-none font-medium",
                 pluginTypeColors[plugin.type],
               )}
             >
@@ -129,7 +129,7 @@ export function PluginCardTemplate({
               className="size-0.5 shrink-0 rounded-full bg-muted-foreground/50"
             />
             <span
-              className="min-w-0 truncate text-[11px] leading-none text-muted-foreground"
+              className="min-w-0 truncate text-xs leading-none text-muted-foreground"
               title={definition?.name ?? plugin.pluginKind}
             >
               {definition?.name ?? plugin.pluginKind}
@@ -137,14 +137,14 @@ export function PluginCardTemplate({
             {!supported && (
               <Badge
                 variant="outline"
-                className="h-[18px] rounded-md px-1.5 py-0 text-[10px] leading-none"
+                className="h-5 rounded-md px-1.5 py-0 text-xs leading-none"
               >
                 {t(WEBUI.common.notCompiled)}
               </Badge>
             )}
           </div>
           {definition?.description && !compact && !children && (
-            <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+            <p className="mt-2 line-clamp-2 text-xs leading-4 text-muted-foreground">
               {definition.description}
             </p>
           )}
@@ -152,10 +152,10 @@ export function PluginCardTemplate({
         <div className="flex shrink-0 items-start gap-0.5 rounded-lg p-0.5 transition-colors group-hover:bg-muted/45">
           {primaryMetric && (
             <div className="mr-0.5 rounded-md bg-muted/45 px-2 py-1 text-right ring-1 ring-inset ring-border/35">
-              <div className="font-mono text-base leading-none font-semibold tabular-nums">
+              <div className="font-mono text-lg leading-none font-semibold tabular-nums">
                 {primaryMetric.value}
               </div>
-              <div className="mt-1 text-[9px] leading-none text-muted-foreground">
+              <div className="mt-1 text-xs leading-none text-muted-foreground">
                 {primaryMetric.label}
               </div>
             </div>
@@ -206,6 +206,7 @@ export function PluginCardTemplate({
         <CardContent className="mt-auto px-3.5 pb-3 pt-0">
           <PluginCardItemSurface>
             <PluginCardItemGrid
+              emphasizeValues
               items={cardMetrics.map((metric) => ({
                 key: metric.label,
                 label: metric.label,

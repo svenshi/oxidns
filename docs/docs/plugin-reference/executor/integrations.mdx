@@ -143,7 +143,7 @@ import Admonition from "@theme/Admonition";
 - 来源相关：`client_ip`、`client_port`、`server_name`、`url_path`
 - 运行态相关：`marks`、`has_resp`
 - 响应相关：`rcode`、`rcode_name`、`resp_ip`
-- cron 元数据：`cron_plugin_tag`、`cron_job_name`、`cron_trigger_kind`、`cron_scheduled_at_unix_ms`
+- cron 元数据：`cron_plugin_tag`、`cron_job_name`、`cron_trigger_kind`（`schedule`、`interval` 或 `manual`）、`cron_scheduled_at_unix_ms`
 
 ### 行为说明
 
@@ -242,7 +242,7 @@ import Admonition from "@theme/Admonition";
 - 来源相关：`client_ip`、`client_port`、`server_name`、`url_path`
 - 运行态相关：`marks`、`has_resp`
 - 响应相关：`rcode`、`rcode_name`、`resp_ip`
-- cron 元数据：`cron_plugin_tag`、`cron_job_name`、`cron_trigger_kind`、`cron_scheduled_at_unix_ms`
+- cron 元数据：`cron_plugin_tag`、`cron_job_name`、`cron_trigger_kind`（`schedule`、`interval` 或 `manual`）、`cron_scheduled_at_unix_ms`
 
 ### 行为说明
 
@@ -673,6 +673,7 @@ args:
 - 仅在配置了 `persistent` 时每 180 秒对账一次；对账使用初始化时已加载的内存集合，不重新读取文件。
 - 动态项是 DNS 观察结果，不是期望状态，不参与启动或周期全表对账。用户手工删除、修改动态项后插件不主动纠偏；只有后续 DNS 再次观察到同一 IP 并触发写入时才可能覆盖该变化。
 - 有限 TTL 动态项在有效 TTL 的 75% 处允许由后续 DNS 观察再次刷新；插件不会为动态项启动独立刷新定时器，`fixed_ttl: 0` 的永久项也不会自动刷新。
+- 同一列表内同一 IP 的多次观察保留最晚的有效到期时间；刷新时按该合并租约的剩余时间设置 RouterOS `timeout`，后续较短的 TTL 不会提前结束仍有效的租约。
 - 删除地址项前会重新确认内部 ID、目标 list/address key 和完整 ownership comment；RouterOS `timeout` 只是租约数据，不属于删除授权条件。RouterOS 最终仍只支持按内部 ID 删除，不提供原子 compare-and-delete。
 
 ### 典型用途

@@ -41,6 +41,73 @@ title: 插件扩展 API
 
 导入缓存 dump。
 
+### cron
+
+#### `POST /api/plugins/<cron_tag>/jobs/<job_name>/run`
+
+立即启动一个已配置的 cron job。`job_name` 是经过 URL 编码的 `args.jobs[].name`；手动触发使用与定时触发相同的 executor 列表和重叠保护，但不会改变 `interval` 或 cron 表达式任务的原定计划。
+
+返回：
+
+* `202 Accepted`
+  * 任务已被后台接受，响应中的 `status` 为 `started`、`trigger` 为 `manual`，并包含本轮 `run_id`。`202` 不代表 executor 链已经成功结束。
+* `404 Not Found`
+  * 当前 cron runtime 中不存在该任务。
+* `409 Conflict`
+  * 同一任务已有一轮正在执行；请求返回 `cron_job_already_running`，不会排队。
+* `503 Service Unavailable`
+  * 手动触发队列已满、TaskCenter 正在停止或对应任务已经不可用。
+
+成功响应示例：
+
+```json
+{
+  "ok": true,
+  "job": "refresh_sets",
+  "status": "started",
+  "trigger": "manual",
+  "run_id": 12
+}
+```
+
+`run_id` 在单个已注册 job 的生命周期内从 `1` 递增，定时与手动运行共用同一序列；插件重新注册或进程重启后会重新计数。
+
+#### `GET /api/plugins/<cron_tag>/jobs/status`
+
+批量读取当前 cron runtime 中所有 job 的轻量状态，job 名称作为 `jobs` 对象的键：
+
+```json
+{
+  "ok": true,
+  "jobs": {
+    "refresh_sets": {
+      "current_run": {
+        "run_id": 12,
+        "trigger": "manual",
+        "status": "running",
+        "started_at_ms": 1780000000000
+      },
+      "last_manual_run": null
+    },
+    "cleanup": {
+      "current_run": null,
+      "last_manual_run": {
+        "run_id": 8,
+        "status": "completed_with_errors",
+        "executor_error_count": 2,
+        "completed_at_ms": 1780000001000
+      }
+    }
+  }
+}
+```
+
+- `current_run.trigger` 为 `manual`、`schedule` 或 `interval`，`status` 为 `pending` 或 `running`。
+- `last_manual_run.status` 为 `completed`、`completed_with_errors`、`failed` 或 `cancelled`；正常返回错误的 executor 会计入 `executor_error_count`，但不会阻止后续 executor。
+- 时间字段都是 Unix 毫秒。接口只保留当前运行和最近一次手动结果，不提供历史、日志内容、结果详情或停止能力。
+
+WebUI 会在当前配置版本已经运行时显示“手动运行”按钮，并每 2 秒批量同步真实状态。编辑配置或保存后尚未应用时按钮隐藏；重新打开详情不会重放已经结束的旧结果。
+
 ### matcher
 
 配置在 `plugins:` 中、具有稳定 tag 的 matcher 都会注册以下运行时控制接口：
@@ -120,6 +187,17 @@ GET /api/plugins/reverse_lookup_main?ip=8.8.8.8
 * 命中：域名文本，通常为 fully-qualified domain name。
 * 未命中：空响应体。
 * 参数错误：`400 Bad Request`。
+
+
+### download
+
+`GET /api/plugins/<tag>/downloads` 返回正在运行的下载清单（`index`、`url`、`path`）和 `running` 状态。索引从 0 开始，对应运行中的配置。
+
+`POST /api/plugins/<tag>/download` 使用 `{"index": 0}` 下载单项，使用 `{}` 下载全部。请求等待下载完成后返回 HTTP 200，响应示例：`{"ok": true, "total": 1, "succeeded": 1, "failed": 0}`。部分或全部下载失败时 `ok` 为 `false`，`failed` 包含超时项；后续项仍按声明顺序执行。详情记录在服务端日志和现有下载指标中。
+
+输入格式错误返回 400，索引越界返回 404，已有下载运行时返回 409。手动请求与 pipeline/cron 下载共用运行锁，pipeline 执行会等待当前批次结束。接口需要同时启用 `api` 和 `plugin-download`，复用管理 API 认证。
+
+接口只允许下载已配置的目标，不能提交 URL 或输出路径。下载沿用插件现有的文件替换行为，不会触发 provider reload 或外层 sequence 的其它步骤。
 
 ### query\_recorder
 

@@ -143,7 +143,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y ipset nftables
+          sudo apt-get install -y ipset nftables iproute2 util-linux
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -170,7 +170,7 @@ jobs:
       - name: Install system packages on Linux
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y ipset nftables
+          sudo apt-get install -y ipset nftables iproute2 util-linux
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -238,4 +238,4 @@ jobs:
       - name: depth-2 powerset check
         run: >
           cargo +nightly hack check --feature-powerset --depth 2 --no-dev-deps
-          --exclude-features minimal,standard,full,hotpath,hotpath-alloc,_tls-base,_tls-client,_tls-server,_http-server,_http-client
+          --exclude-features minimal,standard,full,hotpath,hotpath-alloc,_task-cron,_tls-base,_tls-client,_tls-server,_http-server,_http-client

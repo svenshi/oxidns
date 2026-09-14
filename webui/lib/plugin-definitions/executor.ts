@@ -21,7 +21,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "规则链",
         type: "array",
         required: true,
-        placeholder: "$cache_main\nmatches: !$has_resp, exec: $forward_main",
+        example: "$cache_main\nmatches: !$has_resp, exec: $forward_main",
         item: {
           type: "object",
           label: "规则",
@@ -32,7 +32,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
               description: "定义当前规则的匹配条件。",
               label: "匹配条件",
               type: "array",
-              placeholder: "$has_resp\nqname domain:example.com\n!$blocked",
+              example: "$has_resp\nqname domain:example.com\n!$blocked",
               itemOptions: [
                 {
                   optionKey: "matcher_ref",
@@ -41,13 +41,13 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
                   referenceTypes: ["matcher"],
                   referencePrefix: "$",
                   allowInvert: true,
-                  placeholder: "has_resp",
+                  example: "has_resp",
                 },
                 {
                   optionKey: "input",
                   type: "text",
                   label: "输入值",
-                  placeholder: "qname domain:example.com",
+                  example: "qname domain:example.com",
                 },
               ],
             },
@@ -57,7 +57,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
                 "定义规则命中后要执行的动作，可引用执行器或使用 accept、return、reject、jump、goto、mark、set_mark 等内置动作；mark 追加标记，set_mark 完整替换标记集合；reject 支持大小写不敏感的 RCODE 名称和数字。",
               label: "执行动作",
               type: "text",
-              placeholder:
+              example:
                 "$forward_main / accept / reject SERVFAIL / mark 1,2 / set_mark 2,3 / jump seq_tag",
             },
           ],
@@ -145,7 +145,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "上游列表",
         type: "array",
         required: true,
-        placeholder: "udp://1.1.1.1:53",
+        example: "udp://1.1.1.1:53",
         item: {
           type: "object",
           summaryFields: ["tag", "addr"],
@@ -155,7 +155,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
               description: "为单个上游提供日志标识，便于排查多上游竞争结果。",
               label: "上游标识",
               type: "text",
-              placeholder: "cf_udp",
+              example: "cf_udp",
             },
             {
               key: "addr",
@@ -163,7 +163,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
               label: "上游地址",
               type: "text",
               required: true,
-              placeholder: "udp://1.1.1.1:53",
+              example: "udp://1.1.1.1:53",
             },
             {
               key: "outbound",
@@ -172,7 +172,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
               label: "出站配置",
               type: "select",
               dynamicOptions: "outboundProfiles",
-              placeholder: "profile-1",
+              example: "profile-1",
               advanced: true,
             },
             {
@@ -181,7 +181,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
                 "指定实际连接 IP，同时保留 addr 中的主机名用于 SNI、Host 和证书校验；与 bootstrap 同时配置时本字段优先生效。",
               label: "拨号 IP",
               type: "text",
-              placeholder: "203.0.113.53",
+              example: "203.0.113.53",
               advanced: true,
             },
             {
@@ -189,7 +189,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
               description: "覆盖协议默认端口。",
               label: "端口覆盖",
               type: "number",
-              placeholder: "443",
+              example: "443",
               advanced: true,
             },
             {
@@ -198,7 +198,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
                 "为域名型上游提供引导解析服务器；未配置时会在首次建连时使用系统解析；与 dial_addr 同时配置时会被忽略。",
               label: "Bootstrap",
               type: "text",
-              placeholder: "8.8.8.8:53",
+              example: "8.8.8.8:53",
               advanced: true,
             },
             {
@@ -217,7 +217,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
               description: "为上游连接指定 SOCKS5 代理。",
               label: "SOCKS5 代理",
               type: "text",
-              placeholder: "user:pass@127.0.0.1:1080",
+              example: "user:pass@127.0.0.1:1080",
               advanced: true,
             },
             {
@@ -225,7 +225,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
               description: "定义连接池空闲连接保留时间。",
               label: "连接空闲超时(秒)",
               type: "number",
-              placeholder: "30",
+              example: "30",
               advanced: true,
             },
             {
@@ -233,7 +233,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
               description: "定义连接池连接上限，范围 1..4096。",
               label: "最大连接数",
               type: "number",
-              placeholder: "256",
+              example: "256",
               advanced: true,
             },
             {
@@ -242,7 +242,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
                 "定义连接池最小预热连接数，默认 0，范围 0..4096，且不能大于 max_conns。",
               label: "最小连接数",
               type: "number",
-              placeholder: "0",
+              default: 0,
               advanced: true,
             },
             {
@@ -257,7 +257,8 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
               description: "定义单次上游查询超时。",
               label: "查询超时",
               type: "duration",
-              placeholder: "3s",
+              default: "5s",
+              example: "3s",
               advanced: true,
             },
             {
@@ -280,7 +281,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
               description: "设置 Linux SO_MARK。",
               label: "SO_MARK",
               type: "number",
-              placeholder: "100",
+              example: "100",
               advanced: true,
             },
             {
@@ -288,7 +289,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
               description: "设置 Linux SO_BINDTODEVICE。",
               label: "绑定网卡",
               type: "text",
-              placeholder: "eth0",
+              example: "eth0",
               advanced: true,
             },
           ],
@@ -371,7 +372,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         description: "指定缓存持久化文件路径。",
         label: "持久化文件",
         type: "text",
-        placeholder: "./dns_cache.dump",
+        example: "./dns_cache.dump",
         advanced: true,
       },
       {
@@ -594,7 +595,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "响应码",
         type: "text",
         default: "NOERROR",
-        placeholder: "NOERROR / NXDOMAIN / 3",
+        example: "NOERROR / NXDOMAIN / 3",
         description: "基础 DNS RCODE，支持十进制数字或大小写不敏感的助记名。",
       },
       {
@@ -713,7 +714,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         description: "指定固定的 ECS 来源地址。",
         label: "预设 ECS 地址",
         type: "text",
-        placeholder: "203.0.113.10",
+        example: "203.0.113.10",
       },
       {
         key: "mask4",
@@ -830,13 +831,16 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
           { label: "Background", value: "background" },
         ],
       },
-      stringArrayField(
-        "probe_methods",
-        "测速方式",
-        "tcp:443\ntcp:80",
-        false,
-        "定义用于评分响应 IP 的探测方式，支持 tcp:<port>、ping、none。",
-      ),
+      {
+        ...stringArrayField(
+          "probe_methods",
+          "测速方式",
+          "ping\nnone",
+          false,
+          "定义用于评分响应 IP 的探测方式，支持 tcp:<port>、ping、none。",
+        ),
+        default: ["tcp:443", "tcp:80"],
+      },
       {
         key: "outbound",
         description:
@@ -844,7 +848,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "出站配置",
         type: "select",
         dynamicOptions: "outboundProfiles",
-        placeholder: "profile-1",
+        example: "profile-1",
         advanced: true,
       },
       {
@@ -853,7 +857,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
           "为 TCP 探测指定局部 SOCKS5 代理，优先于 outbound profile proxy。",
         label: "SOCKS5 代理",
         type: "text",
-        placeholder: "127.0.0.1:1080",
+        example: "127.0.0.1:1080",
         advanced: true,
       },
       {
@@ -964,7 +968,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         type: "reference",
         referenceTypes: ["executor"],
         referencePrefix: "",
-        placeholder: "probe_v4",
+        example: "probe_v4",
       },
       {
         key: "cache",
@@ -998,7 +1002,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         type: "reference",
         referenceTypes: ["executor"],
         referencePrefix: "",
-        placeholder: "probe_v6",
+        example: "probe_v6",
       },
       {
         key: "cache",
@@ -1138,7 +1142,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         description: "定义摘要日志标题。",
         label: "日志标题",
         type: "text",
-        placeholder: "main pipeline",
+        example: "main pipeline",
         default: "query summary",
       },
     ],
@@ -1161,7 +1165,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         required: true,
         referenceTypes: ["provider"],
         referencePrefix: "",
-        placeholder: "learned_allow",
+        example: "learned_allow",
       },
       {
         key: "phase",
@@ -1185,13 +1189,16 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         ],
         default: "first",
       },
-      stringArrayField(
-        "qtypes",
-        "查询类型",
-        "A\nAAAA",
-        false,
-        "只学习指定 DNS 查询类型。",
-      ),
+      {
+        ...stringArrayField(
+          "qtypes",
+          "查询类型",
+          "HTTPS\nSVCB",
+          false,
+          "只学习指定 DNS 查询类型。",
+        ),
+        default: ["A", "AAAA"],
+      },
       {
         key: "success_only",
         description: "仅响应为 NOERROR 时学习；只在 after 阶段生效。",
@@ -1260,7 +1267,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "SQLite 文件",
         type: "text",
         required: true,
-        placeholder: "./data/query-recorder-main.sqlite",
+        example: "./data/query-recorder-main.sqlite",
       },
       {
         key: "queue_size",
@@ -1443,7 +1450,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
           { label: "PATCH", value: "PATCH" },
           { label: "DELETE", value: "DELETE" },
         ],
-        default: "POST",
+        initialValue: "POST",
       },
       {
         key: "url",
@@ -1451,7 +1458,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "目标 URL",
         type: "text",
         required: true,
-        placeholder: "https://hooks.example.com/dns",
+        example: "https://hooks.example.com/dns",
       },
       {
         key: "phase",
@@ -1515,14 +1522,14 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         description: "原始字符串请求体。",
         label: "原始 Body",
         type: "textarea",
-        placeholder: "qname=${qname}",
+        example: "qname=${qname}",
       },
       {
         key: "json",
         description: "以 JSON 方式发送请求体。",
         label: "JSON Body",
         type: "json",
-        placeholder: '{"qname":"${qname}","client_ip":"${client_ip}"}',
+        example: '{"qname":"${qname}","client_ip":"${client_ip}"}',
       },
       {
         key: "form",
@@ -1545,7 +1552,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "出站配置",
         type: "select",
         dynamicOptions: "outboundProfiles",
-        placeholder: "profile-1",
+        example: "profile-1",
         advanced: true,
       },
       {
@@ -1553,7 +1560,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         description: "指定 SOCKS5 代理。",
         label: "SOCKS5 代理",
         type: "text",
-        placeholder: "127.0.0.1:1080",
+        example: "127.0.0.1:1080",
         advanced: true,
       },
       {
@@ -1615,7 +1622,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "命令",
         type: "text",
         required: true,
-        placeholder: "bash",
+        example: "bash",
       },
       stringArrayField(
         "args",
@@ -1637,7 +1644,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         description: "指定脚本运行时的工作目录。",
         label: "工作目录",
         type: "text",
-        placeholder: "/etc/oxidns",
+        example: "/etc/oxidns",
       },
       {
         key: "timeout",
@@ -1771,9 +1778,9 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         type: "object",
         fields: nftSetTargetFields.map((field) =>
           field.key === "table_family"
-            ? { ...field, placeholder: "ip6" }
+            ? { ...field, example: "ip6" }
             : field.key === "set_name"
-              ? { ...field, placeholder: "dns_v6" }
+              ? { ...field, example: "dns_v6" }
               : field,
         ),
         summaryFields: ["table_family", "table_name", "set_name"],
@@ -1912,7 +1919,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "RouterOS API 地址",
         type: "text",
         required: true,
-        placeholder: "172.16.1.1:8728",
+        example: "172.16.1.1:8728",
       },
       { key: "username", label: "用户名", type: "text", required: true },
       { key: "password", label: "密码", type: "password", required: true },
@@ -1930,6 +1937,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
             key: "insecure",
             label: "跳过证书验证",
             type: "switch",
+            default: false,
           },
         ],
       },
@@ -1981,19 +1989,19 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "路由表",
         type: "text",
         required: true,
-        placeholder: "via_proxy",
+        example: "via_proxy",
       },
       {
         key: "gateway4",
         label: "IPv4 网关",
         type: "text",
-        placeholder: "192.168.88.2@main",
+        example: "192.168.88.2@main",
       },
       {
         key: "gateway6",
         label: "IPv6 网关",
         type: "text",
-        placeholder: "fe80::2%ether1",
+        example: "fe80::2%ether1",
       },
       {
         key: "distance",
@@ -2132,7 +2140,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "RouterOS API 地址",
         type: "text",
         required: true,
-        placeholder: "172.16.1.1:8728",
+        example: "172.16.1.1:8728",
       },
       {
         key: "username",
@@ -2155,6 +2163,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
             key: "insecure",
             label: "跳过证书验证",
             type: "switch",
+            default: false,
           },
         ],
       },
@@ -2249,7 +2258,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
             {
               type: "text",
               label: "输入值",
-              placeholder: "1.1.1.1",
+              example: "1.1.1.1",
             },
           ),
           stringArrayField(
@@ -2261,7 +2270,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
             {
               type: "text",
               label: "输入值",
-              placeholder: "/etc/oxidns/persistent_ips.txt",
+              example: "/etc/oxidns/persistent_ips.txt",
             },
           ),
         ],
@@ -2363,7 +2372,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         description: "下载缓存目录。",
         label: "下载缓存目录",
         type: "text",
-        placeholder: "./upgrade/cache",
+        example: "./upgrade/cache",
         advanced: true,
       },
       {
@@ -2371,7 +2380,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         description: "替换前备份目录。",
         label: "备份目录",
         type: "text",
-        placeholder: "./upgrade/backups",
+        example: "./upgrade/backups",
         advanced: true,
       },
       {
@@ -2379,7 +2388,8 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         description: "升级时安装 WebUI 静态资源的目录。",
         label: "WebUI 目录",
         type: "text",
-        placeholder: "./webui",
+        default: "./webui",
+        example: "/opt/oxidns/webui",
       },
       {
         key: "skip_webui",
@@ -2410,7 +2420,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "出站配置",
         type: "select",
         dynamicOptions: "outboundProfiles",
-        placeholder: "profile-1",
+        example: "profile-1",
         advanced: true,
       },
       {
@@ -2418,7 +2428,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         description: "升级下载时使用的 SOCKS5 代理。",
         label: "SOCKS5 代理",
         type: "text",
-        placeholder: "127.0.0.1:1080",
+        example: "127.0.0.1:1080",
         advanced: true,
       },
       {
@@ -2464,7 +2474,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "下载项",
         type: "array",
         required: true,
-        placeholder:
+        example:
           '[{"url":"https://example.com/geosite.dat","dir":"/etc/oxidns","filename":"geosite.dat"}]',
         item: {
           type: "object",
@@ -2477,7 +2487,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
               label: "URL",
               type: "text",
               required: true,
-              placeholder: "https://example.com/geosite.dat",
+              example: "https://example.com/geosite.dat",
             },
             {
               key: "dir",
@@ -2485,14 +2495,14 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
               label: "目录",
               type: "text",
               required: true,
-              placeholder: "/etc/oxidns",
+              example: "/etc/oxidns",
             },
             {
               key: "filename",
               description: "下载项的目标文件名。",
               label: "文件名",
               type: "text",
-              placeholder: "geosite.dat",
+              example: "geosite.dat",
             },
           ],
         },
@@ -2512,7 +2522,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "出站配置",
         type: "select",
         dynamicOptions: "outboundProfiles",
-        placeholder: "profile-1",
+        example: "profile-1",
         advanced: true,
       },
       {
@@ -2520,7 +2530,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         description: "所有下载连接都会通过该 SOCKS5 代理发起。",
         label: "SOCKS5 代理",
         type: "text",
-        placeholder: "127.0.0.1:1080",
+        example: "127.0.0.1:1080",
         advanced: true,
       },
       {
@@ -2567,7 +2577,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
           type: "reference",
           referenceTypes: ["provider"],
           referencePrefix: "$",
-          placeholder: "geosite_cn",
+          example: "geosite_cn",
         },
       ),
     ],
@@ -2626,7 +2636,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "任务列表",
         type: "array",
         required: true,
-        placeholder:
+        example:
           '[{"name":"refresh_sets","interval":"5m","executors":["$seq_refresh"]}]',
         item: {
           type: "object",
@@ -2639,21 +2649,21 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
               label: "任务名称",
               type: "text",
               required: true,
-              placeholder: "refresh_sets",
+              example: "refresh_sets",
             },
             {
               key: "schedule",
               description: "使用标准 5 字段 cron 表达式调度任务。",
               label: "Cron 表达式",
               type: "text",
-              placeholder: "0 */6 * * *",
+              example: "0 */6 * * *",
             },
             {
               key: "interval",
               description: "用简单固定间隔调度任务。",
               label: "固定间隔",
               type: "duration",
-              placeholder: "5m",
+              example: "5m",
             },
             {
               key: "executors",
@@ -2661,7 +2671,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
               label: "执行器",
               type: "array",
               required: true,
-              placeholder: "$seq_refresh\ndebug_print cron refresh",
+              example: "$seq_refresh\ndebug_print cron refresh",
               itemOptions: [
                 executorReferenceArrayItem("seq_refresh"),
                 inputArrayItem("debug_print cron refresh"),
@@ -2675,7 +2685,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         description: "为当前 cron 插件下的所有 schedule 任务指定时区。",
         label: "时区",
         type: "text",
-        placeholder: "Asia/Shanghai",
+        example: "Asia/Shanghai",
         advanced: true,
       },
     ],
