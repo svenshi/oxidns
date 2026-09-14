@@ -57,6 +57,10 @@ Listens for DNS over UDP and forwards requests to `entry`.
 ### Behavior
 
 - Receives requests through a UDP socket.
+- Replies to queries sent to a local unicast address use the query's original destination IP and port as their source, including IPv4, IPv6, and dual-stack wildcard listeners.
+- Wildcard listeners require per-packet destination information from the operating system. If it cannot be enabled, initialization fails with a suggestion to bind an explicit IP, such as `192.168.1.1:53`. Configure separate listeners when multiple explicit addresses are needed.
+- On Windows, IPv6 listeners can still start when the IPv4 address family is confirmed to be unavailable. Explicitly configured IPv4 listeners do not depend on IPv6.
+- A datagram with missing or truncated destination information is discarded and an error is logged, preventing a reply from the wrong source address.
 - Response encoding respects the client's advertised EDNS UDP payload size.
 - Oversized responses are truncated according to DNS semantics rather than by blindly cutting raw bytes.
 
