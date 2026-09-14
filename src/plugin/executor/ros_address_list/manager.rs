@@ -603,12 +603,6 @@ impl AddressListManager {
         )
     }
 
-    fn should_refresh_dynamic_entry(&self, key: &AddressListKey, now_ms: u64) -> bool {
-        self.leases
-            .get(key)
-            .is_none_or(|lease| lease.needs_sync(now_ms))
-    }
-
     fn prune_dynamic_cache(&mut self, now_ms: u64) {
         self.leases.retain(|key, lease| {
             !lease.desired().is_expired(now_ms) && !self.persistent_items.contains(key)
@@ -900,13 +894,17 @@ impl AddressListManager {
                 continue;
             }
             self.leases.observe(key.clone(), deadline, now);
-            let timeout = deadline
-                .remaining_secs(now)
-                .map_or(DynamicTimeout::Timeless, DynamicTimeout::Timed);
-            if !self.should_refresh_dynamic_entry(key, now) {
+            let lease = self.leases.get(key).expect("observed lease must exist");
+            if !lease.needs_sync(now) {
                 outcomes[index] = Some(Ok(()));
                 continue;
             }
+            // Match the merged lease confirmed after the write: a shorter
+            // observation must not truncate another still-valid lease.
+            let timeout = lease
+                .desired()
+                .remaining_secs(now)
+                .map_or(DynamicTimeout::Timeless, DynamicTimeout::Timed);
             prepared.push(Prepared {
                 index,
                 key: key.clone(),
