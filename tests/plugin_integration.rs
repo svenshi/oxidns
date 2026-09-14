@@ -1973,6 +1973,21 @@ plugins:
     Ok(())
 }
 
+fn bind_udp_reply_test_socket(listen: SocketAddr) -> std::io::Result<StdUdpSocket> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::for_address(listen),
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+    if listen.is_ipv6() {
+        socket.set_only_v6(false)?;
+    }
+    // Match the server's dual-stack binding, but leave port reuse disabled so
+    // reservations cannot select an active listener's port in parallel tests.
+    socket.bind(&listen.into())?;
+    Ok(socket.into())
+}
+
 /// Exercise actual DNS responses, including concurrent queries from one source
 /// socket to different local server addresses. The runtime is destroyed even
 /// when an exchange or a wire/source-address assertion fails.
@@ -1983,8 +1998,7 @@ async fn check_udp_reply_profile(
 ) -> Result<()> {
     let mut started = None;
     for _ in 0..16 {
-        let reserved =
-            oxidns::plugin::server::udp::build_udp_socket(SocketAddr::new(listen_ip, 0))?;
+        let reserved = bind_udp_reply_test_socket(SocketAddr::new(listen_ip, 0))?;
         let listen = reserved.local_addr()?;
         drop(reserved);
         let large_answers = (1..=64)
@@ -2110,21 +2124,29 @@ plugins:
                 }
             }
         }
+        // Keep the runtime's test serialization guard until the shutdown
+        // assertion completes. Destroying the whole runtime first would let
+        // the next test start a listener before we check this port.
+        let server = runtime
+            .get_plugin("reply_udp")
+            .expect("UDP reply test server should exist");
+        timeout(Duration::from_secs(3), server.as_plugin().destroy())
+            .await
+            .map_err(|_| DnsError::runtime("UDP reply test server shutdown timed out"))??;
+        // Do not enable reuse here: a retained listener must fail this check.
+        let rebound = bind_udp_reply_test_socket(listen).map_err(|err| {
+            DnsError::runtime(format!(
+                "UDP reply test could not rebind {listen} after shutdown: {err}"
+            ))
+        })?;
+        drop(rebound);
         Ok::<(), DnsError>(())
     }
     .await;
     timeout(Duration::from_secs(3), runtime.destroy())
         .await
         .map_err(|_| DnsError::runtime("UDP reply test shutdown timed out"))?;
-    exchange?;
-    // Shutdown must release the listener even with concurrent requests.
-    let rebound = StdUdpSocket::bind(listen).map_err(|err| {
-        DnsError::runtime(format!(
-            "UDP reply test could not rebind {listen} after shutdown: {err}"
-        ))
-    })?;
-    drop(rebound);
-    Ok(())
+    exchange
 }
 
 #[tokio::test]
