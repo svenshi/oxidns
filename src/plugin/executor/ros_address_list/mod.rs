@@ -1176,6 +1176,82 @@ persistent:
         assert_eq!(state.update_ops, 0);
     }
 
+    async fn observe_shorter_ttl_at_refresh_window()
+    -> (AddressListManager, Arc<MockMikrotikApi>, AddressListKey) {
+        let api = Arc::new(MockMikrotikApi::default());
+        let mut manager = AddressListManager::new(api.clone(), default_cfg("shorter-ttl"));
+        let addr = "203.0.113.77".parse().unwrap();
+        let key = AddressListKey::new(addr, "oxidns_ipv4".to_string());
+        for (now_ms, ttl_secs) in [(0, 300), (200_000, 300), (225_000, 60)] {
+            manager
+                .observe_domain_at_for_test(
+                    "example.com".to_string(),
+                    vec![ObservedAddr { addr, ttl_secs }],
+                    now_ms,
+                )
+                .await
+                .unwrap();
+        }
+        (manager, api, key)
+    }
+
+    #[tokio::test]
+    async fn shorter_ttl_refresh_preserves_the_longest_live_lease() {
+        let (_, api, key) = observe_shorter_ttl_at_refresh_window().await;
+        let state = api.state.lock().unwrap();
+        let entry = state
+            .entries
+            .get(&MockMikrotikApi::storage_key(&key))
+            .unwrap();
+
+        // The answer at t=200 remains valid until t=500, so the refresh at
+        // t=225 must preserve its remaining 275 seconds despite the new TTL.
+        assert_eq!(entry.timeout.as_deref(), Some("275s"));
+        assert_eq!(state.update_ops, 1);
+    }
+
+    #[tokio::test]
+    async fn shorter_ttl_refresh_keeps_remote_entry_until_refresh_is_allowed() {
+        let (mut manager, api, key) = observe_shorter_ttl_at_refresh_window().await;
+        let storage_key = MockMikrotikApi::storage_key(&key);
+        let expires_at_ms = {
+            let state = api.state.lock().unwrap();
+            let entry = state.entries.get(&storage_key).unwrap();
+            let timeout_secs = entry
+                .timeout
+                .as_ref()
+                .unwrap()
+                .strip_suffix('s')
+                .unwrap()
+                .parse::<u64>()
+                .unwrap();
+            225_000 + timeout_secs * 1_000
+        };
+
+        for now_ms in [286_000, 501_000] {
+            // Model only native expiry of the timeout actually written by
+            // OxiDNS, without an operator or another writer changing the row.
+            if expires_at_ms <= now_ms {
+                api.state.lock().unwrap().entries.remove(&storage_key);
+            }
+            manager
+                .observe_domain_at_for_test(
+                    "example.com".to_string(),
+                    vec![ObservedAddr {
+                        addr: key.address,
+                        ttl_secs: 60,
+                    }],
+                    now_ms,
+                )
+                .await
+                .unwrap();
+            assert!(
+                api.state.lock().unwrap().entries.contains_key(&storage_key),
+                "a DNS observation at {now_ms} must leave the remote entry present"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn failed_refresh_clears_cache_and_next_observation_retries_immediately() {
         let api = Arc::new(MockMikrotikApi::default());
