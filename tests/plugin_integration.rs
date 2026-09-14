@@ -2044,7 +2044,13 @@ plugins:
         for _ in 0..QUERIES {
             let (len, source) = timeout(Duration::from_secs(2), client.recv_from(&mut buf))
                 .await
-                .map_err(|_| DnsError::runtime("UDP reply source test timed out"))??;
+                .map_err(|_| {
+                    let missing: Vec<_> = (0..QUERIES).filter(|id| !seen[*id]).collect();
+                    DnsError::runtime(format!(
+                        "UDP reply source test timed out: listen={listen}, client={client_ip}, \
+                         destinations={destinations:?}, missing IDs={missing:?}"
+                    ))
+                })??;
             let response = Message::from_bytes(&buf[..len])?;
             let id = usize::from(response.id());
             if id >= QUERIES || seen[id] {
@@ -2112,7 +2118,11 @@ plugins:
         .map_err(|_| DnsError::runtime("UDP reply test shutdown timed out"))?;
     exchange?;
     // Shutdown must release the listener even with concurrent requests.
-    let rebound = StdUdpSocket::bind(listen)?;
+    let rebound = StdUdpSocket::bind(listen).map_err(|err| {
+        DnsError::runtime(format!(
+            "UDP reply test could not rebind {listen} after shutdown: {err}"
+        ))
+    })?;
     drop(rebound);
     Ok(())
 }
@@ -2151,9 +2161,9 @@ async fn test_udp_server_reply_sources_on_secondary_loopback() -> Result<()> {
 #[tokio::test]
 async fn test_udp_server_multihomed_reply_sources() -> Result<()> {
     const PARENT_NAMESPACE: &str = "OXIDNS_UDP_TEST_PARENT_NETNS";
-    let namespace = fs::read_link("/proc/self/ns/net")?;
     if let Some(parent_namespace) = std::env::var_os(PARENT_NAMESPACE) {
         // Refuse to configure addresses if the subprocess was not isolated.
+        let namespace = fs::read_link("/proc/self/ns/net")?;
         if namespace.as_os_str() == parent_namespace.as_os_str() {
             return Err(DnsError::runtime(
                 "UDP test requires a new network namespace",
@@ -2162,27 +2172,18 @@ async fn test_udp_server_multihomed_reply_sources() -> Result<()> {
     } else {
         // Re-execute only this test in a new process: changing a test runner's
         // namespace in place would affect unrelated tests or runtime threads.
-        let is_root = running_as_root();
-        // Prefer an unprivileged user namespace where the host permits one.
-        // Hosted Linux CI also provides passwordless sudo for restricted hosts.
-        let user_namespace = !is_root
-            && Command::new("unshare")
-                .args(["--user", "--map-root-user", "--net", "--", "true"])
-                .output()?
-                .status
-                .success();
-        let needs_sudo = !is_root && !user_namespace;
-        let mut command = tokio::process::Command::new(if needs_sudo { "sudo" } else { "timeout" });
-        if needs_sudo {
-            command.args(["-n", "--", "timeout"]);
-        }
-        // Bound the privileged process group as well as the parent wait.
-        command.args(["--kill-after=5s", "20s", "unshare"]);
-        if user_namespace {
-            command.args(["--user", "--map-root-user"]);
-        }
+        let namespace = match fs::read_link("/proc/self/ns/net") {
+            Ok(namespace) => namespace,
+            Err(err) => {
+                eprintln!("Skipping UDP multihomed test: cannot inspect network namespace: {err}");
+                return Ok(());
+            }
+        };
+        let Some(mut command) = udp_test_namespace_command().await else {
+            return Ok(());
+        };
         command
-            .args(["--net", "--", "env"])
+            .arg("env")
             // Set the child marker after sudo's environment filtering.
             .arg(format!("{PARENT_NAMESPACE}={}", namespace.display()))
             .arg(std::env::current_exe()?)
@@ -2307,6 +2308,111 @@ async fn test_udp_server_multihomed_reply_sources() -> Result<()> {
         )
         .await?;
     }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn udp_test_namespace_command() -> Option<tokio::process::Command> {
+    // UID 0 does not imply CAP_SYS_ADMIN or CAP_NET_ADMIN (e.g. containers).
+    // Probe the actual launch path, including ip and timeout, in a disposable
+    // namespace. Never change interfaces in the test runner's namespace.
+    let launchers: &[(&str, &[&str])] = &[
+        (
+            "timeout",
+            &["--kill-after=5s", "20s", "unshare", "--net", "--"],
+        ),
+        (
+            "timeout",
+            &[
+                "--kill-after=5s",
+                "20s",
+                "unshare",
+                "--user",
+                "--map-root-user",
+                "--net",
+                "--",
+            ],
+        ),
+        (
+            "sudo",
+            &[
+                "-n",
+                "--",
+                "timeout",
+                "--kill-after=5s",
+                "20s",
+                "unshare",
+                "--net",
+                "--",
+            ],
+        ),
+    ];
+    let mut unavailable = Vec::new();
+    for (program, args) in launchers {
+        let mut probe = tokio::process::Command::new(program);
+        probe
+            .args(*args)
+            .args(["ip", "link", "set", "lo", "up"])
+            .kill_on_drop(true);
+        let reason = match timeout(Duration::from_secs(30), probe.output()).await {
+            Ok(Ok(output)) if output.status.success() => {
+                let mut command = tokio::process::Command::new(program);
+                command.args(*args);
+                return Some(command);
+            }
+            Ok(Ok(output)) => format!(
+                "{}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+            Ok(Err(err)) => err.to_string(),
+            Err(_) => "probe timed out".to_owned(),
+        };
+        unavailable.push(format!("{program} {}: {reason}", args.join(" ")));
+    }
+    // This environment-only skip keeps ordinary cargo test usable without
+    // extra privileges/tools. Once a probe succeeds, all fixture and DNS
+    // failures propagate; they must never turn into a skip.
+    eprintln!(
+        "Skipping UDP multihomed test: no usable network namespace launcher:\n{}",
+        unavailable.join("\n")
+    );
+    None
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn test_udp_namespace_environment_checks() -> Result<()> {
+    let empty_path = TempDir::new()?;
+    let mut command = tokio::process::Command::new(std::env::current_exe()?);
+    command
+        .args([
+            "--exact",
+            "test_udp_server_multihomed_reply_sources",
+            "--nocapture",
+        ])
+        .env("PATH", empty_path.path())
+        .env_remove("OXIDNS_UDP_TEST_PARENT_NETNS")
+        .kill_on_drop(true);
+    let output = timeout(Duration::from_secs(5), command.output())
+        .await
+        .map_err(|_| DnsError::runtime("UDP namespace availability check timed out"))??;
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Skipping UDP multihomed test"));
+
+    // An isolation failure must remain a failure even when tools are absent.
+    command.env(
+        "OXIDNS_UDP_TEST_PARENT_NETNS",
+        fs::read_link("/proc/self/ns/net")?,
+    );
+    let output = timeout(Duration::from_secs(5), command.output())
+        .await
+        .map_err(|_| DnsError::runtime("UDP namespace isolation check timed out"))??;
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("UDP test requires a new network namespace")
+    );
     Ok(())
 }
 
