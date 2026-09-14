@@ -10,6 +10,7 @@ import { useAuthStore } from "@/lib/auth-store";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
 import {
+  DownloadBusyError,
   fetchDownloads,
   runDownload,
   type DownloadItem,
@@ -91,7 +92,7 @@ function DownloadsPanelInner({ tag }: { tag: string }) {
   }, [load]);
 
   useEffect(() => {
-    if (!running || pending !== null) return;
+    if (!running || pending !== null || loading) return;
     const timer = setTimeout(() => void load(), 1500);
     return () => clearTimeout(timer);
   }, [running, pending, load, loading]);
@@ -106,10 +107,15 @@ function DownloadsPanelInner({ tag }: { tag: string }) {
       const response = await runDownload(tag, index);
       if (active.current) setResult(response);
     } catch (err) {
-      if (active.current)
+      if (!active.current) return;
+      if (err instanceof DownloadBusyError) {
+        setRunning(true);
+        await load();
+      } else {
         setError(
           err instanceof Error ? err.message : t(WEBUI.download.runFailed),
         );
+      }
     } finally {
       requestPending.current = false;
       if (active.current) setPending(null);
