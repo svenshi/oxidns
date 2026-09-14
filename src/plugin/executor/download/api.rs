@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Manual downloads use the live configuration and share the executor's run lock.
+//! Manual downloads use the live configuration and share the executor's run
+//! lock.
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -9,21 +12,21 @@ use http::{Request, StatusCode};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::DownloadExecutor;
+use super::DownloadRuntime;
 use crate::api::{ApiHandler, ApiResponse, json_error, json_ok};
 use crate::infra::error::Result;
 use crate::register_plugin_api;
 
-pub(super) fn register(executor: &DownloadExecutor) -> Result<()> {
+pub(super) fn register(runtime: Arc<DownloadRuntime>) -> Result<()> {
     register_plugin_api!(
-        &executor.tag,
-        GET "/downloads" => DownloadListHandler(executor.clone()),
-        POST "/download" => DownloadRunHandler(executor.clone()),
+        &runtime.tag,
+        GET "/downloads" => DownloadListHandler(runtime.clone()),
+        POST "/download" => DownloadRunHandler(runtime),
     )
 }
 
 #[derive(Debug)]
-struct DownloadListHandler(DownloadExecutor);
+struct DownloadListHandler(Arc<DownloadRuntime>);
 
 #[async_trait]
 impl ApiHandler for DownloadListHandler {
@@ -49,12 +52,13 @@ impl ApiHandler for DownloadListHandler {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DownloadRequest {
-    /// A zero-based index in the live download list; omission downloads all items.
+    /// A zero-based index in the live download list; omission downloads all
+    /// items.
     index: Option<usize>,
 }
 
 #[derive(Debug)]
-struct DownloadRunHandler(DownloadExecutor);
+struct DownloadRunHandler(Arc<DownloadRuntime>);
 
 #[async_trait]
 impl ApiHandler for DownloadRunHandler {
@@ -118,7 +122,6 @@ impl ApiHandler for DownloadRunHandler {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use std::sync::Arc;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
@@ -133,8 +136,8 @@ mod tests {
     use crate::infra::network::http_client::{HttpClient, HttpClientOptions};
     use crate::plugin::executor::download::{DownloadMetrics, DownloadTarget};
 
-    fn executor(dir: &Path, urls: &[String]) -> DownloadExecutor {
-        DownloadExecutor {
+    fn executor(dir: &Path, urls: &[String]) -> Arc<DownloadRuntime> {
+        Arc::new(DownloadRuntime {
             tag: "download_api_test".into(),
             client: HttpClient::new(HttpClientOptions::new(false, None)),
             timeout: Duration::from_secs(2),
@@ -151,15 +154,15 @@ mod tests {
             insecure_skip_verify: false,
             socks5: None,
             metrics: Arc::new(DownloadMetrics::new("download_api_test".into())),
-            run_lock: Arc::new(Mutex::new(())),
-        }
+            run_lock: Mutex::new(()),
+        })
     }
 
     async fn body(response: ApiResponse) -> Value {
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
     }
 
-    async fn run(executor: &DownloadExecutor, payload: &str) -> ApiResponse {
+    async fn run(executor: &Arc<DownloadRuntime>, payload: &str) -> ApiResponse {
         timeout(
             Duration::from_secs(5),
             DownloadRunHandler(executor.clone()).handle(
@@ -290,7 +293,7 @@ mod tests {
             dir.path(),
             &[format!("http://{}/slow", listener.local_addr().unwrap())],
         );
-        executor.timeout = Duration::from_millis(20);
+        Arc::get_mut(&mut executor).unwrap().timeout = Duration::from_millis(20);
         let response = run(&executor, "{}").await;
         assert_eq!(
             body(response).await,

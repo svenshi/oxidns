@@ -1282,6 +1282,8 @@ export interface DownloadResult {
   failed: number;
 }
 
+export class DownloadBusyError extends Error {}
+
 export async function fetchDownloads(
   tag: string,
   signal?: AbortSignal,
@@ -1310,7 +1312,7 @@ export async function runDownload(
     },
   );
   if (response.status === 409) {
-    throw new Error(tClient(WEBUI.download.busy));
+    throw new DownloadBusyError(tClient(WEBUI.download.busy));
   }
   return readJsonResponse<DownloadResult>(response);
 }

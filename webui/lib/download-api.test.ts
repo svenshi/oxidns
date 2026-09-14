@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchDownloads, runDownload } from "./oxidns-api";
+import { DownloadBusyError, fetchDownloads, runDownload } from "./oxidns-api";
 
 const fetchMock = vi.fn();
 vi.stubGlobal("fetch", fetchMock);
@@ -48,7 +48,7 @@ describe("manual download API", () => {
 
   it("rejects busy and server errors", async () => {
     fetchMock.mockResolvedValueOnce(new Response("{}", { status: 409 }));
-    await expect(runDownload("rules")).rejects.toThrow();
+    await expect(runDownload("rules")).rejects.toBeInstanceOf(DownloadBusyError);
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ message: "missing plugin" }), {
         status: 404,
