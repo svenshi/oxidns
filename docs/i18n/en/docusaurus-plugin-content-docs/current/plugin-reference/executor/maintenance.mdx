@@ -257,6 +257,14 @@ plugins:
 
 ---
 
+
+### Manual downloads
+
+The WebUI download plugin detail view provides a **Download all** button above the live download list and a **Download** button for each item. Buttons show progress and are disabled during an active download. The result reports success and failure counts; a failed item does not stop subsequent downloads. Apply configuration changes before using the updated list.
+
+The corresponding [management API](../../api/plugins.mdx#download) supports single-item and batch downloads. Manual downloads only update files; reload the relevant providers separately when rules need to be refreshed.
+
+
 ## `reload_provider`
 
 ### Purpose

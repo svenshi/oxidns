@@ -188,6 +188,17 @@ GET /api/plugins/reverse_lookup_main?ip=8.8.8.8
 * 未命中：空响应体。
 * 参数错误：`400 Bad Request`。
 
+
+### download
+
+`GET /api/plugins/<tag>/downloads` 返回正在运行的下载清单（`index`、`url`、`path`）和 `running` 状态。索引从 0 开始，对应运行中的配置。
+
+`POST /api/plugins/<tag>/download` 使用 `{"index": 0}` 下载单项，使用 `{}` 下载全部。请求等待下载完成后返回 HTTP 200，响应示例：`{"ok": true, "total": 1, "succeeded": 1, "failed": 0}`。部分或全部下载失败时 `ok` 为 `false`，`failed` 包含超时项；后续项仍按声明顺序执行。详情记录在服务端日志和现有下载指标中。
+
+输入格式错误返回 400，索引越界返回 404，已有下载运行时返回 409。手动请求与 pipeline/cron 下载共用运行锁，pipeline 执行会等待当前批次结束。接口需要同时启用 `api` 和 `plugin-download`，复用管理 API 认证。
+
+接口只允许下载已配置的目标，不能提交 URL 或输出路径。下载沿用插件现有的文件替换行为，不会触发 provider reload 或外层 sequence 的其它步骤。
+
 ### query\_recorder
 
 #### `GET /api/plugins/<tag>/records`

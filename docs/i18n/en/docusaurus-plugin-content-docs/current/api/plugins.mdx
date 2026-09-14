@@ -193,6 +193,17 @@ Responses:
 * Miss: empty response body
 * Invalid parameter: `400 Bad Request`
 
+
+### download
+
+`GET /api/plugins/<tag>/downloads` returns the live download list (`index`, `url`, `path`) and a `running` flag. Indices are zero-based and refer to the running configuration.
+
+`POST /api/plugins/<tag>/download` downloads one item with `{"index": 0}`, or all items with `{}`. The request waits for completion and returns HTTP 200 with `{"ok": true, "total": 1, "succeeded": 1, "failed": 0}`. A partial or complete download failure sets `ok` to `false`; `failed` includes timeouts. Remaining items still run in declaration order. Details are recorded in the server logs and existing download metrics.
+
+Malformed input returns 400, an out-of-range index returns 404, and an overlapping download returns 409. Manual requests share a lock with pipeline/cron downloads; pipeline executions wait for the active batch. These routes require both the `api` and `plugin-download` features and use the management API's authentication.
+
+Only configured targets can be downloaded; URLs and output paths cannot be supplied by this API. Downloads replace files using the plugin's existing behavior. Provider reloads and other steps in a surrounding sequence are not triggered.
+
 ### query_recorder
 
 #### `GET /api/plugins/<tag>/records`

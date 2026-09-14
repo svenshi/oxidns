@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_yaml_ng::Value;
+use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tracing::{info, warn};
 use url::Url;
@@ -40,6 +41,9 @@ use crate::infra::system::deserialize_duration_option;
 use crate::plugin::executor::{ExecStep, Executor};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;
+
+#[cfg(feature = "api")]
+mod api;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -122,7 +126,7 @@ impl MetricSource for DownloadMetrics {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct DownloadExecutor {
     tag: String,
     client: HttpClient,
@@ -131,6 +135,7 @@ struct DownloadExecutor {
     insecure_skip_verify: bool,
     socks5: Option<String>,
     metrics: Arc<DownloadMetrics>,
+    run_lock: Arc<Mutex<()>>,
 }
 
 #[async_trait]
@@ -140,6 +145,8 @@ impl Plugin for DownloadExecutor {
     }
 
     async fn init(&mut self, _context: &crate::plugin::PluginInitContext<'_>) -> Result<()> {
+        #[cfg(feature = "api")]
+        api::register(self)?;
         register_metric_source(self.metrics.clone())
     }
 
@@ -153,10 +160,18 @@ impl Plugin for DownloadExecutor {
 impl Executor for DownloadExecutor {
     #[hotpath::measure]
     async fn execute(&self, _context: &mut DnsContext) -> Result<ExecStep> {
+        let _run = self.run_lock.lock().await;
+        self.download_batch(&self.downloads).await;
+        Ok(ExecStep::Next)
+    }
+}
+
+impl DownloadExecutor {
+    async fn download_batch(&self, downloads: &[DownloadTarget]) -> (usize, usize) {
         let mut success_count = 0usize;
         let mut failure_count = 0usize;
 
-        for item in &self.downloads {
+        for item in downloads {
             match timeout(self.timeout, self.download_one(item)).await {
                 Ok(Ok(())) => {
                     success_count += 1;
@@ -200,15 +215,13 @@ impl Executor for DownloadExecutor {
             plugin = %self.tag,
             successes = success_count,
             failures = failure_count,
-            total = self.downloads.len(),
+            total = downloads.len(),
             "download batch finished"
         );
 
-        Ok(ExecStep::Next)
+        (success_count, failure_count)
     }
-}
 
-impl DownloadExecutor {
     async fn download_one(&self, item: &DownloadTarget) -> Result<()> {
         self.client
             .download(
@@ -259,6 +272,7 @@ impl PluginFactory for DownloadFactory {
                 insecure_skip_verify: runtime.insecure_skip_verify,
                 socks5: runtime.raw_socks5,
                 metrics: Arc::new(DownloadMetrics::new(plugin_tag.clone())),
+                run_lock: Arc::new(Mutex::new(())),
             };
 
             info!(
@@ -316,6 +330,7 @@ impl PluginFactory for DownloadFactory {
             insecure_skip_verify: runtime.insecure_skip_verify,
             socks5: runtime.raw_socks5,
             metrics: Arc::new(DownloadMetrics::new(plugin_config.tag.clone())),
+            run_lock: Arc::new(Mutex::new(())),
         })))
     }
 
@@ -346,6 +361,7 @@ impl PluginFactory for DownloadFactory {
             insecure_skip_verify: false,
             socks5: None,
             metrics: Arc::new(DownloadMetrics::new(tag.to_string())),
+            run_lock: Arc::new(Mutex::new(())),
         })))
     }
 }
@@ -591,6 +607,7 @@ mod tests {
             insecure_skip_verify: false,
             socks5: None,
             metrics: Arc::new(DownloadMetrics::new("download".to_string())),
+            run_lock: Arc::new(Mutex::new(())),
         };
         let mut ctx = test_context();
         let step = plugin
