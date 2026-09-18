@@ -14,13 +14,16 @@
 //!   buffer, and SSE broadcaster;
 //! - recorders sharing a database path coordinate reads, writes, and
 //!   maintenance;
-//! - persistence uses one `records` table and one `steps` table per recorder
-//!   schema version.
+//! - v2 shares immutable paths and question lists and compresses large response
+//!   snapshots in the writer; v1 tables are never read, migrated, or deleted.
 
 mod api;
 mod backend;
 mod capture;
 mod model;
+mod payload;
+mod persistence;
+mod schema;
 mod store;
 
 #[cfg(test)]

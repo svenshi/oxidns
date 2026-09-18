@@ -1988,6 +1988,61 @@ fn bind_udp_reply_test_socket(listen: SocketAddr) -> std::io::Result<StdUdpSocke
     Ok(socket.into())
 }
 
+async fn rebind_udp_reply_test_socket(
+    listen: SocketAddr,
+    budget: Duration,
+) -> std::io::Result<StdUdpSocket> {
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        match bind_udp_reply_test_socket(listen) {
+            Ok(socket) => return Ok(socket),
+            Err(err)
+                if err.kind() == std::io::ErrorKind::AddrInUse
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                // Port reservations in parallel tests happen before they
+                // acquire the runtime lock. Allow a transient
+                // reservation to finish, but never enable reuse
+                // or accept a persistently held socket.
+                tokio::time::sleep_until(
+                    deadline.min(tokio::time::Instant::now() + Duration::from_millis(10)),
+                )
+                .await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_udp_reply_rebind_waits_for_temporary_reservation() -> std::io::Result<()> {
+    use std::future::Future;
+    use std::task::Poll;
+
+    let reservation = bind_udp_reply_test_socket("127.0.0.1:0".parse().unwrap())?;
+    let listen = reservation.local_addr()?;
+    let mut rebind = Box::pin(rebind_udp_reply_test_socket(listen, Duration::from_secs(1)));
+    std::future::poll_fn(|cx| {
+        assert!(rebind.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(reservation);
+    let rebound = rebind.await?;
+    assert_eq!(rebound.local_addr()?, listen);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_udp_reply_rebind_rejects_retained_socket() -> std::io::Result<()> {
+    let retained = bind_udp_reply_test_socket("127.0.0.1:0".parse().unwrap())?;
+    let err = rebind_udp_reply_test_socket(retained.local_addr()?, Duration::from_millis(20))
+        .await
+        .expect_err("A retained socket must fail the shutdown check");
+    assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+    Ok(())
+}
+
 /// Exercise actual DNS responses, including concurrent queries from one source
 /// socket to different local server addresses. The runtime is destroyed even
 /// when an exchange or a wire/source-address assertion fails.
@@ -2134,11 +2189,13 @@ plugins:
             .await
             .map_err(|_| DnsError::runtime("UDP reply test server shutdown timed out"))??;
         // Do not enable reuse here: a retained listener must fail this check.
-        let rebound = bind_udp_reply_test_socket(listen).map_err(|err| {
-            DnsError::runtime(format!(
-                "UDP reply test could not rebind {listen} after shutdown: {err}"
-            ))
-        })?;
+        let rebound = rebind_udp_reply_test_socket(listen, Duration::from_secs(1))
+            .await
+            .map_err(|err| {
+                DnsError::runtime(format!(
+                    "UDP reply test could not rebind {listen} after shutdown: {err}"
+                ))
+            })?;
         drop(rebound);
         Ok::<(), DnsError>(())
     }

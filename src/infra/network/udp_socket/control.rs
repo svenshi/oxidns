@@ -62,15 +62,18 @@ impl Control {
         assert!(size_of::<T>() <= self.bytes.len());
         let occupied = space(size_of::<T>());
         assert!(self.len + occupied <= self.bytes.len());
-        let header = Header {
-            cmsg_len: (header_len() + size_of::<T>()) as _,
-            cmsg_level: level,
-            cmsg_type: kind,
-        };
-        // SAFETY: both writes fit in the checked buffer. Header has only
-        // integer fields without padding; the caller guarantees all
-        // bytes of T are initialized. Unaligned writes also support
-        // BSD's four-byte ancillary alignment on 64-bit targets.
+        // SAFETY: native headers contain only integer fields, so zero is valid
+        // and also initializes platform-specific reserved fields such as
+        // musl's.
+        let mut header: Header = unsafe { std::mem::zeroed() };
+        header.cmsg_len = (header_len() + size_of::<T>()) as _;
+        header.cmsg_level = level;
+        header.cmsg_type = kind;
+        // SAFETY: both writes fit in the checked buffer. On supported targets,
+        // Header has no implicit padding; reserved fields are initialized
+        // above. The caller guarantees all bytes of T are initialized.
+        // Unaligned writes also support BSD's four-byte ancillary
+        // alignment on 64-bit targets.
         unsafe {
             let ptr = self.bytes.as_mut_ptr().add(self.len);
             ptr.cast::<Header>().write_unaligned(header);
@@ -106,7 +109,7 @@ impl<'a> Iterator for Messages<'a> {
         }
         // SAFETY: Header consists of integers and its full size was checked.
         let header = unsafe { self.remaining.as_ptr().cast::<Header>().read_unaligned() };
-        // BSD uses socklen_t; Linux and Winsock use size_t.
+        // The native length type varies by platform and libc implementation.
         #[allow(clippy::unnecessary_cast)]
         let len = header.cmsg_len as usize;
         if len < header_len() || len > self.remaining.len() {
@@ -133,6 +136,18 @@ pub(super) unsafe fn decode<T: Copy>(bytes: &[u8]) -> io::Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(target_env = "musl", target_pointer_width = "64"))]
+    #[test]
+    fn control_header_clears_musl_reserved_bytes() {
+        let mut control = Control::new();
+        control.bytes.fill(0xFF);
+        // SAFETY: u32 has no padding or uninitialized bytes.
+        unsafe { control.push(1, 2, 123u32) };
+        // SAFETY: push initialized the complete native header in the buffer.
+        let header = unsafe { control.bytes.as_ptr().cast::<Header>().read_unaligned() };
+        assert_eq!(header.__pad1, 0);
+    }
 
     #[test]
     fn control_messages_validate_lengths_and_truncation() {

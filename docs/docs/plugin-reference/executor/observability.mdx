@@ -165,7 +165,15 @@ import Admonition from "@theme/Admonition";
 
 ### 作用
 
-把入口 request、执行后 response 以及 `sequence` 路径事件持久化到 recorder 自己的 SQLite 数据库，并暴露历史查询、统计和 SSE 实时推送接口。
+记录 DNS 查询、响应和执行路径，帮助排查解析异常、分析插件命中情况，并提供历史统计和实时查询日志。
+
+自动合并重复内容并无损压缩较大的响应，无需额外配置。实际空间收益取决于查询内容，低重复率场景也可能增加占用。
+
+<Admonition type="note" title="升级到 v2">
+
+升级后自动使用新存储，配置和现有 API 保持兼容。**查询历史将重新积累，旧历史不再显示。** 旧数据不会自动删除，仍占用磁盘空间；“清空历史”和保留期清理也不会删除它们。若需释放这部分空间，请先备份，仅清理目标 recorder 的旧表，不要直接删除可能共用的数据库文件。
+
+</Admonition>
 
 ### 配置示例
 
@@ -238,24 +246,15 @@ import Admonition from "@theme/Admonition";
 
 ### 行为说明
 
-- 这是纯 executor 观察器，不会修改 `server` 收口逻辑。
-- 进入时抓取入口 request 的结构化快照，并启用 `DnsContext.execution_path`。
-- `next` 返回后立即提交记录；成功时记录当前 response，失败时记录 `error` 和空 response。
-- request / response 不保存 wire 数据，而是把问题区、RR、EDNS 等字段拆成 JSON 文本列。
-- `client_ip` 字段来自 OxiDNS 看到的传输层来源地址；如果前面有 systemd-resolved、dnsmasq、AdGuardHome、dae、clash 等本机转发链路，记录中可能只看到 `127.0.0.1`。
-- 每个 recorder 使用同一前缀下的版本化表：
-  - `qr_<safe_tag>_<fnv64hex>_v1_records`
-  - `qr_<safe_tag>_<fnv64hex>_v1_steps`
-  - `qr_<safe_tag>_<fnv64hex>_v1_questions`
-  - `qr_<safe_tag>_<fnv64hex>_v1_meta`
-- `records` 主表只保存固定字段集合；`steps` 表保存 `sequence` 路径事件，用于执行路径分析和命中率统计；`questions` 表是从 `questions_json` 派生的索引表，用于加速 qname/qtype 查询；`meta` 表记录已完成的派生表迁移。
-- 每个 recorder 独占自己的有界队列、SQLite 连接、后台写线程、内存 tail 和 SSE 广播器。
-- 共用同一 `path` 的 recorder 会按规范化文件路径协调 reader、writer 和维护操作；表和内存状态仍按 tag 隔离。
-- 定时保留期清理会删除过期记录、回收全部完整空闲页，并在最后截断 WAL。只有删除产生完整空闲页时，数据库文件才会实际变小；少量删除可能只释放页内空间供后续写入复用。
-- 旧数据库若仍是 `auto_vacuum=NONE`，第一次定时清理或手动清空会执行一次完整 `VACUUM`，迁移到 `INCREMENTAL` 模式。该过程可能短暂停止 recorder 的数据库读写，并需要额外临时磁盘空间，但不会阻塞 DNS 请求处理。
-- 维护失败不会终止后台 writer；定时任务会在后续周期重试，并通过结构化日志报告回收前后的页数、文件大小和失败阶段。
+- 通过 `retention_days` 控制保留天数，过期记录按 `cleanup_interval_hours` 定时清理。少量删除后文件可能不会立即变小，释放的空间可供后续记录复用。
+- 多个 recorder 可以共用数据库文件；记录按 tag 隔离，清空一个不会删除其他 recorder 的历史。
+- `client_ip` 是 OxiDNS 看到的来源地址。经过本机转发时可能显示 `127.0.0.1`，而非真实终端 IP。
+- 较旧数据库首次回收空间时可能需要额外临时磁盘空间，并短暂影响历史查询和记录写入；DNS 解析继续运行。
 
 ### 数据结构约定
+
+<details>
+<summary>API 返回字段示例</summary>
 
 - `questions_json` 固定为 question 数组，例如：
 
@@ -282,7 +281,8 @@ import Admonition from "@theme/Admonition";
 ```
 
 - `req_edns_json`、`resp_edns_json` 固定为 EDNS 对象或 `NULL`。
-- 表名中的 `v1` 是当前 schema 版本；后续升级会新增新版本表，不做原地改表。
+
+</details>
 
 ### API
 
@@ -299,8 +299,7 @@ import Admonition from "@theme/Admonition";
 - `GET /plugins/<tag>/records/<id>`
   - 返回单条完整记录，并附带 `steps`。
 - `DELETE /plugins/<tag>/records`
-  - 清空当前 recorder 的所有历史记录和 `steps`，并清空内存 tail。
-  - 操作会先 flush 后台写入队列，再用小批次自动提交删除记录；每批删除和每批页面回收后都会截断 WAL，避免一个覆盖整次清空的大事务导致 WAL 持续增长。返回 `cleared_records` 表示删除的主表记录数。
+  - 清空当前 recorder 的 v2 历史和实时回放缓存，保留旧版历史及其他 recorder 的数据。返回 `cleared_records` 表示删除的记录数。
   - 若历史已删除但磁盘回收失败，接口返回 `query_recorder_clear_failed`，错误信息会明确说明历史已经清除；后续维护仍可重试空间回收。
 - `GET /plugins/<tag>/stats/plugins`
   - 返回按 `matcher / executor / builtin` 聚合的命中统计。
