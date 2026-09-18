@@ -296,7 +296,9 @@ GET /api/plugins/reverse_lookup_main?ip=8.8.8.8
 
 #### `DELETE /api/plugins/<tag>/records`
 
-清空当前 recorder 的所有历史查询记录和 `steps` 路径事件。清空操作会先 flush 后台写入队列，随后删除 SQLite 记录表中的所有行，并清空内存 tail。
+清空当前 recorder 的 v2 查询历史（包括 `steps` 路径事件）和内存回放缓存。操作会先 flush 后台写入队列；`cleared_records` 表示本次删除的 v2 查询记录数。
+
+**升级前的 v1 历史不会被清空，仍占用磁盘空间。** 其他 recorder 的数据也不受影响。如需手动清理 v1 历史，请仅删除对应的旧表，不要直接删除共用数据库。
 
 返回：
 

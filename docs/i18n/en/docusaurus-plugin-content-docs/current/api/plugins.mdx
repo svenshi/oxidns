@@ -301,7 +301,9 @@ Responses:
 
 #### `DELETE /api/plugins/<tag>/records`
 
-Clears all persisted query-history rows and `steps` path events for the current recorder. The operation first flushes the background writer queue, then deletes all rows from the SQLite records table and clears the in-memory tail.
+Clears the current recorder's v2 query history (including `steps` path events) and in-memory replay cache. The operation first flushes the background writer queue; `cleared_records` reports the number of v2 query records deleted.
+
+**Pre-upgrade v1 history is retained and continues to occupy disk space.** Other recorders' data is also unaffected. To manually remove v1 history, delete only the corresponding old tables, not the shared database.
 
 Responses:
 
