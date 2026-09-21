@@ -158,7 +158,8 @@ fn ipset_operate(setname: &str, entry: &IpEntry, cmd: u8) -> Result<()> {
             libc::EEXIST => Err(IpSetError::ElementExists),
             libc::IPSET_ERR_EXIST => {
                 if cmd == IPSET_CMD_TEST {
-                    // For TEST command, IPSET_ERR_EXIST means element NOT in set
+                    // For TEST command, IPSET_ERR_EXIST means element NOT in
+                    // set
                     return Err(IpSetError::ElementNotFound);
                 }
                 // For ADD command, this means element already exists
@@ -181,8 +182,9 @@ fn ipset_operate(setname: &str, entry: &IpEntry, cmd: u8) -> Result<()> {
 // include/uapi/linux/netfilter/ipset/ip_set.h)
 mod libc {
     pub use ::libc::*;
-    // IPSET_ERR_PRIVATE = 4096, then PROTOCOL=4097, FIND_TYPE=4098, MAX_SETS=4099,
-    // BUSY=4100, EXIST_SETNAME2=4101, TYPE_MISMATCH=4102, EXIST=4103
+    // IPSET_ERR_PRIVATE = 4096, then PROTOCOL=4097, FIND_TYPE=4098,
+    // MAX_SETS=4099, BUSY=4100, EXIST_SETNAME2=4101, TYPE_MISMATCH=4102,
+    // EXIST=4103
     pub const IPSET_ERR_EXIST: i32 = 4103;
     pub const IPSET_ERR_INVALID_CIDR: i32 = 4104;
     pub const IPSET_ERR_TYPE_MISMATCH: i32 = 4102;

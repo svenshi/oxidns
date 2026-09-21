@@ -143,7 +143,7 @@ Sends callback requests to external `http/https` services. It can trigger before
 - Source fields: `client_ip`, `client_port`, `server_name`, `url_path`
 - Runtime fields: `marks`, `has_resp`
 - Response fields: `rcode`, `rcode_name`, `resp_ip`
-- Cron metadata: `cron_plugin_tag`, `cron_job_name`, `cron_trigger_kind`, `cron_scheduled_at_unix_ms`
+- Cron metadata: `cron_plugin_tag`, `cron_job_name`, `cron_trigger_kind` (`schedule`, `interval`, or `manual`), `cron_scheduled_at_unix_ms`
 
 ### Behavior
 
@@ -242,7 +242,7 @@ Runs an explicitly configured external command and injects a stable subset of th
 - Source fields: `client_ip`, `client_port`, `server_name`, `url_path`
 - Runtime fields: `marks`, `has_resp`
 - Response fields: `rcode`, `rcode_name`, `resp_ip`
-- Cron metadata: `cron_plugin_tag`, `cron_job_name`, `cron_trigger_kind`, `cron_scheduled_at_unix_ms`
+- Cron metadata: `cron_plugin_tag`, `cron_job_name`, `cron_trigger_kind` (`schedule`, `interval`, or `manual`), `cron_scheduled_at_unix_ms`
 
 ### Behavior
 
@@ -656,6 +656,7 @@ args:
 - The 180-second periodic reconcile runs only when `persistent` is configured and uses the in-memory set loaded during initialization; it never rereads files.
 - Dynamic entries are DNS observations rather than desired state, so they are excluded from startup and periodic full-table reconcile. Operator edits are not proactively corrected; only a later DNS observation that triggers a write may overwrite them.
 - Finite dynamic entries become eligible for refresh by a later DNS observation at 75% of their effective TTL. The plugin does not run a separate dynamic-refresh timer, and timeless entries are not refreshed automatically.
+- Repeated observations of the same IP in the same list retain the latest valid expiry. Refresh writes set the RouterOS `timeout` from the remaining merged lease, so a later, shorter TTL does not prematurely end a still-valid lease.
 - Before deleting an address-list row, the plugin rechecks its internal ID, target list/address key, and complete ownership comment. RouterOS `timeout` is lease data rather than a deletion-authorization condition. RouterOS still exposes final removal by internal ID and has no atomic compare-and-delete primitive.
 
 ### Typical Uses

@@ -1973,6 +1973,528 @@ plugins:
     Ok(())
 }
 
+fn bind_udp_reply_test_socket(listen: SocketAddr) -> std::io::Result<StdUdpSocket> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::for_address(listen),
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+    if listen.is_ipv6() {
+        socket.set_only_v6(false)?;
+    }
+    // Match the server's dual-stack binding, but leave port reuse disabled so
+    // reservations cannot select an active listener's port in parallel tests.
+    socket.bind(&listen.into())?;
+    Ok(socket.into())
+}
+
+async fn rebind_udp_reply_test_socket(
+    listen: SocketAddr,
+    budget: Duration,
+) -> std::io::Result<StdUdpSocket> {
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        match bind_udp_reply_test_socket(listen) {
+            Ok(socket) => return Ok(socket),
+            Err(err)
+                if err.kind() == std::io::ErrorKind::AddrInUse
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                // Port reservations in parallel tests happen before they
+                // acquire the runtime lock. Allow a transient
+                // reservation to finish, but never enable reuse
+                // or accept a persistently held socket.
+                tokio::time::sleep_until(
+                    deadline.min(tokio::time::Instant::now() + Duration::from_millis(10)),
+                )
+                .await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_udp_reply_rebind_waits_for_temporary_reservation() -> std::io::Result<()> {
+    use std::future::Future;
+    use std::task::Poll;
+
+    let reservation = bind_udp_reply_test_socket("127.0.0.1:0".parse().unwrap())?;
+    let listen = reservation.local_addr()?;
+    let mut rebind = Box::pin(rebind_udp_reply_test_socket(listen, Duration::from_secs(1)));
+    std::future::poll_fn(|cx| {
+        assert!(rebind.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(reservation);
+    let rebound = rebind.await?;
+    assert_eq!(rebound.local_addr()?, listen);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_udp_reply_rebind_rejects_retained_socket() -> std::io::Result<()> {
+    let retained = bind_udp_reply_test_socket("127.0.0.1:0".parse().unwrap())?;
+    let err = rebind_udp_reply_test_socket(retained.local_addr()?, Duration::from_millis(20))
+        .await
+        .expect_err("A retained socket must fail the shutdown check");
+    assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+    Ok(())
+}
+
+/// Exercise actual DNS responses, including concurrent queries from one source
+/// socket to different local server addresses. The runtime is destroyed even
+/// when an exchange or a wire/source-address assertion fails.
+async fn check_udp_reply_profile(
+    listen_ip: IpAddr,
+    client_ip: IpAddr,
+    destinations: &[IpAddr],
+) -> Result<()> {
+    let mut started = None;
+    for _ in 0..16 {
+        let reserved = bind_udp_reply_test_socket(SocketAddr::new(listen_ip, 0))?;
+        let listen = reserved.local_addr()?;
+        drop(reserved);
+        let large_answers = (1..=64)
+            .map(|i| format!("192.0.2.{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let config = parse_config(&format!(
+            r#"
+log:
+  level: error
+plugins:
+  - tag: reply_hosts
+    type: hosts
+    args:
+      entries:
+        - "full:example.test 192.0.2.10"
+        - "full:large.test {large_answers}"
+  - tag: reply_udp
+    type: udp_server
+    args:
+      entry: reply_hosts
+      listen: "{listen}"
+"#
+        ))?;
+        match plugin::init(config).await {
+            Ok(runtime) => {
+                started = Some((runtime, listen));
+                break;
+            }
+            Err(err) if err.to_string().contains("Failed to bind UDP socket") => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    let (runtime, listen) =
+        started.ok_or_else(|| DnsError::runtime("Failed to reserve UDP reply test port"))?;
+    let exchange = async {
+        let client = UdpSocket::bind(SocketAddr::new(client_ip, 0)).await?;
+        let mut request = Message::new();
+        request.add_question(Question::new(
+            Name::from_ascii("example.test.").unwrap(),
+            RecordType::A,
+            DNSClass::IN,
+        ));
+        // Keep multiple destinations in flight before collecting any replies.
+        const QUERIES: usize = 32;
+        for id in 0..QUERIES {
+            request.set_id(id as u16);
+            client
+                .send_to(
+                    &request.to_bytes()?,
+                    SocketAddr::new(destinations[id % destinations.len()], listen.port()),
+                )
+                .await?;
+        }
+        let mut seen = [false; QUERIES];
+        let mut buf = [0u8; 4096];
+        for _ in 0..QUERIES {
+            let (len, source) = timeout(Duration::from_secs(2), client.recv_from(&mut buf))
+                .await
+                .map_err(|_| {
+                    let missing: Vec<_> = (0..QUERIES).filter(|id| !seen[*id]).collect();
+                    DnsError::runtime(format!(
+                        "UDP reply source test timed out: listen={listen}, client={client_ip}, \
+                         destinations={destinations:?}, missing IDs={missing:?}"
+                    ))
+                })??;
+            let response = Message::from_bytes(&buf[..len])?;
+            let id = usize::from(response.id());
+            if id >= QUERIES || seen[id] {
+                return Err(DnsError::runtime("Unexpected or duplicate UDP reply ID"));
+            }
+            let expected = SocketAddr::new(destinations[id % destinations.len()], listen.port());
+            if source != expected
+                || response.questions() != request.questions()
+                || response.message_type() != oxidns::proto::MessageType::Response
+                || response.rcode() != Rcode::NoError
+                || response.answers().len() != 1
+                || response.answers()[0].data().ip_addr() != Some("192.0.2.10".parse().unwrap())
+            {
+                return Err(DnsError::runtime(format!(
+                    "Invalid UDP reply: source {source}, expected {expected}, id {id}"
+                )));
+            }
+            seen[id] = true;
+        }
+        // Connected UDP filters out packets with the wrong source in the
+        // kernel.
+        for destination in destinations {
+            let client = UdpSocket::bind(SocketAddr::new(client_ip, 0)).await?;
+            client
+                .connect(SocketAddr::new(*destination, listen.port()))
+                .await?;
+            for payload in [None, Some(1232u16)] {
+                let mut request = Message::new();
+                request.set_id(0x341);
+                request.add_question(Question::new(
+                    Name::from_ascii("large.test.").unwrap(),
+                    RecordType::A,
+                    DNSClass::IN,
+                ));
+                if let Some(payload) = payload {
+                    let mut edns = oxidns::proto::Edns::new();
+                    edns.set_udp_payload_size(payload);
+                    request.set_edns(edns);
+                }
+                client.send(&request.to_bytes()?).await?;
+                let len = timeout(Duration::from_secs(2), client.recv(&mut buf))
+                    .await
+                    .map_err(|_| DnsError::runtime("Connected UDP reply test timed out"))??;
+                let response = Message::from_bytes(&buf[..len])?;
+                let limit = usize::from(payload.unwrap_or(512));
+                if len > limit
+                    || response.id() != request.id()
+                    || response.questions() != request.questions()
+                    || response.rcode() != Rcode::NoError
+                    || response.message_type() != oxidns::proto::MessageType::Response
+                    || response.truncated() != payload.is_none()
+                    || (payload.is_some() && response.answers().len() != 64)
+                {
+                    return Err(DnsError::runtime(
+                        "UDP reply changed DNS or EDNS truncation semantics",
+                    ));
+                }
+            }
+        }
+        // Keep the runtime's test serialization guard until the shutdown
+        // assertion completes. Destroying the whole runtime first would let
+        // the next test start a listener before we check this port.
+        let server = runtime
+            .get_plugin("reply_udp")
+            .expect("UDP reply test server should exist");
+        timeout(Duration::from_secs(3), server.as_plugin().destroy())
+            .await
+            .map_err(|_| DnsError::runtime("UDP reply test server shutdown timed out"))??;
+        // Do not enable reuse here: a retained listener must fail this check.
+        let rebound = rebind_udp_reply_test_socket(listen, Duration::from_secs(1))
+            .await
+            .map_err(|err| {
+                DnsError::runtime(format!(
+                    "UDP reply test could not rebind {listen} after shutdown: {err}"
+                ))
+            })?;
+        drop(rebound);
+        Ok::<(), DnsError>(())
+    }
+    .await;
+    timeout(Duration::from_secs(3), runtime.destroy())
+        .await
+        .map_err(|_| DnsError::runtime("UDP reply test shutdown timed out"))?;
+    exchange
+}
+
+#[tokio::test]
+async fn test_udp_server_reply_sources_and_payload_limits() -> Result<()> {
+    for (listen, client) in [
+        ("0.0.0.0", "127.0.0.1"),
+        ("::", "127.0.0.1"),
+        ("::", "::1"),
+        ("127.0.0.1", "127.0.0.1"),
+        ("::1", "::1"),
+    ] {
+        let client = client.parse().unwrap();
+        check_udp_reply_profile(listen.parse().unwrap(), client, &[client]).await?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn test_udp_server_reply_sources_on_secondary_loopback() -> Result<()> {
+    let destinations = ["127.0.0.2".parse().unwrap(), "127.0.0.3".parse().unwrap()];
+    for listen in ["0.0.0.0", "::"] {
+        check_udp_reply_profile(
+            listen.parse().unwrap(),
+            "127.0.0.1".parse().unwrap(),
+            &destinations,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn test_udp_server_multihomed_reply_sources() -> Result<()> {
+    const PARENT_NAMESPACE: &str = "OXIDNS_UDP_TEST_PARENT_NETNS";
+    if let Some(parent_namespace) = std::env::var_os(PARENT_NAMESPACE) {
+        // Refuse to configure addresses if the subprocess was not isolated.
+        let namespace = fs::read_link("/proc/self/ns/net")?;
+        if namespace.as_os_str() == parent_namespace.as_os_str() {
+            return Err(DnsError::runtime(
+                "UDP test requires a new network namespace",
+            ));
+        }
+    } else {
+        // Re-execute only this test in a new process: changing a test runner's
+        // namespace in place would affect unrelated tests or runtime threads.
+        let namespace = match fs::read_link("/proc/self/ns/net") {
+            Ok(namespace) => namespace,
+            Err(err) => {
+                eprintln!("Skipping UDP multihomed test: cannot inspect network namespace: {err}");
+                return Ok(());
+            }
+        };
+        let Some(mut command) = udp_test_namespace_command().await else {
+            return Ok(());
+        };
+        command
+            .arg("env")
+            // Set the child marker after sudo's environment filtering.
+            .arg(format!("{PARENT_NAMESPACE}={}", namespace.display()))
+            .arg(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "test_udp_server_multihomed_reply_sources",
+                "--nocapture",
+            ])
+            .kill_on_drop(true);
+        let mut child = command.spawn()?;
+        let status = timeout(Duration::from_secs(30), child.wait())
+            .await
+            .map_err(|_| DnsError::runtime("UDP network namespace test timed out"))??;
+        if !status.success() {
+            return Err(DnsError::runtime(format!(
+                "UDP network namespace test failed: {status}"
+            )));
+        }
+        return Ok(());
+    }
+
+    // This anonymous namespace is owned by the child process. The kernel
+    // removes its interfaces and addresses on exit, including test failures.
+    let setup: &[&[&str]] = &[
+        &["link", "set", "lo", "up"],
+        &["link", "add", "lan", "type", "dummy"],
+        &["link", "add", "bridge", "type", "dummy"],
+        &["link", "set", "lan", "up"],
+        &["link", "set", "bridge", "up"],
+        &["addr", "add", "192.0.2.1/24", "dev", "lan"],
+        &["addr", "add", "198.51.100.1/24", "dev", "bridge"],
+        &["addr", "add", "198.51.100.10/24", "dev", "bridge"],
+        &["-6", "addr", "add", "fd00:341::1/64", "dev", "lan", "nodad"],
+        // The target remains valid, but is excluded from preferred sources.
+        &[
+            "-6",
+            "addr",
+            "add",
+            "fd00:341::2/64",
+            "dev",
+            "lan",
+            "nodad",
+            "preferred_lft",
+            "0",
+        ],
+        &[
+            "-6",
+            "addr",
+            "add",
+            "fd00:341::10/64",
+            "dev",
+            "lan",
+            "nodad",
+        ],
+    ];
+    for args in setup {
+        run_command("ip", args)?;
+    }
+    let v4: [IpAddr; 2] = [
+        "192.0.2.1".parse().unwrap(),
+        "198.51.100.1".parse().unwrap(),
+    ];
+    let v6: [IpAddr; 2] = [
+        "fd00:341::1".parse().unwrap(),
+        "fd00:341::2".parse().unwrap(),
+    ];
+    // A passing DNS exchange only proves the fix if the same fixture makes
+    // ordinary wildcard recv_from/send_to choose a different source address.
+    for (client_ip, destination) in [("198.51.100.10", v4[0]), ("fd00:341::10", v6[1])] {
+        let client_ip: IpAddr = client_ip.parse().unwrap();
+        let wildcard = if client_ip.is_ipv4() {
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        } else {
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+        };
+        let source = timeout(Duration::from_secs(2), async {
+            let server = UdpSocket::bind(SocketAddr::new(wildcard, 0)).await?;
+            let client = UdpSocket::bind(SocketAddr::new(client_ip, 0)).await?;
+            client
+                .send_to(
+                    b"fixture",
+                    SocketAddr::new(destination, server.local_addr()?.port()),
+                )
+                .await?;
+            let mut buf = [0; 64];
+            let (len, peer) = server.recv_from(&mut buf).await?;
+            server.send_to(&buf[..len], peer).await?;
+            let (len, source) = client.recv_from(&mut buf).await?;
+            if &buf[..len] != b"fixture" {
+                return Err(DnsError::runtime("Unexpected UDP fixture reply"));
+            }
+            Ok::<_, DnsError>(source)
+        })
+        .await
+        .map_err(|_| DnsError::runtime("UDP source selection fixture timed out"))??;
+        if source.ip() == destination {
+            return Err(DnsError::runtime(format!(
+                "Fixture does not reproduce source mismatch for {destination}"
+            )));
+        }
+        println!("Verified default source mismatch: query={destination}, reply={source}");
+    }
+    for listen in ["0.0.0.0", "::", "192.0.2.1"] {
+        let targets = if listen == "192.0.2.1" {
+            &v4[..1]
+        } else {
+            &v4[..]
+        };
+        check_udp_reply_profile(
+            listen.parse().unwrap(),
+            "198.51.100.10".parse().unwrap(),
+            targets,
+        )
+        .await?;
+    }
+    for listen in ["::", "fd00:341::2"] {
+        let targets = if listen == "::" { &v6[..] } else { &v6[1..] };
+        check_udp_reply_profile(
+            listen.parse().unwrap(),
+            "fd00:341::10".parse().unwrap(),
+            targets,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn udp_test_namespace_command() -> Option<tokio::process::Command> {
+    // UID 0 does not imply CAP_SYS_ADMIN or CAP_NET_ADMIN (e.g. containers).
+    // Probe the actual launch path, including ip and timeout, in a disposable
+    // namespace. Never change interfaces in the test runner's namespace.
+    let launchers: &[(&str, &[&str])] = &[
+        (
+            "timeout",
+            &["--kill-after=5s", "20s", "unshare", "--net", "--"],
+        ),
+        (
+            "timeout",
+            &[
+                "--kill-after=5s",
+                "20s",
+                "unshare",
+                "--user",
+                "--map-root-user",
+                "--net",
+                "--",
+            ],
+        ),
+        (
+            "sudo",
+            &[
+                "-n",
+                "--",
+                "timeout",
+                "--kill-after=5s",
+                "20s",
+                "unshare",
+                "--net",
+                "--",
+            ],
+        ),
+    ];
+    let mut unavailable = Vec::new();
+    for (program, args) in launchers {
+        let mut probe = tokio::process::Command::new(program);
+        probe
+            .args(*args)
+            .args(["ip", "link", "set", "lo", "up"])
+            .kill_on_drop(true);
+        let reason = match timeout(Duration::from_secs(30), probe.output()).await {
+            Ok(Ok(output)) if output.status.success() => {
+                let mut command = tokio::process::Command::new(program);
+                command.args(*args);
+                return Some(command);
+            }
+            Ok(Ok(output)) => format!(
+                "{}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+            Ok(Err(err)) => err.to_string(),
+            Err(_) => "probe timed out".to_owned(),
+        };
+        unavailable.push(format!("{program} {}: {reason}", args.join(" ")));
+    }
+    // This environment-only skip keeps ordinary cargo test usable without
+    // extra privileges/tools. Once a probe succeeds, all fixture and DNS
+    // failures propagate; they must never turn into a skip.
+    eprintln!(
+        "Skipping UDP multihomed test: no usable network namespace launcher:\n{}",
+        unavailable.join("\n")
+    );
+    None
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn test_udp_namespace_environment_checks() -> Result<()> {
+    let empty_path = TempDir::new()?;
+    let mut command = tokio::process::Command::new(std::env::current_exe()?);
+    command
+        .args([
+            "--exact",
+            "test_udp_server_multihomed_reply_sources",
+            "--nocapture",
+        ])
+        .env("PATH", empty_path.path())
+        .env_remove("OXIDNS_UDP_TEST_PARENT_NETNS")
+        .kill_on_drop(true);
+    let output = timeout(Duration::from_secs(5), command.output())
+        .await
+        .map_err(|_| DnsError::runtime("UDP namespace availability check timed out"))??;
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Skipping UDP multihomed test"));
+
+    // An isolation failure must remain a failure even when tools are absent.
+    command.env(
+        "OXIDNS_UDP_TEST_PARENT_NETNS",
+        fs::read_link("/proc/self/ns/net")?,
+    );
+    let output = timeout(Duration::from_secs(5), command.output())
+        .await
+        .map_err(|_| DnsError::runtime("UDP namespace isolation check timed out"))??;
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("UDP test requires a new network namespace")
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_hosts_short_circuit_stops_sequence_after_local_answer() -> Result<()> {
     let mut registry_and_addr = None;

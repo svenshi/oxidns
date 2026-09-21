@@ -11,12 +11,14 @@ interface AdvancedSettingsSectionProps {
   children: ReactNode;
   defaultOpen?: boolean;
   className?: string;
+  contentClassName?: string;
 }
 
 export function AdvancedSettingsSection({
   children,
   defaultOpen = false,
   className,
+  contentClassName,
 }: AdvancedSettingsSectionProps) {
   const { t } = useI18n();
   const [open, setOpen] = useState(defaultOpen);
@@ -34,7 +36,9 @@ export function AdvancedSettingsSection({
           className={cn("size-4 transition-transform", open && "rotate-180")}
         />
       </button>
-      {open && <div className="border-t p-3">{children}</div>}
+      {open && (
+        <div className={cn("border-t p-3", contentClassName)}>{children}</div>
+      )}
     </div>
   );
 }

@@ -5,15 +5,25 @@
 
 "use client";
 
-import { useState } from "react";
-import { Clock, Minus, Pencil, Plus, Save, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Check,
+  Clock,
+  Loader2,
+  Minus,
+  Pencil,
+  Play,
+  Plus,
+  Save,
+  Trash2,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { YamlEditor } from "@/components/config/yaml-editor";
-import { useAppStore } from "@/lib/store";
+import { shouldPersistPluginMutation, useAppStore } from "@/lib/store";
 import {
   parseArgsLevelPluginConfigYaml,
   stringifyArgsLevelPluginConfigYaml,
@@ -39,6 +49,36 @@ import type { PluginInstance } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
+import {
+  CronJobAlreadyRunningError,
+  CronJobNotFoundError,
+  CronJobUnavailableError,
+  fetchCronJobStatuses,
+  runCronJob,
+} from "@/lib/oxidns-api";
+import { usePluginAppliedStatus } from "@/hooks/use-plugin-applied";
+import {
+  CRON_STATUS_POLL_INTERVAL_MS,
+  CRON_SUCCESS_DURATION_MS,
+  CronStatusRequestCoordinator,
+  acceptCronManualRun,
+  beginCronManualRun,
+  clearCronManualRunViewsAfterStatusFailure,
+  cronConfigValuesForDisplay,
+  cronManualRunRuntimeTag,
+  cronRunButtonPhase,
+  emptyCronManualRunView,
+  expireCronManualRunSuccess,
+  hasCronManualRunLocalState,
+  initializeCronManualRunViews,
+  reconcileCronManualRunViews,
+  rejectCronManualRun,
+  type CronManualRunEffect,
+  type CronManualRunView,
+} from "@/lib/cron-manual-run";
+import { useAuthStore } from "@/lib/auth-store";
+import { useVisiblePolling } from "@/hooks/use-visible-polling";
+import { useToast } from "@/components/ui/toast";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -147,6 +187,9 @@ interface CronComposerProps {
   onChange: (value: Record<string, unknown>) => void;
   plugins: PluginInstance[];
   readOnly?: boolean;
+  runtimeTag?: string;
+  runViews?: Record<string, CronManualRunView>;
+  onManualRun?: (jobName: string) => void;
 }
 
 export function CronComposer({
@@ -154,6 +197,9 @@ export function CronComposer({
   onChange,
   plugins,
   readOnly = false,
+  runtimeTag,
+  runViews = {},
+  onManualRun,
 }: CronComposerProps) {
   const { t } = useI18n();
   const [view, setView] = useState<"visual" | "yaml">("visual");
@@ -288,6 +334,9 @@ export function CronComposer({
                 total={jobs.length}
                 plugins={plugins}
                 readOnly={readOnly}
+                runtimeTag={runtimeTag}
+                runView={runViews[job.name.trim()]}
+                onManualRun={onManualRun}
                 onChange={(patch) => updateJob(job.id, patch)}
                 onDelete={() => deleteJob(job.id)}
               />
@@ -319,6 +368,9 @@ function CronJobCard({
   total,
   plugins,
   readOnly,
+  runtimeTag,
+  runView,
+  onManualRun,
   onChange,
   onDelete,
 }: {
@@ -327,10 +379,14 @@ function CronJobCard({
   total: number;
   plugins: PluginInstance[];
   readOnly: boolean;
+  runtimeTag?: string;
+  runView?: CronManualRunView;
+  onManualRun?: (jobName: string) => void;
   onChange: (patch: Partial<CronJob>) => void;
   onDelete: () => void;
 }) {
   const { t } = useI18n();
+  const runPhase = cronRunButtonPhase(runView);
   const addExecutor = () => {
     onChange({ executors: [...job.executors, createEmptyExecutorItem()] });
   };
@@ -346,6 +402,15 @@ function CronJobCard({
   const deleteExecutor = (itemId: string) => {
     onChange({ executors: job.executors.filter((item) => item.id !== itemId) });
   };
+
+  const runLabel =
+    runPhase === "starting" || runPhase === "pending"
+      ? t(WEBUI.cron.runStarting)
+      : runPhase === "running"
+        ? t(WEBUI.cron.runExecuting)
+        : runPhase === "success"
+          ? t(WEBUI.cron.runCompleted)
+          : t(WEBUI.cron.runNow);
 
   return (
     <Card className="rounded-lg border bg-background shadow-sm">
@@ -385,6 +450,32 @@ function CronJobCard({
           <Badge variant="outline" className="shrink-0 font-mono text-[10px]">
             #{index + 1} / {total}
           </Badge>
+          {readOnly && runtimeTag && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className={cn(
+                "h-7 min-w-28 shrink-0 justify-center px-2 text-xs",
+                runPhase === "success" &&
+                  "border-emerald-500/60 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+              )}
+              onClick={() => onManualRun?.(job.name.trim())}
+              disabled={runPhase !== "idle" || !job.name.trim()}
+              title={t(WEBUI.cron.runNow)}
+            >
+              {runPhase === "starting" ||
+              runPhase === "pending" ||
+              runPhase === "running" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : runPhase === "success" ? (
+                <Check className="h-3.5 w-3.5" />
+              ) : (
+                <Play className="h-3.5 w-3.5" />
+              )}
+              {runLabel}
+            </Button>
+          )}
           {!readOnly && (
             <Button
               type="button"
@@ -586,6 +677,10 @@ function CreateDependencyCronButton() {
   );
 }
 
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 // ─── CronDetail (kind component entry point) ─────────────────────────────────
 
 function CronDetail({
@@ -593,17 +688,302 @@ function CronDetail({
   chartData,
   onClose,
 }: PluginDetailComponentProps) {
-  const { t } = useI18n();
+  const { t, formatNumber } = useI18n();
+  const { toast } = useToast();
   const updatePluginConfig = useAppStore((state) => state.updatePluginConfig);
   const saveConfig = useAppStore((state) => state.saveConfig);
   const isConfigSaving = useAppStore((state) => state.isConfigSaving);
   const plugins = useAppStore((state) => state.plugins);
+  const configVersion = useAppStore((state) => state.configVersion);
+  const runningVersion = useAppStore((state) => state.runningVersion);
+  const isConnected = useAuthStore((state) => state.isConnected);
+  const connectionEpoch = useAuthStore((state) => state.connectionEpoch);
+  const appliedStatus = usePluginAppliedStatus(plugin.name);
   const [editing, setEditing] = useState(false);
   const [configValues, setConfigValues] = useState<Record<string, unknown>>(
     () => plugin.config,
   );
+  const displayedConfigValues = cronConfigValuesForDisplay(
+    editing,
+    configValues,
+    plugin.config,
+  );
+  const displayedJobs = useMemo(
+    () => parseCronJobs(displayedConfigValues.jobs),
+    [displayedConfigValues.jobs],
+  );
+  const jobNames = useMemo(
+    () => displayedJobs.map((job) => job.name.trim()).filter(Boolean),
+    [displayedJobs],
+  );
+  const jobNamesKey = JSON.stringify(jobNames);
+  const runtimeTag = cronManualRunRuntimeTag(
+    editing,
+    appliedStatus,
+    plugin.name,
+    configVersion,
+    runningVersion,
+  );
+  const runSessionKey = JSON.stringify([
+    isConnected ? connectionEpoch : "disconnected",
+    runtimeTag ?? null,
+    configVersion,
+    runningVersion,
+    jobNamesKey,
+  ]);
+  const [runViewState, setRunViewState] = useState<{
+    sessionKey: string;
+    views: Record<string, CronManualRunView>;
+  }>({ sessionKey: runSessionKey, views: {} });
+  const runViews = useMemo(
+    () => (runViewState.sessionKey === runSessionKey ? runViewState.views : {}),
+    [runSessionKey, runViewState],
+  );
+  const runViewsRef = useRef(runViews);
+  const initializedRunStatusRef = useRef(false);
+  const pollFailureNotifiedRef = useRef(false);
+  const runRequestControllersRef = useRef(new Map<string, AbortController>());
+  const statusRequestCoordinatorRef = useRef(
+    new CronStatusRequestCoordinator(),
+  );
+  const successTimersRef = useRef(new Map<string, number>());
 
-  const jobCount = parseCronJobs(configValues.jobs).length;
+  const replaceRunViews = useCallback(
+    (next: Record<string, CronManualRunView>) => {
+      runViewsRef.current = next;
+      setRunViewState({ sessionKey: runSessionKey, views: next });
+    },
+    [runSessionKey],
+  );
+
+  const updateRunView = useCallback(
+    (
+      jobName: string,
+      update: (current: CronManualRunView | undefined) => CronManualRunView,
+    ) => {
+      replaceRunViews({
+        ...runViewsRef.current,
+        [jobName]: update(runViewsRef.current[jobName]),
+      });
+    },
+    [replaceRunViews],
+  );
+
+  const notifyRunEffect = useCallback(
+    (effect: CronManualRunEffect) => {
+      if (effect.type === "completed_with_errors") {
+        toast({
+          variant: "warning",
+          title: t(WEBUI.cron.runPartialFailure, {
+            name: effect.jobName,
+            count: formatNumber(effect.executorErrorCount),
+          }),
+        });
+        return;
+      }
+      const title =
+        effect.type === "cancelled"
+          ? t(WEBUI.cron.runCancelled, { name: effect.jobName })
+          : effect.type === "lost"
+            ? t(WEBUI.cron.runStatusLost, { name: effect.jobName })
+            : t(WEBUI.cron.runExecutionFailed, { name: effect.jobName });
+      toast({ variant: "error", title });
+    },
+    [formatNumber, t, toast],
+  );
+
+  useEffect(() => {
+    const runRequestControllers = runRequestControllersRef.current;
+    const statusRequestCoordinator = statusRequestCoordinatorRef.current;
+    const successTimers = successTimersRef.current;
+    initializedRunStatusRef.current = false;
+    pollFailureNotifiedRef.current = false;
+    statusRequestCoordinator.invalidate();
+    for (const controller of runRequestControllers.values()) {
+      controller.abort();
+    }
+    runRequestControllers.clear();
+    for (const timer of successTimers.values()) {
+      window.clearTimeout(timer);
+    }
+    successTimers.clear();
+    const resetViews = Object.fromEntries(
+      jobNames.map((jobName) => [jobName, emptyCronManualRunView()]),
+    );
+    runViewsRef.current = resetViews;
+    const resetTimer = window.setTimeout(() => {
+      // The initial status request may finish before this deferred state reset.
+      if (!initializedRunStatusRef.current) {
+        replaceRunViews(resetViews);
+      }
+    }, 0);
+
+    return () => {
+      window.clearTimeout(resetTimer);
+      statusRequestCoordinator.invalidate();
+      for (const controller of runRequestControllers.values()) {
+        controller.abort();
+      }
+      runRequestControllers.clear();
+      for (const timer of successTimers.values()) {
+        window.clearTimeout(timer);
+      }
+      successTimers.clear();
+    };
+  }, [jobNames, replaceRunViews, runSessionKey]);
+
+  const refreshCronStatuses = useCallback(
+    async (parentSignal?: AbortSignal) => {
+      if (!runtimeTag || !isConnected) return;
+      const request = statusRequestCoordinatorRef.current.begin(parentSignal);
+      try {
+        const response = await fetchCronJobStatuses(runtimeTag, request.signal);
+        if (!request.isCurrent()) return;
+        pollFailureNotifiedRef.current = false;
+        const hasLocalRun = Object.values(runViewsRef.current).some(
+          hasCronManualRunLocalState,
+        );
+        if (!initializedRunStatusRef.current && !hasLocalRun) {
+          replaceRunViews(
+            initializeCronManualRunViews(jobNames, response.jobs),
+          );
+        } else {
+          const result = reconcileCronManualRunViews(
+            runViewsRef.current,
+            jobNames,
+            response.jobs,
+          );
+          replaceRunViews(result.views);
+          result.effects.forEach(notifyRunEffect);
+        }
+        initializedRunStatusRef.current = true;
+      } catch (error) {
+        if (request.signal.aborted || isAbortError(error)) return;
+        if (!request.isCurrent()) return;
+        if (!pollFailureNotifiedRef.current) {
+          pollFailureNotifiedRef.current = true;
+          toast({
+            variant: "error",
+            title: t(WEBUI.cron.runStatusSyncFailed),
+          });
+        }
+        initializedRunStatusRef.current = false;
+        replaceRunViews(
+          clearCronManualRunViewsAfterStatusFailure(
+            runViewsRef.current,
+            jobNames,
+          ),
+        );
+      } finally {
+        request.release();
+      }
+    },
+    [
+      isConnected,
+      jobNames,
+      notifyRunEffect,
+      replaceRunViews,
+      runtimeTag,
+      t,
+      toast,
+    ],
+  );
+
+  useVisiblePolling(
+    refreshCronStatuses,
+    CRON_STATUS_POLL_INTERVAL_MS,
+    Boolean(runtimeTag && isConnected),
+    runSessionKey,
+  );
+
+  const refreshCronStatusesNow = useCallback(() => {
+    if (!runtimeTag || !isConnected) return;
+    void refreshCronStatuses();
+  }, [isConnected, refreshCronStatuses, runtimeTag]);
+
+  const handleManualRun = useCallback(
+    async (jobName: string) => {
+      if (!runtimeTag || !jobName) return;
+      statusRequestCoordinatorRef.current.invalidate();
+      updateRunView(jobName, beginCronManualRun);
+      const controller = new AbortController();
+      runRequestControllersRef.current.get(jobName)?.abort();
+      runRequestControllersRef.current.set(jobName, controller);
+      try {
+        const response = await runCronJob(
+          runtimeTag,
+          jobName,
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
+        updateRunView(jobName, (view) =>
+          acceptCronManualRun(view, response.run_id),
+        );
+        refreshCronStatusesNow();
+      } catch (error) {
+        if (controller.signal.aborted || isAbortError(error)) return;
+        updateRunView(jobName, rejectCronManualRun);
+        if (error instanceof CronJobAlreadyRunningError) {
+          toast({
+            variant: "warning",
+            title: t(WEBUI.cron.runBusy, { name: jobName }),
+          });
+          refreshCronStatusesNow();
+        } else if (error instanceof CronJobNotFoundError) {
+          toast({
+            variant: "error",
+            title: t(WEBUI.cron.runNotFound, { name: jobName }),
+          });
+        } else if (error instanceof CronJobUnavailableError) {
+          toast({
+            variant: "error",
+            title: t(WEBUI.cron.runUnavailable, { name: jobName }),
+          });
+        } else {
+          toast({
+            variant: "error",
+            title: t(WEBUI.cron.runStartUnconfirmed, { name: jobName }),
+          });
+        }
+      } finally {
+        if (runRequestControllersRef.current.get(jobName) === controller) {
+          runRequestControllersRef.current.delete(jobName);
+        }
+      }
+    },
+    [refreshCronStatusesNow, runtimeTag, t, toast, updateRunView],
+  );
+
+  useEffect(() => {
+    const visibleSuccesses = new Set(
+      Object.entries(runViews)
+        .filter(([, view]) => view.success === "visible")
+        .map(([jobName]) => jobName),
+    );
+    for (const [jobName, timer] of successTimersRef.current) {
+      if (!visibleSuccesses.has(jobName)) {
+        window.clearTimeout(timer);
+        successTimersRef.current.delete(jobName);
+      }
+    }
+    for (const jobName of visibleSuccesses) {
+      if (successTimersRef.current.has(jobName)) continue;
+      const timer = window.setTimeout(() => {
+        successTimersRef.current.delete(jobName);
+        const current = runViewsRef.current[jobName];
+        if (!current) return;
+        updateRunView(jobName, () => expireCronManualRunSuccess(current));
+      }, CRON_SUCCESS_DURATION_MS);
+      successTimersRef.current.set(jobName, timer);
+    }
+  }, [runViews, updateRunView]);
+
+  const jobCount = displayedJobs.length;
+
+  const handleStartEditing = () => {
+    setConfigValues(plugin.config);
+    setEditing(true);
+  };
 
   const handleCancel = () => {
     setConfigValues(plugin.config);
@@ -611,10 +991,10 @@ function CronDetail({
   };
 
   const handleSave = async () => {
-    updatePluginConfig(plugin.id, configValues);
     try {
-      await saveConfig();
-      setEditing(false);
+      const resolution = await updatePluginConfig(plugin.id, configValues);
+      if (shouldPersistPluginMutation(resolution)) await saveConfig();
+      if (resolution !== "cancelled") setEditing(false);
     } catch {
       // Store-level config errors are surfaced in the full config editor.
     }
@@ -652,7 +1032,7 @@ function CronDetail({
                   </Button>
                 </>
               ) : (
-                <Button size="sm" onClick={() => setEditing(true)}>
+                <Button size="sm" onClick={handleStartEditing}>
                   <Pencil className="h-4 w-4" />
                   {t(WEBUI.common.editConfig)}
                 </Button>
@@ -661,10 +1041,13 @@ function CronDetail({
           </CardHeader>
           <CardContent className="p-4 pt-0">
             <CronComposer
-              value={configValues}
+              value={displayedConfigValues}
               onChange={setConfigValues}
               plugins={plugins}
               readOnly={!editing}
+              runtimeTag={runtimeTag}
+              runViews={runViews}
+              onManualRun={(jobName) => void handleManualRun(jobName)}
             />
           </CardContent>
         </Card>

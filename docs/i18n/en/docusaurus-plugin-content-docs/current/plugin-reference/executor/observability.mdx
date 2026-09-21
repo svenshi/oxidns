@@ -159,7 +159,15 @@ Records concise query summaries.
 
 ### Purpose
 
-Persists the entry request, the post-`next` response, and `sequence` execution-path events into a recorder-owned SQLite database, then exposes history, aggregate stats, and an SSE stream.
+Records DNS queries, responses, and execution paths to help troubleshoot resolution issues and analyze plugin matches, with historical statistics and live query logs.
+
+Repeated content is shared and larger responses are compressed losslessly, with no extra configuration. Space savings depend on the workload; low repetition can increase storage use.
+
+<Admonition type="note" title="Upgrading to v2">
+
+Upgrades automatically use the new storage while keeping configuration and existing APIs compatible. **History starts afresh; old history is no longer displayed.** Old data is not automatically deleted and continues to occupy space. Neither “clear history” nor retention cleanup removes it. To reclaim that space, back up first and remove only the intended recorder's old tables; never delete a potentially shared database file.
+
+</Admonition>
 
 ### Example Configuration
 
@@ -229,24 +237,15 @@ Persists the entry request, the post-`next` response, and `sequence` execution-p
 
 ### Behavior
 
-- This is a pure executor observer and does not change server finalization logic.
-- It captures a structured snapshot of the entry request, enables `DnsContext.execution_path`, runs `next`, and commits immediately after `next` returns.
-- Successful runs store the current response. Failed runs store `error` and an empty response shape.
-- Request and response payloads are not stored as wire blobs. Question, RR, and EDNS fields are extracted into JSON text columns.
-- The `client_ip` field comes from the transport source address seen by OxiDNS; if a local forwarding chain such as systemd-resolved, dnsmasq, AdGuardHome, dae, or clash sits in front, rows may show only `127.0.0.1`.
-- Each recorder uses versioned tables under the same prefix:
-  - `qr_<safe_tag>_<fnv64hex>_v1_records`
-  - `qr_<safe_tag>_<fnv64hex>_v1_steps`
-  - `qr_<safe_tag>_<fnv64hex>_v1_questions`
-  - `qr_<safe_tag>_<fnv64hex>_v1_meta`
-- `records` contains only the fixed schema fields for structured snapshots. `steps` stores `sequence` path events for path analysis and hit-rate reporting. `questions` is a derived index table from `questions_json` for faster qname/qtype queries. `meta` records completed derived-table migrations.
-- Every recorder owns its own bounded queue, SQLite connection, writer thread, tail buffer, and SSE broadcaster.
-- Recorders that share the same `path` coordinate readers, writers, and maintenance by normalized database path; tables and in-memory state remain isolated by tag.
-- Periodic retention cleanup deletes expired rows, reclaims every completely free page, and truncates the WAL last. The database file shrinks only when deletion produces complete free pages; small deletions may instead leave reusable space inside live pages.
-- If an existing database still uses `auto_vacuum=NONE`, its first periodic or manual cleanup performs one full `VACUUM` to migrate it to `INCREMENTAL`. This may temporarily pause recorder database reads and writes and require additional temporary disk space, but it does not block DNS request processing.
-- A maintenance failure does not stop the writer. Periodic cleanup retries on a later interval and structured logs report page counts, file sizes, and the failure stage.
+- Set `retention_days` to control how long records are kept; expired records are cleaned up every `cleanup_interval_hours`. Small deletions may not immediately shrink the file, but the freed space can be reused for new records.
+- Multiple recorders can share a database file. History is isolated by tag, so clearing one recorder preserves the others.
+- `client_ip` is the source address OxiDNS sees. Local forwarding may make it appear as `127.0.0.1` instead of the actual device address.
+- The first space reclamation on an older database may require temporary disk space and briefly pause history queries and record writes. DNS resolution continues.
 
 ### Data Shape
+
+<details>
+<summary>API response field examples</summary>
 
 - `questions_json` is always a question array, for example:
 
@@ -273,7 +272,8 @@ Persists the entry request, the post-`next` response, and `sequence` execution-p
 ```
 
 - `req_edns_json` and `resp_edns_json` are EDNS objects or `NULL`.
-- The `v1` suffix in the table name is the schema version. Future upgrades add new versioned tables rather than altering the existing ones in place.
+
+</details>
 
 ### API
 
@@ -290,8 +290,7 @@ Persists the entry request, the post-`next` response, and `sequence` execution-p
 - `GET /plugins/<tag>/records/<id>`
   - Returns one full record plus `steps`.
 - `DELETE /plugins/<tag>/records`
-  - Clears all history rows and `steps` for the current recorder, and clears the in-memory tail.
-  - The operation first flushes the background writer queue, then deletes records in small auto-committed batches. It truncates the WAL after every deletion and page-reclamation batch, avoiding one transaction spanning the full clear operation. It returns `cleared_records` for the number of deleted main-table rows.
+  - Clears the current recorder’s v2 history and live replay cache, preserving old-version history and other recorders. Returns `cleared_records` with the number of deleted records.
   - If history deletion succeeds but disk reclamation fails, the endpoint returns `query_recorder_clear_failed` with a message that history was already cleared; later maintenance can retry space reclamation.
 - `GET /plugins/<tag>/stats/plugins`
   - Returns hit stats grouped by `matcher / executor / builtin`.

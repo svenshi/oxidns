@@ -57,8 +57,8 @@ pub(super) struct IpSelectorMetrics {
 
 impl IpSelectorMetrics {
     pub(super) fn new(tag: String, methods: &[ProbeMethod]) -> Self {
-        // Metrics are emitted only for active methods. `none` is passive and has
-        // no probe attempts or latency samples of its own.
+        // Metrics are emitted only for active methods. `none` is passive and
+        // has no probe attempts or latency samples of its own.
         let mut unique = Vec::new();
         let mut seen = AHashSet::new();
         for method in methods.iter().copied().filter(|method| method.is_active()) {

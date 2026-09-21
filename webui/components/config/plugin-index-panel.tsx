@@ -2,27 +2,20 @@
 
 import { useMemo, useState } from "react";
 import { Copy, Check, Server, Zap, Filter, Database } from "lucide-react";
-import { pluginKindDefinitions } from "@/lib/plugin-definitions";
 import type { PluginType } from "@/lib/types";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
-
-interface PluginEntry {
-  tag: string;
-  kind: string;
-  category: PluginType | "unknown";
-  line: number;
-}
-
-const kindToCategory = new Map<string, PluginType>(
-  pluginKindDefinitions.map((d) => [d.kind, d.type]),
-);
+import {
+  parsePluginsFromYaml,
+  type PluginIndexEntry,
+} from "@/components/config/plugin-index";
 
 const CATEGORY_ORDER: (PluginType | "unknown")[] = [
   "server",
   "executor",
   "matcher",
   "provider",
+  "unknown",
 ];
 
 const CATEGORY_ICONS: Record<PluginType | "unknown", React.ReactNode> = {
@@ -32,67 +25,6 @@ const CATEGORY_ICONS: Record<PluginType | "unknown", React.ReactNode> = {
   provider: <Database className="h-3 w-3" />,
   unknown: null,
 };
-
-function parsePluginsFromYaml(text: string): PluginEntry[] {
-  const lines = text.split("\n");
-  const results: PluginEntry[] = [];
-
-  let inPlugins = false;
-  let itemIndent = -1;
-  let current: { tag?: string; kind?: string; line?: number } | null = null;
-
-  const flush = () => {
-    if (current?.tag && current.line != null) {
-      const kind = current.kind ?? "";
-      results.push({
-        tag: current.tag,
-        kind,
-        category: kindToCategory.get(kind) ?? "unknown",
-        line: current.line,
-      });
-    }
-    current = null;
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i];
-    const trimmed = raw.trimStart();
-    const indent = raw.length - trimmed.length;
-
-    if (!trimmed || trimmed.startsWith("#")) continue;
-
-    if (!inPlugins) {
-      if (indent === 0 && /^plugins\s*:/.test(trimmed)) {
-        inPlugins = true;
-      }
-      continue;
-    }
-
-    // Back to a top-level key — plugins section ended
-    if (indent === 0 && !trimmed.startsWith("- ")) {
-      break;
-    }
-
-    if (trimmed.startsWith("- ")) {
-      flush();
-      current = { line: i + 1 };
-      itemIndent = indent;
-      const rest = trimmed.slice(2).trim();
-      const tagM = rest.match(/^tag\s*:\s*(.+)/);
-      if (tagM) current.tag = tagM[1].trim();
-      const typeM = rest.match(/^type\s*:\s*(.+)/);
-      if (typeM) current.kind = typeM[1].trim();
-    } else if (current && indent > itemIndent) {
-      const tagM = trimmed.match(/^tag\s*:\s*(.+)/);
-      if (tagM) current.tag = tagM[1].trim();
-      const typeM = trimmed.match(/^type\s*:\s*(.+)/);
-      if (typeM) current.kind = typeM[1].trim();
-    }
-  }
-
-  flush();
-  return results;
-}
 
 interface PluginIndexPanelProps {
   yamlText: string;
@@ -109,7 +41,7 @@ export function PluginIndexPanel({
   const entries = useMemo(() => parsePluginsFromYaml(yamlText), [yamlText]);
 
   const grouped = useMemo(() => {
-    const map = new Map<PluginType | "unknown", PluginEntry[]>();
+    const map = new Map<PluginType | "unknown", PluginIndexEntry[]>();
     for (const entry of entries) {
       const list = map.get(entry.category) ?? [];
       list.push(entry);

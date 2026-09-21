@@ -457,8 +457,9 @@ async fn resolve_remote_ip(info: &ConnectionInfo, has_dial_addr: bool) -> Resolu
 }
 
 fn should_delegate_name_resolution_to_socks5(info: &ConnectionInfo) -> bool {
-    // Match upstream dialing: SOCKS5 receives the domain only when no configured
-    // resolver or static remote IP can provide a concrete connection address.
+    // Match upstream dialing: SOCKS5 receives the domain only when no
+    // configured resolver or static remote IP can provide a concrete
+    // connection address.
     info.remote_ip.is_none() && info.bootstrap.is_none() && info.socks5.is_some()
 }
 

@@ -4,6 +4,7 @@ import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import { zhCNWebui } from "@/lib/i18n/locales/zh-CN/webui";
 import { I18nProvider } from "@/lib/i18n/provider";
+import { ToastProvider } from "@/components/ui/toast";
 
 const fontSans = Inter({ subsets: ["latin"], variable: "--font-sans" });
 const fontMono = JetBrains_Mono({
@@ -55,7 +56,9 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          <I18nProvider>{children}</I18nProvider>
+          <I18nProvider>
+            <ToastProvider>{children}</ToastProvider>
+          </I18nProvider>
         </ThemeProvider>
       </body>
     </html>
