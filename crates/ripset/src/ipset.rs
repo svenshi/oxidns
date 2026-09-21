@@ -12,7 +12,9 @@ use crate::netlink::{
 use crate::{IpAddrBytes, IpCidr, IpEntry, IpSetError, IpTarget, Result};
 
 // ipset protocol constants
-const IPSET_PROTOCOL: u8 = 7;
+// All commands used here support protocol 6, including on protocol 7 kernels.
+// Keep this compatibility baseline for older kernels (issue #326).
+const IPSET_PROTOCOL: u8 = 6;
 const IPSET_MAXNAMELEN: usize = 32;
 
 // ipset commands
@@ -60,8 +62,8 @@ fn ipset_msg_type(cmd: u8) -> u16 {
     ((NFNL_SUBSYS_IPSET as u16) << 8) | (cmd as u16)
 }
 
-/// Internal function to perform ipset operations.
-fn ipset_operate(setname: &str, entry: &IpEntry, cmd: u8) -> Result<()> {
+/// Encode an element operation without opening a netlink socket.
+fn build_ipset_operation(setname: &str, entry: &IpEntry, cmd: u8) -> Result<MsgBuffer> {
     // Validate setname
     if setname.is_empty() || setname.len() >= IPSET_MAXNAMELEN {
         return Err(IpSetError::InvalidSetName(setname.to_string()));
@@ -131,6 +133,13 @@ fn ipset_operate(setname: &str, entry: &IpEntry, cmd: u8) -> Result<()> {
 
     // Finalize message length
     buf.finalize_nlmsg();
+
+    Ok(buf)
+}
+
+/// Internal function to perform ipset operations.
+fn ipset_operate(setname: &str, entry: &IpEntry, cmd: u8) -> Result<()> {
+    let buf = build_ipset_operation(setname, entry, cmd)?;
 
     // Create socket and send/receive
     let socket = NetlinkSocket::new()?;
@@ -725,7 +734,24 @@ mod tests {
     use std::net::IpAddr;
 
     use super::*;
-    use crate::test_util::{find_attr, walk_attrs};
+    use crate::test_util::{find_attr, split_messages, walk_attrs};
+
+    #[test]
+    fn element_operations_use_compatible_protocol() {
+        for cidr in ["192.0.2.0/24", "2001:db8::/64"] {
+            let entry = IpEntry::from(cidr.parse::<IpCidr>().unwrap());
+            for cmd in [IPSET_CMD_ADD, IPSET_CMD_DEL, IPSET_CMD_TEST] {
+                let buf = build_ipset_operation("compat", &entry, cmd).unwrap();
+                let messages = split_messages(buf.as_slice());
+                assert_eq!(messages.len(), 1);
+                let (header, _, payload) = &messages[0];
+                assert_eq!(header.nlmsg_type, ipset_msg_type(cmd));
+                let attrs = walk_attrs(payload);
+                let protocol = find_attr(&attrs, IPSET_ATTR_PROTOCOL).unwrap();
+                assert_eq!(protocol.payload, &[6]);
+            }
+        }
+    }
 
     #[test]
     fn test_ipset_msg_type() {
@@ -770,7 +796,7 @@ mod tests {
         assert_eq!(IPSET_ATTR_IPADDR_IPV4, 1);
         assert_eq!(IPSET_ATTR_IPADDR_IPV6, 2);
         // Protocol version
-        assert_eq!(IPSET_PROTOCOL, 7);
+        assert_eq!(IPSET_PROTOCOL, 6);
         assert_eq!(IPSET_MAXNAMELEN, 32);
     }
 
