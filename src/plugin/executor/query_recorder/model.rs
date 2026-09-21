@@ -36,8 +36,10 @@ pub(super) struct ResolvedRecorderConfig {
 #[derive(Debug, Clone)]
 pub(super) struct TableNames {
     pub(super) records: String,
-    pub(super) steps: String,
-    pub(super) questions: String,
+    pub(super) traces: String,
+    pub(super) trace_steps: String,
+    pub(super) question_sets: String,
+    pub(super) question_items: String,
     pub(super) meta: String,
 }
 

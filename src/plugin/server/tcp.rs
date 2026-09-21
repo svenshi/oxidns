@@ -437,7 +437,8 @@ impl PluginFactory for TcpServerFactory {
             ))
         })?;
 
-        // Resolve and type-check the entry executor using contextual diagnostics.
+        // Resolve and type-check the entry executor using contextual
+        // diagnostics.
         let entry_executor = init_context.executor("args.entry", &tcp_config.entry)?;
 
         // Load TLS configuration if cert and key are provided

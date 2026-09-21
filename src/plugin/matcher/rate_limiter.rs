@@ -76,7 +76,7 @@ struct RateLimiter {
     mask6: u8,
     buckets: TtlCache<IpAddr, Bucket>,
     cleanup_started: AtomicBool,
-    cleanup_task_id: Mutex<Option<u64>>,
+    cleanup_task_handle: Mutex<Option<task_center::ManagedTaskHandle>>,
     metrics: Arc<RateLimiterMetrics>,
 }
 
@@ -144,7 +144,7 @@ impl PluginFactory for RateLimiterFactory {
             mask6: cfg.mask6.unwrap_or(DEFAULT_MASK6),
             buckets: TtlCache::with_capacity(4096),
             cleanup_started: AtomicBool::new(false),
-            cleanup_task_id: Mutex::new(None),
+            cleanup_task_handle: Mutex::new(None),
             metrics: Arc::new(RateLimiterMetrics::new(plugin_config.tag.clone())),
         })))
     }
@@ -161,7 +161,7 @@ impl PluginFactory for RateLimiterFactory {
             mask6: cfg.mask6.unwrap_or(DEFAULT_MASK6),
             buckets: TtlCache::with_capacity(4096),
             cleanup_started: AtomicBool::new(false),
-            cleanup_task_id: Mutex::new(None),
+            cleanup_task_handle: Mutex::new(None),
             metrics: Arc::new(RateLimiterMetrics::new(tag.to_string())),
         })))
     }
@@ -180,32 +180,40 @@ impl Plugin for RateLimiter {
         }
 
         let buckets = self.buckets.clone();
-        let task_id = task_center::spawn_fixed(
+        let task_handle = match task_center::spawn_fixed(
             format!("rate_limiter:{}:cleanup", self.tag),
             Duration::from_secs(CLEANUP_INTERVAL_SECS),
-            move || {
+            task_center::TaskOptions::default(),
+            move |_| {
                 let buckets = buckets.clone();
                 async move {
                     let now = AppClock::elapsed_millis();
                     while buckets.remove_expired_batch(now, 2048) > 0 {}
                 }
             },
-        );
-        if let Ok(mut guard) = self.cleanup_task_id.lock() {
-            *guard = Some(task_id);
+        ) {
+            Ok(handle) => handle,
+            Err(error) => {
+                self.cleanup_started.store(false, Ordering::Relaxed);
+                unregister_metric_source(&self.tag);
+                return Err(error);
+            }
+        };
+        if let Ok(mut guard) = self.cleanup_task_handle.lock() {
+            *guard = Some(task_handle);
         }
         Ok(())
     }
 
     async fn destroy(&self) -> DnsResult<()> {
         unregister_metric_source(&self.tag);
-        let task_id = if let Ok(mut guard) = self.cleanup_task_id.lock() {
+        let task_handle = if let Ok(mut guard) = self.cleanup_task_handle.lock() {
             guard.take()
         } else {
             None
         };
-        if let Some(task_id) = task_id {
-            task_center::stop_task(task_id).await;
+        if let Some(handle) = task_handle {
+            handle.stop().await;
         }
         self.cleanup_started.store(false, Ordering::Relaxed);
         Ok(())
@@ -403,7 +411,7 @@ mod tests {
             mask6: 128,
             buckets: TtlCache::with_capacity(16),
             cleanup_started: AtomicBool::new(false),
-            cleanup_task_id: Mutex::new(None),
+            cleanup_task_handle: Mutex::new(None),
             metrics: metrics.clone(),
         };
 

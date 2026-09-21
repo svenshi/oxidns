@@ -74,7 +74,8 @@ impl Upstream for UdpTruncatedUpstream {
 
         // Check if response was truncated (TC bit set)
         if response.truncated() {
-            // Log fallback event (only happens occasionally, minimal performance impact)
+            // Log fallback event (only happens occasionally, minimal
+            // performance impact)
             debug!("UDP response truncated, falling back to TCP");
 
             // Retry over TCP to get the full response

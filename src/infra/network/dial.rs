@@ -469,8 +469,8 @@ async fn connect_tcp_socket(socket: Socket, socket_addr: SocketAddr) -> Result<T
     // with the peer's delayed ACK, adding tens of milliseconds per query.
     let _ = stream.set_nodelay(true);
 
-    // Ensure the async connect has completed before the stream is used by higher
-    // layers.
+    // Ensure the async connect has completed before the stream is used by
+    // higher layers.
     stream.writable().await?;
     if let Some(err) = stream.take_error()? {
         return Err(err.into());

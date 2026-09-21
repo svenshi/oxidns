@@ -74,11 +74,11 @@ sha2 = "0.11.0"
 wincode = { version = "0.6", features = ["derive"] }
 oxidns-proto = { version = "0.1.5", path = "crates/proto" }
 oxidns-macros = { version = "0.1.0", path = "crates/macros" }
-hotpath = "0.23"
+hotpath = "0.26"
 
-# Optional: only needed by the `plugin-upgrade` feature (self-upgrade CLI +
-# `upgrade` executor). Pulled in by tarball / archive verification helpers.
+# Optional upgrade dependencies and response snapshot compression.
 semver = { version = "1.0", optional = true }
+# Shared by upgrade archives and query-recorder response snapshots.
 flate2 = { version = "1.1", optional = true }
 tar = { version = "0.4", optional = true }
 
@@ -115,10 +115,10 @@ aho-corasick = "1.1.4"
 prost = { version = "0.14", optional = true }
 regex = "1.12.2"
 
-# Executor plugin dependencies, each gated by its own feature.
+# Optional TaskCenter calendar scheduling and executor plugin dependencies.
 cronexpr = { version = "1.5.0", optional = true }
 fast-socks5 = "1.0.0"
-mikrotik-rs = { package = "oxidns-mikrotik-rs", version = "0.8.1", optional = true }
+mikrotik-rs = { version = "0.9.0", optional = true }
 rusqlite = { version = "0.40.1", features = ["bundled"], optional = true }
 zoneparser = { package = "oxidns-zoneparser", version = "0.1.2", path = "crates/zoneparser", optional = true }
 
@@ -131,7 +131,7 @@ ripset = { package = "oxidns-ripset", version = "0.1.2", path = "crates/ripset",
 [target.'cfg(windows)'.dependencies]
 zip = { version = "8", optional = true }
 windows-service = "0.8"
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_Networking_WinSock", "Win32_System_IO"] }
 
 
 # =============================================================================
@@ -279,13 +279,13 @@ plugin-ros-route = ["dep:mikrotik-rs", "mikrotik-rs/tokio-tls", "_tls-client"]
 
 # `query_recorder` executor backed by bundled SQLite. Its management API
 # surface is part of the build, hence the `api` requirement.
-plugin-query-recorder = ["api", "_sequence-step-recording", "dep:rusqlite"]
+plugin-query-recorder = ["api", "_sequence-step-recording", "dep:rusqlite", "dep:flate2"]
 
 # `ipset` + `nftset` executors (Linux netlink-backed firewall set sync).
 plugin-ipset = ["dep:ripset"]
 
 # `cron` executor (cron-expression scheduled triggers).
-plugin-cron = ["dep:cronexpr"]
+plugin-cron = ["_task-cron"]
 
 # `dynamic_domain_set` provider + `learn_domain` executor (runtime-writable
 # domain rule set with background-flush persistence and pipeline learning).
@@ -337,6 +337,8 @@ provider-adguard-rule = []
 # --- Private aggregator features -------------------------------------------
 # These are pulled in by the public features above and should not be
 # enabled directly. They exist so each crate group is declared once.
+
+_task-cron = ["dep:cronexpr"]
 
 _tls-base = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]
 _tls-client = ["_tls-base", "dep:webpki-roots"]
