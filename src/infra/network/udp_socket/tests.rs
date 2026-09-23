@@ -168,3 +168,54 @@ async fn udp_reply_socket_preserves_destination_and_rejects_truncation() {
         );
     }
 }
+
+#[cfg(windows)]
+#[tokio::test]
+async fn closed_client_ports_do_not_interrupt_windows_listeners() {
+    for (listen, client_bind, destination) in [
+        ("127.0.0.1:0", "127.0.0.1:0", "127.0.0.1"),
+        ("0.0.0.0:0", "127.0.0.1:0", "127.0.0.1"),
+        ("[::1]:0", "[::1]:0", "::1"),
+        ("[::]:0", "[::1]:0", "::1"),
+        ("[::]:0", "127.0.0.1:0", "127.0.0.1"),
+    ] {
+        let raw = listen::build_udp_socket(listen.parse().unwrap(), |_| {}).unwrap();
+        let destination = SocketAddr::new(
+            destination.parse().unwrap(),
+            raw.local_addr().unwrap().port(),
+        );
+        let server = UdpReplySocket::new(UdpSocket::from_std(raw).unwrap()).unwrap();
+        let client = UdpSocket::bind(client_bind).await.unwrap();
+        client.send_to(b"departing", destination).await.unwrap();
+        let mut buf = [0; 128];
+        let (_, target) = timeout(Duration::from_secs(2), server.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        drop(client);
+        for _ in 0..3 {
+            server.send_to(b"late reply", target).await.unwrap();
+            // No client is sending: a read must stay pending instead of
+            // surfacing the asynchronous port-unreachable notification.
+            assert!(
+                timeout(Duration::from_millis(50), server.recv_from(&mut buf))
+                    .await
+                    .is_err()
+            );
+        }
+        let healthy = UdpSocket::bind(client_bind).await.unwrap();
+        healthy.send_to(b"healthy", destination).await.unwrap();
+        let (len, target) = timeout(Duration::from_secs(2), server.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buf[..len], b"healthy");
+        server.send_to(b"answer", target).await.unwrap();
+        let (len, source) = timeout(Duration::from_secs(2), healthy.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buf[..len], b"answer");
+        assert_eq!(source, destination);
+    }
+}

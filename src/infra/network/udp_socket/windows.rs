@@ -31,6 +31,32 @@ fn last_error() -> io::Error {
     io::Error::from_raw_os_error(unsafe { ws::WSAGetLastError() }.0)
 }
 
+/// A late reply to a closed client port must not interrupt the shared listener.
+/// This applies to explicit bindings as well as packet-info sockets.
+pub(super) fn disable_connection_reset(socket: &UdpSocket) -> io::Result<()> {
+    let enabled = 0u32;
+    let mut returned = 0;
+    // SAFETY: the socket is live and the BOOL input remains valid throughout
+    // this synchronous call. No output or overlapped operation is requested.
+    let result = unsafe {
+        ws::WSAIoctl(
+            socket_handle(socket),
+            ws::SIO_UDP_CONNRESET,
+            Some((&enabled as *const u32).cast()),
+            size_of::<u32>() as u32,
+            None,
+            0,
+            &mut returned,
+            None,
+            None,
+        )
+    };
+    if result == ws::SOCKET_ERROR {
+        return Err(last_error());
+    }
+    Ok(())
+}
+
 fn enable(socket: &UdpSocket, level: ws::IPPROTO, option: i32) -> io::Result<()> {
     // SAFETY: the borrowed socket is live and the option is a DWORD boolean.
     if unsafe {

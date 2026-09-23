@@ -5718,3 +5718,242 @@ plugins:
     kernel_result?;
     Ok(())
 }
+
+#[tokio::test]
+async fn test_tcp_disconnect_preserves_cache_fill_and_shutdown_waits_for_requests() -> Result<()> {
+    check_tcp_request_drain(None).await
+}
+
+#[cfg(feature = "server-dot")]
+#[tokio::test]
+async fn test_dot_disconnect_preserves_cache_fill_and_shutdown_waits_for_requests() -> Result<()> {
+    check_tcp_request_drain(Some(12)).await?;
+    check_tcp_request_drain(Some(13)).await
+}
+
+trait TestDnsStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> TestDnsStream for T {}
+
+async fn connect_drain_test_client(
+    listen: SocketAddr,
+    tls_version: Option<u16>,
+) -> Result<Box<dyn TestDnsStream>> {
+    let stream = tokio::net::TcpStream::connect(listen).await?;
+    #[cfg(feature = "server-dot")]
+    if let Some(version) = tls_version {
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in
+            rustls_pemfile::certs(&mut include_bytes!("fixtures/server-tls/cert.pem").as_slice())
+        {
+            roots
+                .add(cert?)
+                .map_err(|error| DnsError::runtime(error.to_string()))?;
+        }
+        let version = if version == 12 {
+            &rustls::version::TLS12
+        } else {
+            &rustls::version::TLS13
+        };
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[version])
+            .map_err(|error| DnsError::runtime(error.to_string()))?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+        return Ok(Box::new(
+            connector
+                .connect("localhost".try_into().unwrap(), stream)
+                .await?,
+        ));
+    }
+    #[cfg(not(feature = "server-dot"))]
+    assert!(tls_version.is_none());
+    Ok(Box::new(stream))
+}
+
+async fn check_tcp_request_drain(tls_version: Option<u16>) -> Result<()> {
+    use oxidns::infra::network::transport::tcp::{TcpTransportReader, TcpTransportWriter};
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+
+    let upstream = UdpSocket::bind("127.0.0.1:0").await?;
+    let upstream_addr = upstream.local_addr()?;
+    let metrics_config = if cfg!(feature = "metrics") {
+        "  - tag: disconnect_metrics\n    type: metrics_collector\n"
+    } else {
+        ""
+    };
+    let metrics_step = if cfg!(feature = "metrics") {
+        "      - exec: $disconnect_metrics\n"
+    } else {
+        ""
+    };
+    let tls_config = if tls_version.is_some() {
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/server-tls");
+        format!(
+            "      cert: {}\n      key: {}\n",
+            serde_json::to_string(&fixtures.join("cert.pem"))?,
+            serde_json::to_string(&fixtures.join("key.pem"))?
+        )
+    } else {
+        String::new()
+    };
+    let mut initialized = None;
+    for _ in 0..16 {
+        let reservation = TcpListener::bind("127.0.0.1:0").await?;
+        let listen = reservation.local_addr()?;
+        let config = parse_config(&format!(
+            r#"
+log:
+  level: info
+plugins:
+{metrics_config}  - tag: disconnect_cache
+    type: cache
+    args:
+      short_circuit: true
+  - tag: disconnect_forward
+    type: forward
+    args:
+      upstreams:
+        - addr: "udp://{upstream_addr}"
+          timeout: 5s
+  - tag: disconnect_sequence
+    type: sequence
+    args:
+{metrics_step}      - exec: $disconnect_cache
+      - exec: $disconnect_forward
+  - tag: disconnect_tcp
+    type: tcp_server
+    args:
+      entry: disconnect_sequence
+      listen: "{listen}"
+{tls_config}"#
+        ))?;
+        drop(reservation);
+        match plugin::init(config).await {
+            Ok(runtime) => {
+                initialized = Some((runtime, listen));
+                break;
+            }
+            Err(error) if error.to_string().contains("Failed to bind TCP socket") => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let (runtime, listen) = initialized.expect("TCP test listener should bind");
+    let outcome = async {
+        let query = make_context(runtime.clone(), "abandoned.test.")
+            .request()
+            .clone();
+        let mut abandoned = connect_drain_test_client(listen, tls_version).await?;
+        TcpTransportWriter::new(&mut abandoned)
+            .write_message(&query)
+            .await?;
+        let mut buf = [0u8; 4096];
+        let (len, peer) = timeout(Duration::from_secs(2), upstream.recv_from(&mut buf))
+            .await
+            .map_err(|_| DnsError::runtime("first request did not reach upstream"))??;
+        let pending = Message::from_bytes(&buf[..len])?;
+        drop(abandoned);
+
+        // Another connection must remain usable while the abandoned request
+        // is still waiting on its upstream response.
+        let healthy = connect_drain_test_client(listen, tls_version).await?;
+        let (mut reader, writer) = tokio::io::split(healthy);
+        let mut writer = TcpTransportWriter::new(writer);
+        let healthy_query = make_context(runtime.clone(), "healthy.test.")
+            .request()
+            .clone();
+        writer.write_message(&healthy_query).await?;
+        let (len, healthy_peer) = timeout(Duration::from_secs(2), upstream.recv_from(&mut buf))
+            .await
+            .map_err(|_| DnsError::runtime("second request did not reach upstream"))??;
+        let healthy_request = Message::from_bytes(&buf[..len])?;
+        assert_eq!(
+            healthy_request.first_question().unwrap().name().to_fqdn(),
+            "healthy.test."
+        );
+        upstream
+            .send_to(
+                &healthy_request.response(Rcode::NoError).to_bytes()?,
+                healthy_peer,
+            )
+            .await?;
+        let reply = timeout(
+            Duration::from_secs(2),
+            TcpTransportReader::new(&mut reader).read_message(),
+        )
+        .await
+        .map_err(|_| DnsError::runtime("healthy TCP connection did not respond"))??;
+        assert_eq!(reply.id(), healthy_query.id());
+
+        let server = runtime.get_plugin("disconnect_tcp").unwrap();
+        let shutdown = server.as_plugin().destroy();
+        tokio::pin!(shutdown);
+        assert!(futures::poll!(&mut shutdown).is_pending());
+        let mut byte = [0];
+        let closed = timeout(Duration::from_secs(2), reader.read(&mut byte))
+            .await
+            .map_err(|_| DnsError::runtime("shutdown retained TCP writer"))?;
+        match closed {
+            Ok(0) => {}
+            Err(error)
+                if tls_version.is_some() && error.kind() == std::io::ErrorKind::UnexpectedEof => {}
+            other => panic!("Expected closed transport, got {other:?}"),
+        }
+        assert!(
+            futures::poll!(&mut shutdown).is_pending(),
+            "server must wait for accepted requests"
+        );
+
+        let mut response = pending.response(Rcode::NoError);
+        response.add_answer(oxidns::proto::Record::from_rdata(
+            pending.first_question().unwrap().name().clone(),
+            60,
+            oxidns::proto::RData::A(oxidns::proto::rdata::A(Ipv4Addr::new(192, 0, 2, 35))),
+        ));
+        upstream.send_to(&response.to_bytes()?, peer).await?;
+        timeout(Duration::from_secs(2), &mut shutdown)
+            .await
+            .map_err(|_| DnsError::runtime("server did not drain accepted request"))??;
+
+        let cache = runtime
+            .get_plugin("disconnect_cache")
+            .unwrap()
+            .to_executor();
+        let mut cached = make_context(runtime.clone(), "abandoned.test.");
+        cache.execute(&mut cached).await?;
+        assert_eq!(
+            cached
+                .response()
+                .expect("disconnected request must still populate cache")
+                .answers()
+                .len(),
+            1
+        );
+        #[cfg(feature = "metrics")]
+        {
+            let metrics = oxidns::infra::observability::metrics::render_prometheus_metrics();
+            assert!(
+                metrics
+                    .lines()
+                    .any(|line| line.starts_with("query_inflight{")
+                        && line.contains("disconnect_metrics")
+                        && line.ends_with(" 0")),
+                "{metrics}"
+            );
+            assert!(
+                metrics.lines().any(|line| line.starts_with("query_total{")
+                    && line.contains("disconnect_metrics")
+                    && line.ends_with(" 2")),
+                "{metrics}"
+            );
+        }
+        Ok::<(), DnsError>(())
+    }
+    .await;
+    timeout(Duration::from_secs(8), runtime.destroy())
+        .await
+        .map_err(|_| DnsError::runtime("TCP test cleanup timed out"))?;
+    outcome
+}

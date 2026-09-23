@@ -225,6 +225,9 @@ async fn run_server(
                             }
                         });
                     }
+                    Err(e) if is_client_port_unreachable(&e) => {
+                        debug!(listen = %addr, error = %e, "UDP reply destination is no longer listening");
+                    }
                     Err(e) => {
                         warn!("Error receiving message on UDP socket: {}", e);
                     }
@@ -236,6 +239,20 @@ async fn run_server(
     tasks.close();
     tasks.wait().await;
     info!(listen = %addr, "UDP server stopped");
+}
+
+/// Classify only the Windows notification for a previous reply to a closed
+/// port.
+fn is_client_port_unreachable(error: &DnsError) -> bool {
+    #[cfg(windows)]
+    {
+        matches!(error, DnsError::Io(error) if error.raw_os_error() == Some(windows::Win32::Networking::WinSock::WSAECONNRESET.0))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = error;
+        false
+    }
 }
 
 /// Build a UDP socket with reuse_address and reuse_port options when available
@@ -323,6 +340,22 @@ mod tests {
 
     use super::*;
     use crate::plugin::test_utils::plugin_config;
+
+    #[test]
+    fn only_windows_port_unreachable_is_a_client_notification() {
+        assert_eq!(
+            is_client_port_unreachable(&DnsError::Io(std::io::Error::from_raw_os_error(10054))),
+            cfg!(windows)
+        );
+        for error in [
+            DnsError::Io(std::io::ErrorKind::PermissionDenied.into()),
+            DnsError::Io(std::io::ErrorKind::ConnectionReset.into()),
+            DnsError::Io(std::io::Error::from_raw_os_error(10050)),
+            DnsError::protocol("malformed DNS message (10054)"),
+        ] {
+            assert!(!is_client_port_unreachable(&error));
+        }
+    }
 
     #[test]
     fn test_udp_factory_requires_args() {
