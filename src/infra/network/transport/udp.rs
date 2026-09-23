@@ -75,11 +75,7 @@ impl UdpServerTransport {
     #[inline]
     #[hotpath::measure]
     pub async fn read_message_from(&self, buf: &mut [u8]) -> Result<(Message, UdpReplyTarget)> {
-        let (n, addr) = self
-            .socket
-            .recv_from(buf)
-            .await
-            .map_err(|e| DnsError::protocol(format!("Failed to recv_from UDP: {}", e)))?;
+        let (n, addr) = self.socket.recv_from(buf).await?;
 
         let msg = Message::from_bytes(&buf[..n]).map_err(|e| {
             DnsError::protocol(format!("Failed to parse DNS message from UDP: {}", e))

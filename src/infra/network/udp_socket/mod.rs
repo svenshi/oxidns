@@ -118,6 +118,10 @@ impl UdpReplySocket {
         initialize: impl FnOnce(&UdpSocket) -> io::Result<platform::State>,
     ) -> io::Result<Self> {
         let bound = socket.local_addr()?;
+        #[cfg(windows)]
+        if let Err(error) = platform::disable_connection_reset(&socket) {
+            tracing::warn!(%bound, %error, "Failed to disable UDP port-unreachable notifications; receive errors will be classified by the server");
+        }
         let packet_info = if normalize_ipv4_mapped_ip(bound.ip()).is_unspecified() {
             Some(initialize(&socket).map_err(|err| {
                 io::Error::new(err.kind(), format!(
