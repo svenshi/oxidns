@@ -255,8 +255,9 @@ fn plan_build(
                 return Ok(());
             };
 
-            // The planning pass validates the complete supported subset. It never
-            // retains a matcher or emits per-line diagnostics.
+            // The planning pass validates the complete supported subset. It
+            // never retains a matcher or emits per-line
+            // diagnostics.
             validate_pattern(meta.pattern)?;
             let details = parse_rule_details(&meta)?;
 

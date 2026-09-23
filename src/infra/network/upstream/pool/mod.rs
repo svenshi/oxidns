@@ -169,7 +169,8 @@ where
                     return;
                 };
 
-                // Perform maintenance (awaiting ensures fairness and proper error handling)
+                // Perform maintenance (awaiting ensures fairness and proper
+                // error handling)
                 pool.maintain().await;
                 // Yield to allow other tasks to run
                 yield_now().await;

@@ -70,10 +70,7 @@ where
 
         self.write_buf[..2].copy_from_slice(&(body_len as u16).to_be_bytes());
 
-        self.writer
-            .write_all(&self.write_buf)
-            .await
-            .map_err(|e| DnsError::protocol(format!("Failed to write TCP DNS frame: {}", e)))?;
+        self.writer.write_all(&self.write_buf).await?;
         Ok(())
     }
 

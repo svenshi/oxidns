@@ -561,9 +561,10 @@ fn nftset_get_flags(family: &str, table: &str, setname: &str) -> Result<u32> {
         }
 
         if attr_type == NFTA_SET_FLAGS && attr_len >= 8 {
-            // nftables u32 attributes are big-endian on the wire (put_attr_u32_nft
-            // writes via put_u32_be without NLA_F_NET_BYTEORDER), so receivers
-            // must decode as BE. Decoding as native byte order mistakenly
+            // nftables u32 attributes are big-endian on the wire
+            // (put_attr_u32_nft writes via put_u32_be without
+            // NLA_F_NET_BYTEORDER), so receivers must decode as BE.
+            // Decoding as native byte order mistakenly
             // returned 0x04000000 for `flags interval` on little-endian hosts,
             // which made `is_interval` always false and broke CIDR adds.
             let flags = u32::from_be_bytes([
@@ -675,6 +676,21 @@ fn put_set_elem(buf: &mut MsgBuffer, key_bytes: &[u8], flags: u32, timeout_ms: O
     buf.end_nested(elem_offset);
 }
 
+/// Keep lookup and mutation failures consistent with the public element API.
+fn normalize_operation_error(error: IpSetError, cmd: u16, setname: &str) -> IpSetError {
+    match error {
+        IpSetError::NetlinkError(libc::ENOENT) => {
+            if cmd == NFT_MSG_DELSETELEM {
+                IpSetError::ElementNotFound
+            } else {
+                IpSetError::SetNotFound(setname.to_string())
+            }
+        }
+        IpSetError::NetlinkError(libc::EEXIST) => IpSetError::ElementExists,
+        other => other,
+    }
+}
+
 /// Internal function to perform nftset element operations.
 fn nftset_operate(
     family: &str,
@@ -694,7 +710,8 @@ fn nftset_operate(
     let nf_family = parse_nf_family(family)?;
 
     // Get set flags to determine if it's an interval set
-    let set_flags = nftset_get_flags(family, table, setname).unwrap_or(0);
+    let set_flags = nftset_get_flags(family, table, setname)
+        .map_err(|error| normalize_operation_error(error, cmd, setname))?;
     let is_interval = (set_flags & NFT_SET_INTERVAL) != 0;
     let is_cidr = matches!(entry.target, IpTarget::Cidr(_));
 
@@ -784,16 +801,11 @@ fn nftset_operate(
             if error == 0 {
                 // Continue reading
             } else {
-                return match -error {
-                    libc::ENOENT => {
-                        if cmd == NFT_MSG_DELSETELEM {
-                            return Err(IpSetError::ElementNotFound);
-                        }
-                        Err(IpSetError::SetNotFound(setname.to_string()))
-                    }
-                    libc::EEXIST => Err(IpSetError::ElementExists),
-                    _ => Err(IpSetError::NetlinkError(-error)),
-                };
+                return Err(normalize_operation_error(
+                    IpSetError::NetlinkError(-error),
+                    cmd,
+                    setname,
+                ));
             }
         }
 
@@ -986,7 +998,8 @@ pub fn nftset_list(family: &str, table: &str, setname: &str) -> Result<Vec<IpEnt
                     };
                 }
             } else {
-                // Check if this is a NEWSETELEM message (response to GETSETELEM dump)
+                // Check if this is a NEWSETELEM message (response to GETSETELEM
+                // dump)
                 let expected_type = nft_msg_type(NFT_MSG_NEWSETELEM);
                 if hdr.nlmsg_type == expected_type {
                     // Parse the message for IP addresses
@@ -1048,7 +1061,8 @@ fn parse_nftset_elements_list(data: &[u8], result: &mut Vec<IpEntry>) -> Result<
             break;
         }
 
-        // Each element in the list - try to parse it as an element containing a key
+        // Each element in the list - try to parse it as an element containing a
+        // key
         if let Some(element) =
             parse_nftset_single_element(&data[offset + NlAttr::SIZE..offset + attr_len])
         {
@@ -1214,7 +1228,8 @@ pub fn nftset_list_tables(family: &str) -> Result<Vec<String>> {
                     return Err(IpSetError::NetlinkError(-error));
                 }
             } else {
-                // Check if this is a NEWTABLE message (response to GETTABLE dump)
+                // Check if this is a NEWTABLE message (response to GETTABLE
+                // dump)
                 let expected_type = nft_msg_type(NFT_MSG_NEWTABLE);
                 if hdr.nlmsg_type == expected_type {
                     // Parse the message for table name
@@ -1268,6 +1283,43 @@ fn parse_nftset_table_name(data: &[u8]) -> Option<String> {
 mod tests {
     use super::*;
     use crate::test_util::{find_attr, walk_attrs};
+
+    #[test]
+    fn operation_errors_preserve_public_classification() {
+        assert!(matches!(
+            normalize_operation_error(
+                IpSetError::NetlinkError(libc::ENOENT),
+                NFT_MSG_NEWSETELEM,
+                "missing",
+            ),
+            IpSetError::SetNotFound(name) if name == "missing"
+        ));
+        assert!(matches!(
+            normalize_operation_error(
+                IpSetError::NetlinkError(libc::ENOENT),
+                NFT_MSG_DELSETELEM,
+                "missing",
+            ),
+            IpSetError::ElementNotFound
+        ));
+        for cmd in [NFT_MSG_NEWSETELEM, NFT_MSG_DELSETELEM] {
+            assert!(matches!(
+                normalize_operation_error(IpSetError::NetlinkError(libc::EEXIST), cmd, "set"),
+                IpSetError::ElementExists
+            ));
+            for code in [libc::EPERM, libc::EOPNOTSUPP, libc::EINVAL] {
+                assert!(matches!(
+                    normalize_operation_error(IpSetError::NetlinkError(code), cmd, "set"),
+                    IpSetError::NetlinkError(actual) if actual == code
+                ));
+            }
+            let error = std::io::Error::from(std::io::ErrorKind::TimedOut);
+            assert!(matches!(
+                normalize_operation_error(IpSetError::SocketError(error), cmd, "set"),
+                IpSetError::SocketError(error) if error.kind() == std::io::ErrorKind::TimedOut
+            ));
+        }
+    }
 
     #[test]
     fn test_nft_msg_type() {
@@ -1390,7 +1442,8 @@ mod tests {
             "nftables u32 attributes deliberately omit NLA_F_NET_BYTEORDER",
         );
         assert_eq!(flags_attr.payload.len(), 4);
-        // BE encoding of 0x1 is [0x00, 0x00, 0x00, 0x01]; LE would be the reverse.
+        // BE encoding of 0x1 is [0x00, 0x00, 0x00, 0x01]; LE would be the
+        // reverse.
         assert_eq!(flags_attr.payload, &[0x00, 0x00, 0x00, 0x01]);
     }
 
@@ -1529,8 +1582,8 @@ mod tests {
     #[test]
     #[ignore]
     fn test_nftset_with_timeout() {
-        // Requires: sudo nft add set inet filter test_set_timeout { type ipv4_addr\;
-        // timeout 5m\; }
+        // Requires: sudo nft add set inet filter test_set_timeout { type
+        // ipv4_addr\; timeout 5m\; }
         let addr: IpAddr = "10.0.0.2".parse().unwrap();
         let entry = IpEntry::with_timeout(addr, 60);
         nftset_add("inet", "filter", "test_set_timeout", entry)

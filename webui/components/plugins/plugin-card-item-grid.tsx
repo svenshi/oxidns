@@ -11,6 +11,12 @@ export function pluginCardGridColumnClass(itemCount: number): string {
   return itemCount < 4 ? "grid-cols-1" : "grid-cols-2";
 }
 
+export function pluginCardItemColumnClass(emphasizeValues: boolean): string {
+  return emphasizeValues
+    ? "grid-cols-[minmax(0,1fr)_auto]"
+    : "grid-cols-[minmax(5.25rem,52%)_minmax(0,1fr)]";
+}
+
 export function PluginCardItemSurface({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-[5.25rem] items-center overflow-hidden rounded-md bg-muted/25 px-3 py-2">
@@ -19,7 +25,13 @@ export function PluginCardItemSurface({ children }: { children: ReactNode }) {
   );
 }
 
-export function PluginCardItemGrid({ items }: { items: PluginCardItem[] }) {
+export function PluginCardItemGrid({
+  items,
+  emphasizeValues = false,
+}: {
+  items: PluginCardItem[];
+  emphasizeValues?: boolean;
+}) {
   return (
     <div
       className={cn(
@@ -30,7 +42,10 @@ export function PluginCardItemGrid({ items }: { items: PluginCardItem[] }) {
       {items.map((item) => (
         <div
           key={item.key}
-          className="grid h-5 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 text-[11px] leading-5"
+          className={cn(
+            "grid h-5 min-w-0 items-center gap-2 text-xs leading-5",
+            pluginCardItemColumnClass(emphasizeValues),
+          )}
         >
           <span
             className="min-w-0 truncate text-muted-foreground"
@@ -39,7 +54,10 @@ export function PluginCardItemGrid({ items }: { items: PluginCardItem[] }) {
             {item.label}
           </span>
           <span
-            className="max-w-[9.5rem] min-w-0 truncate text-right font-mono text-[11px] font-semibold tracking-[-0.01em] text-foreground tabular-nums"
+            className={cn(
+              "max-w-[9.5rem] min-w-0 truncate text-right font-mono text-xs tracking-[-0.01em] text-foreground tabular-nums",
+              emphasizeValues ? "font-semibold" : "font-normal",
+            )}
             title={item.value}
           >
             {item.value}

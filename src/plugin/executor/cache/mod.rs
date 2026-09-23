@@ -509,7 +509,8 @@ impl Cache {
                 async move {
                     let changed = updated_keys.swap(0, Ordering::Relaxed);
                     if changed < MINIMUM_CHANGES_TO_DUMP {
-                        // Keep sparse updates accumulated so low-write workloads still persist
+                        // Keep sparse updates accumulated so low-write
+                        // workloads still persist
                         // eventually without triggering dump every interval.
                         if changed > 0 {
                             updated_keys.fetch_add(changed, Ordering::Relaxed);
@@ -667,7 +668,8 @@ impl Cache {
                 break;
             }
 
-            // Approximate LRU: sort sampled keys by last-access and evict oldest subset.
+            // Approximate LRU: sort sampled keys by last-access and evict
+            // oldest subset.
             sample.sort_unstable_by_key(|(_, last)| *last);
             let wanted = (evict_target - evicted_total).min(sample.len());
             let mut evicted_batch = 0usize;

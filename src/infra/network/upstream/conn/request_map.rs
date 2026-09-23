@@ -161,9 +161,9 @@ impl RequestMap {
     /// Create a new sparse request map sized for the expected max inflight
     /// load.
     pub fn with_capacity(max_inflight: u16) -> Self {
-        // Keep the table sparse on purpose. At the default inflight limit of 64,
-        // we allocate 256 slots, which is still tiny but keeps linear probing
-        // short even under bursty request churn.
+        // Keep the table sparse on purpose. At the default inflight limit of
+        // 64, we allocate 256 slots, which is still tiny but keeps
+        // linear probing short even under bursty request churn.
         let desired = usize::from(max_inflight).saturating_mul(SLOT_FACTOR);
         let slot_count = desired.max(MIN_SLOT_COUNT).next_power_of_two();
         let mut slots = Vec::with_capacity(slot_count);
@@ -394,8 +394,9 @@ impl RequestMap {
                     slot.meta.store(META_TOMBSTONE, Ordering::Release);
                     self.size.fetch_sub(1, Ordering::Relaxed);
                     if self.is_empty() {
-                        // Once the map drains completely, we can safely turn all
-                        // tombstones back into empty slots and restore short
+                        // Once the map drains completely, we can safely turn
+                        // all tombstones back into
+                        // empty slots and restore short
                         // probe chains for the next burst of traffic.
                         self.reset_tombstones();
                     }

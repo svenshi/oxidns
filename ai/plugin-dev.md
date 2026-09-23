@@ -1,6 +1,10 @@
 # Plugin Development Guide
 
-This document is the single source of truth for writing, registering, testing, documenting, and feature-gating OxiDNS plugins. Read it before adding any new plugin or modifying an existing one.
+This document defines stable design criteria for plugin work. Use it when a
+change affects plugin architecture, registration, lifecycle, feature gating, or
+cross-surface contracts. Derive the current plugin inventory and wiring from the
+Rust modules, factory registration, `Cargo.toml`, and tests rather than from this
+document.
 
 ---
 
@@ -40,7 +44,7 @@ Fall back to `register_plugin_factory!("type", expr)` only when:
 ## Implementation Guidelines
 
 - Include a module-level doc comment that covers: purpose, config shape, dependency expectations, lifecycle, and any hot-path or side-effect behavior.
-- Reuse existing abstractions (`DnsContext`, `Executor`, `Matcher`, `Provider`, `RequestHandle`, upstream pools, plugin registry) before introducing parallel frameworks.
+- Inspect and reuse the abstractions exposed by `src/core/`, `src/plugin/`, and `src/infra/network/` before introducing parallel frameworks.
 - Keep platform-specific code clearly guarded — especially Linux-only netlink, `ipset`, and `nftset` paths.
 - Management HTTP API integration must compile cleanly without the `api` feature. Gate the module with `#[cfg(feature = "api")]` or keep feature-specific implementations behind internal `cfg` branches when a no-op facade is required.
 - Resolve configured matcher dependencies with `PluginInitContext::matcher_ref(field, tag, reverse)` and evaluate the returned `MatcherRef`. Do not extract an `Arc<dyn Matcher>` and apply `!` outside the reference: runtime `always_true` / `always_false` modes fix the matcher base result before each reference applies its own negation.
@@ -57,125 +61,53 @@ Fall back to `register_plugin_factory!("type", expr)` only when:
 - Avoid unnecessary allocation, cloning, parsing, locking, or blocking I/O per request.
 - Push expensive initialization into `Plugin::init` rather than repeating it per query.
 - Keep side effects (metrics updates, persistence writes, external system calls) off the latency-sensitive response path unless correctness requires otherwise.
-- Preserve plugin composability — new behavior should be added as a plugin or trait extension, not as a server-level special case.
+- Preserve plugin composability. DNS- or configuration-driven policy normally belongs in a plugin or trait extension; transport framing and connection-lifecycle behavior may remain server-local when that ownership is intrinsic and documented.
 - Justify every `Arc`, `DashMap`, queue, or background task added to the core path; watch for lock contention and unbounded state growth.
 
 ---
 
 ## Cargo Feature Conventions
 
-OxiDNS uses a three-layer Cargo feature system. Every new plugin must be placed in the correct layer and wired through all four integration points below.
+The `[features]` table in `Cargo.toml` is the only authoritative feature graph.
+Use the unguarded and `#[cfg]`-guarded declarations in the plugin category
+`mod.rs` files to determine which plugins are always available. Use
+`src/build_info.rs` and `tests/feature_gating.rs` to check the user-visible
+capability and negative-build behavior.
 
-### Three layers
-
-| Layer | Names | Purpose |
-|-------|-------|---------|
-| **Bundles** | `minimal`, `standard`, `full` (default) | Preset combinations for release artifacts |
-| **Granular** | `plugin-*`, `provider-*`, `server-*`, `upstream-*`, `api`, `webui`, `metrics` | One flag per plugin / protocol / surface |
-| **Private aggregators** | `_tls-base`, `_http-server`, `_http-client`, `_sequence-step-recording` | Shared optional deps — never enable directly |
-
-**Bundle scope:**
-- `minimal` — UDP/TCP listeners and upstreams, `sequence`, `forward`, `cache`, `fallback`, `hosts`, `redirect`, `dual_selector`, `ecs_handler`, `ttl`, `drop_resp`, `black_hole`, `debug_print`, `reload`, all matchers, `domain_set`, `ip_set`. No hyper/rustls/quinn/h2/h3/zoneparser.
-- `standard` — `minimal` + management API, WebUI, metrics, DoT/DoH/DoQ, most executor and provider plugins. No MikroTik, no ipset/nftset.
-- `full` (default) — `standard` + DoH3, `plugin-mikrotik` (both RouterOS executors), `plugin-ipset`.
-
-### Always-on core plugins (no feature gate)
-
-These plugins are compiled unconditionally as part of `minimal`. Do **not** add a feature gate to them:
-
-`black_hole`, `cache`, `debug_print`, `drop_resp`, `dual_selector`, `ecs_handler`, `fallback`, `forward`, `forward_edns0opt`, `hosts`, `query_summary`, `redirect`, `reload`, `sleep`, `sequence`, `ttl` — and all matchers (`qname`, `qtype`, `qclass`, `client_ip`, `resp_ip`, `cname`, `has_resp`, `rcode`, `mark`, `env`, `random`, `rate_limit`, …) and core providers (`domain_set`, `ip_set`).
+The graph distinguishes public bundles and granular features from private
+aggregators. Follow the current naming families already declared in
+`Cargo.toml`; do not copy a feature inventory into prose. Features whose names
+start with `_` are implementation details: depend on them through a public
+feature and do not document them as operator-facing switches.
 
 ### When to add a feature gate
 
 Add a feature gate for any plugin that meets **at least one** of these criteria:
 
-1. Introduces a new optional Cargo dependency (e.g. `rusqlite`, `mikrotik-rs`, `prost`, `zoneparser`).
+1. Introduces a new optional Cargo dependency edge.
 2. Pulls in heavy protocol infrastructure (TLS, HTTP, QUIC).
 3. Is not needed for basic DNS forwarding and would be out of scope for a `minimal` build.
 4. Has significant runtime side effects (file I/O, background tasks, external system calls) that an operator may want to exclude.
 
-Adding a new matcher predicate or extending an existing executor's config options does **not** need a feature gate.
+Adding a small predicate or extending an already-compiled plugin does not by
+itself require another feature. Preserve the existing bundle contract unless
+the change explicitly revises it.
 
-### Naming convention
+### Integration points for a gated plugin
 
-| Category | Pattern | Examples |
-|----------|---------|---------|
-| Executor or paired executor+provider | `plugin-<noun>` | `plugin-cron`, `plugin-ip-selector`, `plugin-dynamic-domain` |
-| Provider only | `provider-<noun>` | `provider-protobuf`, `provider-adguard-rule` |
-| Inbound protocol | `server-<proto>` | `server-dot`, `server-doh`, `server-doq`, `server-doh3` |
-| Outbound protocol | `upstream-<proto>` | `upstream-dot`, `upstream-doh`, `upstream-doq` |
-| Management surface | bare name | `api`, `webui`, `metrics` |
+Update every applicable executable surface in the same change:
 
-Use kebab-case. Do not use underscores in feature names.
+1. Declare the public feature and optional dependency edges in `Cargo.toml`,
+   and intentionally choose bundle membership there.
+2. Gate the category module and every downstream reference with the same public
+   feature; provide a safe disabled-feature path where shared code needs one.
+3. Update `src/build_info.rs` when the capability is reported to operators.
+4. Add positive and negative coverage in `tests/feature_gating.rs` and gate
+   affected integration tests in `tests/plugin_integration.rs`.
 
-### Checklist for adding a new feature-gated plugin
-
-All four steps must land in the same PR.
-
-**1. `Cargo.toml` — declare the feature and mark deps as optional**
-
-```toml
-# `my_plugin` executor (one-line description of purpose).
-plugin-my-plugin = ["dep:some-crate"]   # omit dep list if no new Cargo dep
-```
-
-Mark any new Cargo dependency `optional = true`:
-
-```toml
-some-crate = { version = "1.0", optional = true }
-```
-
-Add to the appropriate bundle (`standard` for most plugins; `full` only for Linux-specific or niche integrations):
-
-```toml
-standard = [
-    ...
-    "plugin-my-plugin",
-]
-```
-
-If the plugin requires the management API:
-
-```toml
-plugin-my-plugin = ["api", "dep:some-crate"]
-```
-
-**2. `src/plugin/executor/mod.rs` or `src/plugin/provider/mod.rs` — gate the module**
-
-```rust
-#[cfg(feature = "plugin-my-plugin")]
-pub mod my_plugin;
-```
-
-**3. Downstream references — guard any code outside the plugin directory**
-
-```rust
-#[cfg(feature = "plugin-my-plugin")]
-use crate::plugin::executor::my_plugin::MyFactory;
-```
-
-If a shared utility (e.g. `src/config/`) references a symbol only present in a feature-gated module, guard the call with `#[cfg(feature = "...")]` and provide a safe fallback when the feature is absent.
-
-**4. `tests/plugin_integration.rs` — gate integration tests**
-
-```rust
-#[cfg(feature = "plugin-my-plugin")]
-#[tokio::test]
-async fn test_my_plugin_init() -> Result<()> { ... }
-```
-
-### Private aggregator features
-
-Never enable `_tls-base`, `_http-server`, `_http-client`, or `_sequence-step-recording` directly. They are implementation details. If your plugin needs outbound HTTP, declare `"_http-client"` as a dependency of your feature in `Cargo.toml`; do not reference `hyper` directly.
-
-### Verifying a new feature
-
-```bash
-cargo check --no-default-features --features minimal                       # plugin must be absent
-cargo check --no-default-features --features "minimal,plugin-my-plugin"   # must compile cleanly
-cargo check --no-default-features --features standard                      # must compile cleanly
-cargo check                                                                # full build, must pass
-```
+Select feature-off/on, bundle, and matrix checks from the current recipes in
+`justfile`. CI parity and platform coverage are defined by
+`.github/workflows/rust-ci.yml`; do not preserve a copied command matrix here.
 
 ---
 
@@ -184,20 +116,20 @@ cargo check                                                                # ful
 - Place unit tests (`#[cfg(test)] mod tests`) inside the plugin's own module, close to the logic under test.
 - Add wiring-level tests to `tests/plugin_integration.rs` for: config parsing, dependency resolution, sequence quick-setup, and server integration.
 - Gate each integration test behind `#[cfg(feature = "plugin-my-plugin")]` when the plugin is feature-gated.
-- Run `cargo test --test plugin_integration` whenever you change plugin registration, config parsing, sequence behavior, or server startup paths.
+- Run the focused integration recipe or command that covers registration, config parsing, sequence behavior, or server startup when those paths change; use `justfile` for the current broader gates.
 - Cover both success paths and failure paths for any plugin that touches upstream resolution, cache, or cross-plugin dependencies.
 
 ---
 
 ## Documentation & WebUI Sync
 
-When adding or modifying a plugin, update all four artifacts in the same PR:
+Update only maintained representations of the contract that actually changed:
 
 1. **`docs/`** — sync the relevant Chinese plugin reference page and its English counterpart under `docs/i18n/en/`. Cover behavior, config shape, dependencies, lifecycle, side effects, and examples whenever any of those change.
 
 2. **`webui/lib/plugin-definitions/`** — add or update the entry in the correct category file (`executor.ts`, `matcher.ts`, `provider.ts`, or `server.ts`). The catalog, create dialog, cards, detail drawer, sequence composer, and YAML editor all auto-derive from these definitions.
 
-3. **`README.md` and `README_EN.md`** — update if the change adds or renames plugin types, config fields, default behaviors, or supported protocols.
+3. **`README.md` and `README_EN.md`** — update capability summaries only when the user-visible capability or prominent default changes; plugin field details belong in the plugin reference.
 
 4. **`config.yaml`** — update the canonical default config if the change affects the default plugin composition or introduces required new config fields.
 

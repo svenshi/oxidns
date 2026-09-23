@@ -148,6 +148,10 @@ export const enUSWebui = {
     emptyConfigItems: "No config items yet. Click below to add one.",
     addConfigItem: "Add config item",
     selectPlaceholder: "Select",
+    examplePlaceholder: "Example: {value}",
+    configExampleLabel: "Example",
+    restoreDefaultValue: "Restore default: {value}",
+    clearConfigValue: "Clear explicit value",
     configHelpLabel: "{label} configuration help",
     arraySyntaxValue: "Value",
     arraySyntaxPlugin: "Plugin",
@@ -365,6 +369,23 @@ export const enUSWebui = {
     paramOptional: "Parameter (optional)",
     notCompiled: "Not compiled",
   },
+  download: {
+    title: "Download files",
+    download: "Download",
+    downloadAll: "Download all",
+    downloading: "Downloading…",
+    loading: "Loading downloads…",
+    empty: "No files to download",
+    loadFailed: "Failed to load downloads",
+    runFailed: "Download request failed",
+    busy: "A download is already running. Try again shortly.",
+    success: "Download complete: {count} succeeded",
+    partialFailure:
+      "Download finished: {succeeded} succeeded, {failed} failed. See logs for details.",
+    runtimeHint:
+      "This is the live download list. Downloads replace target files; reload the relevant providers separately to refresh rules.",
+    retry: "Refresh list",
+  },
   cron: {
     yamlMustBeObject: "Cron config must be a YAML object",
     taskTab: "Tasks",
@@ -394,10 +415,19 @@ export const enUSWebui = {
     taskCount: "Tasks",
     runNow: "Run now",
     runStarting: "Starting",
-    runStarted: 'Job "{name}" started',
+    runExecuting: "Running",
+    runCompleted: "Completed",
     runBusy: 'Job "{name}" is already running',
+    runNotFound: 'Job "{name}" no longer exists; refresh the config and retry',
     runUnavailable: 'Job "{name}" is temporarily unavailable',
-    runFailed: 'Failed to start job "{name}"',
+    runStartUnconfirmed: 'Could not confirm whether job "{name}" started',
+    runPartialFailure:
+      'Job "{name}" finished with {count} executor failures; check the logs',
+    runExecutionFailed: 'Job "{name}" failed; check the logs',
+    runCancelled: 'Job "{name}" was cancelled',
+    runStatusLost: 'Lost the run status for job "{name}"; check the logs',
+    runStatusSyncFailed:
+      "Failed to sync cron job status; retrying automatically",
   },
   dynamicDomainSet: {
     ruleFileLabel: "Rule file",
@@ -685,6 +715,18 @@ export const enUSWebui = {
     restartDialogDesc:
       "The running service will be replaced with a new process. DNS resolution will be briefly interrupted and all in-memory state (such as cache) will be cleared. The config will be saved to disk before the restart is triggered.",
     confirmRestart: "Confirm restart",
+  },
+  configPatch: {
+    title: "This edit cannot be applied losslessly",
+    description:
+      "The selected YAML structure cannot be changed safely while preserving all of its source formatting. Review the smallest local replacement in the YAML editor, or force the replacement and save it now. The rest of the file will remain unchanged.",
+    affectedPath: "Affected path: {path}",
+    review: "Review in YAML editor",
+    force: "Force local replacement",
+    forceWarning:
+      "Forcing this edit rebuilds the affected section, so its comments and formatting may change.",
+    forceUnavailable:
+      "A bounded, valid local replacement could not be generated. Edit this path manually in the YAML editor.",
   },
   configEditor: {
     title: "Config File Editor",

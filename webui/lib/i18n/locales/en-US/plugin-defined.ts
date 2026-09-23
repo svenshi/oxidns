@@ -35,7 +35,7 @@ export const enUSPluginDefined = {
         listen: {
           label: "listening address",
           description: "Specify the UDP listening address.",
-          placeholder: "0.0.0.0:53",
+          example: "0.0.0.0:53",
         },
       },
       metrics: {
@@ -83,17 +83,17 @@ export const enUSPluginDefined = {
         listen: {
           label: "listening address",
           description: "Specify the TCP listening address.",
-          placeholder: ":53",
+          example: ":53",
         },
         cert: {
           label: "TLS certificate",
           description: "Specify the TLS certificate file path.",
-          placeholder: "/etc/oxidns/server.crt",
+          example: "/etc/oxidns/server.crt",
         },
         key: {
           label: "TLS private key",
           description: "Specify the TLS private key file path.",
-          placeholder: "/etc/oxidns/server.key",
+          example: "/etc/oxidns/server.key",
         },
         idle_timeout: {
           label: "Idle timeout (seconds)",
@@ -140,7 +140,7 @@ export const enUSPluginDefined = {
         entries: {
           label: "path mapping",
           description: "Define the mapping of HTTP paths to executors.",
-          placeholder: '[{"path":"/dns-query","exec":"seq_main"}]',
+          example: '[{"path":"/dns-query","exec":"seq_main"}]',
         },
         "entries[]": {
           label: "path mapping",
@@ -148,13 +148,13 @@ export const enUSPluginDefined = {
         "entries[].path": {
           label: "path",
           description: "Specify the DoH request path.",
-          placeholder: "/dns-query",
+          example: "/dns-query",
         },
         "entries[].exec": {
           label: "Executor",
           description:
             "Specifies the executor that handles requests for this path.",
-          placeholder: "seq_main",
+          example: "seq_main",
         },
         "entries[].json_api": {
           label: "JSON DNS API",
@@ -164,23 +164,23 @@ export const enUSPluginDefined = {
         listen: {
           label: "listening address",
           description: "Specify the HTTP/HTTPS listening address.",
-          placeholder: ":443",
+          example: ":443",
         },
         src_ip_header: {
           label: "Source IP Header",
           description:
             "Specifies the field name to read the real client source address from the request header.",
-          placeholder: "X-Forwarded-For",
+          example: "X-Forwarded-For",
         },
         cert: {
           label: "HTTPS certificate",
           description: "Specify the HTTPS certificate file path.",
-          placeholder: "/etc/oxidns/server.crt",
+          example: "/etc/oxidns/server.crt",
         },
         key: {
           label: "HTTPS private key",
           description: "Specify the HTTPS private key file path.",
-          placeholder: "/etc/oxidns/server.key",
+          example: "/etc/oxidns/server.key",
         },
         idle_timeout: {
           label: "Idle timeout (seconds)",
@@ -235,17 +235,17 @@ export const enUSPluginDefined = {
         listen: {
           label: "listening address",
           description: "Specify the QUIC listening address.",
-          placeholder: ":853",
+          example: ":853",
         },
         cert: {
           label: "TLS certificate",
           description: "Specify the TLS certificate file required by DoQ.",
-          placeholder: "/etc/oxidns/server.crt",
+          example: "/etc/oxidns/server.crt",
         },
         key: {
           label: "TLS private key",
           description: "Specify the TLS private key file required by DoQ.",
-          placeholder: "/etc/oxidns/server.key",
+          example: "/etc/oxidns/server.key",
         },
         idle_timeout: {
           label: "Idle timeout (seconds)",
@@ -292,7 +292,7 @@ export const enUSPluginDefined = {
         args: {
           label: "chain of rules",
           description: "Define the chain of rules for the sequence.",
-          placeholder: "$cache_main\nmatches: !$has_resp, exec: $forward_main",
+          example: "$cache_main\nmatches: !$has_resp, exec: $forward_main",
         },
         "args[]": {
           label: "rule",
@@ -300,21 +300,21 @@ export const enUSPluginDefined = {
         "args[].matches": {
           label: "Match condition",
           description: "Define the matching conditions for the current rule.",
-          placeholder: "$has_resp\nqname domain:example.com\n!$blocked",
+          example: "$has_resp\nqname domain:example.com\n!$blocked",
         },
         "args[].matches.$matcher_ref": {
           label: "Quote matcher",
-          placeholder: "has_resp",
+          example: "has_resp",
         },
         "args[].matches.$input": {
           label: "Enter value",
-          placeholder: "qname domain:example.com",
+          example: "qname domain:example.com",
         },
         "args[].exec": {
           label: "perform action",
           description:
             "Defines the action to perform when the rule matches. You can reference an executor or use built-in actions such as accept, return, reject, jump, goto, mark, and set_mark. mark appends values, while set_mark replaces the complete mark set; reject accepts case-insensitive RCODE names and numeric values.",
-          placeholder:
+          example:
             "$forward_main / accept / reject SERVFAIL / mark 1,2 / set_mark 2,3 / jump seq_tag",
         },
       },
@@ -342,42 +342,42 @@ export const enUSPluginDefined = {
         upstreams: {
           label: "upstream list",
           description: "Define one or more upstream targets.",
-          placeholder: "udp://1.1.1.1:53",
+          example: "udp://1.1.1.1:53",
         },
         "upstreams[].tag": {
           label: "upstream identifier",
           description:
             "Provide log identification for a single upstream to facilitate troubleshooting multi-upstream competition results.",
-          placeholder: "cf_udp",
+          example: "cf_udp",
         },
         "upstreams[].addr": {
           label: "upstream address",
           description:
             "Define the upstream address, protocol type, and target host.",
-          placeholder: "udp://1.1.1.1:53",
+          example: "udp://1.1.1.1:53",
         },
         "upstreams[].outbound": {
           label: "Outbound Profile",
           description:
             "Reference a profile from network.outbound.profiles to inject resolver and proxy defaults into this upstream. Local dial_addr, bootstrap, and socks5 take precedence.",
-          placeholder: "profile-1",
+          example: "profile-1",
         },
         "upstreams[].dial_addr": {
           label: "Dial-up IP",
           description:
             "Specify the actual connection IP, while retaining the host name in addr for SNI, Host and certificate verification; this field takes precedence when configured at the same time as bootstrap.",
-          placeholder: "203.0.113.53",
+          example: "203.0.113.53",
         },
         "upstreams[].port": {
           label: "Port coverage",
           description: "Override the protocol default port.",
-          placeholder: "443",
+          example: "443",
         },
         "upstreams[].bootstrap": {
           label: "Bootstrap",
           description:
             "Provides a bootstrap resolver for domain-based upstreams. Must be IP:port; if omitted, system resolution is used on first connection; ignored when dial_addr is also configured.",
-          placeholder: "8.8.8.8:53",
+          example: "8.8.8.8:53",
         },
         "upstreams[].bootstrap_version": {
           label: "Bootstrap IP version",
@@ -390,25 +390,24 @@ export const enUSPluginDefined = {
         "upstreams[].socks5": {
           label: "SOCKS5 proxy",
           description: "Specify a SOCKS5 proxy for upstream connections.",
-          placeholder: "user:pass@127.0.0.1:1080",
+          example: "user:pass@127.0.0.1:1080",
         },
         "upstreams[].idle_timeout": {
           label: "Connection idle timeout (seconds)",
           description:
             "Define the connection pool idle connection retention time.",
-          placeholder: "30",
+          example: "30",
         },
         "upstreams[].max_conns": {
           label: "Maximum number of connections",
           description:
             "Define the upper limit of connection pool connections, in the range 1..4096.",
-          placeholder: "256",
+          example: "256",
         },
         "upstreams[].min_conns": {
           label: "Minimum number of connections",
           description:
             "Define the minimum warmed connection count kept by the pool. Default is 0, range is 0..4096, and it must not exceed max_conns.",
-          placeholder: "0",
         },
         "upstreams[].insecure_skip_verify": {
           label: "Skip TLS check",
@@ -418,7 +417,7 @@ export const enUSPluginDefined = {
         "upstreams[].timeout": {
           label: "Query timeout",
           description: "Define a single upstream query timeout.",
-          placeholder: "3s",
+          example: "3s",
         },
         "upstreams[].enable_pipeline": {
           label: "Enable Pipeline",
@@ -431,12 +430,12 @@ export const enUSPluginDefined = {
         "upstreams[].so_mark": {
           label: "SO_MARK",
           description: "Set Linux SO_MARK.",
-          placeholder: "100",
+          example: "100",
         },
         "upstreams[].bind_to_device": {
           label: "Bind network card",
           description: "Set Linux SO_BINDTODEVICE.",
-          placeholder: "eth0",
+          example: "eth0",
         },
         short_circuit: {
           label: "Stop subsequent execution after success",
@@ -510,7 +509,7 @@ export const enUSPluginDefined = {
         dump_file: {
           label: "Persistence file",
           description: "Specify the cache persistence file path.",
-          placeholder: "./dns_cache.dump",
+          example: "./dns_cache.dump",
         },
         dump_interval: {
           label: "Dump interval (seconds)",
@@ -641,21 +640,21 @@ export const enUSPluginDefined = {
         entries: {
           label: "Inline hosts rules",
           description: "Define inline hosts rules.",
-          placeholder:
+          example:
             "router.local 192.168.1.1\nfull:gateway.local 192.168.1.2\ndomain:svc.local 10.0.0.10\nkeyword:nas 192.168.1.20\nregexp:^api[0-9]+\\.corp\\.local$ 10.10.0.5",
         },
         "entries[]": {
           label: "Enter value",
-          placeholder: "router.local 192.168.1.1",
+          example: "router.local 192.168.1.1",
         },
         files: {
           label: "hosts file",
           description: "Specify a list of external hosts rule files.",
-          placeholder: "/etc/oxidns/hosts.txt",
+          example: "/etc/oxidns/hosts.txt",
         },
         "files[]": {
           label: "Enter value",
-          placeholder: "/etc/oxidns/hosts.txt",
+          example: "/etc/oxidns/hosts.txt",
         },
         short_circuit: {
           label: "Stop subsequent execution after hit",
@@ -687,21 +686,21 @@ export const enUSPluginDefined = {
         rules: {
           label: "static record",
           description: "Define an inline static record list.",
-          placeholder:
+          example:
             'example.com. 60 IN TXT "hello world"\nwww.example.com. 120 IN A 192.0.2.10',
         },
         "rules[]": {
           label: "Enter value",
-          placeholder: 'example.com. 60 IN TXT "hello world"',
+          example: 'example.com. 60 IN TXT "hello world"',
         },
         files: {
           label: "log file",
           description: "Specify a list of static record files.",
-          placeholder: "/etc/oxidns/zone.txt",
+          example: "/etc/oxidns/zone.txt",
         },
         "files[]": {
           label: "Enter value",
-          placeholder: "/etc/oxidns/zone.txt",
+          example: "/etc/oxidns/zone.txt",
         },
         short_circuit: {
           label: "Stop subsequent execution after hit",
@@ -719,7 +718,7 @@ export const enUSPluginDefined = {
           label: "Response code",
           description:
             "Base DNS RCODE as a decimal number or case-insensitive mnemonic.",
-          placeholder: "NOERROR / NXDOMAIN / 3",
+          example: "NOERROR / NXDOMAIN / 3",
         },
         authoritative: {
           label: "Authoritative answer (AA)",
@@ -733,32 +732,32 @@ export const enUSPluginDefined = {
           label: "Answer records",
           description:
             "One zone-style RR per item; {qname} and {qclass} refer to the first query name and class.",
-          placeholder: "{qname} 300 {qclass} A 192.0.2.10",
+          example: "{qname} 300 {qclass} A 192.0.2.10",
         },
         "answers[]": {
           label: "Enter value",
-          placeholder: "{qname} 300 {qclass} A 192.0.2.10",
+          example: "{qname} 300 {qclass} A 192.0.2.10",
         },
         authorities: {
           label: "Authority records",
           description:
             "One zone-style RR per item; configure SOA here for NODATA negative caching.",
-          placeholder:
+          example:
             "{qname} 300 {qclass} SOA ns.example. hostmaster.example. 1 7200 1800 86400 300",
         },
         "authorities[]": {
           label: "Enter value",
-          placeholder:
+          example:
             "{qname} 300 {qclass} SOA ns.example. hostmaster.example. 1 7200 1800 86400 300",
         },
         additionals: {
           label: "Additional records",
           description: "One zone-style RR per item.",
-          placeholder: "mail.example.com. 300 IN A 192.0.2.25",
+          example: "mail.example.com. 300 IN A 192.0.2.25",
         },
         "additionals[]": {
           label: "Enter value",
-          placeholder: "mail.example.com. 300 IN A 192.0.2.25",
+          example: "mail.example.com. 300 IN A 192.0.2.25",
         },
         short_circuit: {
           label: "Stop after generating response",
@@ -775,21 +774,21 @@ export const enUSPluginDefined = {
         rules: {
           label: "Redirect rules",
           description: "Define inline redirection rules.",
-          placeholder:
+          example:
             "full:old.example.com new.example.net\ndomain:legacy.example.com modern.example.net\nkeyword:staging staging-gateway.example.net\nregexp:^api[0-9]+\\.legacy\\.example\\.com$ api-gateway.example.net",
         },
         "rules[]": {
           label: "Enter value",
-          placeholder: "full:old.example.com new.example.net",
+          example: "full:old.example.com new.example.net",
         },
         files: {
           label: "rules file",
           description: "Specify a list of external redirection rule files.",
-          placeholder: "/etc/oxidns/redirect.txt",
+          example: "/etc/oxidns/redirect.txt",
         },
         "files[]": {
           label: "Enter value",
-          placeholder: "/etc/oxidns/redirect.txt",
+          example: "/etc/oxidns/redirect.txt",
         },
       },
     },
@@ -802,11 +801,11 @@ export const enUSPluginDefined = {
           label: "Trusted source IPs / CIDRs",
           description:
             "Use ECS only when the original client IP matches this allow-list; empty args default to 127.0.0.1 and ::1.",
-          placeholder: "127.0.0.1\n10.0.0.0/24\n::1",
+          example: "127.0.0.1\n10.0.0.0/24\n::1",
         },
         "args.$input": {
           label: "IP or CIDR",
-          placeholder: "127.0.0.1",
+          example: "127.0.0.1",
         },
       },
       quickSetup: {
@@ -831,7 +830,7 @@ export const enUSPluginDefined = {
         preset: {
           label: "Default ECS address",
           description: "Specify a fixed ECS source address.",
-          placeholder: "203.0.113.10",
+          example: "203.0.113.10",
         },
         mask4: {
           label: "IPv4 prefix length",
@@ -855,11 +854,11 @@ export const enUSPluginDefined = {
           label: "Option Code",
           description:
             "Defines the set of EDNS0 option codes that are allowed to be copied from the request into the response.",
-          placeholder: "10\n12",
+          example: "10\n12",
         },
         "codes[]": {
           label: "Enter value",
-          placeholder: "10",
+          example: "10",
         },
       },
       quickSetup: {
@@ -905,23 +904,23 @@ export const enUSPluginDefined = {
           label: "Speed ​​measurement method",
           description:
             "Define the detection method used to score response IP, supporting tcp:<port>, ping, none.",
-          placeholder: "tcp:443\ntcp:80",
+          example: "ping\nnone",
         },
         "probe_methods[]": {
           label: "Enter value",
-          placeholder: "tcp:443",
+          example: "tcp:443",
         },
         outbound: {
           label: "Outbound Profile",
           description:
             "Reference a profile from network.outbound.profiles so TCP probes can reuse the profile proxy.",
-          placeholder: "profile-1",
+          example: "profile-1",
         },
         socks5: {
           label: "SOCKS5 Proxy",
           description:
             "Specify a local SOCKS5 proxy for TCP probes, overriding the outbound profile proxy.",
-          placeholder: "127.0.0.1:1080",
+          example: "127.0.0.1:1080",
         },
         probe_stagger: {
           label: "Speed ​​peak deviation (ms)",
@@ -1012,7 +1011,7 @@ export const enUSPluginDefined = {
           label: "Probe executor",
           description:
             "Specifies the executor used only for the internal preferred-QTYPE probe.",
-          placeholder: "probe_v4",
+          example: "probe_v4",
         },
         cache: {
           label: "Cache preference status",
@@ -1034,7 +1033,7 @@ export const enUSPluginDefined = {
           label: "Probe executor",
           description:
             "Specifies the executor used only for the internal preferred-QTYPE probe.",
-          placeholder: "probe_v6",
+          example: "probe_v6",
         },
         cache: {
           label: "Cache preference status",
@@ -1067,11 +1066,11 @@ export const enUSPluginDefined = {
           label: "Custom return addresses",
           description:
             "Defines local synthetic return addresses used by custom mode.",
-          placeholder: "0.0.0.0\n::",
+          example: "0.0.0.0\n::",
         },
         "ips[]": {
           label: "Enter value",
-          placeholder: "0.0.0.0",
+          example: "0.0.0.0",
         },
         short_circuit: {
           label: "Stop subsequent execution after hit",
@@ -1144,7 +1143,7 @@ export const enUSPluginDefined = {
         msg: {
           label: "Log title",
           description: "Defines the summary log title.",
-          placeholder: "main pipeline",
+          example: "main pipeline",
         },
       },
       quickSetup: {
@@ -1159,7 +1158,7 @@ export const enUSPluginDefined = {
         provider: {
           label: "Target Provider",
           description: "References the target dynamic_domain_set provider.",
-          placeholder: "learned_allow",
+          example: "learned_allow",
         },
         phase: {
           label: "learning stage",
@@ -1181,11 +1180,11 @@ export const enUSPluginDefined = {
         qtypes: {
           label: "Query type",
           description: "Just learn to specify DNS query types.",
-          placeholder: "A\nAAAA",
+          example: "HTTPS\nSVCB",
         },
         "qtypes[]": {
           label: "Enter value",
-          placeholder: "A",
+          example: "A",
         },
         success_only: {
           label: "Only successful response",
@@ -1236,7 +1235,7 @@ export const enUSPluginDefined = {
           label: "SQLite file",
           description:
             "Specifies the SQLite file path of the current recorder.",
-          placeholder: "./data/query-recorder-main.sqlite",
+          example: "./data/query-recorder-main.sqlite",
         },
         queue_size: {
           label: "Queue size",
@@ -1361,7 +1360,7 @@ export const enUSPluginDefined = {
         url: {
           label: "Target URL",
           description: "Target URL.",
-          placeholder: "https://hooks.example.com/dns",
+          example: "https://hooks.example.com/dns",
         },
         phase: {
           label: "triggering phase",
@@ -1405,12 +1404,12 @@ export const enUSPluginDefined = {
         body: {
           label: "Original Body",
           description: "Raw string request body.",
-          placeholder: "qname=${qname}",
+          example: "qname=${qname}",
         },
         json: {
           label: "JSON Body",
           description: "Send the request body as JSON.",
-          placeholder: '{"qname":"${qname}","client_ip":"${client_ip}"}',
+          example: '{"qname":"${qname}","client_ip":"${client_ip}"}',
         },
         form: {
           label: "Form Body",
@@ -1426,12 +1425,12 @@ export const enUSPluginDefined = {
           label: "Outbound profile",
           description:
             "Reference a profile from network.outbound.profiles to control resolver and proxy settings.",
-          placeholder: "profile-1",
+          example: "profile-1",
         },
         socks5: {
           label: "SOCKS5 proxy",
           description: "Specify SOCKS5 proxy.",
-          placeholder: "127.0.0.1:1080",
+          example: "127.0.0.1:1080",
         },
         insecure_skip_verify: {
           label: "Skip HTTPS certificate verification",
@@ -1471,16 +1470,16 @@ export const enUSPluginDefined = {
         command: {
           label: "Order",
           description: "The path or name of the command to be executed.",
-          placeholder: "bash",
+          example: "bash",
         },
         args: {
           label: "Command parameters",
           description: "Array of parameters passed to the command.",
-          placeholder: "/etc/oxidns/notify.sh\n${qname}",
+          example: "/etc/oxidns/notify.sh\n${qname}",
         },
         "args[]": {
           label: "Enter value",
-          placeholder: "/etc/oxidns/notify.sh",
+          example: "/etc/oxidns/notify.sh",
         },
         env: {
           label: "environment variables",
@@ -1492,7 +1491,7 @@ export const enUSPluginDefined = {
         cwd: {
           label: "Working directory",
           description: "Specify the working directory when the script is run.",
-          placeholder: "/etc/oxidns",
+          example: "/etc/oxidns",
         },
         timeout: {
           label: "Timeout",
@@ -1589,19 +1588,19 @@ export const enUSPluginDefined = {
         },
         "ipv4.table_family": {
           label: "Table Family",
-          placeholder: "ip",
+          example: "ip",
         },
         "ipv4.table_name": {
           label: "table name",
-          placeholder: "mangle",
+          example: "mangle",
         },
         "ipv4.set_name": {
           label: "Set name",
-          placeholder: "dns_v4",
+          example: "dns_v4",
         },
         "ipv4.mask": {
           label: "prefix length",
-          placeholder: "24",
+          example: "24",
         },
         ipv6: {
           label: "IPv6 target",
@@ -1609,19 +1608,19 @@ export const enUSPluginDefined = {
         },
         "ipv6.table_family": {
           label: "Table Family",
-          placeholder: "ip6",
+          example: "ip6",
         },
         "ipv6.table_name": {
           label: "table name",
-          placeholder: "mangle",
+          example: "mangle",
         },
         "ipv6.set_name": {
           label: "Set name",
-          placeholder: "dns_v6",
+          example: "dns_v6",
         },
         "ipv6.mask": {
           label: "prefix length",
-          placeholder: "24",
+          example: "24",
         },
         table_family4: {
           label: "IPv4 table family",
@@ -1689,7 +1688,7 @@ export const enUSPluginDefined = {
       fields: {
         address: {
           label: "RouterOS API address",
-          placeholder: "172.16.1.1:8728",
+          example: "172.16.1.1:8728",
         },
         username: { label: "Username" },
         password: { label: "Password" },
@@ -1714,9 +1713,9 @@ export const enUSPluginDefined = {
           description:
             "Limits distinct route keys independently in the ingress queue and retry backlog.",
         },
-        routing_table: { label: "Routing table", placeholder: "via_proxy" },
-        gateway4: { label: "IPv4 gateway", placeholder: "192.168.88.2@main" },
-        gateway6: { label: "IPv6 gateway", placeholder: "fe80::2%ether1" },
+        routing_table: { label: "Routing table", example: "via_proxy" },
+        gateway4: { label: "IPv4 gateway", example: "192.168.88.2@main" },
+        gateway6: { label: "IPv6 gateway", example: "fe80::2%ether1" },
         distance: { label: "Route distance" },
         comment_prefix: { label: "Comment prefix" },
         persistent: {
@@ -1727,17 +1726,17 @@ export const enUSPluginDefined = {
         "persistent.ips": {
           label: "IP / CIDR",
           description: "Declare persistent IP or CIDR routes inline.",
-          placeholder: "1.1.1.1\n100.64.1.0/24",
+          example: "1.1.1.1\n100.64.1.0/24",
         },
-        "persistent.ips[]": { label: "Value", placeholder: "1.1.1.1" },
+        "persistent.ips[]": { label: "Value", example: "1.1.1.1" },
         "persistent.files": {
           label: "Files",
           description: "Load persistent IP or CIDR routes from external files.",
-          placeholder: "/etc/oxidns/persistent_routes.txt",
+          example: "/etc/oxidns/persistent_routes.txt",
         },
         "persistent.files[]": {
           label: "Value",
-          placeholder: "/etc/oxidns/persistent_routes.txt",
+          example: "/etc/oxidns/persistent_routes.txt",
         },
         min_ttl: { label: "Minimum dynamic-route TTL" },
         max_ttl: { label: "Maximum dynamic-route TTL" },
@@ -1832,7 +1831,7 @@ export const enUSPluginDefined = {
           label: "RouterOS API address",
           description:
             "Specify the RouterOS API service address, usually written as host:port.",
-          placeholder: "172.16.1.1:8728",
+          example: "172.16.1.1:8728",
         },
         username: {
           label: "username",
@@ -1902,21 +1901,21 @@ export const enUSPluginDefined = {
         "persistent.ips": {
           label: "IP / CIDR",
           description: "Declare the resident IP or CIDR segment inline.",
-          placeholder: "1.1.1.1\n100.64.1.0/24",
+          example: "1.1.1.1\n100.64.1.0/24",
         },
         "persistent.ips[]": {
           label: "Enter value",
-          placeholder: "1.1.1.1",
+          example: "1.1.1.1",
         },
         "persistent.files": {
           label: "document",
           description:
             "Loads a collection of resident addresses from an external file.",
-          placeholder: "/etc/oxidns/persistent_ips.txt",
+          example: "/etc/oxidns/persistent_ips.txt",
         },
         "persistent.files[]": {
           label: "Enter value",
-          placeholder: "/etc/oxidns/persistent_ips.txt",
+          example: "/etc/oxidns/persistent_ips.txt",
         },
         min_ttl: {
           label: "Dynamic item minimum TTL",
@@ -2027,18 +2026,18 @@ export const enUSPluginDefined = {
         cache_dir: {
           label: "Download cache directory",
           description: "Download cache directory.",
-          placeholder: "./upgrade/cache",
+          example: "./upgrade/cache",
         },
         backup_dir: {
           label: "Backup directory",
           description: "Back up the directory before replacing.",
-          placeholder: "./upgrade/backups",
+          example: "./upgrade/backups",
         },
         webui_dir: {
           label: "WebUI directory",
           description:
             "The directory where WebUI static resources are installed during upgrade.",
-          placeholder: "./webui",
+          example: "/opt/oxidns/webui",
         },
         skip_webui: {
           label: "Skip WebUI upgrade",
@@ -2058,12 +2057,12 @@ export const enUSPluginDefined = {
           label: "Outbound profile",
           description:
             "Reference a profile from network.outbound.profiles for upgrade downloads.",
-          placeholder: "profile-1",
+          example: "profile-1",
         },
         socks5: {
           label: "SOCKS5 proxy",
           description: "SOCKS5 proxy used when updating downloads.",
-          placeholder: "127.0.0.1:1080",
+          example: "127.0.0.1:1080",
         },
         insecure_skip_verify: {
           label: "Skip HTTPS certificate verification",
@@ -2084,7 +2083,7 @@ export const enUSPluginDefined = {
           label: "Download items",
           description:
             "Download one or more HTTP/HTTPS files to a local directory and overwrite the target files after the new content is completely written.",
-          placeholder:
+          example:
             '[{"url":"https://example.com/geosite.dat","dir":"/etc/oxidns","filename":"geosite.dat"}]',
         },
         "downloads[]": {
@@ -2093,17 +2092,17 @@ export const enUSPluginDefined = {
         "downloads[].url": {
           label: "URL",
           description: "The HTTP/HTTPS URL of the download.",
-          placeholder: "https://example.com/geosite.dat",
+          example: "https://example.com/geosite.dat",
         },
         "downloads[].dir": {
           label: "Directory",
           description: "The destination directory for downloaded items.",
-          placeholder: "/etc/oxidns",
+          example: "/etc/oxidns",
         },
         "downloads[].filename": {
           label: "File name",
           description: "The target file name of the downloaded item.",
-          placeholder: "geosite.dat",
+          example: "geosite.dat",
         },
         timeout: {
           label: "Timeout",
@@ -2113,13 +2112,13 @@ export const enUSPluginDefined = {
           label: "Outbound profile",
           description:
             "Reference a profile from network.outbound.profiles to control download resolver and proxy settings.",
-          placeholder: "profile-1",
+          example: "profile-1",
         },
         socks5: {
           label: "SOCKS5 proxy",
           description:
             "All download connections will be initiated through this SOCKS5 proxy.",
-          placeholder: "127.0.0.1:1080",
+          example: "127.0.0.1:1080",
         },
         startup_if_missing: {
           label: "Complete missing files at startup",
@@ -2154,10 +2153,10 @@ export const enUSPluginDefined = {
           label: "Provider reference",
           description:
             "Execute targeted provider reload one by one in the order declared in args.",
-          placeholder: "$geosite_cn\n$geoip_cn",
+          example: "$geosite_cn\n$geoip_cn",
         },
         "args[]": {
-          placeholder: "geosite_cn",
+          example: "geosite_cn",
         },
       },
       quickSetup: {
@@ -2201,7 +2200,7 @@ export const enUSPluginDefined = {
         jobs: {
           label: "task list",
           description: "Define one or more background tasks.",
-          placeholder:
+          example:
             '[{"name":"refresh_sets","interval":"5m","executors":["$seq_refresh"]}]',
         },
         "jobs[]": {
@@ -2211,38 +2210,38 @@ export const enUSPluginDefined = {
           label: "Task name",
           description:
             "Task name, used for logging and runtime identification.",
-          placeholder: "refresh_sets",
+          example: "refresh_sets",
         },
         "jobs[].schedule": {
           label: "Cron expression",
           description:
             "Schedule tasks using standard 5-field cron expressions.",
-          placeholder: "0 */6 * * *",
+          example: "0 */6 * * *",
         },
         "jobs[].interval": {
           label: "fixed interval",
           description: "Schedule tasks with simple fixed intervals.",
-          placeholder: "5m",
+          example: "5m",
         },
         "jobs[].executors": {
           label: "Executor",
           description:
             "Defines a list of executors to be executed sequentially when a task is triggered.",
-          placeholder: "$seq_refresh\ndebug_print cron refresh",
+          example: "$seq_refresh\ndebug_print cron refresh",
         },
         "jobs[].executors.$executor_ref": {
           label: "Reference executor",
-          placeholder: "seq_refresh",
+          example: "seq_refresh",
         },
         "jobs[].executors.$input": {
           label: "Enter value",
-          placeholder: "debug_print cron refresh",
+          example: "debug_print cron refresh",
         },
         timezone: {
           label: "time zone",
           description:
             "Specify the time zone for all schedule tasks under the current cron plugin.",
-          placeholder: "Asia/Shanghai",
+          example: "Asia/Shanghai",
         },
       },
       metrics: {
@@ -2269,15 +2268,15 @@ export const enUSPluginDefined = {
           label: "match expression",
           description:
             "One matcher expression per line, supporting $tag, shortcut expressions and ! negation",
-          placeholder: "$match_tag\nqname domain:example.com\n!$blocked",
+          example: "$match_tag\nqname domain:example.com\n!$blocked",
         },
         "args.$matcher_ref": {
           label: "Quote matcher",
-          placeholder: "match_tag",
+          example: "match_tag",
         },
         "args.$input": {
           label: "Enter value",
-          placeholder: "qname domain:example.com",
+          example: "qname domain:example.com",
         },
       },
     },
@@ -2288,16 +2287,16 @@ export const enUSPluginDefined = {
         args: {
           label: "Domain name rules",
           description: "Define the source of domain name matching rules.",
-          placeholder:
+          example:
             "full:login.example.com\ndomain:example.com\nkeyword:cdn\nregexp:^api[0-9]+\\.example\\.net$\n$core_domains\n&/etc/oxidns/domains.txt",
         },
         "args.$provider_ref": {
           label: "Reference provider",
-          placeholder: "core_domains",
+          example: "core_domains",
         },
         "args.$input": {
           label: "Enter value",
-          placeholder: "regexp:^api[0-9]+\\.example\\.net$",
+          example: "regexp:^api[0-9]+\\.example\\.net$",
         },
       },
       quickSetup: {
@@ -2313,11 +2312,11 @@ export const enUSPluginDefined = {
           label: "Provider reference",
           description:
             "Use the $provider_tag form to reference the provider that implements contains_question.",
-          placeholder: "$ad_rules\n$shared_domains",
+          example: "$ad_rules\n$shared_domains",
         },
         "args[]": {
           label: "Reference provider",
-          placeholder: "ad_rules",
+          example: "ad_rules",
         },
       },
       quickSetup: {
@@ -2332,11 +2331,11 @@ export const enUSPluginDefined = {
           label: "QType text or numeric",
           description:
             "Define a set of query types that are allowed to hit, supporting text such as A/AAAA and corresponding values.",
-          placeholder: "A\nAAAA\n1\n28",
+          example: "A\nAAAA\n1\n28",
         },
         "args[]": {
           label: "Enter value",
-          placeholder: "A",
+          example: "A",
         },
       },
       quickSetup: {
@@ -2351,11 +2350,11 @@ export const enUSPluginDefined = {
           label: "QClass text or numeric",
           description:
             "Define a set of query categories that are allowed to hit, and support text such as IN/CH and corresponding values.",
-          placeholder: "IN\n1",
+          example: "IN\n1",
         },
         "args[]": {
           label: "Enter value",
-          placeholder: "IN",
+          example: "IN",
         },
       },
       quickSetup: {
@@ -2369,15 +2368,15 @@ export const enUSPluginDefined = {
         args: {
           label: "IP / CIDR / ip_set",
           description: "Define client source address matching conditions.",
-          placeholder: "192.168.0.0/16\n$lan_ip_set",
+          example: "192.168.0.0/16\n$lan_ip_set",
         },
         "args.$provider_ref": {
           label: "Reference provider",
-          placeholder: "lan_ip_set",
+          example: "lan_ip_set",
         },
         "args.$input": {
           label: "Enter value",
-          placeholder: "192.168.0.0/16",
+          example: "192.168.0.0/16",
         },
       },
       quickSetup: {
@@ -2391,15 +2390,15 @@ export const enUSPluginDefined = {
         args: {
           label: "IP / CIDR / ip_set",
           description: "Define reply address matching conditions.",
-          placeholder: "100.64.0.0/10\n$special_targets",
+          example: "100.64.0.0/10\n$special_targets",
         },
         "args.$provider_ref": {
           label: "Reference provider",
-          placeholder: "special_targets",
+          example: "special_targets",
         },
         "args.$input": {
           label: "Enter value",
-          placeholder: "100.64.0.0/10",
+          example: "100.64.0.0/10",
         },
       },
       quickSetup: {
@@ -2413,15 +2412,15 @@ export const enUSPluginDefined = {
         args: {
           label: "IP / CIDR / ip_set",
           description: "Define PTR reverse check address matching conditions.",
-          placeholder: "192.168.0.0/16\n$lan_ip_set",
+          example: "192.168.0.0/16\n$lan_ip_set",
         },
         "args.$provider_ref": {
           label: "Reference provider",
-          placeholder: "lan_ip_set",
+          example: "lan_ip_set",
         },
         "args.$input": {
           label: "Enter value",
-          placeholder: "192.168.0.0/16",
+          example: "192.168.0.0/16",
         },
       },
       quickSetup: {
@@ -2436,16 +2435,16 @@ export const enUSPluginDefined = {
           label: "CNAME rules",
           description:
             "Defines the response CNAME target domain name matching rule source.",
-          placeholder:
+          example:
             "full:alias.example.com\ndomain:example.com\nkeyword:cdn\nregexp:^edge[0-9]+\\.example\\.net$\n$core_domains\n&/etc/oxidns/cnames.txt",
         },
         "args.$provider_ref": {
           label: "Reference provider",
-          placeholder: "core_domains",
+          example: "core_domains",
         },
         "args.$input": {
           label: "Enter value",
-          placeholder: "regexp:^edge[0-9]+\\.example\\.net$",
+          example: "regexp:^edge[0-9]+\\.example\\.net$",
         },
       },
       quickSetup: {
@@ -2460,11 +2459,11 @@ export const enUSPluginDefined = {
           label: "RCode text or value",
           description:
             "Defines a set of response codes that allow hits, and supports text and corresponding values ​​such as SERVFAIL/NXDOMAIN.",
-          placeholder: "NOERROR\nSERVFAIL\nNXDOMAIN\n0\n2\n3",
+          example: "NOERROR\nSERVFAIL\nNXDOMAIN\n0\n2\n3",
         },
         "args[]": {
           label: "Enter value",
-          placeholder: "NOERROR",
+          example: "NOERROR",
         },
       },
       quickSetup: {
@@ -2489,11 +2488,11 @@ export const enUSPluginDefined = {
         args: {
           label: "Mark",
           description: "Defines the set of marks that are allowed to hit.",
-          placeholder: "100\n200",
+          example: "100\n200",
         },
         "args[]": {
           label: "Enter value",
-          placeholder: "100",
+          example: "100",
         },
       },
       quickSetup: {
@@ -2508,11 +2507,11 @@ export const enUSPluginDefined = {
           label: "environment variable conditions",
           description:
             "Define environment variable conditions that need to be met at the same time.",
-          placeholder: "PROFILE=prod\nFEATURE_X",
+          example: "PROFILE=prod\nFEATURE_X",
         },
         "args[]": {
           label: "Enter value",
-          placeholder: "PROFILE=prod",
+          example: "PROFILE=prod",
         },
       },
       quickSetup: {
@@ -2526,11 +2525,11 @@ export const enUSPluginDefined = {
         args: {
           label: "Probability",
           description: "Define matcher hit probability.",
-          placeholder: "0.1",
+          example: "0.1",
         },
         "args[]": {
           label: "Enter value",
-          placeholder: "0.1",
+          example: "0.1",
         },
       },
       quickSetup: {
@@ -2545,13 +2544,13 @@ export const enUSPluginDefined = {
           label: "Timezone",
           description:
             "Leave empty to use the system timezone, or enter a valid IANA timezone to make policy evaluation explicit.",
-          placeholder: "Asia/Shanghai",
+          example: "Asia/Shanghai",
         },
         periods: {
           label: "Time windows",
           description:
             "Any matching window returns true; time, weekday, and day-of-month conditions in one window must all match.",
-          placeholder:
+          example:
             '[{"start":"09:00","end":"18:00","weekdays":["mon","tue","wed","thu","fri"]}]',
         },
         "periods[]": {
@@ -2560,18 +2559,18 @@ export const enUSPluginDefined = {
         "periods[].start": {
           label: "Start time",
           description: "Use HH:MM and set it together with the end time.",
-          placeholder: "09:00",
+          example: "09:00",
         },
         "periods[].end": {
           label: "End time",
           description:
             "Use HH:MM; an earlier value than start crosses midnight.",
-          placeholder: "18:00",
+          example: "18:00",
         },
         "periods[].weekdays": {
           label: "Weekdays",
           description: "Leave empty to allow every weekday.",
-          placeholder: "mon\ntue\nwed\nthu\nfri",
+          example: "mon\ntue\nwed\nthu\nfri",
         },
         "periods[].weekdays[]": {
           options: {
@@ -2588,10 +2587,10 @@ export const enUSPluginDefined = {
           label: "Days of month",
           description:
             "Enter values from 1 to 31; leave empty to allow every day.",
-          placeholder: "1\n15",
+          example: "1\n15",
         },
         "periods[].monthdays[]": {
-          placeholder: "1",
+          example: "1",
         },
       },
       quickSetup: {
@@ -2646,7 +2645,7 @@ export const enUSPluginDefined = {
         args: {
           label: "expression",
           description: "Universal string expression matcher expression.",
-          placeholder: "url_path prefix /dns-",
+          example: "url_path prefix /dns-",
         },
       },
       quickSetup: {
@@ -2671,31 +2670,31 @@ export const enUSPluginDefined = {
         exps: {
           label: "Inline domain name rules",
           description: "Define a list of inline domain name expressions.",
-          placeholder:
+          example:
             "full:login.example.com\ndomain:example.com\nkeyword:cdn\nregexp:^api[0-9]+\\.example\\.net$",
         },
         "exps[]": {
           label: "Enter value",
-          placeholder: "full:login.example.com",
+          example: "full:login.example.com",
         },
         files: {
           label: "Domain name rules file",
           description: "Specify a list of external rule file paths.",
-          placeholder: "/etc/oxidns/domains.txt",
+          example: "/etc/oxidns/domains.txt",
         },
         "files[]": {
           label: "Enter value",
-          placeholder: "/etc/oxidns/domains.txt",
+          example: "/etc/oxidns/domains.txt",
         },
         sets: {
           label: "Downstream Provider",
           description:
             "Reference other providers with domain name matching capabilities.",
-          placeholder: "shared_domains\nshared_geosite",
+          example: "shared_domains\nshared_geosite",
         },
         "sets[]": {
           label: "Reference provider",
-          placeholder: "shared_domains",
+          example: "shared_domains",
         },
       },
     },
@@ -2708,17 +2707,17 @@ export const enUSPluginDefined = {
           label: "Rules file",
           description:
             "Specify the path to the local rules file managed by this dynamic provider.",
-          placeholder: "/etc/oxidns/learned-allow.txt",
+          example: "/etc/oxidns/learned-allow.txt",
         },
         bootstrap_rules: {
           label: "Initial rules",
           description:
             "Initial rules are only written if the rules file does not exist.",
-          placeholder: "full:login.example.com\ndomain:example.com",
+          example: "full:login.example.com\ndomain:example.com",
         },
         "bootstrap_rules[]": {
           label: "Enter value",
-          placeholder: "full:login.example.com",
+          example: "full:login.example.com",
         },
         queue_size: {
           label: "Queue size",
@@ -2743,17 +2742,17 @@ export const enUSPluginDefined = {
         file: {
           label: "geosite.dat",
           description: "Specify the geosite.dat file path.",
-          placeholder: "/etc/oxidns/geosite.dat",
+          example: "/etc/oxidns/geosite.dat",
         },
         selectors: {
           label: "Selector",
           description:
             "Extract some rules by code, and also support code@attribute syntax to further filter by attribute.",
-          placeholder: "cn\ngeolocation-!cn",
+          example: "cn\ngeolocation-!cn",
         },
         "selectors[]": {
           label: "Enter value",
-          placeholder: "cn",
+          example: "cn",
         },
       },
     },
@@ -2764,20 +2763,20 @@ export const enUSPluginDefined = {
         rules: {
           label: "inline rules",
           description: "Provides a subset of AdGuard Home DNS rules.",
-          placeholder: "||ads.example.com^\n@@||safe.ads.example.com^",
+          example: "||ads.example.com^\n@@||safe.ads.example.com^",
         },
         "rules[]": {
           label: "Enter value",
-          placeholder: "||ads.example.com^",
+          example: "||ads.example.com^",
         },
         files: {
           label: "rules file",
           description: "Load from external rules file.",
-          placeholder: "/etc/oxidns/adguard.txt",
+          example: "/etc/oxidns/adguard.txt",
         },
         "files[]": {
           label: "Enter value",
-          placeholder: "/etc/oxidns/adguard.txt",
+          example: "/etc/oxidns/adguard.txt",
         },
       },
     },
@@ -2789,29 +2788,29 @@ export const enUSPluginDefined = {
         ips: {
           label: "IP / CIDR",
           description: "Define a list of inline IP or CIDR rules.",
-          placeholder: "192.168.0.0/16\nfd00::/8",
+          example: "192.168.0.0/16\nfd00::/8",
         },
         "ips[]": {
           label: "Enter value",
-          placeholder: "192.168.0.0/16",
+          example: "192.168.0.0/16",
         },
         files: {
           label: "IP rules file",
           description: "Specify a list of external IP rule file paths.",
-          placeholder: "/etc/oxidns/ips.txt",
+          example: "/etc/oxidns/ips.txt",
         },
         "files[]": {
           label: "Enter value",
-          placeholder: "/etc/oxidns/ips.txt",
+          example: "/etc/oxidns/ips.txt",
         },
         sets: {
           label: "Downstream Provider",
           description: "Reference other ip_set instances.",
-          placeholder: "shared_ip_set\nshared_geoip",
+          example: "shared_ip_set\nshared_geoip",
         },
         "sets[]": {
           label: "Reference provider",
-          placeholder: "shared_ip_set",
+          example: "shared_ip_set",
         },
       },
     },
@@ -2822,16 +2821,16 @@ export const enUSPluginDefined = {
         file: {
           label: "geoip.dat",
           description: "Specify the geoip.dat file path.",
-          placeholder: "/etc/oxidns/geoip.dat",
+          example: "/etc/oxidns/geoip.dat",
         },
         selectors: {
           label: "Selector",
           description: "Extract IP/CIDR collection by code.",
-          placeholder: "cn",
+          example: "cn",
         },
         "selectors[]": {
           label: "Enter value",
-          placeholder: "cn",
+          example: "cn",
         },
       },
     },

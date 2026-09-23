@@ -515,8 +515,8 @@ pub fn extract_client_ip(
             );
             return addr;
         }
-        // X-Forwarded-For may contain multiple IPs, take the first one (original
-        // client)
+        // X-Forwarded-For may contain multiple IPs, take the first one
+        // (original client)
         if let Some(first_ip) = ip_str.split(',').next() {
             let first_ip = first_ip.trim();
             if let Ok(ip) = first_ip.parse::<std::net::IpAddr>() {

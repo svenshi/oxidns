@@ -231,7 +231,8 @@ async fn dynamic_domain_set_sync_append_flushes_without_batch_or_tick() {
 
     // Give the worker time to consume Tokio interval's immediate first tick.
     // Without an explicit flush for waited appends, this request would then sit
-    // in the pending batch until the 60s interval and exceed the caller timeout.
+    // in the pending batch until the 60s interval and exceed the caller
+    // timeout.
     tokio::time::sleep(Duration::from_millis(25)).await;
     backend
         .append_rules_sync(

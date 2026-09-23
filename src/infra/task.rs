@@ -109,6 +109,7 @@ pub(crate) enum TaskTriggerKind {
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
 pub(crate) struct TaskRunContext {
+    pub run_id: u64,
     pub trigger: TaskTriggerKind,
     pub scheduled_at_unix_ms: i64,
 }
@@ -120,7 +121,7 @@ pub(crate) enum TaskEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TriggerOutcome {
-    Started,
+    Started { run_id: u64 },
     AlreadyRunning,
     Unavailable,
 }
@@ -415,6 +416,7 @@ struct ScheduledTask {
     task: TaskFn,
     on_event: Option<TaskEventHandler>,
     running: Option<JoinHandle<()>>,
+    next_run_id: u64,
 }
 
 impl std::fmt::Debug for ScheduledTask {
@@ -751,6 +753,7 @@ fn handle_command(
                     task,
                     on_event,
                     running: None,
+                    next_run_id: 1,
                 },
             );
         }
@@ -878,14 +881,17 @@ async fn run_due_tasks(
             }
 
             if task.running.is_none() {
-                spawn_entry = Some((
-                    id,
-                    task.task.clone(),
-                    TaskRunContext {
-                        trigger: TaskTriggerKind::Scheduled,
-                        scheduled_at_unix_ms: scheduled_at.unix_ms,
-                    },
-                ));
+                if let Some(context) =
+                    take_run_context(task, TaskTriggerKind::Scheduled, scheduled_at.unix_ms)
+                {
+                    spawn_entry = Some((id, task.task.clone(), context));
+                } else {
+                    error!(
+                        task = %task.name,
+                        "Scheduled task exhausted its run id space; automatic execution is paused"
+                    );
+                    task.next_run = None;
+                }
             } else {
                 notify_task_event(
                     &task.name,
@@ -905,9 +911,7 @@ async fn run_due_tasks(
     reap_finished_handles(finished).await;
     for (id, run, context) in to_spawn {
         if let Some(task) = tasks.get_mut(&id) {
-            task.running = Some(tokio::spawn(async move {
-                run(context).await;
-            }));
+            task.running = Some(spawn_task_future(&task.name, run, context, None));
         }
     }
 }
@@ -940,15 +944,67 @@ async fn handle_trigger(trigger: TriggerCommand, tasks: &mut HashMap<u64, Schedu
     }
 
     let now = task.clock.now_for(&task.schedule);
+    let Some(context) = take_run_context(task, TaskTriggerKind::Manual, now.unix_ms) else {
+        error!(task = %task.name, "Task exhausted its run id space");
+        let _ = trigger.reply.send(TriggerOutcome::Unavailable);
+        return;
+    };
     let run = task.task.clone();
-    task.running = Some(tokio::spawn(async move {
-        run(TaskRunContext {
-            trigger: TaskTriggerKind::Manual,
-            scheduled_at_unix_ms: now.unix_ms,
-        })
-        .await;
-    }));
-    let _ = trigger.reply.send(TriggerOutcome::Started);
+    task.running = Some(spawn_task_future(
+        &task.name,
+        run,
+        context,
+        Some(trigger.reply),
+    ));
+}
+
+fn take_run_context(
+    task: &mut ScheduledTask,
+    trigger: TaskTriggerKind,
+    scheduled_at_unix_ms: i64,
+) -> Option<TaskRunContext> {
+    let run_id = task.next_run_id;
+    task.next_run_id = run_id.checked_add(1)?;
+    Some(TaskRunContext {
+        run_id,
+        trigger,
+        scheduled_at_unix_ms,
+    })
+}
+
+/// Invoke the task factory inside its own Tokio task so synchronous setup
+/// cannot block the scheduler actor. Manual starts are acknowledged only after
+/// the factory returns, ensuring task-owned guards exist before `Started` is
+/// sent.
+fn spawn_task_future(
+    task_name: &str,
+    run: TaskFn,
+    context: TaskRunContext,
+    manual_reply: Option<oneshot::Sender<TriggerOutcome>>,
+) -> JoinHandle<()> {
+    let task_name = task_name.to_owned();
+    tokio::spawn(async move {
+        let future = match catch_unwind(AssertUnwindSafe(|| run(context))) {
+            Ok(future) => future,
+            Err(_) => {
+                error!(
+                    task = %task_name,
+                    run_id = context.run_id,
+                    "Periodic task panicked while creating its future"
+                );
+                if let Some(reply) = manual_reply {
+                    let _ = reply.send(TriggerOutcome::Unavailable);
+                }
+                return;
+            }
+        };
+        if let Some(reply) = manual_reply {
+            let _ = reply.send(TriggerOutcome::Started {
+                run_id: context.run_id,
+            });
+        }
+        future.await;
+    })
 }
 
 fn compute_next_deadline(
@@ -1090,6 +1146,20 @@ where
     global_task_center().spawn_fixed(name, interval, options, task)
 }
 
+#[cfg(all(test, feature = "api", feature = "plugin-cron"))]
+pub(crate) fn spawn_fixed_isolated<F, Fut>(
+    name: impl Into<String>,
+    interval: Duration,
+    options: TaskOptions,
+    task: F,
+) -> DnsResult<ManagedTaskHandle>
+where
+    F: Fn(TaskRunContext) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    TaskCenter::new().spawn_fixed(name, interval, options, task)
+}
+
 #[cfg(feature = "_task-cron")]
 pub(crate) fn spawn_cron<F, Fut>(
     name: impl Into<String>,
@@ -1118,8 +1188,8 @@ pub async fn stop_all() {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Barrier, Mutex};
 
     use tokio::sync::{Notify, oneshot};
 
@@ -1131,6 +1201,11 @@ mod tests {
                 return;
             }
             tokio::task::yield_now().await;
+            // A cooperative yield alone is not sufficient when a scheduler
+            // has to be recreated on platforms with slower thread wakeups
+            // (notably Windows). Give the runtime a small real scheduling
+            // window before checking again.
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
         panic!("timed out waiting for {label}");
     }
@@ -1138,6 +1213,13 @@ mod tests {
     async fn flush_tasks() {
         for _ in 0..4 {
             tokio::task::yield_now().await;
+        }
+    }
+
+    fn started_run_id(outcome: TriggerOutcome) -> u64 {
+        match outcome {
+            TriggerOutcome::Started { run_id } => run_id,
+            other => panic!("expected started outcome, got {other:?}"),
         }
     }
 
@@ -1291,7 +1373,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(slow_handle.trigger().await, TriggerOutcome::Started);
+        assert_eq!(started_run_id(slow_handle.trigger().await), 1);
         slow_started.notified().await;
         let stop = tokio::spawn(async move {
             slow_handle.stop().await;
@@ -1299,10 +1381,12 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         assert_eq!(
-            tokio::time::timeout(Duration::from_millis(100), responsive_handle.trigger())
-                .await
-                .expect("another task should remain controllable while abort is reaped"),
-            TriggerOutcome::Started
+            started_run_id(
+                tokio::time::timeout(Duration::from_millis(100), responsive_handle.trigger())
+                    .await
+                    .expect("another task should remain controllable while abort is reaped"),
+            ),
+            1
         );
         tokio::time::timeout(Duration::from_secs(1), stop)
             .await
@@ -1657,7 +1741,8 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(handle.trigger().await, TriggerOutcome::Started);
+        let manual_run_id = started_run_id(handle.trigger().await);
+        assert_eq!(manual_run_id, 1);
         started.notified().await;
         assert_eq!(
             handle.trigger().await,
@@ -1666,6 +1751,7 @@ mod tests {
         );
         assert_eq!(skipped.load(Ordering::Relaxed), 1);
         assert_eq!(contexts.lock().unwrap()[0].trigger, TaskTriggerKind::Manual);
+        assert_eq!(contexts.lock().unwrap()[0].run_id, manual_run_id);
 
         advance_and_flush(Duration::from_secs(60)).await;
         wait_until("scheduled overlap to be skipped", || {
@@ -1682,6 +1768,83 @@ mod tests {
         assert!(released.load(Ordering::Acquire));
         assert_eq!(handle.trigger().await, TriggerOutcome::Unavailable);
         blocker.notify_waiters();
+    }
+
+    #[tokio::test]
+    async fn manual_trigger_reports_unavailable_when_future_construction_panics() {
+        let center = TaskCenter::new();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_task = attempts.clone();
+        let handle = center
+            .spawn_fixed(
+                "manual-construction-panic",
+                Duration::from_secs(60),
+                TaskOptions::default(),
+                move |_| {
+                    if attempts_task.fetch_add(1, Ordering::AcqRel) == 0 {
+                        panic!("intentional future construction panic");
+                    }
+                    std::future::ready(())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(handle.trigger().await, TriggerOutcome::Unavailable);
+        assert_eq!(started_run_id(handle.trigger().await), 2);
+        assert_eq!(attempts.load(Ordering::Acquire), 2);
+
+        handle.stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn future_construction_does_not_block_scheduler_actor() {
+        let center = TaskCenter::new();
+        let factory_started = Arc::new(Notify::new());
+        let release_factory = Arc::new(Barrier::new(2));
+        let factory_started_task = factory_started.clone();
+        let release_factory_task = release_factory.clone();
+        let slow_handle = center
+            .spawn_fixed(
+                "slow-future-construction",
+                Duration::from_secs(60),
+                TaskOptions::default(),
+                move |_| {
+                    factory_started_task.notify_one();
+                    release_factory_task.wait();
+                    std::future::ready(())
+                },
+            )
+            .unwrap();
+        let responsive_handle = center
+            .spawn_fixed(
+                "responsive-future-construction",
+                Duration::from_secs(60),
+                TaskOptions::default(),
+                |_| std::future::ready(()),
+            )
+            .unwrap();
+
+        let slow_trigger = {
+            let slow_handle = slow_handle.clone();
+            tokio::spawn(async move { slow_handle.trigger().await })
+        };
+        factory_started.notified().await;
+        assert!(!slow_trigger.is_finished());
+
+        let responsive_outcome =
+            tokio::time::timeout(Duration::from_secs(1), responsive_handle.trigger()).await;
+        release_factory.wait();
+
+        assert_eq!(
+            started_run_id(
+                responsive_outcome.expect("slow construction must not block the scheduler actor")
+            ),
+            1
+        );
+        assert_eq!(started_run_id(slow_trigger.await.unwrap()), 1);
+
+        slow_handle.stop().await;
+        responsive_handle.stop().await;
     }
 
     #[tokio::test(start_paused = true)]
@@ -1708,7 +1871,7 @@ mod tests {
             .unwrap();
 
         advance_and_flush(Duration::from_secs(5)).await;
-        assert_eq!(handle.trigger().await, TriggerOutcome::Started);
+        assert_eq!(started_run_id(handle.trigger().await), 1);
         wait_until("manual run", || runs.load(Ordering::Relaxed) == 1).await;
 
         advance_and_flush(Duration::from_secs(5)).await;
@@ -1863,6 +2026,7 @@ mod tests {
                 task,
                 on_event: None,
                 running: None,
+                next_run_id: 1,
             },
         )]);
         let mut deadlines = BinaryHeap::new();
@@ -1909,7 +2073,7 @@ mod tests {
             )
             .unwrap();
 
-            assert_eq!(handle.trigger().await, TriggerOutcome::Started, "{kind:?}");
+            assert_eq!(started_run_id(handle.trigger().await), 1, "{kind:?}");
             started.notified().await;
             assert_eq!(
                 handle.trigger().await,
@@ -1958,12 +2122,12 @@ mod tests {
                 },
             )
             .unwrap();
-            assert_eq!(panic_handle.trigger().await, TriggerOutcome::Started);
+            assert_eq!(started_run_id(panic_handle.trigger().await), 1);
             wait_until("first symmetric panic attempt", || {
                 attempts.load(Ordering::Acquire) == 1
             })
             .await;
-            assert_eq!(panic_handle.trigger().await, TriggerOutcome::Started);
+            assert_eq!(started_run_id(panic_handle.trigger().await), 2);
             wait_until("second symmetric panic attempt", || {
                 attempts.load(Ordering::Acquire) == 2
             })
@@ -1993,21 +2157,29 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(handle.trigger().await, TriggerOutcome::Started);
+        assert_eq!(started_run_id(handle.trigger().await), 1);
         wait_until("manual cron run", || !contexts.lock().unwrap().is_empty()).await;
         advance_and_flush(Duration::from_secs(61)).await;
         wait_until("scheduled cron run", || contexts.lock().unwrap().len() >= 2).await;
 
-        let triggers = contexts
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|context| context.trigger)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            triggers,
-            [TaskTriggerKind::Manual, TaskTriggerKind::Scheduled]
-        );
+        {
+            let contexts = contexts.lock().unwrap();
+            let triggers = contexts
+                .iter()
+                .map(|context| context.trigger)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                triggers,
+                [TaskTriggerKind::Manual, TaskTriggerKind::Scheduled]
+            );
+            assert_eq!(
+                contexts
+                    .iter()
+                    .map(|context| context.run_id)
+                    .collect::<Vec<_>>(),
+                [1, 2]
+            );
+        }
         handle.stop().await;
         assert_eq!(handle.trigger().await, TriggerOutcome::Unavailable);
     }
@@ -2067,15 +2239,16 @@ mod tests {
                 task,
                 on_event: None,
                 running: None,
+                next_run_id: 1,
             },
         )]);
         let mut deadlines = BinaryHeap::new();
         let deadline = next_run.unwrap();
         deadlines.push(Reverse((deadline.instant, 1)));
-        for _ in 0..128 {
+        for run_index in 0..128 {
             let (reply, response) = oneshot::channel();
             handle_trigger(TriggerCommand { id: 1, reply }, &mut tasks).await;
-            assert_eq!(response.await.unwrap(), TriggerOutcome::Started);
+            assert_eq!(started_run_id(response.await.unwrap()), run_index + 1);
             assert_eq!(tasks[&1].next_run, Some(deadline));
             stop_running_task(tasks.get_mut(&1).unwrap()).await;
         }
@@ -2103,6 +2276,7 @@ mod tests {
             task: task.clone(),
             on_event: None,
             running: None,
+            next_run_id: 1,
         };
         let mut tasks = HashMap::from([(1, make_task("removed")), (2, make_task("kept"))]);
         let deadline = next_run.unwrap();
@@ -2173,7 +2347,7 @@ mod tests {
             control_tx: retry_channels.control_tx,
             trigger_tx: retry_channels.trigger_tx,
         };
-        assert_eq!(handle.trigger().await, TriggerOutcome::Started);
+        assert_eq!(started_run_id(handle.trigger().await), 1);
         handle.stop().await;
     }
 
@@ -2201,7 +2375,7 @@ mod tests {
                 )
                 .unwrap();
 
-            assert_eq!(handle.trigger().await, TriggerOutcome::Started);
+            assert_eq!(started_run_id(handle.trigger().await), 1);
             wait_until("run after scheduler restart", || {
                 runs.load(Ordering::Relaxed) == 1
             })

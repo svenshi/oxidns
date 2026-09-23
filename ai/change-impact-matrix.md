@@ -19,14 +19,14 @@ conditions below.
 
 | Change | Required synchronization | Minimum validation |
 |---|---|---|
-| Internal Rust refactor with unchanged behavior | Module declarations and in-repository imports; architecture notes when boundaries change. Do not add root-crate compatibility facades unless an explicitly supported Rust API requires one | `cargo check`, focused tests, `cargo +nightly fmt --all --check`; use `just check` before merge |
-| New, renamed, or removed plugin type | Plugin module/factory, dependency kind, Cargo feature and bundle when gated, `tests/plugin_integration.rs`, plugin docs in both languages, WebUI definition/i18n, README capability lists, example config when relevant | Feature-on/off checks, plugin integration tests, `just check`, WebUI typecheck |
-| Plugin config field, enum, default, or validation change | Rust config parser, integration tests, Chinese/English plugin reference, WebUI schema and both locales, `config.yaml` when canonical defaults change, README when behavior is prominent | Focused unit/integration tests, config validation, WebUI typecheck, docs build for non-trivial docs changes |
+| Internal Rust refactor with unchanged behavior | Module declarations and in-repository imports; architecture notes when boundaries change. Do not add root-crate compatibility facades unless an explicitly supported Rust API requires one | Fast compile, focused tests, and formatting recipes from `justfile`; normal gate before merge |
+| New, renamed, or removed plugin type | Plugin module/factory, dependency kind, Cargo feature and bundle when gated, `tests/plugin_integration.rs`, plugin docs in maintained languages, WebUI definition/i18n, README capability lists, example config when relevant | Feature-off/on and integration recipes from `justfile`, plus applicable WebUI package scripts |
+| Plugin config field, enum, default, or validation change | Rust config parser, integration tests, maintained plugin references, WebUI schema/locales, runnable config when canonical defaults change, README when behavior is prominent | Focused unit/integration and config checks, plus applicable WebUI/docs package scripts |
 | Matcher/provider rule syntax change | Parser and error diagnostics, unit tests, `tests/plugin_integration.rs`, Chinese/English configuration docs, affected provider/plugin reference, examples | Focused parser tests plus plugin integration tests |
 | Sequence control-flow or quick-setup change | Parser, dependency analysis, runtime chain behavior, graph output, integration tests, configuration docs, WebUI sequence tooling when syntax changes | Sequence unit tests, `tests/plugin_integration.rs`, `just check` |
 | Management API route, method, payload, status, auth, or CORS change | Rust handler/router tests, `docs/docs/api.mdx` and English counterpart, WebUI API client/store/types and UI states | Focused API tests, `cargo test`, WebUI test/typecheck/lint as affected |
-| WebUI-only behavior or presentation change | Component/store/schema, translation keys and both locales, `ai/webui.md` if conventions change, user docs for workflow changes | `pnpm typecheck`, plus `pnpm lint`, `pnpm test`, and `pnpm build` according to scope |
-| Cargo feature or bundle membership change | `Cargo.toml`, cfg guards, `build_info`, feature-gating tests, custom-build assumptions, plugin-dev bundle documentation, user custom-build docs | Target feature disabled/enabled checks, `just check-matrix` when feasible |
+| WebUI-only behavior or presentation change | Component/store/schema, translation keys and maintained locales, `ai/webui.md` if conventions change, user docs for workflow changes | Applicable scripts from `webui/package.json` and jobs from `.github/workflows/webui-ci.yml` |
+| Cargo feature or bundle membership change | `Cargo.toml`, cfg guards, `src/build_info.rs`, feature-gating tests, custom-build workflow and user custom-build docs | Target feature disabled/enabled checks and the applicable feature recipes from `justfile` |
 | DNS message model, wire codec, or response classification change | `crates/proto`, `src/core`, compatibility tests, and hot-path review when request processing changes | Workspace tests, `tests/message_hickory_compat.rs`, request-path and resource-safety review |
 | Server, upstream, resolver, TLS, HTTP, or QUIC behavior change | Feature graph, transport tests, integration tests, protocol docs in both languages, config examples, release target compatibility | Focused transport tests, all-feature tests, slim bundle checks, cross-platform CI where cfg-specific |
 | Cache, fallback, rewrite, or synthetic-response semantics change | Unit tests for positive/negative/error paths, plugin integration, metrics/docs when counters change, persistence compatibility when serialized data changes | Focused tests, `cargo test cache` or subsystem filter, plugin integration, hot-path and resource-bound review |
@@ -63,15 +63,19 @@ the PR and the applicable release notes.
 
 ## Documentation Sources of Truth
 
-- `AGENTS.md`: concise repository-wide rules and entry points.
-- `ai/architecture.md`: internal architecture and dependency boundaries.
-- `ai/plugin-dev.md`: plugin registration, features, tests, and docs sync.
-- `ai/webui.md`: frontend architecture, i18n, schemas, and visual rules.
-- `ai/testing-strategy.md`: validation depth and CI parity.
-- `ai/performance.md`: performance evidence and regression rules.
-- `ai/operations-runbook.md`: operational diagnosis and recovery.
-- `ai/release-process.md`: release preparation and publication verification.
-- `docs/docs/` and the English i18n tree: user-facing behavior.
+Current facts come first from their maintained project surfaces:
+
+- `Cargo.toml`, workspace manifests, `src/config/`, and `config*.yaml` own build
+  and configuration state.
+- Rust registration/modules, API routes, WebUI definitions/locales, and tests
+  own the contracts they implement.
+- `justfile`, workspace `package.json` scripts, `.githooks/`, and
+  `.github/workflows/` own exact validation and publication behavior.
+- `docs/docs/` and the English i18n tree own user-facing behavior.
+
+`AGENTS.md` and the topic documents in `ai/` explain stable architecture,
+selection criteria, and workflow rationale. They are navigation and policy, not
+parallel inventories of the project state.
 
 When internal mechanics change without user-visible impact, update AI guidance
 only if the rule or workflow changed. When behavior changes, update both

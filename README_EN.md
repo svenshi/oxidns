@@ -165,6 +165,19 @@ Join the Telegram group to chat with the author and other users: [**@OXIDNS** ·
 
 ---
 
+## Maintainer
+
+OxiDNS is created and primarily maintained by [Sven Shi](https://github.com/svenshi).
+
+I'm currently exploring new opportunities in **backend engineering, infrastructure,
+networking**, and engineering roles involving **Rust**.
+
+If your team is working on systems, networking, or infrastructure problems similar
+to those explored in OxiDNS and you think my experience could be a good fit,
+feel free to reach out via [email](mailto:isvenshi@gmail.com).
+
+---
+
 ## Support Project Development
 
 If OxiDNS is useful to you, you can support its ongoing development and maintenance through WeChat Pay or Alipay. Support is entirely optional, and every contribution is sincerely appreciated.

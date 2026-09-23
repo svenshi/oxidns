@@ -141,6 +141,10 @@ export const zhCNWebui = {
     emptyConfigItems: "暂无配置项，点击下方按钮新增。",
     addConfigItem: "新增配置项",
     selectPlaceholder: "请选择",
+    examplePlaceholder: "例如：{value}",
+    configExampleLabel: "示例",
+    restoreDefaultValue: "恢复默认值：{value}",
+    clearConfigValue: "清除显式配置",
     configHelpLabel: "{label} 配置说明",
     arraySyntaxValue: "值",
     arraySyntaxPlugin: "插件",
@@ -351,6 +355,23 @@ export const zhCNWebui = {
     paramOptional: "参数 (可选)",
     notCompiled: "未编译",
   },
+  download: {
+    title: "下载文件",
+    download: "下载",
+    downloadAll: "下载全部",
+    downloading: "下载中…",
+    loading: "正在读取下载清单…",
+    empty: "没有可下载的文件",
+    loadFailed: "无法读取下载清单",
+    runFailed: "下载请求失败",
+    busy: "已有下载正在运行，请稍后再试",
+    success: "下载完成：成功 {count} 项",
+    partialFailure:
+      "下载结束：成功 {succeeded} 项，失败 {failed} 项。详情请查看日志。",
+    runtimeHint:
+      "以下为正在运行的下载清单。下载会覆盖目标文件；需要重新加载规则时，请另行刷新对应 provider。",
+    retry: "刷新清单",
+  },
   cron: {
     yamlMustBeObject: "cron 配置必须是 YAML 对象",
     taskTab: "任务",
@@ -377,10 +398,18 @@ export const zhCNWebui = {
     taskCount: "任务数",
     runNow: "手动运行",
     runStarting: "正在启动",
-    runStarted: "任务“{name}”已开始运行",
+    runExecuting: "执行中",
+    runCompleted: "已完成",
     runBusy: "任务“{name}”正在运行，请稍后再试",
+    runNotFound: "任务“{name}”已不存在，请刷新配置后重试",
     runUnavailable: "任务“{name}”暂时无法启动，请稍后再试",
-    runFailed: "启动任务“{name}”失败",
+    runStartUnconfirmed: "无法确认任务“{name}”是否已启动",
+    runPartialFailure:
+      "任务“{name}”已结束，但有 {count} 个执行器失败，请查看日志",
+    runExecutionFailed: "任务“{name}”执行失败，请查看日志",
+    runCancelled: "任务“{name}”已取消",
+    runStatusLost: "任务“{name}”的运行状态已丢失，请查看日志",
+    runStatusSyncFailed: "同步 Cron 任务运行状态失败，将自动重试",
   },
   dynamicDomainSet: {
     ruleFileLabel: "规则文件",
@@ -664,6 +693,17 @@ export const zhCNWebui = {
     restartDialogDesc:
       "将以新进程替换正在运行的服务。期间 DNS 解析会短暂中断，所有内存中的状态（如缓存）将被清空。配置会先保存到磁盘再触发重启。",
     confirmRestart: "确认重启",
+  },
+  configPatch: {
+    title: "无法无损应用此修改",
+    description:
+      "当前 YAML 结构无法在完整保留源格式的前提下安全修改。你可以在 YAML 编辑器中检查最小局部替换，或确认强制替换并立即保存；文件其他区域不会改变。",
+    affectedPath: "影响路径：{path}",
+    review: "在 YAML 编辑器中检查",
+    force: "强制局部替换",
+    forceWarning: "强制执行会重建上述局部，该局部的注释和排版可能发生变化。",
+    forceUnavailable:
+      "无法生成边界明确且有效的局部替换，请在 YAML 编辑器中手动修改此路径。",
   },
   configEditor: {
     title: "配置文件编辑器",

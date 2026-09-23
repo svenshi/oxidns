@@ -155,6 +155,18 @@ OxiDNS 仍在持续开发，适合高级家庭网络、软路由、Homelab 和�
 
 ---
 
+## 维护者
+
+OxiDNS 主要由 [Sven Shi](https://github.com/svenshi) 创建和维护。
+
+我目前正在关注新的职业机会，方向包括 **后端工程、基础设施、网络系统**，
+以及涉及 **Rust** 的工程岗位。
+
+如果你所在的团队正在解决类似 OxiDNS 所涉及的系统、网络或基础设施问题，
+并认为我的经验可能适合，欢迎通过 [Email](mailto:isvenshi@gmail.com) 与我联系。
+
+---
+
 ## 社区交流
 
 欢迎加入 Telegram 群与作者和其他用户交流：[**@OXIDNS** · https://t.me/oxidns](https://t.me/oxidns)
