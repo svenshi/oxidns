@@ -1,0 +1,193 @@
+// SPDX-FileCopyrightText: 2025 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Operating-system service management and platform dispatch.
+
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+
+use service_manager::{
+    RestartPolicy, ServiceInstallCtx, ServiceLabel, ServiceLevel, ServiceManager, ServiceStartCtx,
+    ServiceStatus, ServiceStatusCtx, ServiceStopCtx, ServiceUninstallCtx, native_service_manager,
+};
+
+use crate::infra::error::{DnsError, Result};
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::try_dispatch_windows_service;
+
+const SERVICE_LABEL: &str = "oxidns";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceInstallConfig {
+    pub working_dir: PathBuf,
+    pub config: PathBuf,
+}
+
+pub fn status() -> Result<ServiceStatus> {
+    let service_manage = service_manager()?;
+    let status = service_manage.status(ServiceStatusCtx {
+        label: service_label()?,
+    })?;
+    Ok(status)
+}
+
+pub fn restart_installed_service() -> Result<()> {
+    stop()?;
+    start()
+}
+
+pub fn install(options: ServiceInstallConfig) -> Result<()> {
+    let working_dir = normalize_working_dir(&options.working_dir)?;
+    let config_path = normalize_config_path(&options.config, &working_dir)?;
+    let program = std::env::current_exe()
+        .map_err(|err| DnsError::runtime(format!("Failed to resolve current executable: {err}")))?;
+
+    let mut manager = native_service_manager().map_err(|err| {
+        DnsError::runtime(format!("Failed to detect native service manager: {err}"))
+    })?;
+    manager
+        .set_level(ServiceLevel::System)
+        .map_err(|err| DnsError::runtime(format!("Failed to set service level: {err}")))?;
+
+    let ctx = ServiceInstallCtx {
+        label: service_label()?,
+        program,
+        args: vec![
+            OsString::from("start"),
+            OsString::from("-c"),
+            config_path.into_os_string(),
+            OsString::from("-d"),
+            working_dir.clone().into_os_string(),
+        ],
+        contents: None,
+        username: None,
+        // Keep `-d` as the single source of truth for runtime-relative paths.
+        // This lets OxiDNS report path problems after startup instead of the
+        // service manager failing an earlier chdir with less context.
+        working_directory: None,
+        environment: None,
+        autostart: true,
+        restart_policy: RestartPolicy::OnFailure {
+            delay_secs: Some(3),
+            max_retries: None,
+            reset_after_secs: None,
+        },
+    };
+    manager
+        .install(ctx)
+        .map_err(|err| DnsError::runtime(format!("Failed to install service: {err}")))?;
+    #[cfg(windows)]
+    windows::configure_restart_recovery()?;
+    Ok(())
+}
+
+pub fn start() -> Result<()> {
+    let manager = service_manager()?;
+    manager
+        .start(ServiceStartCtx {
+            label: service_label()?,
+        })
+        .map_err(|err| DnsError::runtime(format!("Failed to start service: {err}")))?;
+    Ok(())
+}
+
+pub fn stop() -> Result<()> {
+    let manager = service_manager()?;
+    manager
+        .stop(ServiceStopCtx {
+            label: service_label()?,
+        })
+        .map_err(|err| DnsError::runtime(format!("Failed to stop service: {err}")))?;
+    Ok(())
+}
+
+pub fn uninstall() -> Result<()> {
+    let manager = service_manager()?;
+    manager
+        .uninstall(ServiceUninstallCtx {
+            label: service_label()?,
+        })
+        .map_err(|err| DnsError::runtime(format!("Failed to uninstall service: {err}")))?;
+    Ok(())
+}
+
+fn service_manager() -> Result<Box<dyn ServiceManager>> {
+    let mut manager = native_service_manager().map_err(|err| {
+        DnsError::runtime(format!("Failed to detect native service manager: {err}"))
+    })?;
+    manager
+        .set_level(ServiceLevel::System)
+        .map_err(|err| DnsError::runtime(format!("Failed to set service level: {err}")))?;
+    Ok(manager)
+}
+
+fn service_label() -> Result<ServiceLabel> {
+    SERVICE_LABEL
+        .parse()
+        .map_err(|err| DnsError::runtime(format!("Invalid service label '{SERVICE_LABEL}': {err}")))
+}
+
+fn normalize_working_dir(path: &Path) -> Result<PathBuf> {
+    if !path.is_absolute() {
+        return Err(DnsError::config(format!(
+            "service install working directory must be absolute: {}",
+            path.display()
+        )));
+    }
+    std::fs::create_dir_all(path).map_err(|err| {
+        DnsError::runtime(format!(
+            "Failed to create working directory {}: {}",
+            path.display(),
+            err
+        ))
+    })?;
+    path.canonicalize().map_err(|err| {
+        DnsError::runtime(format!(
+            "Failed to canonicalize working directory {}: {}",
+            path.display(),
+            err
+        ))
+    })
+}
+
+fn normalize_config_path(path: &Path, working_dir: &Path) -> Result<PathBuf> {
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        working_dir.join(path)
+    };
+    candidate.canonicalize().map_err(|err| {
+        DnsError::runtime(format!(
+            "Failed to canonicalize config path {}: {}",
+            candidate.display(),
+            err
+        ))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_working_dir_rejects_relative_paths() {
+        let err = normalize_working_dir(Path::new("relative/path")).expect_err("should fail");
+        assert!(err.to_string().contains("must be absolute"));
+    }
+
+    #[test]
+    fn packaged_systemd_unit_uses_cli_working_dir_only() {
+        let unit = include_str!("../../../packaging/oxidns.service");
+        assert!(
+            !unit
+                .lines()
+                .any(|line| line.starts_with("WorkingDirectory="))
+        );
+        assert!(unit.contains(
+            "ExecStart=/usr/bin/oxidns start -c /etc/oxidns/config.yaml -d /var/lib/oxidns"
+        ));
+    }
+}

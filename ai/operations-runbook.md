@@ -2,9 +2,10 @@
 
 Commands below illustrate the operational sequence. Resolve current CLI flags
 from `src/cli/` or `oxidns --help`, service behavior from
-`src/infra/service.rs`, API routes from `src/api/` and the generated API docs,
-and configuration/defaults from `src/config/` plus `config*.yaml`. Those project
-surfaces override copied examples in this runbook.
+`src/infra/service/`, API routes from `src/api/`
+and the generated API docs, and configuration/defaults from `src/config/`
+plus `config*.yaml`. Those project surfaces override copied examples in this
+runbook.
 
 This runbook is for maintaining a deployed OxiDNS instance. User-facing command
 and API references remain under `docs/docs/`; this document defines the order
@@ -46,9 +47,10 @@ service is active.
 ## Service Operations
 
 Use the service operations exposed by `oxidns service --help`. Their supported
-actions and generated definitions come from `src/infra/service.rs`; packaged
-unit files and installation scripts define distribution-specific behavior.
-Inspect the installed definition rather than relying on copied defaults.
+actions and generated definitions come from `src/infra/service/`; packaged
+unit files and installation scripts define
+distribution-specific behavior. Inspect the installed definition rather than
+relying on copied defaults.
 Repeated restarts indicate a persistent startup problem and must not be treated
 as recovery.
 

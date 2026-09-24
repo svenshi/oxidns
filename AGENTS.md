@@ -29,7 +29,7 @@
 - `src/infra/upgrade/` separates release discovery, download, archive handling, progress reporting, and binary/WebUI installation while exposing upgrade orchestration through `mod.rs`.
 - `src/plugin/` is the main extension surface and is split into server, executor, matcher, and provider categories. The category `mod.rs` files and factory registration are the authoritative plugin inventory.
 - Category-local lifecycle, parsing, metrics, and protocol/provider semantics stay within their owning plugin package unless the abstraction is genuinely subsystem-neutral.
-- Service-management implementation lives in `src/infra/service.rs`; `src/cli/service.rs` only adapts CLI service options.
+- Service-management operations and platform dispatch live in `src/infra/service/mod.rs`, with Windows SCM handling in `windows.rs`; `src/cli/service.rs` only adapts CLI service options.
 - Workspace members and their dependency relationships are declared by the root and member `Cargo.toml` files. Each member owns its local API and stability policy.
 - `tests/plugin_integration.rs` covers config parsing, plugin registry wiring, sequence quick-setup, and live server integration.
 - `tests/message_hickory_compat.rs` validates message codec compatibility behavior against Hickory.
