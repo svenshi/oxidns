@@ -1,6 +1,6 @@
 [package]
 name = "oxidns-proto"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 authors = ["Sven Shi <isvenshi@gmail.com>"]
 description = "DNS message model and wire codec primitives used by OxiDNS"

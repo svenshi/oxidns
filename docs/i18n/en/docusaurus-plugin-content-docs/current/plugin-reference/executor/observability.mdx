@@ -165,7 +165,9 @@ Repeated content is shared and larger responses are compressed losslessly, with 
 
 <Admonition type="note" title="Upgrading to v2">
 
-Upgrades automatically use the new storage while keeping configuration and existing APIs compatible. **History starts afresh; old history is no longer displayed.** Old data is not automatically deleted and continues to occupy space. Neither “clear history” nor retention cleanup removes it. To reclaim that space, back up first and remove only the intended recorder's old tables; never delete a potentially shared database file.
+Upgrades automatically use the new storage while keeping configuration and existing APIs compatible. **History starts afresh; old history is no longer displayed.** Old data is not automatically deleted and continues to occupy space. Neither “clear history” nor retention cleanup removes it.
+
+To reclaim space manually, resolve the actual `path` first (relative paths use the runtime working directory), stop OxiDNS, and back up the database. If the SQLite file belongs only to the target recorder, delete the database and its matching `-wal` and `-shm` files, then restart the service; this also discards that recorder's v1 and v2 history. If multiple recorders share the file, do not delete it. After backing up, identify and remove only the intended recorder's old v1 tables to preserve the other recorders' history.
 
 </Admonition>
 

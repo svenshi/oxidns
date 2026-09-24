@@ -7,10 +7,35 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 
 # 版本更新
 
+## 2026-09
+
+<div className="release-stack">
+   <ReleaseCard version="v1.6.0" badge="Minor Release" date="2026-09-24" defaultOpen>
+       **版本定位**
+
+       - v1.6.0 更新查询记录存储与 Windows 服务恢复机制，并改进计划任务、手动下载、DNS 网络传输和 WebUI 配置编辑。
+       - **升级前必读**：`query_recorder` 的 v2 历史从空库开始；旧 v1 历史不迁移，也不会自动删除。Windows 已安装服务必须重新安装，才能获得新的 SCM 恢复设置。
+
+       **主要变更**
+
+       - `perf(query_recorder)`：v2 在 SQLite 中复用重复的执行路径和问题列表，并在后台写入线程无损压缩适用的响应快照；配置、查询 API、过滤、统计与 SSE 接口保持兼容。
+       - `fix(service)`：Windows 服务的应用重启改由 SCM 恢复动作处理，安装时配置失败后的自动重启；修复重启信号丢失及服务停止后的恢复流程。
+       - `feat(cron/download)`：计划任务支持手动执行与结果状态追踪；下载执行器增加手动触发和运行状态控制，WebUI 提供对应操作界面。
+       - `fix(network/ripset)`：改进 UDP 回复源地址与 Windows UDP 套接字处理，避免客户端断开导致在途 DNS 工作丢失；支持 ipset 协议 6，并保留 nftset 查询错误。
+       - `feat(webui)`：改进插件配置字段布局、YAML 编辑保真度与配置补丁确认流程。
+
+       **配置与升级说明**
+
+       - 根 crate 版本为 `1.6.0`，`oxidns-proto` 为 `0.1.6`，`oxidns-ripset` 为 `0.1.3`；release tag 使用 `v1.6.0`。现有 YAML 配置可直接升级，建议先运行 `oxidns check -c <配置文件>`。
+       - **查询记录迁移**：升级后只显示新写入的 v2 历史。旧 v1 表既不会读取或迁移，也不会被 WebUI/API 的“清空历史”或保留期清理删除，仍占用磁盘空间。若要清空整个历史并释放空间，先停止 OxiDNS、备份数据库；确认 `query_recorder.path` 指向该 recorder 独占的文件后，手动删除该 SQLite 文件及其同名 `-wal`、`-shm` 文件，再启动服务。多个 recorder 共用数据库文件时不要整文件删除；请保留文件，并按插件参考文档仅清理目标 recorder 的旧表。
+       - **Windows 服务迁移**：以管理员身份停止并卸载旧服务，替换为 v1.6.0 二进制后，使用原工作目录和配置路径重新安装并启动：`oxidns.exe service stop`、`oxidns.exe service uninstall`、`oxidns.exe service install -d <绝对工作目录> -c <配置文件>`、`oxidns.exe service start`。仅替换二进制或重启旧服务不会更新 SCM 恢复设置。
+   </ReleaseCard>
+</div>
+
 ## 2026-08
 
 <div className="release-stack">
-   <ReleaseCard version="v1.5.2" badge="Patch Release" date="2026-08-18" defaultOpen>
+   <ReleaseCard version="v1.5.2" badge="Patch Release" date="2026-08-18">
        **版本定位**
 
        - Patch Release。v1.5.2 聚焦可信客户端 IP 还原、双栈优选探针隔离、大规则集加载效率与运行时生命周期安全，并补齐 sequence mark 集合操作和发布链路可靠性。
