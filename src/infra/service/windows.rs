@@ -1,44 +1,38 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Operating-system service management infrastructure.
-//!
-//! This module wraps the `service-manager` crate to install, start, stop,
-//! restart, and uninstall OxiDNS as a system service. It keeps
-//! platform-specific service manager details outside the normal foreground
-//! application runner.
+//! Windows SCM dispatch, service lifecycle, and restart recovery.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use service_manager::{
-    RestartPolicy, ServiceInstallCtx, ServiceLabel, ServiceLevel, ServiceManager, ServiceStartCtx,
-    ServiceStatus, ServiceStatusCtx, ServiceStopCtx, ServiceUninstallCtx, native_service_manager,
+use windows_service::service::{
+    ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept,
+    ServiceExitCode, ServiceFailureActions, ServiceFailureResetPeriod, ServiceState,
+    ServiceStatus as WinServiceStatus, ServiceType,
 };
-#[cfg(windows)]
-use windows_service::{
-    define_windows_service,
-    service::{
-        ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept,
-        ServiceExitCode, ServiceFailureActions, ServiceFailureResetPeriod, ServiceState,
-        ServiceStatus as WinServiceStatus, ServiceType,
-    },
-    service_control_handler::{self, ServiceControlHandlerResult},
-    service_dispatcher,
-    service_manager::{ServiceManager as WindowsServiceManager, ServiceManagerAccess},
+use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
+use windows_service::service_manager::{
+    ServiceManager as WindowsServiceManager, ServiceManagerAccess,
 };
+use windows_service::{define_windows_service, service_dispatcher};
 
+use super::SERVICE_LABEL;
 use crate::infra::error::{DnsError, Result};
 
-#[cfg(windows)]
 define_windows_service!(ffi_service_main, windows_service_entry);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowsServiceEvent {
+    StopRequested,
+    AppExited,
+}
 
 /// Try to hand control to the Windows SCM dispatcher.
 ///
 /// Returns `true` if the process was started by SCM (service loop ran to
 /// completion), `false` if running in foreground mode.  Must be called from
 /// the main thread before any other work.
-#[cfg(windows)]
 pub fn try_dispatch_windows_service() -> Result<bool> {
     match service_dispatcher::start("oxidns", ffi_service_main) {
         Ok(()) => Ok(true),
@@ -50,24 +44,22 @@ pub fn try_dispatch_windows_service() -> Result<bool> {
     }
 }
 
-#[cfg(windows)]
 fn windows_service_entry(_args: Vec<OsString>) {
     if let Err(e) = run_windows_service() {
         eprintln!("OxiDNS service error: {e}");
     }
 }
 
-#[cfg(windows)]
 fn run_windows_service() -> Result<()> {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+    let (shutdown_tx, shutdown_rx) = mpsc::channel::<WindowsServiceEvent>();
     let ctrl_tx = shutdown_tx.clone();
 
     let status_handle = service_control_handler::register("oxidns", move |event| match event {
         ServiceControl::Stop | ServiceControl::Shutdown => {
-            let _ = ctrl_tx.send(());
+            let _ = ctrl_tx.send(WindowsServiceEvent::StopRequested);
             ServiceControlHandlerResult::NoError
         }
         ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
@@ -100,7 +92,7 @@ fn run_windows_service() -> Result<()> {
     let app_tx = shutdown_tx;
     let app_thread = std::thread::spawn(move || {
         let result = crate::app::run_windows_service(start_opts);
-        let _ = app_tx.send(());
+        let _ = app_tx.send(WindowsServiceEvent::AppExited);
         result
     });
 
@@ -111,20 +103,22 @@ fn run_windows_service() -> Result<()> {
     )?;
 
     // Block until SCM sends stop or the app exits on its own.
-    let _ = shutdown_rx.recv();
+    let event = shutdown_rx
+        .recv()
+        .map_err(|err| DnsError::runtime(format!("Windows service event channel closed: {err}")))?;
 
     let _ = report(ServiceState::StopPending, ServiceControlAccept::empty(), 5);
 
-    let shutdown_signal = if app_thread.is_finished() {
-        app_thread
+    let shutdown_signal = match event {
+        WindowsServiceEvent::AppExited => app_thread
             .join()
-            .unwrap_or_else(|_| Err(DnsError::runtime("app thread panicked")))
-    } else {
-        // App is still running after receiving stop — exit so SCM marks us
-        // stopped.
-        let _ = report(ServiceState::Stopped, ServiceControlAccept::empty(), 0);
-        std::process::exit(0);
-    }?;
+            .unwrap_or_else(|_| Err(DnsError::runtime("app thread panicked")))?,
+        WindowsServiceEvent::StopRequested => {
+            // An explicit SCM stop is a clean shutdown.
+            let _ = report(ServiceState::Stopped, ServiceControlAccept::empty(), 0);
+            std::process::exit(0);
+        }
+    };
 
     if matches!(shutdown_signal, crate::app::ShutdownSignal::Restart) {
         // Do not report a clean STOPPED state: terminate with a failure code so
@@ -136,13 +130,11 @@ fn run_windows_service() -> Result<()> {
     Ok(())
 }
 
-#[cfg(windows)]
 fn parse_windows_service_start_config() -> Result<crate::app::StartConfig> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     parse_start_config_args(&args)
 }
 
-#[cfg(windows)]
 fn parse_start_config_args(args: &[OsString]) -> Result<crate::app::StartConfig> {
     let Some(command) = args.first().and_then(|arg| arg.to_str()) else {
         return Err(DnsError::runtime(
@@ -209,80 +201,13 @@ fn parse_start_config_args(args: &[OsString]) -> Result<crate::app::StartConfig>
     })
 }
 
-const SERVICE_LABEL: &str = "oxidns";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServiceInstallConfig {
-    pub working_dir: PathBuf,
-    pub config: PathBuf,
-}
-
-pub fn status() -> Result<ServiceStatus> {
-    let service_manage = service_manager()?;
-    let status = service_manage.status(ServiceStatusCtx {
-        label: service_label()?,
-    })?;
-    Ok(status)
-}
-
-pub fn restart_installed_service() -> Result<()> {
-    stop()?;
-    start()
-}
-
-pub fn install(options: ServiceInstallConfig) -> Result<()> {
-    let working_dir = normalize_working_dir(&options.working_dir)?;
-    let config_path = normalize_config_path(&options.config, &working_dir)?;
-    let program = std::env::current_exe()
-        .map_err(|err| DnsError::runtime(format!("Failed to resolve current executable: {err}")))?;
-
-    let mut manager = native_service_manager().map_err(|err| {
-        DnsError::runtime(format!("Failed to detect native service manager: {err}"))
-    })?;
-    manager
-        .set_level(ServiceLevel::System)
-        .map_err(|err| DnsError::runtime(format!("Failed to set service level: {err}")))?;
-
-    let ctx = ServiceInstallCtx {
-        label: service_label()?,
-        program,
-        args: vec![
-            OsString::from("start"),
-            OsString::from("-c"),
-            config_path.into_os_string(),
-            OsString::from("-d"),
-            working_dir.clone().into_os_string(),
-        ],
-        contents: None,
-        username: None,
-        // Keep `-d` as the single source of truth for runtime-relative paths.
-        // This lets OxiDNS report path problems after startup instead of the
-        // service manager failing an earlier chdir with less context.
-        working_directory: None,
-        environment: None,
-        autostart: true,
-        restart_policy: RestartPolicy::OnFailure {
-            delay_secs: Some(3),
-            max_retries: None,
-            reset_after_secs: None,
-        },
-    };
-    manager
-        .install(ctx)
-        .map_err(|err| DnsError::runtime(format!("Failed to install service: {err}")))?;
-    #[cfg(windows)]
-    configure_windows_restart_recovery()?;
-    Ok(())
-}
-
 /// Configure the SCM recovery action used by application-requested restarts.
 ///
 /// The `service-manager` Windows backend installs services through `sc create`,
 /// which cannot apply its `RestartPolicy`. Configure the equivalent recovery
 /// action through the native Windows service API after installation, while the
 /// installer is still running outside the SCM service dispatcher.
-#[cfg(windows)]
-pub(crate) fn configure_windows_restart_recovery() -> Result<()> {
+pub(super) fn configure_restart_recovery() -> Result<()> {
     let manager =
         WindowsServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
             .map_err(|err| DnsError::runtime(format!("Failed to open Windows SCM: {err}")))?;
@@ -314,7 +239,6 @@ pub(crate) fn configure_windows_restart_recovery() -> Result<()> {
     Ok(())
 }
 
-#[cfg(windows)]
 fn windows_restart_failure_actions() -> ServiceFailureActions {
     use std::time::Duration;
 
@@ -329,95 +253,10 @@ fn windows_restart_failure_actions() -> ServiceFailureActions {
     }
 }
 
-pub fn start() -> Result<()> {
-    let manager = service_manager()?;
-    manager
-        .start(ServiceStartCtx {
-            label: service_label()?,
-        })
-        .map_err(|err| DnsError::runtime(format!("Failed to start service: {err}")))?;
-    Ok(())
-}
-
-pub fn stop() -> Result<()> {
-    let manager = service_manager()?;
-    manager
-        .stop(ServiceStopCtx {
-            label: service_label()?,
-        })
-        .map_err(|err| DnsError::runtime(format!("Failed to stop service: {err}")))?;
-    Ok(())
-}
-
-pub fn uninstall() -> Result<()> {
-    let manager = service_manager()?;
-    manager
-        .uninstall(ServiceUninstallCtx {
-            label: service_label()?,
-        })
-        .map_err(|err| DnsError::runtime(format!("Failed to uninstall service: {err}")))?;
-    Ok(())
-}
-
-fn service_manager() -> Result<Box<dyn ServiceManager>> {
-    let mut manager = native_service_manager().map_err(|err| {
-        DnsError::runtime(format!("Failed to detect native service manager: {err}"))
-    })?;
-    manager
-        .set_level(ServiceLevel::System)
-        .map_err(|err| DnsError::runtime(format!("Failed to set service level: {err}")))?;
-    Ok(manager)
-}
-
-fn service_label() -> Result<ServiceLabel> {
-    SERVICE_LABEL
-        .parse()
-        .map_err(|err| DnsError::runtime(format!("Invalid service label '{SERVICE_LABEL}': {err}")))
-}
-
-fn normalize_working_dir(path: &Path) -> Result<PathBuf> {
-    if !path.is_absolute() {
-        return Err(DnsError::config(format!(
-            "service install working directory must be absolute: {}",
-            path.display()
-        )));
-    }
-    std::fs::create_dir_all(path).map_err(|err| {
-        DnsError::runtime(format!(
-            "Failed to create working directory {}: {}",
-            path.display(),
-            err
-        ))
-    })?;
-    path.canonicalize().map_err(|err| {
-        DnsError::runtime(format!(
-            "Failed to canonicalize working directory {}: {}",
-            path.display(),
-            err
-        ))
-    })
-}
-
-fn normalize_config_path(path: &Path, working_dir: &Path) -> Result<PathBuf> {
-    let candidate = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        working_dir.join(path)
-    };
-    candidate.canonicalize().map_err(|err| {
-        DnsError::runtime(format!(
-            "Failed to canonicalize config path {}: {}",
-            candidate.display(),
-            err
-        ))
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[cfg(windows)]
     #[test]
     fn windows_recovery_restarts_after_three_seconds() {
         use std::time::Duration;
@@ -434,21 +273,20 @@ mod tests {
     }
 
     #[test]
-    fn normalize_working_dir_rejects_relative_paths() {
-        let err = normalize_working_dir(Path::new("relative/path")).expect_err("should fail");
-        assert!(err.to_string().contains("must be absolute"));
-    }
+    fn app_exit_event_does_not_depend_on_thread_completion() {
+        use std::sync::mpsc;
+        use std::time::Duration;
 
-    #[test]
-    fn packaged_systemd_unit_uses_cli_working_dir_only() {
-        let unit = include_str!("../../packaging/oxidns.service");
-        assert!(
-            !unit
-                .lines()
-                .any(|line| line.starts_with("WorkingDirectory="))
-        );
-        assert!(unit.contains(
-            "ExecStart=/usr/bin/oxidns start -c /etc/oxidns/config.yaml -d /var/lib/oxidns"
-        ));
+        let (event_tx, event_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let app_thread = std::thread::spawn(move || {
+            event_tx.send(WindowsServiceEvent::AppExited).unwrap();
+            resume_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
+        let event = event_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(event, WindowsServiceEvent::AppExited);
+        assert!(!app_thread.is_finished());
+        resume_tx.send(()).unwrap();
+        app_thread.join().unwrap();
     }
 }
