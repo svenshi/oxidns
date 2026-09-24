@@ -27,6 +27,32 @@ use ripset::{
     nftset_list_tables, nftset_test,
 };
 
+/// A failed GETSET must preserve the public error classification for addresses
+/// and CIDRs instead of assuming a set without interval support.
+#[test]
+#[ignore]
+fn nftset_missing_set_preserves_operation_errors() {
+    ensure_nft_available();
+    let table = unique_name("oxi_nft_missing");
+    let _g = NftCleanup::new("ip", &table);
+    run_nft(&["add", "table", "ip", &table]);
+    for entry in [
+        IpEntry::new("192.0.2.1".parse().unwrap()),
+        IpEntry::new_cidr("192.0.2.0/24".parse().unwrap()),
+    ] {
+        let result = nftset_add("ip", &table, "missing", entry);
+        assert!(
+            matches!(&result, Err(IpSetError::SetNotFound(name)) if name == "missing"),
+            "expected SetNotFound, got {result:?}"
+        );
+        let result = nftset_del("ip", &table, "missing", entry);
+        assert!(
+            matches!(result, Err(IpSetError::ElementNotFound)),
+            "expected ElementNotFound, got {result:?}"
+        );
+    }
+}
+
 /// Smoke test for OxiDNS's primary nftset use case: add /32 entries to a
 /// `flags interval` ipv4 set under the `ip` family. Mirrors the exact
 /// shape of the proxy_set configuration from issues #122 / #127.

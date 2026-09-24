@@ -22,7 +22,7 @@ use crate::config::types::PluginConfig;
 use crate::core::context::RequestMeta;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::network::listen::{self, parse_listen_addr};
-use crate::infra::network::transport::udp::UdpTransport;
+use crate::infra::network::transport::udp::UdpServerTransport;
 use crate::infra::observability::metrics::{register_metric_source, unregister_metric_source};
 use crate::plugin::dependency::DependencySpec;
 use crate::plugin::server::{RequestHandle, Server, ServerMetrics};
@@ -109,15 +109,24 @@ impl Plugin for UdpServer {
 
     async fn init(&mut self, _context: &crate::plugin::PluginInitContext<'_>) -> Result<()> {
         register_metric_source(self.metrics.clone())?;
-        let (startup_tx, startup_rx) = oneshot::channel();
-        self.spawn_server_task(Some(startup_tx))?;
-        match startup_rx.await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(e)) => Err(DnsError::plugin(e)),
-            Err(_) => Err(DnsError::plugin(
-                "UDP server startup channel closed unexpectedly",
-            )),
+        let result = async {
+            let (startup_tx, startup_rx) = oneshot::channel();
+            self.spawn_server_task(Some(startup_tx))?;
+            match startup_rx.await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => Err(DnsError::plugin(e)),
+                Err(_) => Err(DnsError::plugin(
+                    "UDP server startup channel closed unexpectedly",
+                )),
+            }
         }
+        .await;
+        if result.is_err() {
+            // A plugin whose init fails is not installed in the runtime, so it
+            // must release its own metric registration and startup task.
+            let _ = self.destroy().await;
+        }
+        result
     }
 
     async fn destroy(&self) -> Result<()> {
@@ -158,12 +167,27 @@ async fn run_server(
 ) {
     let mut startup_tx = startup_tx;
     let socket = match build_udp_socket(addr) {
-        Ok(s) => UdpSocket::from_std(s).unwrap(),
+        Ok(s) => s,
         Err(e) => {
             if let Some(tx) = startup_tx.take() {
                 let _ = tx.send(Err(format!("Failed to bind UDP socket to {}: {}", addr, e)));
             }
             error!("Failed to bind UDP socket to {}: {}", addr, e);
+            return;
+        }
+    };
+
+    let transport = match UdpSocket::from_std(socket)
+        .map_err(DnsError::from)
+        .and_then(UdpServerTransport::new)
+    {
+        Ok(transport) => Arc::new(transport),
+        Err(err) => {
+            let message = format!("Failed to initialize UDP listener on {addr}: {err}");
+            if let Some(tx) = startup_tx.take() {
+                let _ = tx.send(Err(message.clone()));
+            }
+            error!("{message}");
             return;
         }
     };
@@ -174,19 +198,19 @@ async fn run_server(
     info!(listen = %addr, "UDP server listening");
     debug!("UDP server event loop started on {}", addr);
 
-    let transport = Arc::new(UdpTransport::new(socket));
     let mut buf = vec![0u8; UDP_RECV_BUFFER_SIZE];
     let tasks = TaskTracker::new();
     loop {
         tokio::select! {
             changed = shutdown_rx.changed() => {
-                if changed.is_ok() && *shutdown_rx.borrow() {
+                if changed.is_err() || *shutdown_rx.borrow() {
                     break;
                 }
             }
             recv = transport.read_message_from(&mut buf) => {
                 match recv {
-                    Ok((msg, src_addr)) => {
+                    Ok((msg, reply_target)) => {
+                        let src_addr = reply_target.peer_addr();
                         let max_payload = msg.max_payload();
                         let handler = handler.clone();
                         let transport = transport.clone();
@@ -195,11 +219,14 @@ async fn run_server(
                             // Use requester-advertised UDP payload limit (EDNS) when encoding
                             // response so oversize replies become TC=1 DNS messages, not raw truncation.
                             if let Err(e) =
-                                transport.write_message_to(&response.response, src_addr, max_payload).await
+                                transport.write_message_to(&response.response, reply_target, max_payload).await
                             {
                                 warn!("Failed to send response to {}: {}", src_addr, e);
                             }
                         });
+                    }
+                    Err(e) if is_client_port_unreachable(&e) => {
+                        debug!(listen = %addr, error = %e, "UDP reply destination is no longer listening");
                     }
                     Err(e) => {
                         warn!("Error receiving message on UDP socket: {}", e);
@@ -212,6 +239,20 @@ async fn run_server(
     tasks.close();
     tasks.wait().await;
     info!(listen = %addr, "UDP server stopped");
+}
+
+/// Classify only the Windows notification for a previous reply to a closed
+/// port.
+fn is_client_port_unreachable(error: &DnsError) -> bool {
+    #[cfg(windows)]
+    {
+        matches!(error, DnsError::Io(error) if error.raw_os_error() == Some(windows::Win32::Networking::WinSock::WSAECONNRESET.0))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = error;
+        false
+    }
 }
 
 /// Build a UDP socket with reuse_address and reuse_port options when available
@@ -271,7 +312,8 @@ impl PluginFactory for UdpServerFactory {
             ))
         })?;
 
-        // Resolve and type-check the entry executor using contextual diagnostics.
+        // Resolve and type-check the entry executor using contextual
+        // diagnostics.
         let entry_executor = init_context.executor("args.entry", &udp_config.entry)?;
 
         let metrics = Arc::new(ServerMetrics::new(plugin_config.tag.clone(), "udp"));
@@ -300,6 +342,22 @@ mod tests {
     use crate::plugin::test_utils::plugin_config;
 
     #[test]
+    fn only_windows_port_unreachable_is_a_client_notification() {
+        assert_eq!(
+            is_client_port_unreachable(&DnsError::Io(std::io::Error::from_raw_os_error(10054))),
+            cfg!(windows)
+        );
+        for error in [
+            DnsError::Io(std::io::ErrorKind::PermissionDenied.into()),
+            DnsError::Io(std::io::ErrorKind::ConnectionReset.into()),
+            DnsError::Io(std::io::Error::from_raw_os_error(10050)),
+            DnsError::protocol("malformed DNS message (10054)"),
+        ] {
+            assert!(!is_client_port_unreachable(&error));
+        }
+    }
+
+    #[test]
     fn test_udp_factory_requires_args() {
         let factory = UdpServerFactory {};
         let cfg = plugin_config("udp", "udp_server", None);
@@ -316,5 +374,78 @@ mod tests {
 
         assert_eq!(addr.ip(), IpAddr::V6(Ipv6Addr::UNSPECIFIED));
         assert_ne!(addr.port(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_udp_init_cleans_up_after_startup_failure() {
+        use tokio::time::{Duration, timeout};
+
+        use crate::plugin::test_utils::{create_plugin_for_test, test_registry};
+        use crate::plugin::{PluginCreateContext, PluginInitContext, UninitializedPlugin};
+
+        let blocker = Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::DGRAM,
+            Some(socket2::Protocol::UDP),
+        )
+        .unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawSocket;
+
+            use windows::Win32::Networking::WinSock as ws;
+
+            // Windows permits a second SO_REUSEADDR binding unless the first
+            // socket explicitly reserves the address for exclusive use.
+            // SAFETY: the live socket and DWORD option value have valid sizes.
+            assert_eq!(
+                unsafe {
+                    ws::setsockopt(
+                        ws::SOCKET(blocker.as_raw_socket() as usize),
+                        ws::SOL_SOCKET,
+                        ws::SO_EXCLUSIVEADDRUSE,
+                        Some(&1u32.to_ne_bytes()),
+                    )
+                },
+                0
+            );
+        }
+        blocker
+            .bind(&"127.0.0.1:0".parse::<SocketAddr>().unwrap().into())
+            .unwrap();
+        let config = plugin_config(
+            "startup_hosts",
+            "hosts",
+            Some(serde_yaml_ng::from_str("entries: []").unwrap()),
+        );
+        let UninitializedPlugin::Executor(executor) =
+            create_plugin_for_test(&crate::plugin::executor::hosts::HostsFactory, &config).unwrap()
+        else {
+            panic!("Expected a hosts executor");
+        };
+        let tag = "udp_failed_startup".to_string();
+        let mut server = UdpServer {
+            tag: tag.clone(),
+            listen: blocker.local_addr().unwrap().as_socket().unwrap(),
+            request_handle: Arc::new(RequestHandle {
+                entry_executor: executor.into(),
+                metrics: None,
+            }),
+            metrics: Arc::new(ServerMetrics::new(tag.clone(), "udp")),
+            shutdown_tx: watch::channel(false).0,
+            task_handle: Mutex::new(None),
+        };
+        let create_context = PluginCreateContext::default();
+        let context = PluginInitContext::new(test_registry(), tag, &create_context);
+        let error = timeout(Duration::from_secs(2), server.init(&context))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("Failed to bind UDP socket"));
+        assert!(server.task_handle.lock().unwrap().is_none());
+        assert!(
+            !crate::infra::observability::metrics::render_prometheus_metrics()
+                .contains("udp_failed_startup")
+        );
     }
 }

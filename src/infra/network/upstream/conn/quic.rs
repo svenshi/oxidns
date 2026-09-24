@@ -49,7 +49,8 @@ impl Connection for QuicConnection {
             conn_id = self.id,
             "Closing QUIC connection, sending CONNECTION_CLOSE frame"
         );
-        // Gracefully close the underlying QUIC connection with error code 0 (no error)
+        // Gracefully close the underlying QUIC connection with error code 0 (no
+        // error)
         self.transport.close(b"closing");
         self.close_notify.notify_waiters();
     }
@@ -83,7 +84,8 @@ impl Connection for QuicConnection {
             return Err(DnsError::protocol("Cannot query on closed QUIC connection"));
         }
 
-        // Open a new bidirectional stream (reader/writer) via connection wrapper
+        // Open a new bidirectional stream (reader/writer) via connection
+        // wrapper
         let (mut reader, mut writer) = match self.transport.open_bi().await {
             Ok((reader, writer)) => (reader, writer),
             Err(e) => {

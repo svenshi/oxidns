@@ -396,8 +396,8 @@ mod tests {
     use crate::proto::Name;
 
     #[test]
-    // Covers the key-specific interpretation layer separately from the wire codec
-    // so malformed known-key payloads can never be mistaken for valid
+    // Covers the key-specific interpretation layer separately from the wire
+    // codec so malformed known-key payloads can never be mistaken for valid
     // structured values.
     fn svc_param_value_from_wire_matrix() {
         let port_443 = 443u16.to_be_bytes();
@@ -440,8 +440,8 @@ mod tests {
     }
 
     #[test]
-    // RFC 9460 known keys have strict value shapes; malformed ones must degrade to
-    // Unknown rather than partially decoding.
+    // RFC 9460 known keys have strict value shapes; malformed ones must degrade
+    // to Unknown rather than partially decoding.
     fn svc_param_value_rejects_invalid_known_shapes() {
         let cases = [
             (0, vec![0]),

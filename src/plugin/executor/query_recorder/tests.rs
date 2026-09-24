@@ -164,10 +164,10 @@ fn pending_record(
 fn test_table_names_include_tag_hash_and_version() {
     let tables = table_names("Recorder.Main");
     assert!(tables.records.starts_with("qr_recorder_main_"));
-    assert!(tables.records.ends_with("_v1_records"));
-    assert!(tables.steps.ends_with("_v1_steps"));
-    assert!(tables.questions.ends_with("_v1_questions"));
-    assert!(tables.meta.ends_with("_v1_meta"));
+    assert!(tables.records.ends_with("_v2_records"));
+    assert!(tables.trace_steps.ends_with("_v2_trace_steps"));
+    assert!(tables.question_sets.ends_with("_v2_question_sets"));
+    assert!(tables.meta.ends_with("_v2_meta"));
 }
 
 #[test]
@@ -1606,4 +1606,165 @@ fn test_resolve_config_rejects_zero_limits() {
     })
     .unwrap();
     assert!(resolve_config(Some(config)).is_err());
+}
+
+#[tokio::test]
+async fn test_v2_shared_events_multi_questions_and_sse_history_agree() {
+    let temp = NamedTempFile::new().unwrap();
+    let config = resolve_config(Some(recorder_config(&temp.path().display().to_string()))).unwrap();
+    let mut plugin = QueryRecorder::new("v2_sse".into(), config);
+    plugin.init_for_test().await.unwrap();
+    let backend = plugin.backend.as_ref().unwrap().clone();
+    let mut receiver = backend.broadcaster.subscribe();
+    for id in 1..=3 {
+        let mut pending = pending_record(
+            id as i64,
+            id,
+            "One.Example.",
+            RecordType::A,
+            Ipv4Addr::LOCALHOST,
+            Some(Rcode::NoError),
+            None,
+            &[("same", "matched"), ("same", "matched")],
+        );
+        pending.request.add_question(Question::new(
+            Name::from_ascii("other.example.").unwrap(),
+            RecordType::AAAA,
+            DNSClass::CH,
+        ));
+        pending
+            .request
+            .add_question(pending.request.questions()[0].clone());
+        backend.enqueue(pending);
+    }
+    flush_backend(&backend).await;
+    let mut streamed = Vec::new();
+    for _ in 0..3 {
+        streamed.push(
+            tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    // The WebUI evaluates qname and qtype with separate `some` predicates;
+    // they may match different questions in the same list.
+    let filter = QueryRecordFilter {
+        qname: Some("one.example".into()),
+        qtype: Some("AAAA".into()),
+        matcher_tag: Some("same".into()),
+        rcode: Some(Rcode::NoError.to_string().to_ascii_lowercase()),
+        ..Default::default()
+    };
+    let records = query_records(backend.clone(), list_query(filter.clone()))
+        .unwrap()
+        .0;
+    assert_eq!(records.len(), 3);
+    for (record, detail) in records.iter().zip(streamed.iter().rev()) {
+        assert_eq!(record, &detail.record);
+        assert!(
+            detail
+                .record
+                .questions_json
+                .iter()
+                .any(|q| q.name.to_ascii_lowercase().contains("one.example"))
+        );
+        assert!(
+            detail
+                .record
+                .questions_json
+                .iter()
+                .any(|q| q.qtype == "AAAA")
+        );
+        assert_eq!(
+            super::store::load_record_detail(backend.clone(), record.id)
+                .unwrap()
+                .unwrap()
+                .steps,
+            detail.steps
+        );
+    }
+    let (total, stats) = load_plugin_stats(
+        backend.clone(),
+        PluginsStatsQuery {
+            since_ms: None,
+            until_ms: None,
+            kind: PluginStatsKind::Matcher,
+            filter: filter.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(total, 3);
+    assert_eq!(stats[0].checked, 6);
+    assert_eq!(stats[0].matched, 6);
+    assert_eq!(stats[0].query_total, 3);
+    let dist = load_qtype_distribution(
+        backend.clone(),
+        DistributionQuery {
+            since_ms: None,
+            until_ms: None,
+            filter,
+        },
+    )
+    .unwrap();
+    assert_eq!(dist.sample_size, 3);
+    assert_eq!(dist.rows.iter().find(|r| r.key == "A").unwrap().count, 6);
+    assert_eq!(backend.dropped_total.load(Ordering::Relaxed), 0);
+    plugin.destroy().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "manual writer queue saturation diagnostic"]
+async fn benchmark_v2_queue_pressure() {
+    let temp = NamedTempFile::new().unwrap();
+    let config = resolve_config(Some(recorder_space_config(
+        &temp.path().display().to_string(),
+    )))
+    .unwrap();
+    let mut plugin = QueryRecorder::new("queue_bench".into(), config);
+    plugin.init_for_test().await.unwrap();
+    let backend = plugin.backend.as_ref().unwrap().clone();
+    let start = std::time::Instant::now();
+    let mut peak_backlog = 0usize;
+    for i in 0..20000 {
+        backend.enqueue(pending_record(
+            i,
+            i as u16,
+            "repeated.example.",
+            RecordType::A,
+            Ipv4Addr::LOCALHOST,
+            Some(Rcode::NoError),
+            None,
+            &[("same", "matched")],
+        ));
+        if i % 500 == 499 {
+            let conn = open_reader_database(&backend.path).unwrap();
+            let committed: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {}", backend.tables.records),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let dropped = backend.dropped_total.load(Ordering::Relaxed);
+            peak_backlog = peak_backlog.max((i as u64 + 1 - dropped - committed as u64) as usize);
+        }
+    }
+    flush_backend(&backend).await;
+    let conn = open_reader_database(&backend.path).unwrap();
+    let committed: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM {}", backend.tables.records),
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let dropped = backend.dropped_total.load(Ordering::Relaxed);
+    println!(
+        "queue_attempted=20000 committed={committed} dropped={dropped} sampled_uncommitted_peak={peak_backlog} elapsed_ms={}",
+        start.elapsed().as_millis()
+    );
+    assert_eq!(committed as u64 + dropped, 20000);
+    assert!(peak_backlog <= 4096 + 256);
+    plugin.destroy().await.unwrap();
 }

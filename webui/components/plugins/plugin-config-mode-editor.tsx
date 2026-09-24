@@ -19,6 +19,7 @@ import {
 import {
   createPluginConfigFormValues,
   isPluginConfigFormValid,
+  mergePluginConfigFormValues,
   PluginConfigFieldsEditor,
   serializePluginConfigValues,
 } from "@/components/plugins/plugin-config-fields-editor";
@@ -74,10 +75,15 @@ export function PluginConfigModeEditor({
   const handleModeChange = (nextMode: "fields" | "yaml") => {
     if (nextMode === "yaml") {
       const serializedValues = serializePluginConfigValues(fields, fieldValues);
-      setYamlText(
-        stringifyArgsLevelPluginConfigYaml(serializedValues, alreadyArgsLevel),
+      const mergedValues = mergePluginConfigFormValues(
+        fields,
+        configuredValues,
+        serializedValues,
       );
-      setConfiguredValues(serializedValues);
+      setYamlText(
+        stringifyArgsLevelPluginConfigYaml(mergedValues, alreadyArgsLevel),
+      );
+      setConfiguredValues(mergedValues);
       setYamlError(null);
       onValidityChange?.(isPluginConfigFormValid(fields, fieldValues));
     }
@@ -85,9 +91,16 @@ export function PluginConfigModeEditor({
   };
 
   const handleFieldChange = (nextValues: Record<string, unknown>) => {
+    const serializedValues = serializePluginConfigValues(fields, nextValues);
+    const mergedValues = mergePluginConfigFormValues(
+      fields,
+      configuredValues,
+      serializedValues,
+    );
     setFieldValues(nextValues);
+    setConfiguredValues(mergedValues);
     onValidityChange?.(isPluginConfigFormValid(fields, nextValues));
-    onChange(serializePluginConfigValues(fields, nextValues));
+    onChange(mergedValues);
   };
 
   const handleYamlChange = (nextYaml: string) => {
