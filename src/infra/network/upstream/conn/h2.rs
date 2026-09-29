@@ -32,6 +32,7 @@ enum H2RecvError {
 
 #[derive(Debug)]
 pub struct H2Connection {
+    connection_info: Arc<ConnectionInfo>,
     id: u16,
     sender: SendRequest<Bytes>,
     using_count: AtomicU16,
@@ -47,7 +48,13 @@ impl Connection for H2Connection {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
-        debug!(conn_id = self.id, "Closing DoH connection");
+        debug!(
+            conn_id = self.id,
+            upstream_tag = %self.connection_info.tag.as_deref().unwrap_or("<untagged>"),
+            upstream_host = %self.connection_info.server_name,
+            upstream_port = self.connection_info.port,
+            "Closing DoH connection"
+        );
         self.close_notify.notify_waiters();
     }
 
@@ -156,6 +163,7 @@ impl ConnectionBuilder<H2Connection> for H2ConnectionBuilder {
         &self,
         conn_id: u16,
         deadline: QueryDeadline,
+        connection_info: Arc<ConnectionInfo>,
     ) -> Result<Arc<H2Connection>> {
         let stream = match deadline
             .run(connect_tcp(
@@ -194,6 +202,7 @@ impl ConnectionBuilder<H2Connection> for H2ConnectionBuilder {
         };
 
         let h2_conn = Arc::new(H2Connection {
+            connection_info,
             id: conn_id,
             sender,
             closed: AtomicBool::new(false),
