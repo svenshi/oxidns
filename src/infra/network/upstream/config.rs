@@ -552,11 +552,21 @@ fn static_remote_ip_from_host(host: &str, dial_addr: Option<IpAddr>) -> Option<I
     }
 
     // 2. Try parsing as IP address
-    if let Ok(ip) = IpAddr::from_str(host) {
-        return Some(ip);
-    }
+    parse_ip_literal(host)
+}
 
-    None
+/// Parse `host` as a literal IP address, unwrapping a `[...]` bracket pair
+/// if present.
+///
+/// `url::Url::host_str()` keeps the brackets around IPv6 hosts (e.g.
+/// `"[::1]"`), which `IpAddr::from_str` rejects, so bracketed IPv6 literals
+/// must be unwrapped before parsing.
+fn parse_ip_literal(host: &str) -> Option<IpAddr> {
+    let unbracketed = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    IpAddr::from_str(unbracketed).ok()
 }
 
 /// Detect the connection type from the config address
