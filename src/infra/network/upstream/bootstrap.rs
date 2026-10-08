@@ -33,7 +33,7 @@ use crate::infra::network::upstream::conn::QuicConnection;
 use crate::infra::network::upstream::conn::{TcpConnection, UdpConnection};
 use crate::infra::network::upstream::pool::reuse::ReusePool;
 use crate::infra::network::upstream::pool::{
-    Connection, ConnectionBuilder, ConnectionPool, DeadlineOutcome, QueryDeadline,
+    Connection, ConnectionBuilder, ConnectionPool, DeadlineOutcome, PoolSize, QueryDeadline,
     QueryTimeoutPolicy,
 };
 use crate::infra::network::upstream::traits::Upstream;
@@ -102,7 +102,7 @@ pub(crate) struct BootstrapUpstream<C: Connection> {
     /// Upstream server domain name (for logging)
     server_name: String,
     /// Connection metadata (includes bootstrap config)
-    connection_info: ConnectionInfo,
+    connection_info: Arc<ConnectionInfo>,
     /// Bootstrap resolver for domain name resolution
     bootstrap: Arc<NameResolver>,
     /// Lock-free connection pool with current resolved IP and TTL deadline.
@@ -149,9 +149,11 @@ impl<C: Connection> BootstrapUpstream<C> {
         connection_info: ConnectionInfo,
         pool_factory: Box<dyn BootstrapPoolFactory<C>>,
     ) -> Self {
+        let connection_info = Arc::new(connection_info);
         let pool: Arc<dyn ConnectionPool<C>> = ReusePool::<C>::new(
-            0,
-            1,
+            connection_info.clone(),
+            connection_info.connection_type,
+            PoolSize::new(0, 1),
             ConnectionInfo::DEFAULT_CONN_IDLE_TIME,
             Box::new(DummyConnectionBuilder {}),
             QueryTimeoutPolicy::Close,
@@ -349,7 +351,12 @@ struct DummyConnectionBuilder {}
 
 #[async_trait]
 impl<C: Connection> ConnectionBuilder<C> for DummyConnectionBuilder {
-    async fn create_connection(&self, _conn_id: u16, _deadline: QueryDeadline) -> Result<Arc<C>> {
+    async fn create_connection(
+        &self,
+        _conn_id: u16,
+        _deadline: QueryDeadline,
+        _connection_info: Arc<ConnectionInfo>,
+    ) -> Result<Arc<C>> {
         Err(DnsError::protocol(
             "DummyConnectionBuilder cannot create connections (pool not yet initialized)",
         ))

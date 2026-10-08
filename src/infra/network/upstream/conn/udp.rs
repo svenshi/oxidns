@@ -13,6 +13,7 @@ use tokio::sync::{Notify, oneshot};
 use tokio::time::timeout;
 use tracing::{debug, error, trace, warn};
 
+use super::wait_for_close;
 use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::network::dial::{DialTarget, SocketOptions, UdpDialOptions, connect_udp};
@@ -29,6 +30,7 @@ const UDP_RECV_BUFFER_SIZE: usize = 8_196;
 /// of request IDs to response channels for asynchronous query handling.
 #[derive(Debug)]
 pub struct UdpConnection {
+    connection_info: Arc<ConnectionInfo>,
     /// Unique connection ID (for debugging/tracing)
     id: u16,
     /// The underlying UDP transport bound to a local address
@@ -69,6 +71,9 @@ impl Connection for UdpConnection {
         let cleared = self.request_map.clear();
         debug!(
             conn_id = self.id,
+            upstream_tag = %self.connection_info.tag.as_deref().unwrap_or("<untagged>"),
+            upstream_host = %self.connection_info.server_name,
+            upstream_port = self.connection_info.port,
             canceled_queries = cleared,
             "Closing UDP connection and signaling listener task"
         );
@@ -194,8 +199,14 @@ impl UdpConnection {
     /// # Arguments
     /// * `conn_id` - Unique connection identifier for logging
     /// * `socket` - Pre-configured UDP socket connected to remote server
-    fn new(conn_id: u16, socket: UdpSocket, request_map_capacity: u16) -> UdpConnection {
+    fn new(
+        conn_id: u16,
+        socket: UdpSocket,
+        request_map_capacity: u16,
+        connection_info: Arc<ConnectionInfo>,
+    ) -> UdpConnection {
         Self {
+            connection_info,
             id: conn_id,
             transport: UdpTransport::new(socket),
             close_notify: Notify::new(),
@@ -213,11 +224,10 @@ impl UdpConnection {
     /// the connection closes.
     ///
     /// # Buffer Size
-    /// Uses 4KB buffer which is sufficient for most DNS responses.
+    /// Uses an 8KB buffer which is sufficient for most DNS responses.
     /// Larger responses would typically use TCP (with TC bit set).
     async fn listen_dns_response(self: Arc<Self>) {
         let mut buf = vec![0u8; UDP_RECV_BUFFER_SIZE];
-        let mut closing = false;
 
         debug!(
             conn_id = self.id,
@@ -225,12 +235,9 @@ impl UdpConnection {
         );
 
         loop {
-            if closing && self.request_map.is_empty() {
-                debug!(conn_id = self.id, "Listener exiting (connection dropped)");
-                break;
-            }
-
             select! {
+                biased;
+                _ = wait_for_close(&self.closed, &self.close_notify) => break,
                 recv = self.transport.read_message(&mut buf) => {
                     match recv {
                         Ok(msg) => {
@@ -253,19 +260,16 @@ impl UdpConnection {
                         }
                         Err(e) => {
                             if self.closed.load(Ordering::Acquire) {
-                                closing = true; // graceful shutdown path
-                                continue;
+                                break;
                             }
                             warn!(conn_id = self.id, err = %e, "UDP listener error");
                             continue;
                         }
                     }
                 }
-                _ = self.close_notify.notified() => {
-                    closing = true;
-                }
             }
         }
+        debug!(conn_id = self.id, "UDP listener task terminated");
     }
 }
 
@@ -311,6 +315,7 @@ impl ConnectionBuilder<UdpConnection> for UdpConnectionBuilder {
         &self,
         conn_id: u16,
         _deadline: QueryDeadline,
+        connection_info: Arc<ConnectionInfo>,
     ) -> Result<Arc<UdpConnection>> {
         let socket = connect_udp(UdpDialOptions::new(
             self.target.clone(),
@@ -328,6 +333,7 @@ impl ConnectionBuilder<UdpConnection> for UdpConnectionBuilder {
             conn_id,
             UdpSocket::from_std(socket)?,
             self.request_map_capacity,
+            connection_info,
         );
         let arc = Arc::new(connection);
 
@@ -342,6 +348,41 @@ impl ConnectionBuilder<UdpConnection> for UdpConnectionBuilder {
 mod tests {
     use super::*;
     use crate::infra::network::upstream::ConnectionType;
+
+    fn test_connection_info() -> Arc<ConnectionInfo> {
+        Arc::new(ConnectionInfo::with_addr("udp://127.0.0.1:53").unwrap())
+    }
+
+    #[tokio::test]
+    async fn test_close_stops_udp_listener_before_start_and_while_idle() {
+        AppClock::start();
+        for start_listener in [false, true] {
+            let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let connection = Arc::new(UdpConnection::new(1, socket, 1, test_connection_info()));
+            let weak = Arc::downgrade(&connection);
+            let (sender, receiver) = oneshot::channel();
+            let guard = connection.request_map.store(sender).unwrap();
+            let mut listener = Box::pin(connection.clone().listen_dns_response());
+            if start_listener {
+                assert!(futures::poll!(&mut listener).is_pending());
+            }
+            connection.close();
+            connection.close();
+            assert_eq!(connection.using_count(), 0);
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), receiver)
+                    .await
+                    .expect("close must cancel pending queries")
+                    .is_err()
+            );
+            drop(guard);
+            drop(connection);
+            tokio::time::timeout(Duration::from_secs(1), listener)
+                .await
+                .expect("UDP listener must observe close");
+            assert!(weak.upgrade().is_none(), "listener retained the connection");
+        }
+    }
 
     #[test]
     fn test_builder_new_copies_connection_info_fields() {

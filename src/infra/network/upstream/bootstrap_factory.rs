@@ -20,7 +20,9 @@ use crate::infra::network::upstream::conn::{
 };
 use crate::infra::network::upstream::pool::pipeline::PipelinePool;
 use crate::infra::network::upstream::pool::reuse::ReusePool;
-use crate::infra::network::upstream::pool::{Connection, ConnectionPool, QueryTimeoutPolicy};
+use crate::infra::network::upstream::pool::{
+    Connection, ConnectionPool, PoolSize, QueryTimeoutPolicy,
+};
 
 pub(super) trait BootstrapPoolFactory<C: Connection>: Debug + Send + Sync {
     fn create_pool(
@@ -39,11 +41,11 @@ impl BootstrapPoolFactory<UdpConnection> for UdpBootstrapPoolFactory {
         connection_info: &ConnectionInfo,
         ip: IpAddr,
     ) -> Arc<dyn ConnectionPool<UdpConnection>> {
-        let info = connection_info_with_ip(connection_info, ip);
+        let info = Arc::new(connection_info_with_ip(connection_info, ip));
         let builder = UdpConnectionBuilder::new(&info, pipeline_request_map_capacity());
         PipelinePool::new(
-            main_pool_min_conns(&info),
-            info.max_conns_or_default(),
+            info.clone(),
+            PoolSize::new(main_pool_min_conns(&info), info.max_conns_or_default()),
             ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
             info.idle_timeout,
             Box::new(builder),
@@ -62,12 +64,12 @@ impl BootstrapPoolFactory<TcpConnection> for TcpBootstrapPoolFactory {
         connection_info: &ConnectionInfo,
         ip: IpAddr,
     ) -> Arc<dyn ConnectionPool<TcpConnection>> {
-        let info = connection_info_with_ip(connection_info, ip);
+        let info = Arc::new(connection_info_with_ip(connection_info, ip));
         if info.enable_pipeline.unwrap_or(false) {
             let builder = TcpConnectionBuilder::new(&info, pipeline_request_map_capacity());
             PipelinePool::new(
-                main_pool_min_conns(&info),
-                info.max_conns_or_default(),
+                info.clone(),
+                PoolSize::new(main_pool_min_conns(&info), info.max_conns_or_default()),
                 ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
                 info.idle_timeout,
                 Box::new(builder),
@@ -77,8 +79,9 @@ impl BootstrapPoolFactory<TcpConnection> for TcpBootstrapPoolFactory {
         } else {
             let builder = TcpConnectionBuilder::new(&info, reuse_request_map_capacity());
             ReusePool::new(
-                main_pool_min_conns(&info),
-                info.max_conns_or_default(),
+                info.clone(),
+                info.connection_type,
+                PoolSize::new(main_pool_min_conns(&info), info.max_conns_or_default()),
                 info.idle_timeout,
                 Box::new(builder),
                 QueryTimeoutPolicy::Close,
@@ -99,11 +102,11 @@ impl BootstrapPoolFactory<QuicConnection> for QuicBootstrapPoolFactory {
         connection_info: &ConnectionInfo,
         ip: IpAddr,
     ) -> Arc<dyn ConnectionPool<QuicConnection>> {
-        let info = connection_info_with_ip(connection_info, ip);
+        let info = Arc::new(connection_info_with_ip(connection_info, ip));
         let builder = QuicConnectionBuilder::new(&info);
         PipelinePool::new(
-            main_pool_min_conns(&info),
-            info.max_conns_or_default(),
+            info.clone(),
+            PoolSize::new(main_pool_min_conns(&info), info.max_conns_or_default()),
             ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
             info.idle_timeout,
             Box::new(builder),
@@ -124,11 +127,11 @@ impl BootstrapPoolFactory<H2Connection> for H2BootstrapPoolFactory {
         connection_info: &ConnectionInfo,
         ip: IpAddr,
     ) -> Arc<dyn ConnectionPool<H2Connection>> {
-        let info = connection_info_with_ip(connection_info, ip);
+        let info = Arc::new(connection_info_with_ip(connection_info, ip));
         let builder = H2ConnectionBuilder::new(&info);
         PipelinePool::new(
-            main_pool_min_conns(&info),
-            info.max_conns_or_default(),
+            info.clone(),
+            PoolSize::new(main_pool_min_conns(&info), info.max_conns_or_default()),
             ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
             info.idle_timeout,
             Box::new(builder),
@@ -149,11 +152,11 @@ impl BootstrapPoolFactory<H3Connection> for H3BootstrapPoolFactory {
         connection_info: &ConnectionInfo,
         ip: IpAddr,
     ) -> Arc<dyn ConnectionPool<H3Connection>> {
-        let info = connection_info_with_ip(connection_info, ip);
+        let info = Arc::new(connection_info_with_ip(connection_info, ip));
         let builder = H3ConnectionBuilder::new(&info);
         PipelinePool::new(
-            main_pool_min_conns(&info),
-            info.max_conns_or_default(),
+            info.clone(),
+            PoolSize::new(main_pool_min_conns(&info), info.max_conns_or_default()),
             ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
             info.idle_timeout,
             Box::new(builder),
