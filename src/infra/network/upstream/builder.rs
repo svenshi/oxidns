@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::sync::Arc;
+
 use tracing::debug;
 
 use crate::infra::error::Result;
@@ -19,7 +21,9 @@ use crate::infra::network::upstream::conn::{
 };
 use crate::infra::network::upstream::pool::pipeline::PipelinePool;
 use crate::infra::network::upstream::pool::reuse::ReusePool;
-use crate::infra::network::upstream::pool::{Connection, ConnectionBuilder, QueryTimeoutPolicy};
+use crate::infra::network::upstream::pool::{
+    Connection, ConnectionBuilder, PoolSize, QueryTimeoutPolicy,
+};
 use crate::infra::network::upstream::pooled::{PooledUpstream, UdpTruncatedUpstream};
 use crate::infra::network::upstream::traits::Upstream;
 
@@ -37,13 +41,17 @@ impl UpstreamBuilder {
             let upstream: Box<dyn Upstream> = match connection_info.connection_type {
                 ConnectionType::UDP => {
                     debug!("Creating UDP upstream for {}", connection_info.raw_addr);
+                    let connection_info = Arc::new(connection_info);
                     let builder = UdpConnectionBuilder::new(
                         &connection_info,
                         pipeline_request_map_capacity(),
                     );
                     let main_pool = PipelinePool::new(
-                        main_pool_min_conns(&connection_info),
-                        connection_info.max_conns_or_default(),
+                        connection_info.clone(),
+                        PoolSize::new(
+                            main_pool_min_conns(&connection_info),
+                            connection_info.max_conns_or_default(),
+                        ),
                         ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
                         connection_info.idle_timeout,
                         Box::new(builder),
@@ -54,8 +62,12 @@ impl UpstreamBuilder {
                     let tcp_builder =
                         TcpConnectionBuilder::new(&connection_info, reuse_request_map_capacity());
                     let fallback_pool = ReusePool::new(
-                        udp_truncated_fallback_min_conns(),
-                        connection_info.max_conns_or_default(),
+                        connection_info.clone(),
+                        ConnectionType::TCP,
+                        PoolSize::new(
+                            udp_truncated_fallback_min_conns(),
+                            connection_info.max_conns_or_default(),
+                        ),
                         connection_info.idle_timeout,
                         Box::new(tcp_builder),
                         QueryTimeoutPolicy::Close,
@@ -262,12 +274,13 @@ pub(crate) fn create_pipeline_pool<C: Connection>(
     connection_info: ConnectionInfo,
     builder: Box<dyn ConnectionBuilder<C>>,
 ) -> PooledUpstream<C> {
+    let connection_info = Arc::new(connection_info);
     let timeout = connection_info.timeout;
     let min_size = main_pool_min_conns(&connection_info);
     PooledUpstream::<C> {
         pool: PipelinePool::new(
-            min_size,
-            connection_info.max_conns_or_default(),
+            connection_info.clone(),
+            PoolSize::new(min_size, connection_info.max_conns_or_default()),
             ConnectionInfo::DEFAULT_MAX_CONNS_LOAD,
             connection_info.idle_timeout,
             builder,
@@ -282,12 +295,14 @@ pub(crate) fn create_reuse_pool<C: Connection>(
     connection_info: ConnectionInfo,
     builder: Box<dyn ConnectionBuilder<C>>,
 ) -> PooledUpstream<C> {
+    let connection_info = Arc::new(connection_info);
     let timeout = connection_info.timeout;
     let min_size = main_pool_min_conns(&connection_info);
     PooledUpstream::<C> {
         pool: ReusePool::new(
-            min_size,
-            connection_info.max_conns_or_default(),
+            connection_info.clone(),
+            connection_info.connection_type,
+            PoolSize::new(min_size, connection_info.max_conns_or_default()),
             connection_info.idle_timeout,
             builder,
             QueryTimeoutPolicy::Close,

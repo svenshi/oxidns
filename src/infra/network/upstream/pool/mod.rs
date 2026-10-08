@@ -43,6 +43,7 @@ use tokio::task::yield_now;
 
 use crate::infra::error::Result;
 pub use crate::infra::network::deadline::{DeadlineOutcome, QueryDeadline};
+use crate::infra::network::upstream::config::ConnectionInfo;
 use crate::infra::task as task_center;
 use crate::proto::Message;
 
@@ -58,6 +59,19 @@ pub enum QueryTimeoutPolicy {
     Retire,
     /// Close immediately and release pool capacity.
     Close,
+}
+
+/// Minimum and maximum connections configured for a pool.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PoolSize {
+    pub(crate) min: usize,
+    pub(crate) max: usize,
+}
+
+impl PoolSize {
+    pub(crate) const fn new(min: usize, max: usize) -> Self {
+        Self { min, max }
+    }
 }
 
 /// Connection trait - represents a single persistent connection to an upstream
@@ -108,7 +122,12 @@ pub trait ConnectionBuilder<C: Connection>: Send + Sync + Debug + 'static {
     /// # Returns
     /// Arc-wrapped connection on success, or error if connection establishment
     /// fails
-    async fn create_connection(&self, conn_id: u16, deadline: QueryDeadline) -> Result<Arc<C>>;
+    async fn create_connection(
+        &self,
+        conn_id: u16,
+        deadline: QueryDeadline,
+        connection_info: Arc<ConnectionInfo>,
+    ) -> Result<Arc<C>>;
 }
 
 /// Connection pool trait - manages a pool of connections for load balancing

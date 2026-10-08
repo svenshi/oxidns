@@ -377,7 +377,7 @@ async fn resolve_remote_ip(info: &ConnectionInfo, has_dial_addr: bool) -> Resolu
     if let Some(ip) = info.remote_ip {
         let source = if has_dial_addr {
             "dial_addr"
-        } else if IpAddr::from_str(&info.server_name).is_ok() {
+        } else if is_ip_literal_host(&info.server_name) {
             "literal"
         } else {
             "configured"
@@ -454,6 +454,17 @@ async fn resolve_remote_ip(info: &ConnectionInfo, has_dial_addr: bool) -> Resolu
             apply_to_connection: false,
         },
     }
+}
+
+/// Reports whether `host` is a literal IP address, unwrapping a `[...]`
+/// bracket pair first since `ConnectionInfo::server_name` keeps the
+/// brackets `url::Url::host_str()` uses for IPv6 hosts.
+fn is_ip_literal_host(host: &str) -> bool {
+    let unbracketed = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    IpAddr::from_str(unbracketed).is_ok()
 }
 
 fn should_delegate_name_resolution_to_socks5(info: &ConnectionInfo) -> bool {
@@ -1331,7 +1342,7 @@ fn recommendation(serial: &ProbeStageReport, pipeline: &PipelineProbeReport) -> 
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -1375,6 +1386,22 @@ mod tests {
 
     async fn start_fake_tcp_server(behavior: FakeBehavior) -> SocketAddr {
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(handle_fake_tcp_client(stream, behavior));
+            }
+        });
+        addr
+    }
+
+    async fn start_fake_tcp_server_v6(behavior: FakeBehavior) -> SocketAddr {
+        let listener = TcpListener::bind(SocketAddr::from((Ipv6Addr::LOCALHOST, 0)))
             .await
             .expect("listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
@@ -1570,6 +1597,21 @@ mod tests {
         assert_eq!(report.serial.verdict, ProbeVerdict::Reachable);
         assert_eq!(report.pipeline.verdict, ProbeVerdict::Supported);
         assert_eq!(report.pipeline.success_count, 4);
+    }
+
+    #[tokio::test]
+    async fn probe_ipv6_literal_upstream_is_treated_as_literal_not_domain() {
+        let addr = start_fake_tcp_server_v6(FakeBehavior::Reverse).await;
+
+        let report = probe_fake_server(addr, Duration::from_millis(500)).await;
+
+        assert_eq!(
+            report.target.resolution_source.as_deref(),
+            Some("literal"),
+            "ipv6 upstream address should resolve as 'literal' like ipv4, got {:?} (resolved_ip={:?})",
+            report.target.resolution_source,
+            report.target.resolved_ip
+        );
     }
 
     #[tokio::test]

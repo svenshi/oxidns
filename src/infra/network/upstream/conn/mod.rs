@@ -3,7 +3,7 @@
 
 //! Protocol-specific upstream connection implementations.
 
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 #[cfg(any(feature = "upstream-doq", feature = "upstream-doh3"))]
 use std::time::Duration;
 
@@ -27,6 +27,17 @@ pub(crate) use h3::{H3Connection, H3ConnectionBuilder};
 pub(crate) use quic::{QuicConnection, QuicConnectionBuilder};
 pub(crate) use tcp::{TcpConnection, TcpConnectionBuilder};
 pub(crate) use udp::{UdpConnection, UdpConnectionBuilder};
+
+/// Wait for a connection's persistent closed state without losing a wakeup.
+pub(super) async fn wait_for_close(closed: &AtomicBool, notify: &tokio::sync::Notify) {
+    // Create the future before checking state: notify_waiters wakes futures
+    // created before the notification, even if they have not been polled yet.
+    // The flag covers closure before this future was created.
+    let notified = notify.notified();
+    if !closed.load(Ordering::Acquire) {
+        notified.await;
+    }
+}
 
 /// RAII guard that decrements a connection's in-flight query counter on drop.
 ///

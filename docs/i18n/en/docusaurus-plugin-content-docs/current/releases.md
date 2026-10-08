@@ -7,10 +7,33 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 
 # Release Notes
 
+## 2026-10
+
+<div className="release-stack">
+   <ReleaseCard version="v1.6.1" badge="Patch Release" date="2026-10-08" defaultOpen>
+       **Release Scope**
+
+       - v1.6.1 focuses on upstream connection cleanup and IPv6 address parsing, fixing resources retained by background tasks after connection closure and improving connection-pool diagnostics.
+
+       **Changes**
+
+       - `fix(upstream)`: stop TCP/UDP background I/O tasks and cancel pending queries promptly when connections close. TCP senders also exit after write failures or when closure interrupts a blocked write, preventing closed connections from retaining memory and sockets.
+       - `fix(ipv6)`: recognize bracketed IPv6 literals in upstream URLs and connect directly to the IP instead of treating it as a domain requiring bootstrap resolution. Upstream probes also report these addresses as literals.
+       - `fix(logging)`: add upstream identity, host, port, and transport context to pool and connection-close logs. Record cancelled concurrent-forwarding queries at debug level to reduce warnings during normal races.
+       - `deps`: update locked Rust dependencies, including HTTP/TLS support libraries and serialization dependencies.
+
+       **Compatibility and Upgrade Notes**
+
+       - The root crate is `1.6.1`; use release tag `v1.6.1`. Workspace support-crate versions remain unchanged.
+       - v1.6.0 YAML configurations upgrade directly. No fields are added, renamed, or removed, and existing defaults and bundles remain unchanged. Run `oxidns check -c <config-file>` before upgrading.
+       - Upgrading from v1.6.0 requires no query-history migration or Windows service reinstallation. Upgrades from earlier versions must still follow the v1.6.0 query-history and Windows service migration notes.
+   </ReleaseCard>
+</div>
+
 ## 2026-09
 
 <div className="release-stack">
-   <ReleaseCard version="v1.6.0" badge="Minor Release" date="2026-09-24" defaultOpen>
+   <ReleaseCard version="v1.6.0" badge="Minor Release" date="2026-09-24">
        **Release Scope**
 
        - v1.6.0 updates query-history storage and Windows service recovery, with improvements to scheduled jobs, manual downloads, DNS networking, and WebUI configuration editing.

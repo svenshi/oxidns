@@ -13,9 +13,10 @@ use tracing::{debug, info, warn};
 
 use crate::infra::clock::AppClock;
 use crate::infra::error::Result;
+use crate::infra::network::upstream::config::{ConnectionInfo, ConnectionType};
 use crate::infra::network::upstream::pool::{
     Connection, ConnectionBuilder, ConnectionPool, DeadlineOutcome, ManagedMaintenanceTask,
-    QueryDeadline, QueryTimeoutPolicy, start_maintenance,
+    PoolSize, QueryDeadline, QueryTimeoutPolicy, start_maintenance,
 };
 use crate::infra::task as task_center;
 use crate::proto::Message;
@@ -36,6 +37,8 @@ fn close_conns<C: Connection>(conns: &[Arc<C>]) {
 /// - Thread-safe, designed for async DNS request handling
 #[derive(Debug)]
 pub struct ReusePool<C: Connection> {
+    connection_info: Arc<ConnectionInfo>,
+    transport: ConnectionType,
     /// Queue holding idle connections
     connections: ArrayQueue<Arc<C>>,
     /// Number of active connections in use or queued
@@ -183,20 +186,33 @@ impl<C: Connection> ConnectionPool<C> for ReusePool<C> {
 
 impl<C: Connection> ReusePool<C> {
     /// Create a new reusable connection pool
-    pub fn new(
-        min_size: usize,
-        max_size: usize,
+    pub(crate) fn new(
+        connection_info: Arc<ConnectionInfo>,
+        transport: ConnectionType,
+        size: PoolSize,
         idle_time: Duration,
         connection_builder: Box<dyn ConnectionBuilder<C>>,
         timeout_policy: QueryTimeoutPolicy,
         connect_timeout: Duration,
     ) -> Arc<ReusePool<C>> {
+        let PoolSize {
+            min: min_size,
+            max: max_size,
+        } = size;
         info!(
-            "Creating ReusePool (min_size={}, max_size={})",
-            min_size, max_size
+            upstream_tag = %connection_info.tag.as_deref().unwrap_or("<untagged>"),
+            upstream_host = %connection_info.server_name,
+            target_ip = ?connection_info.remote_ip,
+            upstream_port = connection_info.port,
+            transport = ?transport,
+            min_size,
+            max_size,
+            "Creating ReusePool"
         );
 
         let pool = Arc::new(Self {
+            connection_info,
+            transport,
             connections: ArrayQueue::new(max_size),
             min_size,
             max_size,
@@ -388,7 +404,11 @@ impl<C: Connection> ReusePool<C> {
     ) -> Result<Arc<C>> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         match deadline
-            .run(self.connection_builder.create_connection(id, deadline))
+            .run(self.connection_builder.create_connection(
+                id,
+                deadline,
+                self.connection_info.clone(),
+            ))
             .await
         {
             DeadlineOutcome::Completed(Ok(conn)) => {
@@ -471,7 +491,22 @@ impl<'a, C: Connection> BorrowedConnection<'a, C> {
 impl<C: Connection> Drop for BorrowedConnection<'_, C> {
     fn drop(&mut self) {
         if let Some(conn) = self.conn.take() {
-            warn!("Borrowed reuse-pool connection dropped before release, closing it");
+            // Concurrent forwarding intentionally cancels losing queries.
+            // Drop cannot distinguish that from other early exits or unwinding.
+            debug!(
+                upstream_tag = %self.pool.connection_info.tag.as_deref().unwrap_or("<untagged>"),
+                upstream_host = %self.pool.connection_info.server_name,
+                target_ip = ?self.pool.connection_info.remote_ip,
+                upstream_port = self.pool.connection_info.port,
+                transport = ?self.pool.transport,
+                connection_type = std::any::type_name::<C>(),
+                connection_available = conn.available(),
+                inflight_queries = conn.using_count(),
+                pool_active_before_close = self.pool.active_count.load(Ordering::Relaxed),
+                pool_idle = self.pool.connections.len(),
+                pool_max = self.pool.max_size,
+                "Closing borrowed upstream connection after query cancellation or early drop"
+            );
             self.pool.close_active_connection(conn);
         }
     }
@@ -503,8 +538,12 @@ impl<C: Connection> Drop for ReusePool<C> {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::sync::Mutex;
+    use std::io;
     use std::sync::atomic::{AtomicBool, AtomicU64};
+    use std::sync::{Arc, Mutex};
+
+    use tracing::dispatcher::Dispatch;
+    use tracing_subscriber::fmt::MakeWriter;
 
     use super::*;
     use crate::infra::error::{DnsError, Result};
@@ -593,6 +632,7 @@ mod tests {
             &self,
             _conn_id: u16,
             _deadline: QueryDeadline,
+            _connection_info: Arc<ConnectionInfo>,
         ) -> Result<Arc<MockConnection>> {
             self.planned
                 .lock()
@@ -610,6 +650,8 @@ mod tests {
     ) -> ReusePool<MockConnection> {
         AppClock::start();
         ReusePool {
+            connection_info: Arc::new(ConnectionInfo::with_addr("tcp://127.0.0.1:53").unwrap()),
+            transport: ConnectionType::TCP,
             connections: ArrayQueue::new(max_size.max(1)),
             active_count: AtomicUsize::new(0),
             max_size,
@@ -622,6 +664,66 @@ mod tests {
             release_notified: Notify::new(),
             maintenance_task_handle: Mutex::new(None),
         }
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
+
+    impl<'a> MakeWriter<'a> for CapturedLogs {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    impl io::Write for CapturedLogs {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_early_drop_logs_upstream_identity_without_url_credentials() {
+        let mut info = ConnectionInfo::with_addr("tcp://user:secret@resolver.example:5353")
+            .expect("upstream URL should parse");
+        info.tag = Some("resolver_primary".to_string());
+        info.remote_ip = Some("192.0.2.53".parse().unwrap());
+
+        let mut pool = make_pool(0, 1, 10, MockBuilder::new(vec![]));
+        pool.connection_info = Arc::new(info);
+        pool.active_count.store(1, Ordering::Relaxed);
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(logs.clone())
+            .finish();
+
+        tracing::dispatcher::with_default(&Dispatch::new(subscriber), || {
+            drop(BorrowedConnection::new(
+                &pool,
+                Arc::new(MockConnection::new(true, 0, 0)),
+            ));
+        });
+
+        let output = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("DEBUG"));
+        assert!(output.contains("upstream_tag=resolver_primary"), "{output}");
+        assert!(
+            output.contains("upstream_host=resolver.example"),
+            "{output}"
+        );
+        assert!(output.contains("target_ip=Some(192.0.2.53)"), "{output}");
+        assert!(output.contains("upstream_port=5353"), "{output}");
+        assert!(output.contains("transport=TCP"), "{output}");
+        assert!(!output.contains("secret"));
     }
 
     #[test]
@@ -791,6 +893,35 @@ mod tests {
         assert_eq!(response.id(), 21);
         assert_eq!(conn.query_calls(), 1);
         assert_eq!(pool.connections.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_cancelled_query_closes_connection_and_releases_pool_capacity() {
+        let replacement = Arc::new(MockConnection::new(true, 0, 0));
+        let pool = make_pool(0, 1, 10, MockBuilder::new(vec![Ok(replacement.clone())]));
+        let conn =
+            Arc::new(MockConnection::new(true, 0, 0).with_query_delay(Duration::from_secs(60)));
+        pool.connections.push(conn.clone()).unwrap();
+        pool.active_count.store(1, Ordering::Relaxed);
+
+        let mut query =
+            Box::pin(pool.query(Message::new(), QueryDeadline::new(Duration::from_secs(30))));
+        assert!(futures::poll!(&mut query).is_pending());
+        assert_eq!(conn.query_calls(), 1);
+        drop(query);
+
+        assert_eq!(conn.close_calls(), 1);
+        assert!(!conn.available());
+        assert!(pool.connections.is_empty());
+        assert_eq!(pool.active_count.load(Ordering::Relaxed), 0);
+
+        let borrowed = pool
+            .get(QueryDeadline::new(Duration::from_secs(1)))
+            .await
+            .expect("cancelled query must free capacity for a replacement");
+        assert!(std::ptr::eq(borrowed.connection(), replacement.as_ref()));
+        borrowed.release();
+        assert_eq!(pool.active_count.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]

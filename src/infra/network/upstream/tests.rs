@@ -86,6 +86,7 @@ impl ConnectionBuilder<NoopConnection> for NoopConnectionBuilder {
         &self,
         _conn_id: u16,
         _deadline: QueryDeadline,
+        _connection_info: Arc<ConnectionInfo>,
     ) -> Result<Arc<NoopConnection>> {
         Ok(Arc::new(NoopConnection {
             available: AtomicBool::new(true),
@@ -751,7 +752,7 @@ async fn test_pooled_upstream_lets_pool_handle_deadline_expiry() {
         ConnectionInfo::with_addr("tcp://127.0.0.1").expect("upstream should parse");
     connection_info.timeout = Duration::from_millis(10);
     let upstream = PooledUpstream::<NoopConnection> {
-        connection_info,
+        connection_info: Arc::new(connection_info),
         pool: Arc::new(DeadlineHandlingPool {
             handled_timeout: handled_timeout.clone(),
         }),

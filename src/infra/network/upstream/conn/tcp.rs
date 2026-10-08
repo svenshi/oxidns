@@ -11,6 +11,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::{Notify, oneshot};
 use tracing::{debug, error, trace, warn};
 
+use super::wait_for_close;
 use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
 #[cfg(feature = "upstream-dot")]
@@ -34,6 +35,7 @@ use crate::proto::Message;
 /// asynchronous DNS queries and concurrent request tracking.
 #[derive(Debug)]
 pub struct TcpConnection {
+    connection_info: Arc<ConnectionInfo>,
     /// Unique connection ID for logging/tracing.
     id: u16,
     /// Sender for the unbounded outgoing TCP message channel.
@@ -76,6 +78,9 @@ impl Connection for TcpConnection {
         let cleared = self.request_map.clear();
         debug!(
             conn_id = self.id,
+            upstream_tag = %self.connection_info.tag.as_deref().unwrap_or("<untagged>"),
+            upstream_host = %self.connection_info.server_name,
+            upstream_port = self.connection_info.port,
             canceled_queries = cleared,
             "Initiating TCP connection close sequence"
         );
@@ -185,12 +190,18 @@ impl TcpConnection {
     /// # Arguments
     /// * `conn_id` - Unique connection identifier for logging and debugging
     /// * `sender` - Unbounded channel for queuing outbound DNS messages
-    fn new(conn_id: u16, sender: UnboundedSender<QueuedQuery>, request_map_capacity: u16) -> Self {
+    fn new(
+        conn_id: u16,
+        sender: UnboundedSender<QueuedQuery>,
+        request_map_capacity: u16,
+        connection_info: Arc<ConnectionInfo>,
+    ) -> Self {
         debug!(
             conn_id,
             "Initialized TCP connection wrapper with async I/O tasks"
         );
         Self {
+            connection_info,
             id: conn_id,
             sender,
             close_notify: Notify::new(),
@@ -213,19 +224,28 @@ impl TcpConnection {
         mut writer: TcpTransportWriter<S>,
         mut receiver: UnboundedReceiver<QueuedQuery>,
     ) {
-        let mut closing = false;
         debug!(
             conn_id = self.id,
             "TCP sender task started, ready to transmit queued messages"
         );
 
-        while !closing {
+        loop {
             select! {
-                Some(queued) = receiver.recv() => {
-                    if let Err(e) = writer
-                        .write_message_with_id(&queued.message, queued.query_id)
-                        .await
-                    {
+                biased;
+                _ = wait_for_close(&self.closed, &self.close_notify) => break,
+                queued = receiver.recv() => {
+                    let Some(queued) = queued else {
+                        self.close();
+                        break;
+                    };
+                    // Closing retires the stream, so abandoning a partial
+                    // frame is safe and must also interrupt blocked writes.
+                    let result = select! {
+                        biased;
+                        _ = wait_for_close(&self.closed, &self.close_notify) => break,
+                        result = writer.write_message_with_id(&queued.message, queued.query_id) => result,
+                    };
+                    if let Err(e) = result {
                         error!(
                             conn_id = self.id,
                             error = ?e,
@@ -233,14 +253,8 @@ impl TcpConnection {
                         );
                         self.writeable.store(false, Ordering::Release);
                         self.close();
+                        break;
                     }
-                }
-                _ = self.close_notify.notified() => {
-                    debug!(
-                        conn_id = self.id,
-                        "TCP sender received close notification, shutting down stream"
-                    );
-                    closing = true;
                 }
             }
         }
@@ -263,23 +277,15 @@ impl TcpConnection {
         self: Arc<Self>,
         mut reader: TcpTransportReader<S>,
     ) {
-        let mut closing = false;
         debug!(
             conn_id = self.id,
             "TCP listener task started, waiting for DNS responses"
         );
 
         loop {
-            if closing && self.request_map.is_empty() {
-                debug!(conn_id = self.id, "TCP listener exiting (no more requests)");
-                break;
-            }
-            if self.closed.load(Ordering::Acquire) {
-                debug!(conn_id = self.id, "TCP listener detected closed connection");
-                break;
-            }
-
             select! {
+                biased;
+                _ = wait_for_close(&self.closed, &self.close_notify) => break,
                 res = reader.read_message() => {
                     match res {
                         Ok(msg) => {
@@ -310,15 +316,6 @@ impl TcpConnection {
                             break;
                         }
                     }
-                }
-                _ = self.close_notify.notified() => {
-                    closing = true;
-                    debug!(
-                        conn_id = self.id,
-                        pending_queries = self.request_map.size(),
-                        "TCP listener received close notification, draining remaining responses"
-                    );
-                    continue;
                 }
             }
         }
@@ -380,6 +377,7 @@ impl ConnectionBuilder<TcpConnection> for TcpConnectionBuilder {
         &self,
         conn_id: u16,
         deadline: QueryDeadline,
+        connection_info: Arc<ConnectionInfo>,
     ) -> Result<Arc<TcpConnection>> {
         let stream = match deadline
             .run(connect_tcp(
@@ -402,7 +400,8 @@ impl ConnectionBuilder<TcpConnection> for TcpConnectionBuilder {
         );
 
         let (sender, receiver) = unbounded_channel();
-        let connection = TcpConnection::new(conn_id, sender, self.request_map_capacity);
+        let connection =
+            TcpConnection::new(conn_id, sender, self.request_map_capacity, connection_info);
         let arc = Arc::new(connection);
 
         if self.tls_enabled {
@@ -463,6 +462,96 @@ mod tests {
     #[cfg(feature = "upstream-dot")]
     use crate::infra::network::upstream::ConnectionType;
 
+    fn test_connection_info() -> Arc<ConnectionInfo> {
+        Arc::new(ConnectionInfo::with_addr("tcp://127.0.0.1:53").unwrap())
+    }
+
+    #[tokio::test]
+    async fn test_sender_exits_and_releases_connection_after_write_failure() {
+        AppClock::start();
+        let (sender, receiver) = unbounded_channel();
+        let connection = Arc::new(TcpConnection::new(1, sender, 1, test_connection_info()));
+        let weak = Arc::downgrade(&connection);
+        let (stream, peer) = tokio::io::duplex(64);
+        drop(peer);
+        connection
+            .sender
+            .send(QueuedQuery {
+                message: Message::new(),
+                query_id: 0,
+            })
+            .unwrap();
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            connection.send_dns_request(TcpTransportWriter::new(stream), receiver),
+        )
+        .await
+        .expect("sender must exit after a failed write");
+        assert!(weak.upgrade().is_none(), "sender retained the connection");
+    }
+
+    #[tokio::test]
+    async fn test_close_stops_tcp_tasks_before_start_and_while_idle() {
+        AppClock::start();
+        for start_tasks in [false, true] {
+            let (sender, receiver) = unbounded_channel();
+            let connection = Arc::new(TcpConnection::new(1, sender, 1, test_connection_info()));
+            let weak = Arc::downgrade(&connection);
+            let (stream, _peer) = tokio::io::duplex(64);
+            let (reader, writer) = tokio::io::split(stream);
+            let mut tasks = Box::pin(async {
+                tokio::join!(
+                    connection
+                        .clone()
+                        .listen_dns_response(TcpTransportReader::new(reader)),
+                    connection
+                        .clone()
+                        .send_dns_request(TcpTransportWriter::new(writer), receiver),
+                );
+            });
+            if start_tasks {
+                assert!(futures::poll!(&mut tasks).is_pending());
+            }
+            connection.close();
+            connection.close();
+            tokio::time::timeout(Duration::from_secs(1), tasks)
+                .await
+                .expect("both TCP tasks must observe close");
+            drop(connection);
+            assert!(weak.upgrade().is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_close_interrupts_blocked_tcp_write() {
+        AppClock::start();
+        let (sender, receiver) = unbounded_channel();
+        let connection = Arc::new(TcpConnection::new(1, sender, 1, test_connection_info()));
+        let weak = Arc::downgrade(&connection);
+        // One byte of capacity forces the DNS frame write to remain pending.
+        let (stream, _peer) = tokio::io::duplex(1);
+        connection
+            .sender
+            .send(QueuedQuery {
+                message: Message::new(),
+                query_id: 0,
+            })
+            .unwrap();
+        let mut writer = Box::pin(
+            connection
+                .clone()
+                .send_dns_request(TcpTransportWriter::new(stream), receiver),
+        );
+        assert!(futures::poll!(&mut writer).is_pending());
+        connection.close();
+        drop(connection);
+        tokio::time::timeout(Duration::from_secs(1), writer)
+            .await
+            .expect("close must cancel a blocked write");
+        assert!(weak.upgrade().is_none());
+    }
+
     #[cfg(feature = "upstream-dot")]
     #[test]
     fn test_builder_new_marks_dot_connections_as_tls_enabled() {
@@ -485,7 +574,12 @@ mod tests {
     async fn test_query_returns_error_when_connection_is_closed() {
         AppClock::start();
         let (sender, _receiver) = unbounded_channel();
-        let connection = TcpConnection::new(7, sender, DEFAULT_REQUEST_MAP_CAPACITY);
+        let connection = TcpConnection::new(
+            7,
+            sender,
+            DEFAULT_REQUEST_MAP_CAPACITY,
+            test_connection_info(),
+        );
         connection.close();
 
         let result = connection
@@ -504,7 +598,12 @@ mod tests {
     async fn test_query_removes_request_when_cancelled() {
         AppClock::start();
         let (sender, _receiver) = unbounded_channel();
-        let connection = TcpConnection::new(8, sender, DEFAULT_REQUEST_MAP_CAPACITY);
+        let connection = TcpConnection::new(
+            8,
+            sender,
+            DEFAULT_REQUEST_MAP_CAPACITY,
+            test_connection_info(),
+        );
 
         let result = tokio::time::timeout(
             Duration::from_millis(10),

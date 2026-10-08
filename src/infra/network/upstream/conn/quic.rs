@@ -21,6 +21,7 @@ use crate::infra::network::upstream::{Connection, ConnectionInfo};
 use crate::proto::Message;
 
 pub struct QuicConnection {
+    connection_info: Arc<ConnectionInfo>,
     id: u16,
     transport: QuicTransport,
     using_count: AtomicU16,
@@ -47,6 +48,9 @@ impl Connection for QuicConnection {
         }
         debug!(
             conn_id = self.id,
+            upstream_tag = %self.connection_info.tag.as_deref().unwrap_or("<untagged>"),
+            upstream_host = %self.connection_info.server_name,
+            upstream_port = self.connection_info.port,
             "Closing QUIC connection, sending CONNECTION_CLOSE frame"
         );
         // Gracefully close the underlying QUIC connection with error code 0 (no
@@ -206,6 +210,7 @@ impl ConnectionBuilder<QuicConnection> for QuicConnectionBuilder {
         &self,
         conn_id: u16,
         deadline: QueryDeadline,
+        connection_info: Arc<ConnectionInfo>,
     ) -> Result<Arc<QuicConnection>> {
         let socket = connect_udp(UdpDialOptions::new(
             self.target.clone(),
@@ -235,6 +240,7 @@ impl ConnectionBuilder<QuicConnection> for QuicConnectionBuilder {
         );
 
         let quic_conn = Arc::new(QuicConnection {
+            connection_info,
             id: conn_id,
             transport: QuicTransport::new(quic_conn),
             closed: AtomicBool::new(false),
