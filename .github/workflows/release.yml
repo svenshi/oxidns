@@ -485,15 +485,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Publish oxidns-proto
+      - name: Publish missing support-crate versions
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-        run: cargo publish --locked --manifest-path crates/proto/Cargo.toml
-
-      - name: Publish oxidns-ripset
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-        run: cargo publish --locked --manifest-path crates/ripset/Cargo.toml
+        run: bash .github/scripts/publish_support_crates.sh
 
   publish-crate:
     name: Publish to crates.io

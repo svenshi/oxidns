@@ -125,10 +125,12 @@ The workspace members declared in the root `Cargo.toml` are authoritative.
 - Do not bump every crate for every OxiDNS release; bump a crate when its code
   or published dependency contract changed.
 - Run workspace tests/docs after shared protocol or proc-macro changes.
-- Verify `cargo publish --dry-run` for any crate intended for publication.
 
-The root release workflow publishes the root crate. Publishing child crates or
-changing their publication order requires an explicit release workflow change.
+Support crates are published automatically by the release Action before the
+root crate. Update versions, affected dependency declarations, and the lockfile
+during development. Keep publication and duplicate-upload checks in the
+publication script called by the release workflow. Follow
+`ai/release-process.md` for dependency order and registry-error handling.
 
 ## Code Health
 

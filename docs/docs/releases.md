@@ -7,10 +7,33 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 
 # 版本更新
 
+## 2026-10
+
+<div className="release-stack">
+   <ReleaseCard version="v1.6.1" badge="Patch Release" date="2026-10-08" defaultOpen>
+       **版本定位**
+
+       - v1.6.1 聚焦上游连接的资源释放与 IPv6 地址解析，修复连接关闭后后台任务仍持有资源的问题，并改进连接池诊断日志。
+
+       **主要变更**
+
+       - `fix(upstream)`：TCP/UDP 连接关闭时及时结束后台收发任务并取消等待中的查询；TCP 写入失败或写入阻塞时也能退出，避免已关闭连接持续占用内存和套接字。
+       - `fix(ipv6)`：正确识别上游 URL 中带方括号的 IPv6 字面量，直接使用该 IP 建立连接，不再误走域名 bootstrap 解析；上游探测同步报告为字面量地址。
+       - `fix(logging)`：连接池和连接关闭日志补充上游标识、主机、端口与传输信息；并发转发中被取消的查询以 debug 级别记录，减少正常竞争产生的警告。
+       - `deps`：更新 Rust 依赖锁定版本，包括 HTTP/TLS 支持库与序列化相关依赖。
+
+       **配置与升级说明**
+
+       - 根 crate 版本为 `1.6.1`，release tag 使用 `v1.6.1`；workspace 辅助 crate 版本保持不变。
+       - v1.6.0 YAML 配置可直接升级，没有新增、重命名或删除配置字段，现有默认值与 bundle 保持不变。建议先运行 `oxidns check -c <配置文件>`。
+       - 从 v1.6.0 升级无需迁移查询历史或重新安装 Windows 服务；从更早版本升级仍需遵循 v1.6.0 的查询历史与 Windows 服务迁移说明。
+   </ReleaseCard>
+</div>
+
 ## 2026-09
 
 <div className="release-stack">
-   <ReleaseCard version="v1.6.0" badge="Minor Release" date="2026-09-24" defaultOpen>
+   <ReleaseCard version="v1.6.0" badge="Minor Release" date="2026-09-24">
        **版本定位**
 
        - v1.6.0 更新查询记录存储与 Windows 服务恢复机制，并改进计划任务、手动下载、DNS 网络传输和 WebUI 配置编辑。

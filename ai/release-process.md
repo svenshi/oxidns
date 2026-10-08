@@ -43,8 +43,8 @@ Update the root package version for every release:
 - `Cargo.toml` at the repository root, `[package].version`
 
 For each changed publishable workspace member declared by the root
-`Cargo.toml`, decide whether its own manifest version or published dependency
-metadata must change. Use the latest-tag path diff and current workspace
+`Cargo.toml`, bump its own manifest version when its code or published
+dependency contract changed. Use the latest-tag path diff and current workspace
 membership rather than a crate list copied into this guide.
 
 When a crate version changes:
@@ -58,6 +58,12 @@ When a crate version changes:
 Do not bump a workspace crate just because the root package is being released;
 bump it only when that crate changed or its published dependency metadata must
 change.
+
+Support crates are published automatically by the release Action. During
+release preparation, update crate versions, affected dependency version
+declarations, and `Cargo.lock`; do not publish crates locally. Keep publication
+and registry checks in `.github/scripts/publish_support_crates.sh`, called by
+the release workflow, so the Action remains concise.
 
 ## 3. Generate Release Notes In Docs
 
@@ -143,6 +149,14 @@ Derive publication order, registries, image sources, notification behavior,
 required secrets, and reusable workflow inputs from the active workflow jobs.
 Keep downstream consumers aligned with the release workflow; do not retain a
 second job inventory in this guide.
+
+The release Action publishes support crates in dependency order before
+verifying and publishing the root crate. Read crate names and versions from
+Cargo metadata, skip exact versions already published and not yanked, and
+publish only missing versions. Registry failures, malformed metadata, and
+yanked versions must fail the job rather than be treated as missing versions.
+Keep this logic in the maintained publication script rather than duplicating
+it inside the workflow.
 
 Before tagging, compare any workflow, feature, target, packaging, or upgrade
 changes against this contract. If the contract intentionally changes, update
