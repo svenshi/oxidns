@@ -447,13 +447,11 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_ANNOUNCEMENTS_THREAD_ID: ${{ secrets.TELEGRAM_ANNOUNCEMENTS_THREAD_ID }}
           RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
         run: |
           set -euo pipefail
           : "${TELEGRAM_BOT_TOKEN:?missing TELEGRAM_BOT_TOKEN}"
           : "${TELEGRAM_CHAT_ID:?missing TELEGRAM_CHAT_ID}"
-          : "${TELEGRAM_ANNOUNCEMENTS_THREAD_ID:?missing TELEGRAM_ANNOUNCEMENTS_THREAD_ID}"
 
           RELEASE_NOTES_PATH=".github/release-notes.md"
           MESSAGE=$(python3 .github/scripts/telegram_release_message.py \
@@ -462,7 +460,6 @@ jobs:
           SEND_RESPONSE=$(curl -sS --fail-with-body \
             -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "message_thread_id=${TELEGRAM_ANNOUNCEMENTS_THREAD_ID}" \
             --data-urlencode "text=${MESSAGE}" \
             --data-urlencode "parse_mode=HTML" \
             --data-urlencode "disable_web_page_preview=false")
