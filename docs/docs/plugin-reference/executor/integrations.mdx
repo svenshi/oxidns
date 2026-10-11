@@ -675,6 +675,7 @@ args:
 - 有限 TTL 动态项在有效 TTL 的 75% 处允许由后续 DNS 观察再次刷新；插件不会为动态项启动独立刷新定时器，`fixed_ttl: 0` 的永久项也不会自动刷新。
 - 同一列表内同一 IP 的多次观察保留最晚的有效到期时间；刷新时按该合并租约的剩余时间设置 RouterOS `timeout`，后续较短的 TTL 不会提前结束仍有效的租约。
 - 删除地址项前会重新确认内部 ID、目标 list/address key 和完整 ownership comment；RouterOS `timeout` 只是租约数据，不属于删除授权条件。RouterOS 最终仍只支持按内部 ID 删除，不提供原子 compare-and-delete。
+- RouterOS 在列表已存在同一地址时会拒绝新增，插件把该拒绝视为幂等结果而不是写入错误：重新扫描目标列表，条目归属本插件时按常规归属流程更新，否则该 key 交给已有条目。
 
 ### 典型用途
 
