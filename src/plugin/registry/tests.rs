@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use std::any::Any;
 use std::collections::HashMap as StdHashMap;
 use std::sync::Mutex as StdMutex;

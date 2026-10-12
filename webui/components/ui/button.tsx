@@ -1,3 +1,10 @@
+/*
+ * SPDX-FileCopyrightText: 2023 shadcn
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later AND MIT
+ * Derived from shadcn/ui; see LICENSE-shadcn in the WebUI root.
+ */
+
 import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { Slot } from "radix-ui";

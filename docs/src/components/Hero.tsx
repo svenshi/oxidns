@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import React, { useEffect, useRef, useState } from 'react';
 import Link from '@docusaurus/Link';
 

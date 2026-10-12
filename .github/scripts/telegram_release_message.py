@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Sven Shi
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Render curated GitHub release notes as Telegram-compatible HTML."""
 
 from __future__ import annotations

@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { zhCNPluginDefined } from "../zh-CN/plugin-defined";
 import type { LocaleResourceShape } from "../../types";
 

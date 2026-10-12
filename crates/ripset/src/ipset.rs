@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 ripset contributors
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! ipset operations via netlink.
 //!
 //! This module provides functions to add, test, and delete IP addresses

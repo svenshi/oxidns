@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! RouterOS API adapter for ros_address_list executor.
 //!
 //! This module isolates all RouterOS address-list command paths and response

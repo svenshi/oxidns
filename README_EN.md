@@ -200,3 +200,8 @@ Financial support does not establish a commercial service relationship or affect
 ## License
 
 This project is licensed under the [GNU General Public License v3.0 or later](LICENSE).
+
+The standalone libraries [oxidns-proto](crates/proto/README.md) and
+[oxidns-macros](crates/macros/README.md) are dual-licensed under
+`MIT OR Apache-2.0`, at your option. See each other workspace crate's
+`Cargo.toml` and license files for its licensing terms.

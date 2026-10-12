@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 erikoest
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: MIT
+
 use std::fmt;
 use std::fs::File;
 use std::io::{BufRead, BufReader};

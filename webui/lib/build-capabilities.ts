@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import type { BuildInfo, SupportedPlugins } from "./oxidns-api";
 import type { PluginType } from "./types";
 

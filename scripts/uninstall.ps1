@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Sven Shi
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Uninstall OxiDNS files installed by scripts/install.ps1 on Windows.
 #
 # Common overrides:

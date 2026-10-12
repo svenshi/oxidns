@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 export const LOCALES = ["zh-CN", "en-US"] as const;
 
 export type Locale = (typeof LOCALES)[number];

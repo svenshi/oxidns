@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Wire-level tests for address-list recovery and mutation authorization.
 
 use std::sync::Arc;

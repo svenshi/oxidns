@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 export const zhCNWebui = {
   metadata: {
     title: "OxiDNS - 控制台",

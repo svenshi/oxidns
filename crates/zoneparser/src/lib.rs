@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 erikoest
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: MIT
+
 mod parser;
 
 pub use crate::parser::{

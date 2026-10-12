@@ -34,7 +34,7 @@ let file_records = parse_file("/etc/oxidns/zone.txt", &options)?;
 
 ```toml
 [dependencies]
-zoneparser = { package = "oxidns-zoneparser", version = "0.1" }
+zoneparser = { package = "oxidns-zoneparser", version = "0.1.3" }
 ```
 
 ## Syntax Coverage

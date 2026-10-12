@@ -25,7 +25,7 @@ upstream pools, caching, configuration, logging, and plugin orchestration.
 
 ```toml
 [dependencies]
-oxidns-proto = "0.1"
+oxidns-proto = "0.1.7"
 ```
 
 ```rust
@@ -63,3 +63,10 @@ upstream clients, matchers, executors, tests, and the `oxidns-zoneparser`
 crate. Changes here can affect parsing, rewriting, caching, and transport
 behavior across the full server, so semantic changes should be covered by
 codec and integration tests.
+
+## License
+
+Licensed under either of the following, at your option:
+
+- [MIT license](LICENSE-MIT)
+- [Apache License, Version 2.0](LICENSE-APACHE)

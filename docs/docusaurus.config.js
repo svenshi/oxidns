@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import {createRequire} from 'node:module';
 import {themes as prismThemes} from 'prism-react-renderer';
 

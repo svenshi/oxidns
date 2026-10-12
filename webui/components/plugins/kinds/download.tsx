@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-FileCopyrightText: 2026 i
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";

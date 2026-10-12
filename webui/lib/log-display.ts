@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 export const DEFAULT_LOG_TIME_FORMAT = "HH:mm:ss";
 
 export const LOG_TIME_FORMAT_PRESETS = [

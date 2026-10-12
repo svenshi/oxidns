@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 export const DASHBOARD_SYSTEM_POLL_INTERVAL_MS = 5_000;
 export const DASHBOARD_HEALTH_POLL_INTERVAL_MS = 15_000;
 export const ACTIVE_METRICS_POLL_INTERVAL_MS = 5_000;

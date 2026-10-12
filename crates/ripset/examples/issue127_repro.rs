@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Minimal reproducer for issue #127.
 //!
 //! Usage (Linux, as root, with nftables present):

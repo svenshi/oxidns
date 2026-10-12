@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Wire-level DNS message encoding, decoding, truncation, and length helpers.
 

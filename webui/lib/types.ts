@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 export type PluginType = "server" | "executor" | "matcher" | "provider";
 
 export type PluginStatus = "running" | "stopped" | "error";

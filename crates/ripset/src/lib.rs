@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 ripset contributors
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Pure Rust implementation of ipset/nftset operations via netlink.
 //!
 //! This crate provides functions to add, check, and remove IP addresses

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use std::path::{Component, Path, PathBuf};
 
 use bytes::Bytes;
