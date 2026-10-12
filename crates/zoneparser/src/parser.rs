@@ -894,6 +894,7 @@ fn parse_record_type(raw: &str) -> Result<RecordType, String> {
 
 fn record_type_token(rr_type: RecordType) -> Cow<'static, str> {
     match rr_type {
+        RecordType::ZERO => Cow::Borrowed("TYPE0"),
         RecordType::Unknown(code) => Cow::Owned(format!("TYPE{code}")),
         _ => Cow::Borrowed(rr_type.into()),
     }
@@ -2044,10 +2045,32 @@ $GENERATE 15-16 hex${0,2,x} IN A 192.0.2.$
     }
 
     #[test]
+    fn generated_type_zero_matches_direct_records() {
+        let options = ParseOptions::default();
+        let direct = parse_str(
+            "host1.example.com. 60 IN TYPE0 \\# 1 FF\nhost2.example.com. 60 IN TYPE0 \\# 1 FF\n",
+            &options,
+        )
+        .unwrap();
+        let generated = parse_str(
+            "$ORIGIN example.com.\n$GENERATE 1-2 host$ 60 IN TYPE0 \\# 1 FF\n",
+            &options,
+        )
+        .unwrap();
+        assert_eq!(generated, direct);
+        assert!(
+            matches!(generated[0].data(), RData::Unknown { rr_type: 0, data } if data == &[0xff])
+        );
+    }
+
+    #[test]
     fn reports_numeric_unknown_record_type_in_errors() {
-        let err = parse_str("example.com. TYPE65534 invalid\n", &ParseOptions::default())
-            .expect_err("unknown types require generic RDATA");
-        assert!(err.to_string().contains("TYPE65534"), "{err}");
+        for type_token in ["TYPE0", "TYPE65534"] {
+            let input = format!("example.com. {type_token} invalid\n");
+            let err = parse_str(&input, &ParseOptions::default())
+                .expect_err("types without text parsers require generic RDATA");
+            assert!(err.to_string().contains(type_token), "{err}");
+        }
     }
 
     #[test]
