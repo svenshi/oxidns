@@ -212,6 +212,7 @@ fn infer_server_name(address: &str) -> Option<&str> {
 
 /// RouterOS trap message emitted when an insert targets a value the router
 /// already holds for the same object.
+#[cfg(any(feature = "plugin-ros-address-list", test))]
 const DUPLICATE_ENTRY_TRAP_MESSAGE: &str = "already have such entry";
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -266,6 +267,7 @@ impl RouterOsError {
     /// category, so the message text is the only stable signal. Callers that
     /// map a desired state onto RouterOS objects must treat this as an
     /// idempotent outcome instead of a failure.
+    #[cfg(any(feature = "plugin-ros-address-list", test))]
     pub(crate) fn is_duplicate_entry(&self) -> bool {
         self.kind == RouterOsErrorKind::Trap
             && self

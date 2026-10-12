@@ -195,6 +195,36 @@ impl MikrotikRsClient {
         Ok(entries)
     }
 
+    async fn find_entry_matching_snapshot(
+        &self,
+        expected: &RouterListEntry,
+    ) -> Result<Option<RouterListEntry>> {
+        // A full scan can find a normalized key whose stored address text does
+        // not match router_value(). Recheck by id and list, then compare the
+        // normalized address and complete ownership comment before mutation.
+        // The list filter also makes the fallback safe if RouterOS omits that
+        // field from the filtered reply.
+        let action = "verify address-list entry";
+        let print = CommandBuilder::new()
+            .command(address_list_command(expected.key.family, ListOp::Print))
+            .attribute(".proplist", Some(ADDRESS_LIST_PROPLIST))
+            .query_equal(ADDRESS_ID_FIELD, expected.id.as_str())
+            .query_equal(ADDRESS_LIST_FIELD, expected.key.list.as_str())
+            .build();
+        for row in self.send_rows(action, print).await? {
+            if let Some(current) = parse_router_list_entry(
+                action,
+                expected.key.family,
+                &row,
+                Some(expected.key.list.as_str()),
+            )? && entry_matches_delete_snapshot(expected, &current)
+            {
+                return Ok(Some(current));
+            }
+        }
+        Ok(None)
+    }
+
     async fn add_entry(
         &self,
         key: &AddressListKey,
@@ -238,11 +268,7 @@ impl MikrotikRsClient {
         timeout: Option<&str>,
         comment: &str,
     ) -> Result<bool> {
-        let current = self.find_entries_by_key(&expected.key).await?;
-        let Some(current) = current
-            .into_iter()
-            .find(|current| entry_matches_delete_snapshot(expected, current))
-        else {
+        let Some(current) = self.find_entry_matching_snapshot(expected).await? else {
             return Ok(false);
         };
         let mut set = CommandBuilder::new()
@@ -587,11 +613,7 @@ impl MikrotikApi for MikrotikRsClient {
     }
 
     async fn delete_entry_if_matches(&self, expected: &RouterListEntry) -> Result<bool> {
-        let current = self.find_entries_by_key(&expected.key).await?;
-        let Some(current) = current
-            .into_iter()
-            .find(|current| entry_matches_delete_snapshot(expected, current))
-        else {
+        let Some(current) = self.find_entry_matching_snapshot(expected).await? else {
             return Ok(false);
         };
         self.remove_entry_by_id(&current.id, current.key.family)
@@ -599,6 +621,10 @@ impl MikrotikApi for MikrotikRsClient {
         Ok(true)
     }
 }
+
+#[cfg(test)]
+#[path = "api_tests.rs"]
+mod transport_tests;
 
 #[cfg(test)]
 mod tests {
