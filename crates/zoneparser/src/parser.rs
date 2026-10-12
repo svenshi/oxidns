@@ -1672,6 +1672,24 @@ mod tests {
     }
 
     #[test]
+    fn preserves_multiline_text_line_endings_for_inline_and_file_sources() {
+        let dir = temp_dir();
+        let path = dir.join("multiline.zone");
+        for newline in ["\n", "\r\n"] {
+            let text = format!("hello{newline}   world");
+            let input = format!("example.com. IN TXT ({newline}\"{text}\"{newline}){newline}");
+            fs::write(&path, &input).unwrap();
+
+            let inline = parse_str(&input, &ParseOptions::default()).unwrap();
+            let from_file = parse_file(&path, &ParseOptions::default()).unwrap();
+            assert_eq!(inline.len(), 1);
+            assert_eq!(txt_chunks(&inline[0]), vec![text]);
+            assert_eq!(from_file, inline);
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn parses_upstream_decimal_escapes_before_reporting_invalid_record() {
         let input = fs::read_to_string(fixture_path("escaped_decimal.zn")).unwrap();
         for from_file in [false, true] {
