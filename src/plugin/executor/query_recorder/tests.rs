@@ -866,27 +866,40 @@ fn test_query_recorder_query_parsers_accept_common_filters() {
     assert_eq!(query.filter.rcode.as_deref(), Some("NXDOMAIN"));
     assert_eq!(query.filter.status, QueryRecordStatus::HasResponse);
 
-    let stats =
-        super::api::parse_plugins_stats_query(Some("kind=matcher&qname=example&status=all"))
-            .unwrap();
+    let stats = super::api::parse_plugins_stats_query(Some(
+        "since_ms=0&until_ms=100&kind=matcher&qname=example&status=all",
+    ))
+    .unwrap();
     assert_eq!(stats.kind, PluginStatsKind::Matcher);
     assert_eq!(stats.filter.qname.as_deref(), Some("example"));
     assert_eq!(stats.filter.status, QueryRecordStatus::All);
 
+    let exact = super::api::parse_list_query(Some(
+        "qname_exact=example.com.&client_ip_exact=192.0.2.1&rcode_bucket=_ERROR",
+    ))
+    .unwrap();
+    assert_eq!(exact.filter.qname_exact.as_deref(), Some("example.com."));
+    assert_eq!(exact.filter.client_ip_exact.as_deref(), Some("192.0.2.1"));
+    assert_eq!(exact.filter.rcode_bucket.as_deref(), Some("_ERROR"));
+    assert!(super::api::parse_list_query(Some("rcode_bucket=bad")).is_err());
     let err = super::api::parse_list_query(Some("status=bad")).unwrap_err();
     assert!(err.contains("status must be one of"));
 
     let with_matcher = super::api::parse_list_query(Some("matcher_tag=ads")).unwrap();
     assert_eq!(with_matcher.filter.matcher_tag.as_deref(), Some("ads"));
-    let stats_with_matcher =
-        super::api::parse_plugins_stats_query(Some("kind=matcher&matcher_tag=cn")).unwrap();
+    let stats_with_matcher = super::api::parse_plugins_stats_query(Some(
+        "since_ms=0&until_ms=100&kind=matcher&matcher_tag=cn",
+    ))
+    .unwrap();
     assert_eq!(stats_with_matcher.filter.matcher_tag.as_deref(), Some("cn"));
 
-    let top = super::api::parse_top_query(Some("limit=250&qname=example")).unwrap();
+    let top = super::api::parse_top_query(Some("since_ms=0&until_ms=100&limit=250&qname=example"))
+        .unwrap();
     assert_eq!(top.limit, 250);
     assert_eq!(top.filter.qname.as_deref(), Some("example"));
 
-    let latency = super::api::parse_latency_query(Some("slow_limit=250")).unwrap();
+    let latency =
+        super::api::parse_latency_query(Some("since_ms=0&until_ms=100&slow_limit=250")).unwrap();
     assert_eq!(latency.slow_limit, 250);
 }
 
@@ -970,6 +983,62 @@ async fn test_query_recorder_query_records_support_common_filters() {
         ),
         vec![3]
     );
+    for (filter, expected) in [
+        (
+            QueryRecordFilter {
+                qname_exact: Some("WWW.EXAMPLE.COM.".into()),
+                ..Default::default()
+            },
+            vec![1],
+        ),
+        (
+            QueryRecordFilter {
+                qname_exact: Some("example.com.".into()),
+                ..Default::default()
+            },
+            vec![],
+        ),
+        (
+            QueryRecordFilter {
+                client_ip_exact: Some("192.0.2.3".into()),
+                ..Default::default()
+            },
+            vec![3],
+        ),
+        (
+            QueryRecordFilter {
+                client_ip_exact: Some("0.2.3".into()),
+                ..Default::default()
+            },
+            vec![],
+        ),
+        (
+            QueryRecordFilter {
+                rcode_bucket: Some("_ERROR".into()),
+                ..Default::default()
+            },
+            vec![3],
+        ),
+        (
+            QueryRecordFilter {
+                rcode_bucket: Some("_NO_RESPONSE".into()),
+                ..Default::default()
+            },
+            vec![4],
+        ),
+        (
+            QueryRecordFilter {
+                rcode_bucket: Some("_UNKNOWN".into()),
+                ..Default::default()
+            },
+            vec![],
+        ),
+    ] {
+        assert_eq!(
+            filtered_record_ids(backend.clone(), list_query(filter)),
+            expected
+        );
+    }
     let all_records = query_records(backend.clone(), list_query(QueryRecordFilter::default()))
         .unwrap()
         .0;
@@ -1098,7 +1167,7 @@ async fn test_query_recorder_matcher_stats_use_record_filters() {
     ));
     flush_backend(&backend).await;
 
-    let (query_total, stats) = load_plugin_stats(
+    let (query_total, stats, _) = load_plugin_stats(
         backend,
         PluginsStatsQuery {
             since_ms: None,
@@ -1195,7 +1264,7 @@ async fn test_query_recorder_tracks_fixed_values_and_effective_match_results() {
         vec![3, 1]
     );
 
-    let (_, stats) = load_plugin_stats(
+    let (_, stats, _) = load_plugin_stats(
         backend,
         PluginsStatsQuery {
             since_ms: None,
@@ -1245,7 +1314,7 @@ async fn test_query_recorder_plugin_stats_preserve_total_without_steps() {
     ));
     flush_backend(&backend).await;
 
-    let (query_total, stats) = load_plugin_stats(
+    let (query_total, stats, _) = load_plugin_stats(
         backend,
         PluginsStatsQuery {
             since_ms: None,
@@ -1583,6 +1652,332 @@ async fn test_timeseries_buckets_records_by_minute() {
 }
 
 #[test]
+fn test_statistics_require_bounded_time_ranges() {
+    use super::api::{
+        parse_distribution_query, parse_latency_query, parse_plugins_stats_query,
+        parse_timeseries_query, parse_top_query,
+    };
+    let parsers: [fn(Option<&str>) -> bool; 5] = [
+        |q| parse_plugins_stats_query(q).is_ok(),
+        |q| parse_top_query(q).is_ok(),
+        |q| parse_distribution_query(q).is_ok(),
+        |q| parse_latency_query(q).is_ok(),
+        |q| parse_timeseries_query(q).is_ok(),
+    ];
+    for parse in parsers {
+        for invalid in [
+            None,
+            Some("since_ms=0"),
+            Some("until_ms=100"),
+            Some("since_ms=10&until_ms=10"),
+            Some("since_ms=20&until_ms=10"),
+            Some("since_ms=0&until_ms=86400001"),
+            Some("since_ms=9223372036854775807&until_ms=9223372036854775808"),
+        ] {
+            assert!(!parse(invalid), "accepted invalid range: {invalid:?}");
+        }
+        assert!(parse(Some("since_ms=0&until_ms=86400000")));
+        assert!(parse(Some("since_ms=100000000&until_ms=100001000")));
+    }
+    assert_eq!(
+        parse_timeseries_query(Some("since_ms=0&until_ms=100&bucket=auto&buckets=120"))
+            .unwrap()
+            .bucket,
+        TimeseriesBucket::Auto
+    );
+    assert_eq!(
+        parse_timeseries_query(Some("since_ms=0&until_ms=100"))
+            .unwrap()
+            .bucket,
+        TimeseriesBucket::Minute
+    );
+    assert_eq!(
+        parse_timeseries_query(Some("since_ms=0&until_ms=100&bucket=hour"))
+            .unwrap()
+            .bucket,
+        TimeseriesBucket::Hour
+    );
+    assert!(parse_timeseries_query(Some("since_ms=0&until_ms=100&buckets=0")).is_err());
+}
+
+#[test]
+fn test_timeseries_auto_interval_budget_includes_boundary_buckets() {
+    let auto = TimeseriesBucket::Auto;
+    assert_eq!(auto.millis(0, 86_400_000, 120), 900_000);
+    assert_eq!(auto.millis(0, 600_000, 120), 10_000);
+    assert_eq!(auto.millis(1_000, 120_000, 120), 1_000);
+    assert_eq!(auto.millis(0, 0, 120), 1_000);
+    for since in [0, 123_456, 1_728_001_234_567] {
+        for span in [1, 600_000, 3_600_000, 86_400_000] {
+            for budget in [1, 2, 60, 120, 720] {
+                let until = since + span;
+                let width = auto.millis(since, until, budget);
+                assert!(until.div_euclid(width) - since.div_euclid(width) < budget as i64);
+            }
+        }
+    }
+}
+
+fn assert_aggregation_samples(
+    backend: &std::sync::Arc<super::backend::RecorderBackend>,
+    size: u64,
+    truncated: bool,
+    since: Option<i64>,
+    until: Option<i64>,
+) {
+    let top = TopQuery {
+        since_ms: Some(0),
+        until_ms: Some(120_000),
+        filter: QueryRecordFilter::default(),
+        limit: 20,
+    };
+    let distribution = DistributionQuery {
+        since_ms: top.since_ms,
+        until_ms: top.until_ms,
+        filter: top.filter.clone(),
+    };
+    let clients = load_top_clients(backend.clone(), top.clone()).unwrap();
+    let qnames = load_top_qnames(backend.clone(), top.clone()).unwrap();
+    let qtypes = load_qtype_distribution(backend.clone(), distribution.clone()).unwrap();
+    let rcodes = load_rcode_distribution(backend.clone(), distribution).unwrap();
+    let latency = load_latency_summary(
+        backend.clone(),
+        LatencyQuery {
+            since_ms: top.since_ms,
+            until_ms: top.until_ms,
+            filter: top.filter.clone(),
+            slow_limit: 20,
+        },
+    )
+    .unwrap();
+    let (query_total, _, plugin_sample) = load_plugin_stats(
+        backend.clone(),
+        PluginsStatsQuery {
+            since_ms: top.since_ms,
+            until_ms: top.until_ms,
+            filter: top.filter,
+            kind: PluginStatsKind::Matcher,
+        },
+    )
+    .unwrap();
+    for (count, sample) in [
+        (clients.sample_size, &clients.sample),
+        (qnames.sample_size, &qnames.sample),
+        (qtypes.sample_size, &qtypes.sample),
+        (rcodes.sample_size, &rcodes.sample),
+        (latency.sample_size, &latency.sample),
+        (query_total, &plugin_sample),
+    ] {
+        assert_eq!(count, size);
+        assert_eq!(sample.sample_limit, 10_000);
+        assert_eq!(sample.sample_truncated, truncated);
+        assert_eq!(sample.sample_since_ms, since);
+        assert_eq!(sample.sample_until_ms, until);
+    }
+    // The probe never contributes to a count or a percentile.
+    assert_eq!(clients.rows.iter().map(|row| row.count).sum::<u64>(), size);
+    assert_eq!(qnames.rows.iter().map(|row| row.count).sum::<u64>(), size);
+    assert_eq!(qtypes.rows.iter().map(|row| row.count).sum::<u64>(), size);
+    assert_eq!(rcodes.rows.iter().map(|row| row.count).sum::<u64>(), size);
+    assert_eq!(
+        latency.histogram.iter().map(|row| row.count).sum::<u64>(),
+        size
+    );
+    if size > 0 {
+        assert_eq!(latency.p95_ms, 2);
+    }
+    let serialized = serde_json::to_value(&clients).unwrap();
+    assert_eq!(serialized["sample_truncated"], truncated);
+    assert!(serialized.get("sample").is_none());
+}
+
+#[tokio::test]
+async fn test_timeseries_sample_cutoff_and_query_plan() {
+    let temp = NamedTempFile::new().unwrap();
+    let config = resolve_config(Some(recorder_config(&temp.path().display().to_string()))).unwrap();
+    let mut plugin = QueryRecorder::new("rec".to_string(), config);
+    plugin.init_for_test().await.unwrap();
+    let backend = plugin.backend.as_ref().unwrap().clone();
+    let query = TimeseriesQuery {
+        since_ms: Some(0),
+        until_ms: Some(120_000),
+        filter: QueryRecordFilter::default(),
+        bucket: TimeseriesBucket::Auto,
+        max_buckets: 120,
+    };
+    let empty = load_timeseries(backend.clone(), query.clone()).unwrap();
+    assert!(empty.points.is_empty());
+    assert_eq!(empty.sample_since_ms, None);
+    assert!(!empty.sample_truncated);
+    assert_aggregation_samples(&backend, 0, false, None, None);
+    backend.enqueue(pending_record(
+        0,
+        1,
+        "sample.example.",
+        RecordType::A,
+        Ipv4Addr::LOCALHOST,
+        Some(Rcode::NoError),
+        None,
+        &[],
+    ));
+    flush_backend(&backend).await;
+    let mut conn = open_writer_database(temp.path()).unwrap();
+    let columns = &super::persistence::RECORD_COLUMNS[1..];
+    let values = columns
+        .iter()
+        .map(|column| match *column {
+            "created_at_ms" => "?1".to_string(),
+            "elapsed_ms" => "?2".to_string(),
+            _ => format!("r.{column}"),
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "INSERT INTO {records} ({columns}) SELECT {values} FROM {records} r WHERE r.id = 1",
+        records = backend.tables.records,
+        columns = columns.join(",")
+    );
+    {
+        let tx = conn.transaction().unwrap();
+        {
+            let mut stmt = tx.prepare(&sql).unwrap();
+            for _ in 1..10_000 {
+                stmt.execute([1_000, 2]).unwrap();
+            }
+        }
+        tx.commit().unwrap();
+    }
+    let exact = load_timeseries(backend.clone(), query.clone()).unwrap();
+    assert_eq!(exact.sample_size, 10_000);
+    assert_eq!(exact.sample_limit, 10_000);
+    assert!(!exact.sample_truncated);
+    assert_eq!(exact.sample_since_ms, Some(0));
+    assert_eq!(exact.bucket_ms, 5_000);
+    assert_eq!(exact.points[0].p95_ms, 2);
+    assert!((exact.points[0].avg_ms - 1.9999).abs() < 0.00001);
+    assert_aggregation_samples(&backend, 10_000, false, Some(0), Some(1_000));
+    conn.execute(&sql, [1_000, 3]).unwrap();
+    assert_aggregation_samples(&backend, 10_000, true, Some(1_000), Some(1_000));
+    let truncated = load_timeseries(backend.clone(), query.clone()).unwrap();
+    assert_eq!(truncated.sample_size, 10_000);
+    assert!(truncated.sample_truncated);
+    assert_eq!(truncated.sample_since_ms, Some(1_000));
+    assert_eq!(truncated.sample_until_ms, Some(1_000));
+    assert_eq!(truncated.bucket_ms, 1_000);
+    assert!(truncated.points[0].partial);
+    assert_eq!(truncated.points[0].total, 10_000);
+    assert!((truncated.points[0].avg_ms - 2.0001).abs() < 0.00001);
+    let filtered = load_timeseries(
+        backend.clone(),
+        TimeseriesQuery {
+            since_ms: Some(500),
+            ..query
+        },
+    )
+    .unwrap();
+    assert!(!filtered.sample_truncated);
+    assert_eq!(filtered.sample_size, 10_000);
+    let plan_sql = format!(
+        "EXPLAIN QUERY PLAN SELECT created_at_ms, elapsed_ms, error IS NOT NULL, has_response, COALESCE(rcode = 'Server Failure', 0) FROM {} WHERE created_at_ms >= 0 AND created_at_ms <= 120000 ORDER BY created_at_ms DESC, id DESC LIMIT 10001",
+        backend.tables.records
+    );
+    let plan = conn
+        .prepare(&plan_sql)
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+        .join(" ");
+    assert!(
+        plan.contains("SEARCH") && plan.contains("created_at_idx"),
+        "{plan}"
+    );
+    assert!(!plan.contains("TEMP B-TREE"), "{plan}");
+    plugin.destroy().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_timeseries_classifies_anomalies_and_partial_boundaries() {
+    let temp = NamedTempFile::new().unwrap();
+    let config = resolve_config(Some(recorder_config(&temp.path().display().to_string()))).unwrap();
+    let mut plugin = QueryRecorder::new("rec".to_string(), config);
+    plugin.init_for_test().await.unwrap();
+    let backend = plugin.backend.as_ref().unwrap().clone();
+    for (index, rcode, error) in [
+        (0, Some(Rcode::ServFail), Some("error")),
+        (1, None, None),
+        (2, Some(Rcode::ServFail), None),
+        (3, Some(Rcode::NXDomain), None),
+        (4, Some(Rcode::Refused), None),
+    ] {
+        let mut pending = pending_record(
+            100 + index as i64,
+            index,
+            "anomaly.example.",
+            RecordType::A,
+            Ipv4Addr::LOCALHOST,
+            rcode,
+            error,
+            &[],
+        );
+        pending.elapsed_ms = (index as u64 + 1) * 10;
+        backend.enqueue(pending);
+    }
+    backend.enqueue(pending_record(
+        60_100,
+        6,
+        "later.example.",
+        RecordType::A,
+        Ipv4Addr::LOCALHOST,
+        Some(Rcode::NoError),
+        None,
+        &[],
+    ));
+    flush_backend(&backend).await;
+    let response = load_timeseries(
+        backend.clone(),
+        TimeseriesQuery {
+            since_ms: Some(100),
+            until_ms: Some(60_100),
+            filter: QueryRecordFilter::default(),
+            bucket: TimeseriesBucket::Minute,
+            max_buckets: 120,
+        },
+    )
+    .unwrap();
+    assert_eq!(response.sample_size, 6);
+    let first = &response.points[0];
+    assert_eq!(first.total, 5);
+    assert_eq!(
+        (
+            first.error_count,
+            first.no_response_count,
+            first.servfail_count
+        ),
+        (1, 1, 1)
+    );
+    assert_eq!(first.avg_ms, 30.0);
+    assert_eq!(first.p95_ms, 50);
+    assert!(first.partial && response.points[1].partial);
+    let day = load_timeseries(
+        backend.clone(),
+        TimeseriesQuery {
+            since_ms: Some(0),
+            until_ms: Some(86_400_000),
+            filter: QueryRecordFilter::default(),
+            bucket: TimeseriesBucket::Auto,
+            max_buckets: 120,
+        },
+    )
+    .unwrap();
+    assert_eq!(day.bucket_ms, 900_000);
+    assert_eq!(day.points.len(), 1);
+    assert!(!day.points[0].partial);
+    plugin.destroy().await.unwrap();
+}
+
+#[test]
 fn test_factory_rejects_quick_setup() {
     let factory = QueryRecorderFactory;
     let err = match factory.quick_setup("rec", None) {
@@ -1684,7 +2079,7 @@ async fn test_v2_shared_events_multi_questions_and_sse_history_agree() {
             detail.steps
         );
     }
-    let (total, stats) = load_plugin_stats(
+    let (total, stats, _) = load_plugin_stats(
         backend.clone(),
         PluginsStatsQuery {
             since_ms: None,

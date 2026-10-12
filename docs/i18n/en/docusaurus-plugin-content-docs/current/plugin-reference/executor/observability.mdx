@@ -288,12 +288,16 @@ To reclaim space manually, resolve the actual `path` first (relative paths use t
     - `until_ms=<unix_ms>`
     - `qname=<text>`, substring match against request question names
     - `client_ip=<text>`, substring match against the client IP string
+    - `qname_exact=<name>` / `client_ip_exact=<ip>`: exact ranking drilldown filters; existing substring filters remain unchanged
+    - `rcode_bucket=_ERROR|_NO_RESPONSE|_UNKNOWN`: exact special RCODE category; actual response codes take priority, followed by execution errors, missing responses, and missing response codes
     - `qtype=<type>` / `rcode=<rcode>` / `status=all|error|has_response|no_response`
 - `GET /plugins/<tag>/records/<id>`
   - Returns one full record plus `steps`.
 - `DELETE /plugins/<tag>/records`
   - Clears the current recorder’s v2 history and live replay cache, preserving old-version history and other recorders. Returns `cleared_records` with the number of deleted records.
   - If history deletion succeeds but disk reclamation fails, the endpoint returns `query_recorder_clear_failed` with a message that history was already cleared; later maintenance can retry space reclamation.
+All `/stats/*` aggregation endpoints require `since_ms` and `until_ms` in Unix milliseconds, with the start earlier than the end and a span of at most 24 hours. Missing or invalid intervals return HTTP 400. Each statistic uses at most the latest 10,000 query records within the interval, ordered by timestamp and record ID descending. Existing calls without time bounds must add them; record-list, detail, and SSE parameter semantics are unchanged. Every aggregation response includes `sample_limit`, `sample_truncated`, `sample_since_ms`, and `sample_until_ms`. Only the 10,001st row is probed and excluded from statistics; exactly 10,000 records is not truncation. Empty sample timestamps are `null`.
+
 - `GET /plugins/<tag>/stats/plugins`
   - Returns hit stats grouped by `matcher / executor / builtin`.
   - Supports `since_ms`, `until_ms`, `kind=matcher|executor|builtin|all`, and the record filters.
@@ -308,12 +312,18 @@ To reclaim space manually, resolve the actual `path` first (relative paths use t
   - Returns latency summary values, histogram buckets, and slow-query rankings.
   - Supports `slow_limit=<n>` or `limit=<n>`, default `20`; the backend no longer enforces a `200` cap.
 - `GET /plugins/<tag>/stats/timeseries`
-  - Returns query trends aggregated by minute or hour.
-  - Supports `bucket=minute|hour` and `buckets=<n>` (default `60`, maximum `720`).
+  - Returns query trends using automatic, minute, or hour intervals.
+  - Supports `bucket=auto|minute|hour` and `buckets=<n>` (default `60`, maximum `720`).
 - `GET /plugins/<tag>/stream`
   - Streams newly written records over SSE.
   - Supports `tail=<n>` to replay the in-memory tail.
   - Clients should send `Accept: text/event-stream` and tolerate heartbeat frames, error events, empty payloads, and brief disconnects.
+
+All WebUI aggregation views share presets for the last 10 minutes, 1 hour, and 24 hours, plus an always-visible timeline; there is no All option. The default is the last hour, and Trend opens first. Drag either endpoint, move the entire window, or edit timestamps with second precision. Clicking a timestamp opens a calendar and hour/minute/second fields in the shared UI style, with keyboard adjustment and explicit confirmation. Dragging does not query; completed changes are debounced by 300 milliseconds. The scale stays fixed after release, and Fit interval changes only the scale. Date navigation preserves the local end time and elapsed duration; Back to now moves the window to the current time. Refresh in the timeline and every aggregation card keeps manual and historical intervals fixed; recent presets advance. The selected interval is shown in the timeline. Every view shows actual statistics coverage and a compact limit indicator only when truncated, avoiding duplicate time ranges for full coverage. The compact translucent green track contains the whole-window handle and vertical ruler marks with second, minute, or hour intervals adapted to the visible time range and available width. The marks align with sparse time labels below, and dragging the selection preserves the interval, and hovering shows the pointer time. A stronger green overlay continuously marks the interval between the earliest and latest sampled records from the current aggregation response, including empty buckets in between. Time outside the sample bounds remains pale, without an additional query. Matcher hit rates appear in the Matcher view within Aggregation, sharing the applied interval and statistics budget. Clicking a Matcher, client, domain, QTYPE, RCODE, or slow-query domain opens Query records with the corresponding filter and exact interval, clearing unrelated previous filters. Domain and IP drilldowns fill the existing Query records fields in Exact mode. Matcher fills an editable tag field; special response categories use removable filter labels. Returning to Aggregation preserves its interval and view. Query records keeps its own filters, pagination, and details, without a timeline. QNAME and client IP each use one input with a Contains/Exact selector, defaulting to Contains. Editing values or modes queries only after Apply; Clear restores the defaults. Exact QNAME input accepts an omitted final dot; exact IP uses the full client IP string. The Matcher field filters matching queries by exact tag, accepting current or historical tags. Apply submits changes; an empty field removes the matcher filter. Matcher hit rate is match evaluations divided by check evaluations. Query coverage is queries passing through the matcher divided by all included queries, including non-matches; coverage can overlap across matchers. Clicking a matcher shows matching queries.
+
+Trend requests `bucket=auto&buckets=120`, choosing second, minute, hour, or day intervals from the statistics coverage. Without truncation, coverage spans the request interval. With truncation, it starts at the oldest included record, with its actual coverage timestamps shown above the charts. Unknown earlier periods are not filled with zeroes. Known empty buckets show zero records and null latency, and partial buckets are identified in hover details. The two charts show records and anomalies, and latency. The heading shows the anomaly total, and red dots on the record-count line mark intervals containing anomalies, making small anomaly counts visible alongside high traffic. Latency defaults to the average; switching to P95 does not query again. The latency line connects the surrounding data points across empty buckets, whose latency values remain null. Mutually exclusive anomalies include execution errors, missing responses, and SERVFAIL; NXDOMAIN and REFUSED are not included by default. Clicking a bucket shows query records and details in its intersection with the selected interval. A partial bucket's record list may exceed its chart count.
+
+Time bounds and the record limit constrain statistics work together. Complex filters may still scan many candidate records, so response time is not guaranteed.
 
 ### Typical Uses
 

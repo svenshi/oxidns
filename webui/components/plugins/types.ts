@@ -49,6 +49,9 @@ export interface PluginDetailTemplateProps extends PluginDetailComponentProps {
   summaryItems?: PluginSummaryItem[];
   configContent?: ReactNode;
   metricsContent?: ReactNode;
+  statsTabLabel?: ReactNode;
+  tabValue?: string;
+  onTabValueChange?: (value: string) => void;
   runtimeContent?: ReactNode;
   /**
    * Extra top-level tabs rendered after the metrics tab and before built-in metrics.
