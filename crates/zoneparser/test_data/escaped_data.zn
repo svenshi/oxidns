@@ -1,3 +1,7 @@
 simple.zn.	3600	IN	TXT	"foo\ bar\"baz" "foo bar"
 simple.zn.	3600	IN	TXT	"foo\"" "\foo" ""
 simple.zn.	3600	IN	TXT	"\"" "\\foo" "\foo\bar" "\foo bar"
+simple.zn.	3600	IN	TXT	(
+  "hello
+   world"
+ )

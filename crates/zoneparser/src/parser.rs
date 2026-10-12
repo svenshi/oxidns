@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Sven Shi
 // SPDX-License-Identifier: MIT
 
+use std::borrow::Cow;
 use std::fmt;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -15,6 +16,8 @@ use oxidns_proto::{
     decode_rdata_from_wire,
 };
 use thiserror::Error;
+
+const MAX_PAREN_DEPTH: usize = 1000;
 
 #[derive(Debug, Clone)]
 pub struct ParseOptions {
@@ -458,6 +461,7 @@ fn handle_generate(
         .map(|token| token.raw.as_str())
         .collect::<Vec<_>>()
         .join(" ");
+    let rr_type_token = record_type_token(rr_type);
 
     for value in range.iter() {
         let owner = expand_generate_template(&lhs, value)
@@ -475,7 +479,7 @@ fn handle_generate(
             generated.push_str(class.to_string().as_str());
         }
         generated.push(' ');
-        generated.push_str(<&str>::from(rr_type));
+        generated.push_str(&rr_type_token);
         generated.push(' ');
         generated.push_str(&rdata);
 
@@ -598,7 +602,7 @@ fn parse_record_rdata(
 
     Err(format!(
         "record type '{}' requires RFC3597 generic syntax ('\\# <len> <hex>') in zoneparser",
-        <&str>::from(rr_type)
+        record_type_token(rr_type)
     ))
 }
 
@@ -888,6 +892,13 @@ fn parse_record_type(raw: &str) -> Result<RecordType, String> {
     RecordType::from_str(raw).map_err(|_| format!("unsupported record type '{}'", raw))
 }
 
+fn record_type_token(rr_type: RecordType) -> Cow<'static, str> {
+    match rr_type {
+        RecordType::Unknown(code) => Cow::Owned(format!("TYPE{code}")),
+        _ => Cow::Borrowed(rr_type.into()),
+    }
+}
+
 fn parse_ttl(raw: &str) -> Result<u32, String> {
     if raw.is_empty() {
         return Err("TTL cannot be empty".to_string());
@@ -1000,6 +1011,13 @@ impl LogicalLineAssembler {
             }
 
             if self.in_quote {
+                if ch == '\n' && self.paren_depth == 0 {
+                    return Err(syntax_error(
+                        source,
+                        self.line_number,
+                        "unterminated quoted string; multiline strings require parentheses",
+                    ));
+                }
                 self.current.push(ch);
                 match ch {
                     '"' if !self.escaped => self.in_quote = false,
@@ -1044,6 +1062,15 @@ impl LogicalLineAssembler {
                 }
                 ';' | '#' => self.in_comment = true,
                 '(' => {
+                    if self.paren_depth >= MAX_PAREN_DEPTH {
+                        return Err(syntax_error(
+                            source,
+                            self.line_number,
+                            format!(
+                                "parenthesis nesting exceeds maximum depth ({MAX_PAREN_DEPTH})"
+                            ),
+                        ));
+                    }
                     self.paren_depth += 1;
                     if !self.current.ends_with([' ', '\t']) {
                         self.current.push(' ');
@@ -1300,13 +1327,18 @@ fn decode_escaped_bytes(raw: &str) -> Result<Vec<u8>, String> {
         if idx >= bytes.len() {
             return Err("unterminated escape sequence".to_string());
         }
-        if idx + 2 < bytes.len()
-            && bytes[idx].is_ascii_digit()
-            && bytes[idx + 1].is_ascii_digit()
-            && bytes[idx + 2].is_ascii_digit()
-        {
-            let value =
-                (bytes[idx] - b'0') * 100 + (bytes[idx + 1] - b'0') * 10 + (bytes[idx + 2] - b'0');
+        if bytes[idx].is_ascii_digit() {
+            if idx + 2 >= bytes.len()
+                || !bytes[idx + 1].is_ascii_digit()
+                || !bytes[idx + 2].is_ascii_digit()
+            {
+                return Err("decimal escape must contain exactly three digits".to_string());
+            }
+            let value = u16::from(bytes[idx] - b'0') * 100
+                + u16::from(bytes[idx + 1] - b'0') * 10
+                + u16::from(bytes[idx + 2] - b'0');
+            let value = u8::try_from(value)
+                .map_err(|_| format!("decimal escape exceeds 255: \\{value:03}"))?;
             out.push(value);
             idx += 3;
         } else {
@@ -1628,13 +1660,127 @@ mod tests {
     #[test]
     fn parses_escaped_data_fixture() {
         let records = parse_fixture_file("escaped_data.zn");
-        assert_eq!(records.len(), 3);
+        assert_eq!(records.len(), 4);
         assert_eq!(txt_chunks(&records[0]), vec!["foo bar\"baz", "foo bar"]);
         assert_eq!(txt_chunks(&records[1]), vec!["foo\"", "foo", ""]);
         assert_eq!(
             txt_chunks(&records[2]),
             vec!["\"", "\\foo", "foobar", "foo bar"]
         );
+        assert_eq!(txt_chunks(&records[3]), vec!["hello\n   world"]);
+    }
+
+    #[test]
+    fn parses_upstream_decimal_escapes_before_reporting_invalid_record() {
+        let input = fs::read_to_string(fixture_path("escaped_decimal.zn")).unwrap();
+        for from_file in [false, true] {
+            let mut records = Vec::new();
+            let err = if from_file {
+                visit_file(
+                    fixture_path("escaped_decimal.zn"),
+                    &ParseOptions::default(),
+                    |record| records.push(record),
+                )
+            } else {
+                visit_str(&input, &ParseOptions::default(), |record| {
+                    records.push(record)
+                })
+            }
+            .expect_err("the third fixture record must be rejected");
+            assert!(matches!(err, ZoneParseError::Syntax { line: 3, .. }));
+            assert_eq!(records.len(), 2);
+            let RData::TXT(txt) = records[0].data() else {
+                panic!("expected TXT record");
+            };
+            assert_eq!(
+                txt.txt_data().collect::<Vec<_>>(),
+                vec![b"\x03foo\xbe\xbfbar\xffbaz".as_slice()]
+            );
+            let RData::MX(mx) = records[1].data() else {
+                panic!("expected MX record");
+            };
+            assert_eq!(mx.preference(), 0);
+            assert_eq!(mx.exchange().to_fqdn(), "mail.simple.dzn10.");
+        }
+    }
+
+    #[test]
+    fn parses_decimal_escapes_for_every_byte() {
+        for value in 0..=u8::MAX {
+            let input = format!("example.com. IN TXT \"\\{value:03}\"\n");
+            let records = parse_str(&input, &ParseOptions::default()).unwrap();
+            let RData::TXT(txt) = records[0].data() else {
+                panic!("expected TXT record");
+            };
+            assert_eq!(txt.txt_data().collect::<Vec<_>>(), vec![&[value][..]]);
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_decimal_escapes() {
+        for escaped in [r"\0", r"\12", r"\1x0", r"\12x", r"\256", r"\300", r"\999"] {
+            for quoted in [false, true] {
+                let field = if quoted {
+                    format!("\"{escaped}\"")
+                } else {
+                    escaped.to_string()
+                };
+                let input = format!("example.com. IN TXT {field}\n");
+                let err = parse_str(&input, &ParseOptions::default())
+                    .expect_err("invalid byte escapes must return a syntax error");
+                assert!(matches!(err, ZoneParseError::Syntax { line: 1, .. }));
+                assert!(err.to_string().contains("decimal escape"), "{err}");
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_unterminated_quoted_strings() {
+        let err = parse_file(fixture_path("escape_error2.zn"), &ParseOptions::default())
+            .expect_err("unterminated quoted strings must be rejected");
+        assert!(matches!(err, ZoneParseError::Syntax { line: 1, .. }));
+
+        let input = "example.com. IN TXT \"hello\nworld\"\n";
+        let err = parse_str(input, &ParseOptions::default())
+            .expect_err("multiline quoted strings require parentheses");
+        assert!(matches!(err, ZoneParseError::Syntax { line: 1, .. }));
+    }
+
+    #[test]
+    fn bounds_parenthesis_nesting() {
+        let input = format!(
+            "example.com. {} IN TXT \"ok\" {}\n",
+            "(".repeat(1000),
+            ")".repeat(1000)
+        );
+        assert_eq!(
+            parse_str(&input, &ParseOptions::default()).unwrap().len(),
+            1
+        );
+
+        let input = format!(
+            "example.com. {} IN TXT \"ok\" {}\n",
+            "(".repeat(1001),
+            ")".repeat(1001)
+        );
+        let err = parse_str(&input, &ParseOptions::default())
+            .expect_err("excessive nesting must be rejected");
+        assert!(matches!(err, ZoneParseError::Syntax { line: 1, .. }));
+        assert!(err.to_string().contains("parenthesis nesting"));
+    }
+
+    #[test]
+    fn reports_invalid_headers_and_unmatched_parentheses_as_syntax_errors() {
+        for input in [
+            "example.com. TYPEinvalid \\# 1 FF\n",
+            "example.com. TYPE65536 \\# 1 FF\n",
+            "example.com. INVALIDCLASS TXT \"ok\"\n",
+            "example.com. IN TXT \"ok\" )\n",
+            "example.com. IN TXT ( \"ok\"\n",
+        ] {
+            let err = parse_str(input, &ParseOptions::default()).expect_err("must fail");
+            assert!(matches!(err, ZoneParseError::Syntax { .. }));
+        }
     }
 
     #[test]
@@ -1878,6 +2024,30 @@ $GENERATE 15-16 hex${0,2,x} IN A 192.0.2.$
         assert_eq!(records[0].ttl(), 3600);
         assert_eq!(records[2].name().to_fqdn(), "hex0f.example.com.");
         assert_eq!(records[3].name().to_fqdn(), "hex10.example.com.");
+    }
+
+    #[test]
+    fn supports_generate_for_unknown_record_types() {
+        let input = "$ORIGIN example.com.\n$GENERATE 1-2 host$ IN TYPE65534 \\# 1 FF\n";
+        let records = parse_str(input, &ParseOptions::default()).unwrap();
+        assert_eq!(records.len(), 2);
+        for (index, record) in records.iter().enumerate() {
+            assert_eq!(
+                record.name().to_fqdn(),
+                format!("host{}.example.com.", index + 1)
+            );
+            assert_eq!(record.rr_type(), RecordType::Unknown(65534));
+            assert!(
+                matches!(record.data(), RData::Unknown { rr_type: 65534, data } if data == &[0xff])
+            );
+        }
+    }
+
+    #[test]
+    fn reports_numeric_unknown_record_type_in_errors() {
+        let err = parse_str("example.com. TYPE65534 invalid\n", &ParseOptions::default())
+            .expect_err("unknown types require generic RDATA");
+        assert!(err.to_string().contains("TYPE65534"), "{err}");
     }
 
     #[test]
