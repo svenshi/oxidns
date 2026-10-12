@@ -630,3 +630,138 @@ fn schema_initialization_failure_is_atomic() {
         .unwrap();
     assert_eq!(tables, 0);
 }
+
+#[test]
+#[ignore = "manual bounded statistics scan and query-plan diagnostic"]
+fn benchmark_bounded_statistics_filters() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    let t = table_names("bounded_stats_diagnostic");
+    create_schema(&mut conn, &t).unwrap();
+    let mut common = sample_record_row();
+    common.created_at_ms = 0;
+    common.client_ip = "192.0.2.1".into();
+    common.questions_json[0].name = "common.example.".into();
+    let mut rare = common.clone();
+    rare.client_ip = "192.0.2.99".into();
+    rare.questions_json[0].name = "rare.example.".into();
+    write(
+        &mut conn,
+        &t,
+        &[
+            PreparedRecord::new(common, vec![step(0, "common")]).unwrap(),
+            PreparedRecord::new(rare, vec![step(0, "rare")]).unwrap(),
+        ],
+    );
+    // Clone persistent rows only: this disposable read-only diagnostic does not
+    // reclaim dictionaries.
+    let columns = &super::super::persistence::RECORD_COLUMNS[1..];
+    let values = columns
+        .iter()
+        .map(|column| {
+            if *column == "created_at_ms" {
+                "?".to_string()
+            } else {
+                format!("r.{column}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let insert = format!(
+        "INSERT INTO {} ({}) SELECT {values} FROM {} r WHERE id = 1",
+        t.records,
+        columns.join(","),
+        t.records
+    );
+    {
+        let tx = conn.transaction().unwrap();
+        {
+            let mut stmt = tx.prepare(&insert).unwrap();
+            for timestamp in 1..=100_000 {
+                stmt.execute([timestamp]).unwrap();
+            }
+        }
+        tx.commit().unwrap();
+    }
+    for (name, filter, expected) in [
+        ("time", QueryRecordFilter::default(), 10_000),
+        (
+            "domain_contains",
+            QueryRecordFilter {
+                qname: Some("rare".into()),
+                ..Default::default()
+            },
+            1,
+        ),
+        (
+            "domain_exact",
+            QueryRecordFilter {
+                qname_exact: Some("rare.example.".into()),
+                ..Default::default()
+            },
+            1,
+        ),
+        (
+            "client_contains",
+            QueryRecordFilter {
+                client_ip: Some("192.0.2.99".into()),
+                ..Default::default()
+            },
+            1,
+        ),
+        (
+            "client_exact",
+            QueryRecordFilter {
+                client_ip_exact: Some("192.0.2.99".into()),
+                ..Default::default()
+            },
+            1,
+        ),
+        (
+            "matcher_rare",
+            QueryRecordFilter {
+                matcher_tag: Some("rare".into()),
+                ..Default::default()
+            },
+            1,
+        ),
+    ] {
+        let (clauses, params) =
+            record_filter_clauses("r", &t, Some(0), Some(100_000), &filter).unwrap();
+        let where_sql = join_clauses(&clauses);
+        let old_sql = format!(
+            "WITH sample_records AS (SELECT r.id, r.created_at_ms FROM {} r WHERE {where_sql} ORDER BY r.created_at_ms DESC, r.id DESC LIMIT ?) SELECT COUNT(*) FROM sample_records",
+            t.records
+        );
+        let new_sql = format!(
+            "WITH {} SELECT sample_size FROM totals",
+            stats_sample_ctes(&t.records, &where_sql, "r.id")
+        );
+        for (version, sql, limit) in [("before", old_sql, 10_000), ("after", new_sql, 10_001)] {
+            let mut bindings = params.clone();
+            bindings.push(Value::Integer(limit));
+            let plan = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map(params_from_iter(bindings.clone()), |row| {
+                    row.get::<_, String>(3)
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+                .join("; ");
+            assert!(plan.contains("_idx"), "{name}: {plan}");
+            let mut stmt = conn.prepare(&sql).unwrap();
+            let start = std::time::Instant::now();
+            let size: i64 = stmt
+                .query_row(params_from_iter(bindings), |row| row.get(0))
+                .unwrap();
+            assert_eq!(size, expected);
+            eprintln!(
+                "{name}/{version}: elapsed={:?}, vm_steps={}, fullscan_steps={}, plan={plan}",
+                start.elapsed(),
+                stmt.get_status(rusqlite::StatementStatus::VmStep),
+                stmt.get_status(rusqlite::StatementStatus::FullscanStep)
+            );
+        }
+    }
+}

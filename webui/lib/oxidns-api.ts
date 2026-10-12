@@ -368,9 +368,12 @@ export interface QueryRecordFilters {
   sinceMs?: number;
   untilMs?: number;
   qname?: string;
+  qnameExact?: string;
   qtype?: string;
   clientIp?: string;
+  clientIpExact?: string;
   rcode?: string;
+  rcodeBucket?: "_ERROR" | "_NO_RESPONSE" | "_UNKNOWN";
   status?: QueryRecordStatusFilter;
   matcherTag?: string;
 }
@@ -391,7 +394,14 @@ export interface QueryRecorderPluginStatsRow {
   query_share: number;
 }
 
-export interface QueryRecorderPluginStatsResponse {
+export interface QueryRecorderSampleMetadata {
+  sample_limit: number;
+  sample_truncated: boolean;
+  sample_since_ms: number | null;
+  sample_until_ms: number | null;
+}
+
+export interface QueryRecorderPluginStatsResponse extends QueryRecorderSampleMetadata {
   ok: boolean;
   query_total: number;
   stats: QueryRecorderPluginStatsRow[];
@@ -403,7 +413,7 @@ export interface QueryRecorderTopRow {
   share: number;
 }
 
-export interface QueryRecorderTopResponse {
+export interface QueryRecorderTopResponse extends QueryRecorderSampleMetadata {
   ok: boolean;
   sample_size: number;
   rows: QueryRecorderTopRow[];
@@ -415,7 +425,7 @@ export interface QueryRecorderDistributionRow {
   share: number;
 }
 
-export interface QueryRecorderDistributionResponse {
+export interface QueryRecorderDistributionResponse extends QueryRecorderSampleMetadata {
   ok: boolean;
   sample_size: number;
   rows: QueryRecorderDistributionRow[];
@@ -433,7 +443,7 @@ export interface QueryRecorderLatencySlowRow {
   max_ms: number;
 }
 
-export interface QueryRecorderLatencySummary {
+export interface QueryRecorderLatencySummary extends QueryRecorderSampleMetadata {
   ok: boolean;
   sample_size: number;
   avg_ms: number;
@@ -445,18 +455,20 @@ export interface QueryRecorderLatencySummary {
   slow_top: QueryRecorderLatencySlowRow[];
 }
 
-export type QueryRecorderTimeseriesBucket = "minute" | "hour";
+export type QueryRecorderTimeseriesBucket = "auto" | "minute" | "hour";
 
 export interface QueryRecorderTimeseriesPoint {
   bucket_ms: number;
   total: number;
   error_count: number;
   no_response_count: number;
+  servfail_count: number;
+  partial: boolean;
   avg_ms: number;
   p95_ms: number;
 }
 
-export interface QueryRecorderTimeseriesResponse {
+export interface QueryRecorderTimeseriesResponse extends QueryRecorderSampleMetadata {
   ok: boolean;
   sample_size: number;
   bucket_ms: number;
@@ -1171,9 +1183,13 @@ function appendQueryRecordFilters(
     params.set("until_ms", String(options.untilMs));
   }
   if (options.qname) params.set("qname", options.qname);
+  if (options.qnameExact) params.set("qname_exact", options.qnameExact);
   if (options.qtype) params.set("qtype", options.qtype);
   if (options.clientIp) params.set("client_ip", options.clientIp);
+  if (options.clientIpExact)
+    params.set("client_ip_exact", options.clientIpExact);
   if (options.rcode) params.set("rcode", options.rcode);
+  if (options.rcodeBucket) params.set("rcode_bucket", options.rcodeBucket);
   if (options.status && options.status !== "all") {
     params.set("status", options.status);
   }
