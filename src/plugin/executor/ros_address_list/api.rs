@@ -10,6 +10,7 @@ use std::fmt::Debug;
 
 use async_trait::async_trait;
 use mikrotik_rs::{Command, CommandBuilder};
+use tracing::debug;
 
 use super::model::{AddressListFamily, AddressListKey, decode_owned_comment, parse_router_address};
 use crate::infra::error::{DnsError, Result};
@@ -88,8 +89,12 @@ pub(super) trait MikrotikApi: Debug + Send + Sync {
     ) -> Result<Vec<RouterListEntry>>;
     /// Upsert one plugin-owned address-list entry.
     ///
-    /// Returning `Ok(None)` means a foreign entry already occupies the same
-    /// `(family, list, address)` key and the caller must not overwrite it.
+    /// Returning `Ok(None)` means the key is already occupied by a row this
+    /// plugin must not overwrite: a foreign entry, or a row that stays outside
+    /// its ownership projection because RouterOS stores the address in a form
+    /// the filtered lookup does not report. RouterOS rejecting an insert
+    /// because an equivalent row already exists is an idempotent outcome and
+    /// never surfaces as an error.
     async fn upsert_owned_entry(
         &self,
         key: &AddressListKey,
@@ -190,12 +195,42 @@ impl MikrotikRsClient {
         Ok(entries)
     }
 
+    async fn find_entry_matching_snapshot(
+        &self,
+        expected: &RouterListEntry,
+    ) -> Result<Option<RouterListEntry>> {
+        // A full scan can find a normalized key whose stored address text does
+        // not match router_value(). Recheck by id and list, then compare the
+        // normalized address and complete ownership comment before mutation.
+        // The list filter also makes the fallback safe if RouterOS omits that
+        // field from the filtered reply.
+        let action = "verify address-list entry";
+        let print = CommandBuilder::new()
+            .command(address_list_command(expected.key.family, ListOp::Print))
+            .attribute(".proplist", Some(ADDRESS_LIST_PROPLIST))
+            .query_equal(ADDRESS_ID_FIELD, expected.id.as_str())
+            .query_equal(ADDRESS_LIST_FIELD, expected.key.list.as_str())
+            .build();
+        for row in self.send_rows(action, print).await? {
+            if let Some(current) = parse_router_list_entry(
+                action,
+                expected.key.family,
+                &row,
+                Some(expected.key.list.as_str()),
+            )? && entry_matches_delete_snapshot(expected, &current)
+            {
+                return Ok(Some(current));
+            }
+        }
+        Ok(None)
+    }
+
     async fn add_entry(
         &self,
         key: &AddressListKey,
         timeout: Option<&str>,
         comment: &str,
-    ) -> Result<()> {
+    ) -> RouterOsResult<()> {
         let mut add = CommandBuilder::new()
             .command(address_list_command(key.family, ListOp::Add))
             .attribute(ADDRESS_LIST_FIELD, Some(key.list.as_str()))
@@ -204,8 +239,10 @@ impl MikrotikRsClient {
         if let Some(timeout) = timeout {
             add = add.attribute(TIMEOUT_FIELD, Some(timeout));
         }
+        // The typed transport error is kept so duplicate-insert traps can be
+        // classified before they are flattened into a plugin error.
         let _ = self
-            .send_rows("add address-list entry", add.build())
+            .send_rows_transport("add address-list entry", add.build())
             .await?;
         Ok(())
     }
@@ -231,11 +268,7 @@ impl MikrotikRsClient {
         timeout: Option<&str>,
         comment: &str,
     ) -> Result<bool> {
-        let current = self.find_entries_by_key(&expected.key).await?;
-        let Some(current) = current
-            .into_iter()
-            .find(|current| entry_matches_delete_snapshot(expected, current))
-        else {
+        let Some(current) = self.find_entry_matching_snapshot(expected).await? else {
             return Ok(false);
         };
         let mut set = CommandBuilder::new()
@@ -264,6 +297,140 @@ impl MikrotikRsClient {
         }
         Ok(())
     }
+
+    /// List every entry of one address-list namespace without an address
+    /// filter.
+    ///
+    /// This is the full-scan form used by cold paths and by the duplicate
+    /// insert recovery path, where the filtered lookup already proved unable to
+    /// report the row RouterOS holds.
+    async fn list_entries_for_list(
+        &self,
+        family: AddressListFamily,
+        list: &str,
+    ) -> Result<Vec<RouterListEntry>> {
+        let (action, command) = match family {
+            AddressListFamily::Ipv4 => (
+                "print ipv4 address-list entries",
+                address_list_command(AddressListFamily::Ipv4, ListOp::Print),
+            ),
+            AddressListFamily::Ipv6 => (
+                "print ipv6 address-list entries",
+                address_list_command(AddressListFamily::Ipv6, ListOp::Print),
+            ),
+        };
+        let print = CommandBuilder::new()
+            .command(command)
+            .attribute(".proplist", Some(ADDRESS_LIST_PROPLIST))
+            .query_equal(ADDRESS_LIST_FIELD, list)
+            .build();
+        let mut entries = Vec::new();
+        for row in self.send_rows(action, print).await? {
+            if let Some(entry) = parse_router_list_entry(action, family, &row, Some(list))? {
+                entries.push(entry);
+            }
+        }
+        Ok(entries)
+    }
+
+    /// Run one ownership-aware upsert attempt.
+    async fn upsert_attempt(
+        &self,
+        request: &UpsertRequest<'_>,
+        scope: LookupScope,
+    ) -> Result<UpsertAttempt> {
+        let UpsertRequest {
+            key,
+            timeout,
+            comment,
+            comment_prefix,
+            plugin_tag,
+            refresh_timeout,
+        } = *request;
+        // Upsert policy:
+        // 1) collect all rows that belong to the exact `(family, list, address,
+        //    prefix)` key
+        // 2) refuse overwrite when only foreign rows exist
+        // 3) deduplicate multiple owned rows down to one canonical row
+        // 4) update the canonical row in place when safe
+        // 5) recreate when switching between timed and persistent forms
+        let candidates: Vec<RouterListEntry> = match scope {
+            LookupScope::Filtered => self.find_entries_by_key(key).await?,
+            LookupScope::ListScan => self
+                .list_entries_for_list(key.family, key.list.as_str())
+                .await?
+                .into_iter()
+                .filter(|entry| entry.key == *key)
+                .collect(),
+        };
+
+        let mut owned = Vec::new();
+        let mut has_foreign = false;
+        for entry in candidates {
+            if decode_owned_comment(comment_prefix, plugin_tag, entry.comment.as_deref()).is_some()
+            {
+                owned.push(entry);
+            } else {
+                has_foreign = true;
+            }
+        }
+
+        if owned.is_empty() && has_foreign {
+            return Ok(UpsertAttempt::Foreign);
+        }
+
+        let canonical = owned
+            .iter()
+            .position(|entry| entry.timeout.is_some() == timeout.is_some())
+            .unwrap_or_default();
+        let mut canonical = (!owned.is_empty()).then(|| owned.swap_remove(canonical));
+        self.delete_entries_if_matches(owned).await?;
+
+        if let Some(existing) = canonical.take() {
+            // RouterOS timed and timeless rows are different enough that the
+            // safest transition is delete-and-add when the timeout kind
+            // changes.
+            let timeout_kind_changed = existing.timeout.is_some() != timeout.is_some();
+            if timeout_kind_changed {
+                if !self.delete_entry_if_matches(&existing).await? {
+                    return Err(DnsError::plugin(
+                        "ros_address_list entry changed during timeout-kind transition",
+                    ));
+                }
+                return self.insert_entry(request).await;
+            }
+
+            // `refresh_timeout` lets callers force a timeout rewrite even when
+            // the string looks unchanged, which keeps the remote timer alive.
+            let timeout_changed = existing.timeout.as_deref() != timeout;
+            let comment_changed = existing.comment.as_deref() != Some(comment);
+            if (refresh_timeout || timeout_changed || comment_changed)
+                && !self
+                    .set_entry_if_matches(&existing, timeout, comment)
+                    .await?
+            {
+                return Err(DnsError::plugin(
+                    "ros_address_list entry changed before update",
+                ));
+            }
+            return Ok(UpsertAttempt::Applied);
+        }
+
+        self.insert_entry(request).await
+    }
+
+    /// Insert a row, reporting a RouterOS duplicate rejection as
+    /// [`UpsertAttempt::HiddenDuplicate`] instead of an error.
+    async fn insert_entry(&self, request: &UpsertRequest<'_>) -> Result<UpsertAttempt> {
+        match self
+            .add_entry(request.key, request.timeout, request.comment)
+            .await
+        {
+            Ok(()) => Ok(UpsertAttempt::Applied),
+            Err(error) if error.is_duplicate_entry() => Ok(UpsertAttempt::HiddenDuplicate),
+            Err(error) => Err(error.into()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -272,6 +439,39 @@ enum ListOp {
     Add,
     Set,
     Remove,
+}
+
+/// How one upsert attempt attributes RouterOS rows to the target key.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum LookupScope {
+    /// Exact `(list, address)` query, which is what the plugin writes.
+    Filtered,
+    /// Whole-list scan matched on normalized keys.
+    ListScan,
+}
+
+/// Result of one ownership-aware upsert attempt.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum UpsertAttempt {
+    /// The key already holds the desired plugin state, or it was written.
+    Applied,
+    /// A row this plugin does not own occupies the key; never overwrite it.
+    Foreign,
+    /// RouterOS refused the insert because an equivalent row exists that the
+    /// lookup used for this attempt did not report.
+    HiddenDuplicate,
+}
+
+/// One desired address-list row plus the ownership namespace that authorizes
+/// managing it.
+#[derive(Debug, Clone, Copy)]
+struct UpsertRequest<'a> {
+    key: &'a AddressListKey,
+    timeout: Option<&'a str>,
+    comment: &'a str,
+    comment_prefix: &'a str,
+    plugin_tag: &'a str,
+    refresh_timeout: bool,
 }
 
 /// Map a normalized family/op pair to the RouterOS command namespace.
@@ -342,6 +542,7 @@ impl MikrotikApi for MikrotikRsClient {
         Some(self.transport.snapshot().await)
     }
 
+    /// List all entries from the configured IPv4/IPv6 address lists.
     async fn list_entries(
         &self,
         list4: Option<&str>,
@@ -352,45 +553,17 @@ impl MikrotikApi for MikrotikRsClient {
         let mut entries = Vec::new();
 
         if let Some(list4) = list4 {
-            let print = CommandBuilder::new()
-                .command(address_list_command(AddressListFamily::Ipv4, ListOp::Print))
-                .attribute(".proplist", Some(ADDRESS_LIST_PROPLIST))
-                .query_equal(ADDRESS_LIST_FIELD, list4)
-                .build();
-            for row in self
-                .send_rows("print ipv4 address-list entries", print)
-                .await?
-            {
-                if let Some(entry) = parse_router_list_entry(
-                    "parse ipv4 address-list entry",
-                    AddressListFamily::Ipv4,
-                    &row,
-                    Some(list4),
-                )? {
-                    entries.push(entry);
-                }
-            }
+            entries.extend(
+                self.list_entries_for_list(AddressListFamily::Ipv4, list4)
+                    .await?,
+            );
         }
 
         if let Some(list6) = list6 {
-            let print = CommandBuilder::new()
-                .command(address_list_command(AddressListFamily::Ipv6, ListOp::Print))
-                .attribute(".proplist", Some(ADDRESS_LIST_PROPLIST))
-                .query_equal(ADDRESS_LIST_FIELD, list6)
-                .build();
-            for row in self
-                .send_rows("print ipv6 address-list entries", print)
-                .await?
-            {
-                if let Some(entry) = parse_router_list_entry(
-                    "parse ipv6 address-list entry",
-                    AddressListFamily::Ipv6,
-                    &row,
-                    Some(list6),
-                )? {
-                    entries.push(entry);
-                }
-            }
+            entries.extend(
+                self.list_entries_for_list(AddressListFamily::Ipv6, list6)
+                    .await?,
+            );
         }
 
         Ok(entries)
@@ -405,76 +578,42 @@ impl MikrotikApi for MikrotikRsClient {
         plugin_tag: &str,
         refresh_timeout: bool,
     ) -> Result<Option<()>> {
-        // Upsert policy:
-        // 1) query all rows for the exact `(family, list, address)` key
-        // 2) refuse overwrite when only foreign rows exist
-        // 3) deduplicate multiple owned rows down to one canonical row
-        // 4) update the canonical row in place when safe
-        // 5) recreate when switching between timed and persistent forms
-        let entries = self.find_entries_by_key(key).await?;
-        let mut owned = Vec::new();
-        let mut has_foreign = false;
-        for entry in entries {
-            if decode_owned_comment(comment_prefix, plugin_tag, entry.comment.as_deref()).is_some()
-            {
-                owned.push(entry);
-            } else {
-                has_foreign = true;
-            }
-        }
-
-        if owned.is_empty() && has_foreign {
-            return Ok(None);
-        }
-
-        let canonical = owned
-            .iter()
-            .position(|entry| entry.timeout.is_some() == timeout.is_some())
-            .unwrap_or_default();
-        let mut canonical = (!owned.is_empty()).then(|| owned.swap_remove(canonical));
-        self.delete_entries_if_matches(owned).await?;
-
-        if let Some(existing) = canonical.take() {
-            // RouterOS timed and timeless rows are different enough that the
-            // safest transition is delete-and-add when the timeout kind
-            // changes.
-            let timeout_kind_changed = existing.timeout.is_some() != timeout.is_some();
-            if timeout_kind_changed {
-                if !self.delete_entry_if_matches(&existing).await? {
-                    return Err(DnsError::plugin(
-                        "ros_address_list entry changed during timeout-kind transition",
-                    ));
+        let request = UpsertRequest {
+            key,
+            timeout,
+            comment,
+            comment_prefix,
+            plugin_tag,
+            refresh_timeout,
+        };
+        match self.upsert_attempt(&request, LookupScope::Filtered).await? {
+            UpsertAttempt::Applied => Ok(Some(())),
+            UpsertAttempt::Foreign => Ok(None),
+            UpsertAttempt::HiddenDuplicate => {
+                // RouterOS holds an equivalent row that the exact-key query did
+                // not report. Stored addresses are normalized on insert (`/32`
+                // and IPv6 host forms), filtered prints may omit rows, and
+                // another writer can win the race between lookup and insert.
+                // Re-read the whole list and match on normalized keys before
+                // accepting the insert as already satisfied.
+                debug!(
+                    list = %key.list,
+                    address = %key.normalized_value(),
+                    "ros_address_list insert reported an existing entry, rescanning the list"
+                );
+                match self.upsert_attempt(&request, LookupScope::ListScan).await? {
+                    UpsertAttempt::Applied => Ok(Some(())),
+                    // The key is occupied but stays outside this plugin's
+                    // ownership projection. The policy goal is already met, so
+                    // report it as an occupied key rather than a failure.
+                    UpsertAttempt::Foreign | UpsertAttempt::HiddenDuplicate => Ok(None),
                 }
-                self.add_entry(key, timeout, comment).await?;
-                return Ok(Some(()));
             }
-
-            // `refresh_timeout` lets callers force a timeout rewrite even when
-            // the string looks unchanged, which keeps the remote timer alive.
-            let timeout_changed = existing.timeout.as_deref() != timeout;
-            let comment_changed = existing.comment.as_deref() != Some(comment);
-            if (refresh_timeout || timeout_changed || comment_changed)
-                && !self
-                    .set_entry_if_matches(&existing, timeout, comment)
-                    .await?
-            {
-                return Err(DnsError::plugin(
-                    "ros_address_list entry changed before update",
-                ));
-            }
-            return Ok(Some(()));
         }
-
-        self.add_entry(key, timeout, comment).await?;
-        Ok(Some(()))
     }
 
     async fn delete_entry_if_matches(&self, expected: &RouterListEntry) -> Result<bool> {
-        let current = self.find_entries_by_key(&expected.key).await?;
-        let Some(current) = current
-            .into_iter()
-            .find(|current| entry_matches_delete_snapshot(expected, current))
-        else {
+        let Some(current) = self.find_entry_matching_snapshot(expected).await? else {
             return Ok(false);
         };
         self.remove_entry_by_id(&current.id, current.key.family)
@@ -482,6 +621,10 @@ impl MikrotikApi for MikrotikRsClient {
         Ok(true)
     }
 }
+
+#[cfg(test)]
+#[path = "api_tests.rs"]
+mod transport_tests;
 
 #[cfg(test)]
 mod tests {
@@ -498,6 +641,29 @@ mod tests {
                     Some("operator-owned".to_string()),
                 ),
             ]),
+        }
+    }
+
+    /// RouterOS stores host addresses in mask form for some inputs. The
+    /// duplicate-insert recovery path relies on such rows normalizing back to
+    /// the plugin's own host key.
+    #[test]
+    fn list_parser_normalizes_host_mask_addresses_to_host_keys() {
+        for (family, address, expected) in [
+            (AddressListFamily::Ipv4, "192.0.2.10/32", "192.0.2.10"),
+            (AddressListFamily::Ipv6, "2001:db8::1/128", "2001:db8::1"),
+        ] {
+            let entry =
+                parse_router_list_entry("parse shared list", family, &reply(Some(address)), None)
+                    .expect("host mask form is a projected entry")
+                    .expect("parsed entry");
+            assert_eq!(
+                entry.key,
+                AddressListKey::new(
+                    expected.parse().expect("expected address"),
+                    "policy".to_string()
+                )
+            );
         }
     }
 
