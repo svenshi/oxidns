@@ -274,6 +274,8 @@ export const zhCNDocs = {
       "- 类型：`duration`；必填：否；默认值：`1s`\n- 作用：限制 `async: false` 时等待 provider 写入完成的最长时间。\n- 支持单位：`ms`、`s`、`m`、`h`、`d`。",
   },
   query_recorder: {
+    observe_details:
+      "- 类型：`boolean`；必填：否；默认值：`false`\n- 功能：采集有界的逐查询上游尝试、IP 探测和缓存事件，供 DNS 观测页展示。每条查询最多保留 128 个事件，超出时明确标记截断。关闭后保留原有请求、响应和执行路径记录。",
     path: "- 类型：`string`；必填：是\n- 作用：指定当前 recorder 的 SQLite 文件路径。",
     queue_size:
       "- 类型：`integer`；必填：否；默认值：`8192`\n- 作用：定义热路径到后台写线程的有界队列大小。",

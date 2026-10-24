@@ -60,7 +60,13 @@ impl Executor for ConcurrentForwarder {
     #[hotpath::measure]
     async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
         let start_ms = self.metrics.record_query_start();
-        let (response, last_error, timed_out) = self.query_upstreams(context.request.clone()).await;
+        let (response, last_error, timed_out) = self
+            .query_upstreams(
+                context.request.clone(),
+                context.observation.clone(),
+                context.observation_parent,
+            )
+            .await;
         if let Some(selected) = response {
             if selected.disposition == Some(ResponseDisposition::IncompleteAlias) {
                 self.metrics.record_incomplete_alias_selected();
@@ -96,6 +102,8 @@ impl ConcurrentForwarder {
     async fn query_upstreams(
         &self,
         request: Message,
+        observation: Option<Arc<crate::core::observation::Observation>>,
+        parent: Option<usize>,
     ) -> (Option<SelectedResponse>, Option<String>, bool) {
         let total_upstreams = self.upstreams.len();
         if total_upstreams == 0 {
@@ -104,19 +112,63 @@ impl ConcurrentForwarder {
 
         let mut join_set = JoinSet::new();
         let start_idx = rand::rng().random_range(0..total_upstreams);
+        let mut spans = observation.as_ref().map(|trace| {
+            self.upstreams
+                .iter()
+                .map(|upstream| {
+                    let address = &upstream.connection_info().raw_addr;
+                    trace.span(
+                        parent,
+                        "upstream",
+                        &self.tag,
+                        address,
+                        address
+                            .split_once("://")
+                            .map(|(scheme, _)| scheme)
+                            .unwrap_or("udp"),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        let event_ids = spans.as_ref().map(|spans| {
+            spans
+                .iter()
+                .map(|s| s.as_ref().map(|s| s.id))
+                .collect::<Vec<_>>()
+        });
 
         for i in 0..self.active_concurrent {
             let selected_idx = (start_idx + i) % total_upstreams;
             let upstream = self.upstreams[selected_idx].clone();
             let message = request.clone();
             let metrics = self.metrics.clone();
+            let span = spans.as_mut().and_then(|spans| spans[selected_idx].take());
             join_set.spawn(async move {
+                if let Some(span) = &span {
+                    span.start();
+                }
                 let up_start = metrics.record_upstream_start(selected_idx);
                 let result: Result<Message> = upstream.query(message).await;
                 match &result {
-                    Ok(_) => metrics.record_upstream_success(selected_idx, up_start),
+                    Ok(response) => {
+                        metrics.record_upstream_success(selected_idx, up_start);
+                        if let Some(span) = &span {
+                            span.response(response);
+                            span.finish("success", None);
+                        }
+                    }
                     Err(e) => {
-                        metrics.record_upstream_error(selected_idx, up_start, is_timeout_error(e))
+                        metrics.record_upstream_error(selected_idx, up_start, is_timeout_error(e));
+                        if let Some(span) = &span {
+                            span.finish(
+                                if is_timeout_error(e) {
+                                    "timeout"
+                                } else {
+                                    "error"
+                                },
+                                Some(e.to_string()),
+                            );
+                        }
                     }
                 }
                 if event_enabled!(Level::DEBUG) {
@@ -126,7 +178,7 @@ impl ConcurrentForwarder {
                         upstream.connection_info().raw_addr
                     );
                 }
-                result
+                (selected_idx, result)
             });
         }
 
@@ -134,12 +186,21 @@ impl ConcurrentForwarder {
             ResponseSelectionMode::Fastest => None,
             _ => request.first_question(),
         };
-        select_response(
+        let result = select_response(
             &mut join_set,
             self.active_concurrent,
             question,
             self.response_selection,
         )
-        .await
+        .await;
+        if let (Some(trace), Some(ids), Some(selected)) = (&observation, &event_ids, &result.0)
+            && let Some(id) = ids[selected.upstream_index]
+        {
+            trace.update(id, |event| {
+                event.selected = true;
+                event.reason = Some(format!("{:?}", self.response_selection).to_lowercase());
+            });
+        }
+        result
     }
 }

@@ -216,6 +216,8 @@ pub struct DnsContext {
     pub response: Option<Message>,
     pub execution_path: ExecutionPath,
     pub runtime: RuntimeContext,
+    pub observation: Option<Arc<super::observation::Observation>>,
+    pub observation_parent: Option<usize>,
 }
 
 impl DnsContext {
@@ -227,6 +229,8 @@ impl DnsContext {
             response: None,
             execution_path: ExecutionPath::default(),
             runtime: RuntimeContext::default(),
+            observation: None,
+            observation_parent: None,
         }
     }
 
@@ -370,6 +374,8 @@ impl DnsContext {
             request: self.request.clone(),
             response: self.response.clone(),
             execution_path: self.execution_path.clone(),
+            observation: self.observation.clone(),
+            observation_parent: self.observation_parent,
             runtime: RuntimeContext {
                 marks: self.runtime.marks.clone(),
                 extensions: AHashMap::new(),

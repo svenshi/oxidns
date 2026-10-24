@@ -44,7 +44,7 @@ pub(super) enum SelectionMode {
 }
 
 impl SelectionMode {
-    fn as_str(self) -> &'static str {
+    pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::FirstSuccess => "first_success",
             Self::BestWithinBudget => "best_within_budget",

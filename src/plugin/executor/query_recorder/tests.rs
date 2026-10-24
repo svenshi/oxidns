@@ -30,6 +30,7 @@ use crate::proto::{DNSClass, Message, Name, Question, RData, Rcode, Record, Reco
 
 fn recorder_config(path: &str) -> serde_yaml_ng::Value {
     serde_yaml_ng::to_value(QueryRecorderConfig {
+        observe_details: None,
         path: path.to_string(),
         queue_size: Some(32),
         batch_size: Some(1),
@@ -44,6 +45,7 @@ fn recorder_config(path: &str) -> serde_yaml_ng::Value {
 
 fn recorder_space_config(path: &str) -> serde_yaml_ng::Value {
     serde_yaml_ng::to_value(QueryRecorderConfig {
+        observe_details: None,
         path: path.to_string(),
         queue_size: Some(4_096),
         batch_size: Some(256),
@@ -311,6 +313,7 @@ async fn test_query_recorder_execute_enqueues_record() {
     let temp = NamedTempFile::new().unwrap();
     let config = resolve_config(Some(
         serde_yaml_ng::to_value(QueryRecorderConfig {
+            observe_details: None,
             path: temp.path().display().to_string(),
             queue_size: Some(16),
             batch_size: Some(1),
@@ -353,7 +356,71 @@ async fn test_query_recorder_execute_enqueues_record() {
     .unwrap()
     .0;
     assert_eq!(records.len(), 1);
+    assert!(records[0].observation.is_none());
 
+    plugin.destroy().await.unwrap();
+}
+
+#[test]
+fn disabled_observations_preserve_the_legacy_payload_shape() {
+    let (record, _) = pending_record(
+        1,
+        1,
+        "example.test.",
+        RecordType::A,
+        Ipv4Addr::LOCALHOST,
+        Some(Rcode::NoError),
+        None,
+        &[],
+    )
+    .take_to_record();
+    let payload = super::payload::EncodedPayload::encode_with_compression(&record, false).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&payload.data).unwrap();
+    assert!(value.get("observation").is_none());
+    assert!(payload.decode().unwrap().observation.is_none());
+}
+
+#[tokio::test]
+async fn detailed_observations_are_opt_in_persisted_and_restore_parent() {
+    AppClock::start();
+    let temp = NamedTempFile::new().unwrap();
+    let args = recorder_config(&temp.path().display().to_string());
+    let mut config = resolve_config(Some(args)).unwrap();
+    assert!(!config.observe_details);
+    config.observe_details = true;
+    let mut plugin = QueryRecorder::new("observed".into(), config);
+    plugin.init_for_test().await.unwrap();
+    let parent = crate::core::observation::Observation::new(
+        0,
+        "127.0.0.1".into(),
+        "parent.test.".into(),
+        "A".into(),
+    );
+    let mut context = DnsContext::new(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 5300)),
+        Message::new(),
+    );
+    context.observation = Some(parent.clone());
+    context.observation_parent = Some(42);
+    plugin.execute_with_next(&mut context, None).await.unwrap();
+    assert!(std::sync::Arc::ptr_eq(
+        context.observation.as_ref().unwrap(),
+        &parent
+    ));
+    assert_eq!(context.observation_parent, Some(42));
+    let backend = plugin.backend.as_ref().unwrap().clone();
+    flush_backend(&backend).await;
+    let rows = tokio::task::spawn_blocking(move || {
+        query_records(backend, list_query(QueryRecordFilter::default()))
+            .unwrap()
+            .0
+    })
+    .await
+    .unwrap();
+    let observation = rows[0].observation.as_ref().unwrap();
+    assert_eq!(observation.version, 1);
+    assert_eq!(observation.status, "no_response");
+    assert_ne!(observation.id, parent.snapshot().id);
     plugin.destroy().await.unwrap();
 }
 
@@ -364,6 +431,7 @@ async fn test_query_recorder_list_cursor_only_when_more_records_exist() {
     let temp = NamedTempFile::new().unwrap();
     let config = resolve_config(Some(
         serde_yaml_ng::to_value(QueryRecorderConfig {
+            observe_details: None,
             path: temp.path().display().to_string(),
             queue_size: Some(16),
             batch_size: Some(1),
@@ -777,6 +845,7 @@ async fn test_query_recorder_cleanup_is_not_skipped_when_record_queue_is_full() 
     let temp = NamedTempFile::new().unwrap();
     let config = resolve_config(Some(
         serde_yaml_ng::to_value(QueryRecorderConfig {
+            observe_details: None,
             path: temp.path().display().to_string(),
             queue_size: Some(1),
             batch_size: Some(1),
@@ -1351,6 +1420,7 @@ async fn test_load_top_clients_allows_limit_above_200() {
     let temp = NamedTempFile::new().unwrap();
     let config = resolve_config(Some(
         serde_yaml_ng::to_value(QueryRecorderConfig {
+            observe_details: None,
             path: temp.path().display().to_string(),
             queue_size: Some(512),
             batch_size: Some(64),
@@ -1595,6 +1665,7 @@ fn test_factory_rejects_quick_setup() {
 #[test]
 fn test_resolve_config_rejects_zero_limits() {
     let config = serde_yaml_ng::to_value(QueryRecorderConfig {
+        observe_details: None,
         path: "test.db".to_string(),
         queue_size: Some(0),
         batch_size: Some(1),

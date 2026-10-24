@@ -57,14 +57,41 @@ impl Executor for SingleDnsForwarder {
     async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
         let start_ms = self.metrics.record_query_start();
         self.metrics.record_upstream_start(0);
+        let span = context.observation.as_ref().and_then(|trace| {
+            let address = &self.upstream.connection_info().raw_addr;
+            trace.span(
+                context.observation_parent,
+                "upstream",
+                &self.tag,
+                address,
+                address
+                    .split_once("://")
+                    .map(|(scheme, _)| scheme)
+                    .unwrap_or("udp"),
+            )
+        });
+        if let Some(span) = &span {
+            span.start();
+        }
         match self.upstream.query(context.request.clone()).await {
             Ok(res) => {
+                if let Some(span) = &span {
+                    span.response(&res);
+                    span.finish("success", None);
+                    span.select("single");
+                }
                 context.set_response(res);
                 self.metrics.record_success(start_ms);
                 self.metrics.record_upstream_success(0, start_ms);
             }
             Err(e) => {
                 let timeout = is_timeout_error(&e);
+                if let Some(span) = &span {
+                    span.finish(
+                        if timeout { "timeout" } else { "error" },
+                        Some(e.to_string()),
+                    );
+                }
                 self.metrics.record_error(start_ms, timeout);
                 self.metrics.record_upstream_error(0, start_ms, timeout);
                 warn!(

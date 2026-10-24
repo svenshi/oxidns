@@ -1590,6 +1590,7 @@ mod tests {
         };
 
         RecordRow {
+            observation: None,
             id: 0,
             created_at_ms: 1_700_000_000_123,
             elapsed_ms: 37,

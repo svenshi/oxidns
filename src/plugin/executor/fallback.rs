@@ -159,15 +159,51 @@ impl Executor for FallbackExecutor {
     async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
         let mut join_set = JoinSet::new();
         let (primary_state_tx, primary_state_rx) = watch::channel(PrimaryState::Running);
+        let primary_span = context.observation.as_ref().and_then(|trace| {
+            trace.span(
+                context.observation_parent,
+                "fallback",
+                &self.tag,
+                &self.primary_tag,
+                "primary",
+            )
+        });
+        let secondary_span = context.observation.as_ref().and_then(|trace| {
+            trace.span(
+                context.observation_parent,
+                "fallback",
+                &self.tag,
+                &self.secondary_tag,
+                "secondary",
+            )
+        });
+        let primary_id = primary_span.as_ref().map(|s| s.id);
+        let secondary_id = secondary_span.as_ref().map(|s| s.id);
 
         let primary = self.primary.clone();
-        let primary_ctx = context.copy_for_subquery();
+        let mut primary_ctx = context.copy_for_subquery();
+        primary_ctx.observation_parent = primary_id.or(context.observation_parent);
         let primary_metrics = self.metrics.clone();
         join_set.spawn(async move {
+            if let Some(span) = &primary_span {
+                span.start();
+            }
             primary_metrics
                 .primary_total
                 .fetch_add(1, Ordering::Relaxed);
             let outcome = run_executor(primary, primary_ctx, "primary").await;
+            if let Some(span) = &primary_span {
+                span.finish(
+                    if outcome.context.is_some() {
+                        "success"
+                    } else if outcome.error.is_some() {
+                        "error"
+                    } else {
+                        "no_response"
+                    },
+                    outcome.error.clone(),
+                );
+            }
             let state = if outcome.context.is_some() {
                 PrimaryState::Success
             } else {
@@ -183,7 +219,8 @@ impl Executor for FallbackExecutor {
         });
 
         let secondary = self.secondary.clone();
-        let secondary_ctx = context.copy_for_subquery();
+        let mut secondary_ctx = context.copy_for_subquery();
+        secondary_ctx.observation_parent = secondary_id.or(context.observation_parent);
         let delay = self.threshold;
         let always_standby = self.always_standby;
         let mut primary_state_rx = primary_state_rx.clone();
@@ -220,7 +257,23 @@ impl Executor for FallbackExecutor {
             secondary_metrics
                 .secondary_total
                 .fetch_add(1, Ordering::Relaxed);
-            run_executor(secondary, secondary_ctx, "secondary").await
+            if let Some(span) = &secondary_span {
+                span.start();
+            }
+            let outcome = run_executor(secondary, secondary_ctx, "secondary").await;
+            if let Some(span) = &secondary_span {
+                span.finish(
+                    if outcome.context.is_some() {
+                        "success"
+                    } else if outcome.error.is_some() {
+                        "error"
+                    } else {
+                        "no_response"
+                    },
+                    outcome.error.clone(),
+                );
+            }
+            outcome
         });
 
         let mut last_err = String::new();
@@ -235,6 +288,7 @@ impl Executor for FallbackExecutor {
                     // In standby mode, secondary can finish early but should not win until
                     // the threshold elapses. Flush buffered response once timer fires.
                     if let Some(secondary_ctx) = buffered_secondary.take() {
+                        select_branch(context, secondary_id);
                         context.apply_subquery_result(secondary_ctx);
                         join_set.abort_all();
                         return Ok(self.completion_step());
@@ -255,11 +309,13 @@ impl Executor for FallbackExecutor {
                     match outcome.source {
                         "primary" => {
                             if let Some(primary_ctx) = outcome.context {
+                                select_branch(context, primary_id);
                                 context.apply_subquery_result(primary_ctx);
                                 join_set.abort_all();
                                 return Ok(self.completion_step());
                             }
                             if let Some(secondary_ctx) = buffered_secondary.take() {
+                                select_branch(context, secondary_id);
                                 context.apply_subquery_result(secondary_ctx);
                                 join_set.abort_all();
                                 return Ok(self.completion_step());
@@ -268,6 +324,7 @@ impl Executor for FallbackExecutor {
                         "secondary" => {
                             if let Some(secondary_ctx) = outcome.context {
                                 if !self.always_standby || threshold_reached {
+                                    select_branch(context, secondary_id);
                                     context.apply_subquery_result(secondary_ctx);
                                     join_set.abort_all();
                                     return Ok(self.completion_step());
@@ -299,6 +356,15 @@ impl Executor for FallbackExecutor {
         }
 
         Err(DnsError::plugin(last_err))
+    }
+}
+
+fn select_branch(context: &DnsContext, id: Option<usize>) {
+    if let (Some(trace), Some(id)) = (&context.observation, id) {
+        trace.update(id, |event| {
+            event.selected = true;
+            event.reason = Some("fallback_policy".into());
+        });
     }
 }
 

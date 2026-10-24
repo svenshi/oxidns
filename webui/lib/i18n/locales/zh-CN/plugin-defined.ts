@@ -1115,6 +1115,11 @@ export const zhCNPluginDefined = {
       name: "Query Recorder",
       description: "将请求、响应和 sequence 路径事件持久化到 SQLite",
       fields: {
+        observe_details: {
+          label: "详细观测",
+          description:
+            "采集每次查询的上游竞速、IP 测速和实时执行详情。默认关闭，原有查询记录功能不受影响。",
+        },
         path: {
           label: "SQLite 文件",
           description: "指定当前 recorder 的 SQLite 文件路径。",

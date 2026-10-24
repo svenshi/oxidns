@@ -11,5 +11,6 @@
 //!   matchers and providers.
 
 pub mod context;
+pub mod observation;
 pub mod response;
 pub mod rule_matcher;

@@ -1375,6 +1375,18 @@ impl Executor for Cache {
         };
 
         let cache_lookup = self.try_cache_hit(context, cache_map);
+        if let Some(trace) = &context.observation
+            && let Some(span) = trace.span(context.observation_parent, "cache", &self.tag, "", "")
+        {
+            span.finish(
+                match cache_lookup.as_ref().and_then(|lookup| lookup.hit_kind) {
+                    Some(CacheHitKind::Fresh) => "cache_hit",
+                    Some(CacheHitKind::Stale) => "cache_stale",
+                    None => "cache_miss",
+                },
+                None,
+            );
+        }
         let cache_hit = cache_lookup
             .as_ref()
             .and_then(|lookup| lookup.hit_kind)

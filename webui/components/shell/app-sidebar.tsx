@@ -25,6 +25,7 @@ import {
   BookOpen,
   GitBranch,
   LayoutDashboard,
+  Activity,
   LogOut,
   Puzzle,
   ScrollText,
@@ -35,6 +36,11 @@ import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
 
 const navItems = [
+  {
+    titleKey: WEBUI.shell.observability,
+    href: "/observability",
+    icon: Activity,
+  },
   {
     titleKey: WEBUI.shell.dashboard,
     href: "/",

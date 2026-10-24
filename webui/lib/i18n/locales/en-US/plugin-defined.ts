@@ -1231,6 +1231,11 @@ export const enUSPluginDefined = {
       description:
         "Persists requests, responses, and sequence path events to SQLite",
       fields: {
+        observe_details: {
+          label: "Detailed observations",
+          description:
+            "Collect per-query upstream races, IP probes, and live execution details. Disabled by default; existing query recording remains available.",
+        },
         path: {
           label: "SQLite file",
           description:

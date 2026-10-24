@@ -104,6 +104,7 @@ impl StoredRecord {
     fn into_api(self, questions: Vec<QuestionJson>) -> Result<RecordRow> {
         let snapshot = self.payload.decode()?;
         Ok(RecordRow {
+            observation: snapshot.observation,
             id: self.id,
             created_at_ms: self.created_at_ms,
             elapsed_ms: self.elapsed_ms,

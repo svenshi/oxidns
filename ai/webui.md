@@ -68,6 +68,11 @@ Paths in this guide are relative to `webui/` unless stated otherwise.
 - In compact card configuration summaries, reserve a predictable share of each item for the field label and truncate long values first. Metric summaries may continue to prioritize their numeric values. Keep the full label and value available through their existing title affordances.
 - Keep `CreatePluginDialog` catalog-driven. Search should cover kind, display name, description, type label, and config fields so operators can find plugins by the concept they remember.
 - When replacing mock data with real APIs, keep network calls outside low-level UI primitives and preserve optimistic UI only where the backend operation is reversible or clearly reported.
+- DNS observability reads versioned, bounded per-query observations from the
+  `query_recorder` API after `observe_details` is enabled. Upstream attempts, probe scores, cache results, and
+  execution paths must come from the request that produced them; do not infer
+  query-level detail from cumulative metrics. Older records without observations
+  must keep their existing query details and be labeled as uninstrumented.
 - Structured plugin mutations must patch the source-backed YAML/CST instead of
   stringifying the complete configuration or `plugins` list. Preserve all
   untouched source bytes, keep schema-unknown fields in field mode, and stop

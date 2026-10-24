@@ -20,6 +20,9 @@ use crate::infra::error::{DnsError, Result};
 
 #[derive(Debug)]
 pub(super) struct RecorderBackend {
+    pub(super) observe_details: bool,
+    pub(super) observations: crate::core::observation::ObservationStore,
+    pub(super) observation_readers: Arc<Semaphore>,
     pub(super) tag: String,
     pub(super) path: PathBuf,
     pub(super) tables: TableNames,
@@ -251,6 +254,9 @@ impl RecorderBackend {
             })?;
 
         Ok(Arc::new(Self {
+            observe_details: config.observe_details,
+            observations: crate::core::observation::ObservationStore::new(config.memory_tail),
+            observation_readers: Arc::new(Semaphore::new(8)),
             tag,
             path: config.path,
             tables,

@@ -28,6 +28,8 @@ pub(super) struct EncodedPayload {
 
 #[derive(Debug, Deserialize, PartialEq)]
 pub(super) struct ResponseSnapshot {
+    #[serde(default)]
+    pub(super) observation: Option<crate::core::observation::QueryObservation>,
     pub(super) req_edns_json: Option<EdnsJson>,
     pub(super) answers_json: Vec<RecordJson>,
     pub(super) authorities_json: Vec<RecordJson>,
@@ -38,6 +40,8 @@ pub(super) struct ResponseSnapshot {
 
 #[derive(Serialize)]
 struct SnapshotRef<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observation: &'a Option<crate::core::observation::QueryObservation>,
     req_edns_json: &'a Option<EdnsJson>,
     answers_json: &'a [RecordJson],
     authorities_json: &'a [RecordJson],
@@ -54,6 +58,7 @@ impl EncodedPayload {
 
     pub(super) fn encode_with_compression(record: &RecordRow, compress: bool) -> Result<Self> {
         let raw = serde_json::to_vec(&SnapshotRef {
+            observation: &record.observation,
             req_edns_json: &record.req_edns_json,
             answers_json: &record.answers_json,
             authorities_json: &record.authorities_json,

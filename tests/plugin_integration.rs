@@ -2755,6 +2755,8 @@ plugins:
 async fn test_ip_selector_recommended_chain_keeps_cache_response_uncut() -> Result<()> {
     let probe_addr = start_tcp_probe_server().await?;
     let probe_port = probe_addr.port();
+    // TUN proxies may accept TCP connects to TEST-NET; this loopback address
+    // has no listener.
     let yaml = format!(
         r#"
 log:
@@ -2790,7 +2792,7 @@ plugins:
     type: hosts
     args:
       entries:
-        - "full:example.test 192.0.2.1 127.0.0.1"
+        - "full:example.test 127.0.0.2 127.0.0.1"
   - tag: seq_top1
     type: sequence
     args:
@@ -2838,7 +2840,7 @@ plugins:
             .answer_ips(),
         vec![
             IpAddr::V4(Ipv4Addr::LOCALHOST),
-            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
         ],
         "cache should retain the raw upstream/hosts RRset; ip_selector applies final shaping on return"
     );
