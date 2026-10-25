@@ -4,6 +4,7 @@
 //! Cache persistence helpers.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::fs;
 use tokio::fs::File;
@@ -20,6 +21,11 @@ use crate::infra::cache::ttl::TtlCacheEntry;
 use crate::infra::clock::AppClock;
 use crate::infra::error::Result;
 use crate::infra::system::file_len_if_exists;
+
+/// Distinguishes staging files when two cache instances in the same process
+/// dump to the same path (e.g. the old instance's destroy-time dump racing
+/// the new instance's periodic dump during a reload).
+static DUMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 use crate::proto::{DNSClass, Message, RecordType};
 
 #[derive(Debug, SchemaRead, SchemaWrite)]
@@ -41,10 +47,24 @@ struct PersistedCacheEntry {
 }
 
 pub(super) async fn dump_cache_to_file(cache_map: &CacheMap, dump_path: &str) -> Result<()> {
-    let encoded = dump_cache_to_bytes(cache_map)?;
+    // Serializing the whole cache (entry clone + encode) blocks for large
+    // caches; run it on the blocking pool.
+    let snapshot_map = cache_map.clone();
+    let encoded = tokio::task::spawn_blocking(move || dump_cache_to_bytes(&snapshot_map))
+        .await
+        .map_err(|err| {
+            crate::infra::error::DnsError::runtime(format!("cache dump task failed: {err}"))
+        })??;
 
-    // Write-then-rename to avoid partially written cache dump on crash.
-    let tmp_path = format!("{}.tmp", dump_path);
+    // Write-then-rename to avoid partially written cache dump on crash. The
+    // staging name is unique per dump so concurrent writers never interleave
+    // into the same file.
+    let tmp_path = format!(
+        "{}.{}.{}.tmp",
+        dump_path,
+        std::process::id(),
+        DUMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
     let mut file = File::create(&tmp_path).await?;
     file.write_all(&encoded).await?;
     file.sync_all().await?;
