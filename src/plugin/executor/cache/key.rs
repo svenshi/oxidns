@@ -99,7 +99,7 @@ fn build_ecs_scope_digest(subnet: &ClientSubnet) -> EcsScopeDigest {
 }
 
 #[inline]
-fn extract_any_ecs_scope(request: &Message) -> Option<EcsScopeDigest> {
+pub(super) fn extract_any_ecs_scope(request: &Message) -> Option<EcsScopeDigest> {
     request
         .edns()
         .as_ref()
@@ -108,6 +108,20 @@ fn extract_any_ecs_scope(request: &Message) -> Option<EcsScopeDigest> {
             _ => None,
         })
         .map(build_ecs_scope_digest)
+}
+
+/// Whether the response echoes an EDNS Client Subnet option with a non-zero
+/// scope prefix, i.e. the answer is specific to a client subnet.
+#[inline]
+pub(super) fn response_echoes_scoped_ecs(response: &Message) -> bool {
+    response
+        .edns()
+        .as_ref()
+        .and_then(|edns| match edns.option(EdnsCode::Subnet) {
+            Some(EdnsOption::Subnet(subnet)) => Some(subnet),
+            _ => None,
+        })
+        .is_some_and(|subnet| subnet.scope_prefix() > 0)
 }
 
 #[inline]
@@ -230,5 +244,32 @@ mod tests {
         let cache_key = build_cache_key(&mut context, true);
 
         assert_eq!(cache_key, None);
+    }
+
+    #[test]
+    fn test_response_echoes_scoped_ecs() {
+        let mut response = Message::new();
+        assert!(!response_echoes_scoped_ecs(&response));
+
+        let mut edns = Edns::new();
+        edns.insert(EdnsOption::Subnet(ClientSubnet::new(
+            IpAddr::from([203, 0, 113, 199]),
+            24,
+            0,
+        )));
+        response.set_edns(edns);
+        assert!(
+            !response_echoes_scoped_ecs(&response),
+            "scope prefix 0 means a global answer"
+        );
+
+        let mut edns = Edns::new();
+        edns.insert(EdnsOption::Subnet(ClientSubnet::new(
+            IpAddr::from([203, 0, 113, 199]),
+            24,
+            16,
+        )));
+        response.set_edns(edns);
+        assert!(response_echoes_scoped_ecs(&response));
     }
 }

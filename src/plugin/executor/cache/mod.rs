@@ -18,7 +18,10 @@ use serde_yaml_ng::Value;
 use tokio::sync::OnceCell;
 use tracing::{Level, debug, event_enabled, warn};
 
-use self::key::{CacheKey, build_cache_key as build_cache_key_internal};
+use self::key::{
+    CacheKey, build_cache_key as build_cache_key_internal, extract_any_ecs_scope,
+    response_echoes_scoped_ecs,
+};
 use self::persistence::{dump_cache_to_file, load_cache_from_file};
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
@@ -186,6 +189,7 @@ enum CacheSkipReason {
     NoTtl,
     IncompleteAnswer,
     LowPositiveTtl,
+    EcsScopeMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,6 +226,7 @@ struct CacheMetrics {
     skip_no_ttl_total: AtomicU64,
     skip_incomplete_answer_total: AtomicU64,
     skip_low_positive_ttl_total: AtomicU64,
+    skip_ecs_scope_mismatch_total: AtomicU64,
     lazy_refresh_started_total: AtomicU64,
     lazy_refresh_success_total: AtomicU64,
     lazy_refresh_failed_total: AtomicU64,
@@ -242,6 +247,7 @@ impl CacheMetrics {
             skip_no_ttl_total: AtomicU64::new(0),
             skip_incomplete_answer_total: AtomicU64::new(0),
             skip_low_positive_ttl_total: AtomicU64::new(0),
+            skip_ecs_scope_mismatch_total: AtomicU64::new(0),
             lazy_refresh_started_total: AtomicU64::new(0),
             lazy_refresh_success_total: AtomicU64::new(0),
             lazy_refresh_failed_total: AtomicU64::new(0),
@@ -263,6 +269,10 @@ impl CacheMetrics {
             }
             CacheSkipReason::LowPositiveTtl => {
                 self.skip_low_positive_ttl_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            CacheSkipReason::EcsScopeMismatch => {
+                self.skip_ecs_scope_mismatch_total
                     .fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -363,6 +373,16 @@ impl MetricSource for CacheMetrics {
             "Total responses skipped by cache write policy.",
             &skip_low_positive_ttl,
             self.skip_low_positive_ttl_total.load(Ordering::Relaxed),
+        ));
+        let skip_ecs_scope_mismatch = [
+            MetricLabel::new("plugin_tag", self.tag.as_str()),
+            MetricLabel::new("reason", "ecs_scope_mismatch"),
+        ];
+        sink.emit(MetricSample::counter(
+            "cache_skip_total",
+            "Total responses skipped by cache write policy.",
+            &skip_ecs_scope_mismatch,
+            self.skip_ecs_scope_mismatch_total.load(Ordering::Relaxed),
         ));
         let lazy_started = [
             MetricLabel::new("plugin_tag", self.tag.as_str()),
@@ -1173,7 +1193,10 @@ impl Cache {
             .await;
 
             match refresh {
-                Ok(Ok(Some(response))) if !response.truncated() => {
+                Ok(Ok(Some(response)))
+                    if !response.truncated()
+                        && cache_key_ecs_scope_matches(&key, sub_ctx.request(), &response) =>
+                {
                     let (ttl, disposition) = compute_cache_ttl_with_policy(
                         &response,
                         &key,
@@ -1227,6 +1250,12 @@ impl Cache {
                             .lazy_refresh_failed_total
                             .fetch_add(1, Ordering::Relaxed);
                     }
+                }
+                Ok(Ok(Some(_))) => {
+                    metrics.record_skip(CacheSkipReason::EcsScopeMismatch);
+                    metrics
+                        .lazy_refresh_failed_total
+                        .fetch_add(1, Ordering::Relaxed);
                 }
                 Ok(Ok(_)) => {
                     metrics
@@ -1423,6 +1452,11 @@ impl Executor for Cache {
                 return Ok(next_step);
             }
 
+            if !cache_key_ecs_scope_matches(&key, context.request(), response) {
+                self.metrics.record_skip(CacheSkipReason::EcsScopeMismatch);
+                return Ok(next_step);
+            }
+
             let disposition = response_disposition_for_cache(response, &key);
             match self.compute_cache_ttl_for_disposition(response, &key, disposition) {
                 CacheTtlDecision::Cache(ttl) => {
@@ -1435,6 +1469,22 @@ impl Executor for Cache {
         }
         Ok(next_step)
     }
+}
+
+/// Whether `key` still reflects the request's EDNS Client Subnet state at
+/// insert time.
+///
+/// The key is built before the remaining chain runs; executors such as
+/// `ecs_handler` may inject a subnet afterwards, making the upstream answer
+/// subnet-specific. Storing it under the pre-chain key would serve one
+/// client's subnet answer to every other client, so require the request's
+/// current ECS scope to equal the keyed scope, and reject scoped echo
+/// answers under unscoped keys.
+fn cache_key_ecs_scope_matches(key: &CacheKey, request: &Message, response: &Message) -> bool {
+    if extract_any_ecs_scope(request) != key.ecs_scope {
+        return false;
+    }
+    key.ecs_scope.is_some() || !response_echoes_scoped_ecs(response)
 }
 
 fn compute_positive_ttl_with_policy(
@@ -2122,6 +2172,40 @@ mod tests {
     }
 
     #[derive(Debug)]
+    struct EcsInjectingExecutor;
+
+    #[async_trait]
+    impl Plugin for EcsInjectingExecutor {
+        fn tag(&self) -> &str {
+            "ecs_injecting_executor"
+        }
+    }
+
+    #[async_trait]
+    impl Executor for EcsInjectingExecutor {
+        async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
+            // Mimics `ecs_handler` with `send: true` placed downstream of the
+            // cache: the upstream answer becomes subnet-specific after the
+            // cache key was already built.
+            add_ecs(context.request_mut(), "1.2.3.0/24");
+            let mut response = Message::new();
+            response.set_rcode(Rcode::NoError);
+            response.add_question(Question::new(
+                Name::from_ascii("example.com.").unwrap(),
+                RecordType::A,
+                DNSClass::IN,
+            ));
+            response.add_answer(Record::from_rdata(
+                Name::from_ascii("example.com.").unwrap(),
+                55,
+                RData::A(crate::proto::rdata::A(Ipv4Addr::new(9, 9, 9, 9))),
+            ));
+            context.set_response(response);
+            Ok(ExecStep::Next)
+        }
+    }
+
+    #[derive(Debug)]
     struct StubRefreshExecutor {
         calls: Arc<AtomicUsize>,
     }
@@ -2660,6 +2744,67 @@ mod tests {
             cache
                 .metrics
                 .skip_truncated_total
+                .load(AtomicOrdering::Relaxed),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn ecs_injected_by_downstream_executor_is_not_cached() {
+        AppClock::start();
+        let mut cache = test_cache(default_test_config());
+        let _ = cache.init_for_test().await;
+
+        let mut context = make_context(make_request_with_query("example.com.", false, false));
+
+        let program =
+            ChainProgram::single_with_next_executor_for_test(Arc::new(EcsInjectingExecutor));
+        let next = ExecutorNext::from_program_for_test(program, 0);
+
+        cache.execute_with_next(&mut context, Some(next)).await.unwrap();
+
+        assert!(context.response().is_some());
+        assert_eq!(cache.cache_map.get().unwrap().len(), 0);
+        assert_eq!(
+            cache
+                .metrics
+                .skip_ecs_scope_mismatch_total
+                .load(AtomicOrdering::Relaxed),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn client_supplied_ecs_is_not_cached_under_global_key() {
+        AppClock::start();
+        let mut cache = test_cache(default_test_config());
+        let _ = cache.init_for_test().await;
+
+        let mut request = make_request_with_query("example.com.", false, false);
+        add_ecs(&mut request, "1.2.3.0/24");
+        let mut context = make_context(request);
+
+        let mut response = Message::new();
+        response.set_rcode(Rcode::NoError);
+        response.add_question(Question::new(
+            Name::from_ascii("example.com.").unwrap(),
+            RecordType::A,
+            DNSClass::IN,
+        ));
+        response.add_answer(Record::from_rdata(
+            Name::from_ascii("example.com.").unwrap(),
+            55,
+            RData::A(crate::proto::rdata::A(Ipv4Addr::new(9, 9, 9, 9))),
+        ));
+        context.set_response(response);
+
+        cache.execute_with_next(&mut context, None).await.unwrap();
+
+        assert_eq!(cache.cache_map.get().unwrap().len(), 0);
+        assert_eq!(
+            cache
+                .metrics
+                .skip_ecs_scope_mismatch_total
                 .load(AtomicOrdering::Relaxed),
             1
         );
