@@ -11,11 +11,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_yaml_ng::Value;
-use tokio::sync::OnceCell;
+use tokio::sync::{Notify, OnceCell};
 use tracing::{Level, debug, event_enabled, warn};
 
 use self::key::{
@@ -83,6 +83,10 @@ const EVICTION_SAMPLE_SIZE: usize = 4096;
 const FULL_TRIM_CACHE_SIZE_LIMIT: usize = 100_000;
 const LARGE_CACHE_EVICTION_MAX_BATCH: usize = 65_536;
 const DEFAULT_LAZY_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a follower waits for the in-flight leader before fetching the
+/// key itself.
+const MISS_SINGLE_FLIGHT_WAIT: Duration = Duration::from_secs(5);
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
@@ -230,6 +234,7 @@ struct CacheMetrics {
     lazy_refresh_started_total: AtomicU64,
     lazy_refresh_success_total: AtomicU64,
     lazy_refresh_failed_total: AtomicU64,
+    single_flight_wait_total: AtomicU64,
 }
 
 impl CacheMetrics {
@@ -251,6 +256,7 @@ impl CacheMetrics {
             lazy_refresh_started_total: AtomicU64::new(0),
             lazy_refresh_success_total: AtomicU64::new(0),
             lazy_refresh_failed_total: AtomicU64::new(0),
+            single_flight_wait_total: AtomicU64::new(0),
         }
     }
 
@@ -404,6 +410,12 @@ impl MetricSource for CacheMetrics {
             &lazy_success,
             self.lazy_refresh_success_total.load(Ordering::Relaxed),
         ));
+        sink.emit(MetricSample::counter(
+            "cache_single_flight_wait_total",
+            "Total cold/expired misses that waited for an in-flight fetch of the same key.",
+            &base,
+            self.single_flight_wait_total.load(Ordering::Relaxed),
+        ));
         let lazy_failed = [
             MetricLabel::new("plugin_tag", self.tag.as_str()),
             MetricLabel::new("result", "failed"),
@@ -473,6 +485,11 @@ pub struct Cache {
     /// Deduplicates background refreshes for stale lazy cache hits.
     lazy_refresh_inflight: Arc<Mutex<AHashSet<CacheKey>>>,
 
+    /// Single-flight map for cold/expired misses: the leader fetches while
+    /// concurrent misses for the same key wait for its entry instead of
+    /// stampeding the upstream.
+    miss_single_flight: Arc<Mutex<AHashMap<CacheKey, Arc<Notify>>>>,
+
     /// Next timestamp when an inline write-side maintenance pass may run.
     next_inline_maintenance_ms: AtomicU64,
 
@@ -481,6 +498,31 @@ pub struct Cache {
 
     /// Next timestamp when the hit-side touch interval may be recomputed.
     next_touch_interval_refresh_ms: AtomicU64,
+}
+
+/// Outcome of entering the cold-miss single-flight map for one key.
+enum MissFlight {
+    Leader(MissSingleFlightGuard),
+    Follower(Arc<Notify>),
+}
+
+/// Removes the key from the single-flight map and wakes all waiters when the
+/// leader's fetch finishes (success, failure, or cancellation via drop).
+struct MissSingleFlightGuard {
+    inflight: Arc<Mutex<AHashMap<CacheKey, Arc<Notify>>>>,
+    key: CacheKey,
+    notify: Arc<Notify>,
+}
+
+impl Drop for MissSingleFlightGuard {
+    fn drop(&mut self) {
+        let removed = {
+            let mut map = self.inflight.lock().expect("miss_single_flight poisoned");
+            map.remove(&self.key)
+        };
+        let notify = removed.unwrap_or_else(|| self.notify.clone());
+        notify.notify_waiters();
+    }
 }
 
 impl Cache {
@@ -1145,6 +1187,32 @@ impl Cache {
         self.maybe_prune_after_insert(cache_map, now);
     }
 
+    /// Register `key` in the single-flight map, becoming its fetch leader, or
+    /// obtain the leader's [`Notify`] to wait on as a follower.
+    fn enter_miss_single_flight(&self, key: &CacheKey) -> MissFlight {
+        let mut map = self
+            .miss_single_flight
+            .lock()
+            .expect("miss_single_flight poisoned");
+        if let Some(notify) = map.get(key) {
+            return MissFlight::Follower(notify.clone());
+        }
+        let notify = Arc::new(Notify::new());
+        map.insert(key.clone(), notify.clone());
+        MissFlight::Leader(MissSingleFlightGuard {
+            inflight: self.miss_single_flight.clone(),
+            key: key.clone(),
+            notify,
+        })
+    }
+
+    fn miss_single_flight_still_tracked(&self, key: &CacheKey) -> bool {
+        self.miss_single_flight
+            .lock()
+            .expect("miss_single_flight poisoned")
+            .contains_key(key)
+    }
+
     fn try_start_lazy_refresh(
         &self,
         key: &CacheKey,
@@ -1403,7 +1471,45 @@ impl Executor for Cache {
             return continue_next!(next, context);
         };
 
-        let cache_lookup = self.try_cache_hit(context, cache_map);
+        let mut cache_lookup = self.try_cache_hit(context, cache_map);
+
+        // Cold/expired miss single-flight: when a popular entry expires,
+        // concurrent misses of the same key wait briefly for the in-flight
+        // leader instead of stampeding the upstream. The leader guard is held
+        // until the function returns (a `_` binding still delays Drop) so
+        // waiters only wake after the insert path finishes.
+        let mut _miss_leader: Option<MissSingleFlightGuard> = None;
+        if let Some(lookup) = cache_lookup.as_ref()
+            && lookup.hit_kind.is_none()
+        {
+            let key = lookup.key.clone();
+            match self.enter_miss_single_flight(&key) {
+                MissFlight::Leader(guard) => _miss_leader = Some(guard),
+                MissFlight::Follower(notify) => {
+                    self.metrics
+                        .single_flight_wait_total
+                        .fetch_add(1, Ordering::Relaxed);
+                    let notified = notify.notified();
+                    tokio::pin!(notified);
+                    // Enable first, then re-check the map: if the leader
+                    // already left, its wakeup raced with our registration and
+                    // the resulting entry (or failure) is already visible.
+                    notified.as_mut().enable();
+                    if self.miss_single_flight_still_tracked(&key) {
+                        let _ =
+                            tokio::time::timeout(MISS_SINGLE_FLIGHT_WAIT, notified.as_mut()).await;
+                    }
+                    if let Some(lookup) = self.try_cache_hit(context, cache_map)
+                        && lookup.hit_kind.is_some()
+                    {
+                        cache_lookup = Some(lookup);
+                    }
+                    // Still a miss after the leader finished: fetch this key
+                    // ourselves, without re-registering as leader.
+                }
+            }
+        }
+
         let cache_hit = cache_lookup
             .as_ref()
             .and_then(|lookup| lookup.hit_kind)
@@ -1774,6 +1880,7 @@ impl CacheFactory {
             dump_task_handle: Mutex::new(None),
             cleanup_task_handle: Mutex::new(None),
             lazy_refresh_inflight: Arc::new(Mutex::new(AHashSet::new())),
+            miss_single_flight: Arc::new(Mutex::new(AHashMap::new())),
             next_inline_maintenance_ms: AtomicU64::new(0),
             touch_interval_ms: AtomicU64::new(0),
             next_touch_interval_refresh_ms: AtomicU64::new(0),
@@ -1892,6 +1999,7 @@ mod tests {
             dump_task_handle: Mutex::new(None),
             cleanup_task_handle: Mutex::new(None),
             lazy_refresh_inflight: Arc::new(Mutex::new(AHashSet::new())),
+            miss_single_flight: Arc::new(Mutex::new(AHashMap::new())),
             next_inline_maintenance_ms: AtomicU64::new(0),
             touch_interval_ms: AtomicU64::new(0),
             next_touch_interval_refresh_ms: AtomicU64::new(0),
@@ -2721,6 +2829,148 @@ mod tests {
         let key = cache_key_for_domain("example.com");
         assert_eq!(cache.compute_negative_ttl(&nodata, &key), Some(60));
         assert_eq!(cache.compute_negative_ttl(&cname_only, &key), None);
+    }
+
+    #[derive(Debug)]
+    struct CountingFetchExecutor {
+        calls: Arc<AtomicUsize>,
+        delay: Duration,
+        fail_first: bool,
+    }
+
+    #[async_trait]
+    impl Plugin for CountingFetchExecutor {
+        fn tag(&self) -> &str {
+            "counting_fetch_executor"
+        }
+    }
+
+    #[async_trait]
+    impl Executor for CountingFetchExecutor {
+        async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
+            let call = self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            if self.fail_first && call == 0 {
+                tokio::time::sleep(self.delay).await;
+                return Err(DnsError::plugin("upstream unavailable"));
+            }
+            tokio::time::sleep(self.delay).await;
+            let mut response = Message::new();
+            response.set_rcode(Rcode::NoError);
+            response.add_question(Question::new(
+                Name::from_ascii("example.com.").unwrap(),
+                RecordType::A,
+                DNSClass::IN,
+            ));
+            response.add_answer(Record::from_rdata(
+                Name::from_ascii("example.com.").unwrap(),
+                55,
+                RData::A(crate::proto::rdata::A(Ipv4Addr::new(9, 9, 9, 9))),
+            ));
+            context.set_response(response);
+            Ok(ExecStep::Next)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn concurrent_cold_misses_share_one_downstream_fetch() {
+        AppClock::start();
+        let mut config = default_test_config();
+        config.short_circuit = Some(true);
+        let mut cache = test_cache(config);
+        let _ = cache.init_for_test().await;
+        let cache = Arc::new(cache);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let program = Arc::new(CountingFetchExecutor {
+            calls: calls.clone(),
+            delay: Duration::from_millis(100),
+            fail_first: false,
+        });
+
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            let cache = cache.clone();
+            let program = ChainProgram::single_with_next_executor_for_test(program.clone());
+            handles.push(tokio::spawn(async move {
+                let mut context =
+                    make_context(make_request_with_query("example.com.", false, false));
+                let next = ExecutorNext::from_program_for_test(program, 0);
+                cache.execute_with_next(&mut context, Some(next)).await
+            }));
+        }
+
+        let mut responses = 0usize;
+        for handle in handles {
+            handle
+                .await
+                .expect("task should join")
+                .expect("cache execution should succeed");
+            responses += 1;
+        }
+
+        assert_eq!(responses, 5);
+        assert_eq!(
+            calls.load(AtomicOrdering::SeqCst),
+            1,
+            "single-flight must collapse concurrent cold misses into one fetch"
+        );
+        assert_eq!(cache.cache_map.get().unwrap().len(), 1);
+        assert!(
+            cache
+                .metrics
+                .single_flight_wait_total
+                .load(AtomicOrdering::Relaxed)
+                >= 1,
+            "at least one follower should have waited on the leader"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn miss_single_flight_follower_falls_back_when_leader_fails() {
+        AppClock::start();
+        let mut config = default_test_config();
+        config.short_circuit = Some(true);
+        let mut cache = test_cache(config);
+        let _ = cache.init_for_test().await;
+        let cache = Arc::new(cache);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let program = Arc::new(CountingFetchExecutor {
+            calls: calls.clone(),
+            delay: Duration::from_millis(50),
+            fail_first: true,
+        });
+
+        let leader_program = ChainProgram::single_with_next_executor_for_test(program.clone());
+        let leader_cache = cache.clone();
+        let leader = tokio::spawn(async move {
+            let mut context = make_context(make_request_with_query("example.com.", false, false));
+            let next = ExecutorNext::from_program_for_test(leader_program, 0);
+            leader_cache
+                .execute_with_next(&mut context, Some(next))
+                .await
+        });
+        // Let the leader register and enter its delayed failing fetch.
+        tokio::task::yield_now().await;
+
+        let follower_program = ChainProgram::single_with_next_executor_for_test(program);
+        let follower_result = cache
+            .execute_with_next(
+                &mut make_context(make_request_with_query("example.com.", false, false)),
+                Some(ExecutorNext::from_program_for_test(follower_program, 0)),
+            )
+            .await;
+
+        let leader_result = leader.await.expect("leader task should join");
+
+        assert!(leader_result.is_err(), "leader fetch failed by design");
+        follower_result.expect("follower should fall back to its own fetch");
+        assert_eq!(
+            calls.load(AtomicOrdering::SeqCst),
+            2,
+            "leader failed once; the follower must retry the fetch itself"
+        );
+        assert_eq!(cache.cache_map.get().unwrap().len(), 1);
     }
 
     #[tokio::test]
