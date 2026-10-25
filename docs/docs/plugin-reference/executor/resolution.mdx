@@ -383,6 +383,8 @@ import Admonition from "@theme/Admonition";
   - `lazy_cache_ttl` 决定 stale 回包 TTL，并允许在原始 TTL 过期后短时间返回 stale 响应。
   - stale 命中会在后台异步刷新缓存。
   - 该配置不会缩短原始 fresh TTL。
+  - 注意:条目的过期时间取 `max(原始 TTL, lazy_cache_ttl)`。当原始 TTL 已大于 `lazy_cache_ttl` 时,条目在 fresh 窗口结束后直接整体过期,不会有额外的 stale 窗口;如需对长 TTL 域名保留 stale 兜底,应把 `lazy_cache_ttl` 设得比这些域名的原始 TTL 更长。
+  - 未开启 `short_circuit` 时,stale 命中后链会继续执行下游;若下游产生了新响应,该响应不会回写本缓存(由后台刷新负责更新)。
 
 #### `dump_file`
 
