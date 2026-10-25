@@ -518,12 +518,14 @@ impl<C: Connection> PipelineSlot<C> {
         if previous == 1 && self.state() != SLOT_ACTIVE {
             self.close();
         }
-        // Releasing one in-flight query frees exactly one unit of load on this
-        // slot, so wake a single waiter instead of stampeding all of them.
-        // `Notify` stores one permit if no waiter is currently parked, and the
-        // freed capacity is in any case visible to other acquirers via
-        // `try_acquire_existing`, so this cannot strand a waiter.
+        // Releasing one in-flight query frees exactly one unit of load on
+        // this slot. `notify_one` covers a waiter that has enabled its
+        // notified future but not parked yet; `notify_waiters` is still
+        // required because consecutive `notify_one` calls collapse into a
+        // single stored permit, which can strand an already-parked waiter
+        // despite free capacity.
         notify.notify_one();
+        notify.notify_waiters();
     }
 
     fn release_without_notify(&self) {

@@ -118,6 +118,7 @@ impl<C: Connection> ConnectionPool<C> for ReusePool<C> {
             return;
         }
 
+        let mut requeued = false;
         for _ in 0..check_count {
             if let Some(conn) = self.connections.pop() {
                 if conn.available() {
@@ -127,6 +128,8 @@ impl<C: Connection> ConnectionPool<C> for ReusePool<C> {
                         if let Err(conn) = self.connections.push(conn) {
                             drop_vec.push(conn);
                             self.active_count.fetch_sub(1, Ordering::Relaxed);
+                        } else {
+                            requeued = true;
                         }
                     } else {
                         // idle timeout
@@ -151,10 +154,17 @@ impl<C: Connection> ConnectionPool<C> for ReusePool<C> {
                     break;
                 } else {
                     self.active_count.fetch_add(1, Ordering::Relaxed);
+                    requeued = true;
                 }
             } else {
                 break;
             }
+        }
+
+        // A waiter can park against an empty queue while maintain holds the
+        // popped connections; re-queued entries must wake it.
+        if requeued {
+            self.release_notified.notify_waiters();
         }
 
         // Close dropped/invalid connections
@@ -311,7 +321,11 @@ impl<C: Connection> ReusePool<C> {
             self.close_active_connection(conn);
         } else {
             debug!("Connection released back to pool");
+            // One stored permit can collapse across consecutive releases and
+            // strand a parked waiter despite free capacity; wake parked
+            // waiters as well.
             self.release_notified.notify_one();
+            self.release_notified.notify_waiters();
         }
     }
 
@@ -351,6 +365,7 @@ impl<C: Connection> ReusePool<C> {
                     if self.connections.push(conn.clone()).is_ok() {
                         created.push(conn);
                         self.release_notified.notify_one();
+                        self.release_notified.notify_waiters();
                     } else {
                         debug!("Pool queue is full while expanding, closing new connection");
                         self.close_active_connection(conn);
