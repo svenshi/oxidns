@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use bytes::{BufMut, Bytes};
+use bytes::{Buf, BufMut, Bytes};
 use futures::future::poll_fn;
 use h3::client::{RequestStream, SendRequest};
 use h3_quinn::{BidiStream, OpenStreams};
@@ -22,7 +22,8 @@ use crate::infra::network::dial::{
     DialTarget, QuicDialOptions, SocketOptions, UdpDialOptions, connect_quic, connect_udp,
 };
 use crate::infra::network::upstream::conn::doh::{
-    build_dns_get_request, build_doh_request_uri, get_cap_buf_with_context_len,
+    append_response_chunk, build_dns_get_request, build_doh_request_uri,
+    get_cap_buf_with_context_len,
 };
 use crate::infra::network::upstream::pool::{ConnectionBuilder, DeadlineOutcome, QueryDeadline};
 use crate::infra::network::upstream::{Connection, ConnectionInfo};
@@ -247,10 +248,13 @@ async fn recv(
 
     let mut response_bytes = get_cap_buf_with_context_len(&mut response);
 
-    while let Some(partial_bytes) = request_stream.recv_data().await.map_err(|e| {
+    while let Some(mut partial_bytes) = request_stream.recv_data().await.map_err(|e| {
         H3RecvError::Transport(DnsError::protocol(format!("h3 recv_data error: {e}")))
     })? {
-        response_bytes.put(partial_bytes);
+        let chunk = partial_bytes.copy_to_bytes(partial_bytes.remaining());
+        append_response_chunk(&mut response_bytes, &chunk).map_err(|e| {
+            H3RecvError::Transport(DnsError::protocol(format!("h3 recv_data error: {e}")))
+        })?;
     }
 
     // Was it a successful request?

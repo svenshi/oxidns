@@ -20,6 +20,13 @@ use crate::infra::network::upstream::{ConnectionInfo, ConnectionType};
 #[allow(dead_code)]
 const DNS_HEADER_VALUE: HeaderValue = HeaderValue::from_static("application/dns-message");
 
+/// Upper bound for upstream DoH/H2/H3 response bodies.
+///
+/// A DNS message never exceeds 64 KiB on the wire, so any larger body (or a
+/// spoofed Content-Length) must not drive buffering. Mirrors the resolver-side
+/// limit in `resolver/client/doh.rs`.
+const MAX_DNS_MESSAGE_LEN: usize = u16::MAX as usize;
+
 /// Build a DoH GET request with base64url-encoded DNS query
 ///
 /// Constructs an HTTP GET request following RFC 8484 Section 4.1 (GET method).
@@ -78,9 +85,39 @@ pub fn get_cap_buf_with_context_len<T>(response: &mut Response<T>) -> BytesMut {
         .get(CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<usize>().ok())
+        .map(|v| v.min(MAX_DNS_MESSAGE_LEN)) // Never trust a remote header with pre-allocation size
         .unwrap_or(4096); // Default 4KB for typical DNS responses
 
     BytesMut::with_capacity(capacity)
+}
+
+/// Append one body chunk to a response buffer, rejecting bodies larger than
+/// a DNS message.
+///
+/// Content-Length only sizes the pre-allocation; the streamed body itself can
+/// still exceed any advertised length, so every chunk passes through this
+/// bound.
+#[cfg(feature = "_http-client")]
+#[allow(dead_code)]
+#[inline]
+pub fn append_response_chunk(
+    response: &mut BytesMut,
+    chunk: &[u8],
+) -> crate::infra::error::Result<()> {
+    use bytes::BufMut;
+
+    let next_len = response.len().checked_add(chunk.len()).ok_or_else(|| {
+        crate::infra::error::DnsError::protocol(
+            "upstream DoH response body exceeds DNS message size limit",
+        )
+    })?;
+    if next_len > MAX_DNS_MESSAGE_LEN {
+        return Err(crate::infra::error::DnsError::protocol(
+            "upstream DoH response body exceeds DNS message size limit",
+        ));
+    }
+    response.put_slice(chunk);
+    Ok(())
 }
 
 /// Build DoH request URI template from connection info
@@ -166,6 +203,31 @@ mod tests {
         let buf = get_cap_buf_with_context_len(&mut response);
 
         assert_eq!(buf.capacity(), 4096);
+    }
+
+    #[test]
+    fn test_get_cap_buf_with_context_len_clamps_huge_content_length() {
+        let mut response = Response::builder()
+            .header(CONTENT_LENGTH, "99999999999")
+            .body(())
+            .expect("response should build");
+
+        let buf = get_cap_buf_with_context_len(&mut response);
+
+        assert_eq!(buf.capacity(), u16::MAX as usize);
+    }
+
+    #[test]
+    fn test_append_response_chunk_rejects_oversize_body() {
+        let full = vec![0_u8; u16::MAX as usize];
+        let mut buf = BytesMut::with_capacity(u16::MAX as usize);
+        assert!(append_response_chunk(&mut buf, &full).is_ok());
+        assert_eq!(buf.len(), u16::MAX as usize);
+        assert!(append_response_chunk(&mut buf, &[0_u8; 1][..]).is_err());
+
+        let oversize = vec![0_u8; u16::MAX as usize + 1];
+        let mut fresh = BytesMut::with_capacity(16);
+        assert!(append_response_chunk(&mut fresh, &oversize).is_err());
     }
 
     #[test]
