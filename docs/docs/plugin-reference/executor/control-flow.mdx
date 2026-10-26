@@ -181,9 +181,9 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 
 #### `threshold`
 
-- 类型：`integer`；必填：否；默认值：`0`
+- 类型：`integer`；必填：否；默认值：`500`
 - 单位：毫秒
-- 作用：定义主路径超时或延迟判定阈值。
+- 作用：定义主路径超时或延迟判定阈值；设为 `0` 表示主路径启动的同时立即启动备用路径。
 
 #### `always_standby`
 

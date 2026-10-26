@@ -210,6 +210,20 @@ async fn run_server(
             recv = transport.read_message_from(&mut buf) => {
                 match recv {
                     Ok((msg, reply_target)) => {
+                        // Drop spoofed responses and unsupported opcodes before
+                        // spawning a task: garbage floods must not pay the
+                        // per-packet task creation cost. handle_request keeps
+                        // the same check for the stream-based servers.
+                        if msg.message_type() != crate::proto::MessageType::Query
+                            || msg.opcode() != crate::proto::Opcode::Query
+                        {
+                            debug!(
+                                listen = %addr,
+                                id = msg.id(),
+                                "Dropping non-query UDP datagram before pipeline"
+                            );
+                            continue;
+                        }
                         let src_addr = reply_target.peer_addr();
                         let max_payload = msg.max_payload();
                         let handler = handler.clone();
@@ -227,6 +241,12 @@ async fn run_server(
                     }
                     Err(e) if is_client_port_unreachable(&e) => {
                         debug!(listen = %addr, error = %e, "UDP reply destination is no longer listening");
+                    }
+                    // A malformed datagram only affects the attacker's own
+                    // packet; keep decode failures at debug level so a
+                    // garbage flood cannot drown the log at line rate.
+                    Err(crate::infra::error::DnsError::Protocol(e)) => {
+                        debug!(listen = %addr, error = %e, "Dropping malformed UDP datagram");
                     }
                     Err(e) => {
                         warn!("Error receiving message on UDP socket: {}", e);

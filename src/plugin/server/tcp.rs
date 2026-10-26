@@ -422,7 +422,12 @@ pub fn build_tcp_listener(addr: SocketAddr, idle_timeout: Duration) -> Result<Tc
 
 fn configure_tcp_socket(sock: &Socket, idle_timeout: Duration) {
     let _ = sock.set_tcp_nodelay(true);
-    let keepalive = TcpKeepalive::new().with_interval(idle_timeout);
+    // `with_time` sets TCP_KEEPIDLE; without it the OS default (~2h on Linux)
+    // applies and `idle_timeout` only controls the probe interval, leaving
+    // dead-but-open connections unreaped.
+    let keepalive = TcpKeepalive::new()
+        .with_time(idle_timeout)
+        .with_interval(idle_timeout);
     let _ = sock.set_tcp_keepalive(&keepalive);
     #[cfg(all(
         unix,
