@@ -84,9 +84,16 @@ const FULL_TRIM_CACHE_SIZE_LIMIT: usize = 100_000;
 const LARGE_CACHE_EVICTION_MAX_BATCH: usize = 65_536;
 const DEFAULT_LAZY_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How long a follower waits for the in-flight leader before fetching the
-/// key itself.
-const MISS_SINGLE_FLIGHT_WAIT: Duration = Duration::from_secs(5);
+/// Default how long a follower waits for the in-flight leader before fetching
+/// the key itself (milliseconds). Overridden by `single_flight_wait_ms`.
+const DEFAULT_SINGLE_FLIGHT_WAIT_MS: u64 = 5_000;
+
+/// Default maximum number of leadership rounds a waiter may enter before
+/// fetching the key itself. When a leader finishes without caching the entry,
+/// waiters wake and re-elect a new leader instead of stampeding the upstream,
+/// but repeated failures must not leave the request stalled indefinitely.
+/// Overridden by `single_flight_max_rounds`.
+const MISS_SINGLE_FLIGHT_MAX_ROUNDS: usize = 3;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
@@ -129,6 +136,19 @@ pub struct CacheConfig {
     ///
     /// Default: false.
     ecs_in_key: Option<bool>,
+
+    /// Waiter wait budget (milliseconds) for a cold/expired miss single-flight
+    /// leader before fetching the key itself.
+    ///
+    /// Default: 5000.
+    single_flight_wait_ms: Option<u64>,
+
+    /// Maximum number of leadership rounds a cold/expired miss waiter may enter
+    /// before fetching the key itself. Set to 1 to disable re-election after a
+    /// failed leader.
+    ///
+    /// Default: 3.
+    single_flight_max_rounds: Option<usize>,
 }
 
 type CacheMap = TtlCache<CacheKey, Arc<CacheItem>>;
@@ -489,6 +509,12 @@ pub struct Cache {
     /// concurrent misses for the same key wait for its entry instead of
     /// stampeding the upstream.
     miss_single_flight: Arc<Mutex<AHashMap<CacheKey, Arc<Notify>>>>,
+
+    /// Resolved cold/expired miss single-flight wait budget.
+    miss_single_flight_wait: Duration,
+
+    /// Resolved maximum number of single-flight leadership rounds.
+    miss_single_flight_max_rounds: usize,
 
     /// Next timestamp when an inline write-side maintenance pass may run.
     next_inline_maintenance_ms: AtomicU64,
@@ -1483,31 +1509,49 @@ impl Executor for Cache {
             && lookup.hit_kind.is_none()
         {
             let key = lookup.key.clone();
-            match self.enter_miss_single_flight(&key) {
-                MissFlight::Leader(guard) => _miss_leader = Some(guard),
-                MissFlight::Follower(notify) => {
-                    self.metrics
-                        .single_flight_wait_total
-                        .fetch_add(1, Ordering::Relaxed);
-                    let notified = notify.notified();
-                    tokio::pin!(notified);
-                    // Enable first, then re-check the map: if the leader
-                    // already left, its wakeup raced with our registration and
-                    // the resulting entry (or failure) is already visible.
-                    notified.as_mut().enable();
-                    if self.miss_single_flight_still_tracked(&key) {
-                        let _ =
-                            tokio::time::timeout(MISS_SINGLE_FLIGHT_WAIT, notified.as_mut()).await;
+            // Shared wait budget: repeated leader takeovers must not extend
+            // this request's stall beyond a single configured wait budget.
+            let deadline = tokio::time::Instant::now() + self.miss_single_flight_wait;
+            for _ in 0..self.miss_single_flight_max_rounds {
+                match self.enter_miss_single_flight(&key) {
+                    MissFlight::Leader(guard) => {
+                        _miss_leader = Some(guard);
+                        break;
                     }
-                    if let Some(lookup) = self.try_cache_hit(context, cache_map)
-                        && lookup.hit_kind.is_some()
-                    {
-                        cache_lookup = Some(lookup);
+                    MissFlight::Follower(notify) => {
+                        self.metrics
+                            .single_flight_wait_total
+                            .fetch_add(1, Ordering::Relaxed);
+                        let notified = notify.notified();
+                        tokio::pin!(notified);
+                        // Enable first, then re-check the map: if the leader
+                        // already left, its wakeup raced with our registration
+                        // and the resulting entry (or failure) is already
+                        // visible.
+                        notified.as_mut().enable();
+                        if self.miss_single_flight_still_tracked(&key)
+                            && let Some(remaining) =
+                                deadline.checked_duration_since(tokio::time::Instant::now())
+                        {
+                            let _ = tokio::time::timeout(remaining, notified.as_mut()).await;
+                        }
+                        if let Some(lookup) = self.try_cache_hit(context, cache_map)
+                            && lookup.hit_kind.is_some()
+                        {
+                            cache_lookup = Some(lookup);
+                            break;
+                        }
+                        // The leader finished without caching this key (fetch
+                        // failure or a skipped insert). Re-register so exactly
+                        // one waiter takes over leadership while the others
+                        // keep waiting, instead of every waiter fetching the
+                        // same key downstream at once.
                     }
-                    // Still a miss after the leader finished: fetch this key
-                    // ourselves, without re-registering as leader.
                 }
             }
+            // Exhausted the round budget: fetch this key ourselves without
+            // becoming leader so a permanently failing upstream cannot pin
+            // waiters in the election loop.
         }
 
         let cache_hit = cache_lookup
@@ -1773,6 +1817,8 @@ fn parse_cache_config(args: Option<Value>) -> Result<CacheConfig> {
         max_positive_ttl: None,
         min_positive_ttl: None,
         ecs_in_key: None,
+        single_flight_wait_ms: None,
+        single_flight_max_rounds: None,
     })
 }
 
@@ -1832,6 +1878,22 @@ fn validate_cache_config(config: &CacheConfig) -> Result<()> {
         ));
     }
 
+    if let Some(wait_ms) = config.single_flight_wait_ms
+        && wait_ms == 0
+    {
+        return Err(DnsError::plugin(
+            "cache single_flight_wait_ms must be greater than 0",
+        ));
+    }
+
+    if let Some(rounds) = config.single_flight_max_rounds
+        && rounds == 0
+    {
+        return Err(DnsError::plugin(
+            "cache single_flight_max_rounds must be greater than 0",
+        ));
+    }
+
     Ok(())
 }
 
@@ -1874,6 +1936,14 @@ impl CacheFactory {
             short_circuit: cache_config.short_circuit.unwrap_or(false),
             ecs_in_key: cache_config.ecs_in_key.unwrap_or(false),
             cache_size: cache_config.size.unwrap_or(DEFAULT_CACHE_SIZE),
+            miss_single_flight_wait: Duration::from_millis(
+                cache_config
+                    .single_flight_wait_ms
+                    .unwrap_or(DEFAULT_SINGLE_FLIGHT_WAIT_MS),
+            ),
+            miss_single_flight_max_rounds: cache_config
+                .single_flight_max_rounds
+                .unwrap_or(MISS_SINGLE_FLIGHT_MAX_ROUNDS),
             config: cache_config,
             updated_keys: Arc::new(AtomicU64::new(0)),
             metrics,
@@ -1916,6 +1986,8 @@ fn parse_cache_quick_setup(raw: &str) -> Result<CacheConfig> {
         max_positive_ttl: None,
         min_positive_ttl: None,
         ecs_in_key: None,
+        single_flight_wait_ms: None,
+        single_flight_max_rounds: None,
     };
 
     for token in raw.split_whitespace() {
@@ -1983,6 +2055,14 @@ mod tests {
         let cache_size = config.size.unwrap_or(DEFAULT_CACHE_SIZE);
         let ecs_in_key = config.ecs_in_key.unwrap_or(false);
         let short_circuit = config.short_circuit.unwrap_or(false);
+        let miss_single_flight_wait = Duration::from_millis(
+            config
+                .single_flight_wait_ms
+                .unwrap_or(DEFAULT_SINGLE_FLIGHT_WAIT_MS),
+        );
+        let miss_single_flight_max_rounds = config
+            .single_flight_max_rounds
+            .unwrap_or(MISS_SINGLE_FLIGHT_MAX_ROUNDS);
 
         Cache {
             cache_map: OnceCell::new(),
@@ -1992,6 +2072,8 @@ mod tests {
             negative_ttl_without_soa,
             short_circuit,
             ecs_in_key,
+            miss_single_flight_wait,
+            miss_single_flight_max_rounds,
             config,
             updated_keys: Arc::new(AtomicU64::new(0)),
             metrics: Arc::new(CacheMetrics::new("cache_test".to_string())),
@@ -2019,6 +2101,8 @@ mod tests {
             max_positive_ttl: None,
             min_positive_ttl: None,
             ecs_in_key: None,
+            single_flight_wait_ms: None,
+            single_flight_max_rounds: None,
         }
     }
 
@@ -2968,9 +3052,70 @@ mod tests {
         assert_eq!(
             calls.load(AtomicOrdering::SeqCst),
             2,
-            "leader failed once; the follower must retry the fetch itself"
+            "leader failed once; the re-elected follower must retry the fetch itself"
         );
         assert_eq!(cache.cache_map.get().unwrap().len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn miss_single_flight_reelects_one_leader_when_the_first_fails() {
+        AppClock::start();
+        let mut config = default_test_config();
+        config.short_circuit = Some(true);
+        let mut cache = test_cache(config);
+        let _ = cache.init_for_test().await;
+        let cache = Arc::new(cache);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let program = Arc::new(CountingFetchExecutor {
+            calls: calls.clone(),
+            delay: Duration::from_millis(100),
+            fail_first: true,
+        });
+
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            let cache = cache.clone();
+            let program = ChainProgram::single_with_next_executor_for_test(program.clone());
+            handles.push(tokio::spawn(async move {
+                let mut context =
+                    make_context(make_request_with_query("example.com.", false, false));
+                let next = ExecutorNext::from_program_for_test(program, 0);
+                cache.execute_with_next(&mut context, Some(next)).await
+            }));
+        }
+
+        let mut succeeded = 0usize;
+        let mut leader_failures = 0usize;
+        for handle in handles {
+            match handle.await.expect("task should join") {
+                Ok(_) => succeeded += 1,
+                Err(_) => leader_failures += 1,
+            }
+        }
+
+        assert_eq!(
+            leader_failures, 1,
+            "only the original leader's fetch should fail by design"
+        );
+        assert_eq!(
+            succeeded, 4,
+            "every follower should be served by the re-elected leader's fetch"
+        );
+        assert_eq!(
+            calls.load(AtomicOrdering::SeqCst),
+            2,
+            "exactly one waiter must take over leadership after the first leader fails"
+        );
+        assert_eq!(cache.cache_map.get().unwrap().len(), 1);
+        assert!(
+            cache
+                .metrics
+                .single_flight_wait_total
+                .load(AtomicOrdering::Relaxed)
+                >= 2,
+            "waiters should wait for both the failed and the re-elected leader"
+        );
     }
 
     #[tokio::test]
@@ -3861,6 +4006,8 @@ mod tests {
             max_positive_ttl: None,
             min_positive_ttl: None,
             ecs_in_key: None,
+            single_flight_wait_ms: None,
+            single_flight_max_rounds: None,
         };
 
         assert!(validate_cache_config(&cfg).is_err());
@@ -3881,5 +4028,33 @@ mod tests {
         cfg.max_positive_ttl = Some(10);
 
         assert!(validate_cache_config(&cfg).is_err());
+    }
+
+    #[test]
+    fn validate_config_rejects_zero_single_flight_wait() {
+        let mut cfg = default_test_config();
+        cfg.single_flight_wait_ms = Some(0);
+
+        assert!(validate_cache_config(&cfg).is_err());
+    }
+
+    #[test]
+    fn validate_config_rejects_zero_single_flight_max_rounds() {
+        let mut cfg = default_test_config();
+        cfg.single_flight_max_rounds = Some(0);
+
+        assert!(validate_cache_config(&cfg).is_err());
+    }
+
+    #[test]
+    fn single_flight_config_overrides_are_resolved() {
+        let mut cfg = default_test_config();
+        cfg.single_flight_wait_ms = Some(250);
+        cfg.single_flight_max_rounds = Some(2);
+
+        let cache = test_cache(cfg);
+
+        assert_eq!(cache.miss_single_flight_wait, Duration::from_millis(250));
+        assert_eq!(cache.miss_single_flight_max_rounds, 2);
     }
 }

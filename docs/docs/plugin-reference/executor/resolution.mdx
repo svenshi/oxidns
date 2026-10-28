@@ -441,6 +441,19 @@ import Admonition from "@theme/Admonition";
 - 作用：控制 ECS scope 是否参与缓存键计算。
 - 位置注意：缓存键在进入 cache 时即已计算。若下游存在会注入 ECS 的执行器（如 `ecs_handler` 且 `send: true`），或响应回显了非零 scope 的 ECS，该响应不会写入缓存（以 `cache_skip_total{reason="ecs_scope_mismatch"...}` 计）——因此不会出现跨客户端污染。需要子网相关答案各自缓存时，把 `cache` 放在 `ecs_handler` 之后，或让客户端自带 ECS 并开启 `ecs_in_key`（仅覆盖客户端提供的 ECS）。
 
+#### `single_flight_wait_ms`
+
+- 类型：`integer`；必填：否；默认值：`5000`
+- 单位：毫秒
+- 作用：冷/过期未命中时，跟随者等待同 key 在途 leader 取数的最长时间。
+- 说明：所有重新选举轮次共享同一等待预算；超时后该请求自行取数。
+
+#### `single_flight_max_rounds`
+
+- 类型：`integer`；必填：否；默认值：`3`
+- 作用：leader 失败或未写入缓存后，跟随者重新注册并参与选举的最大轮次。
+- 说明：每轮只会产生一个新 leader，其余跟随者继续等待；设为 `1` 时退化为“等待一次 leader 后自行取数”。
+
 ### quick setup
 
 ```yaml
@@ -484,6 +497,7 @@ import Admonition from "@theme/Admonition";
 - `cache_insert_total`
 - `cache_skip_total{reason="truncated|no_ttl|incomplete_answer|low_positive_ttl"}`
 - `cache_lazy_refresh_total{result="started|success|failed"}`
+- `cache_single_flight_wait_total`
 - `cache_entry_count`
 
 ### 典型用途

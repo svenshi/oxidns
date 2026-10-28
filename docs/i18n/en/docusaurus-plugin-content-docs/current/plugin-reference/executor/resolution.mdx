@@ -384,6 +384,19 @@ For A/AAAA and other non-CNAME queries, cache admission requires the requested t
 - Type: `boolean`; Required: no; Default: `false`
 - Purpose: Include ECS information in the cache key.
 
+#### `single_flight_wait_ms`
+
+- Type: `integer`; Required: no; Default: `5000`
+- Unit: milliseconds
+- Purpose: Maximum time a follower waits for the in-flight leader of the same key after a cold/expired miss.
+- Notes: All re-election rounds share the same wait budget. Once it expires, the request fetches the key itself.
+
+#### `single_flight_max_rounds`
+
+- Type: `integer`; Required: no; Default: `3`
+- Purpose: Maximum number of rounds a follower may re-register for leadership after the leader fails or skips the cache write.
+- Notes: Each round elects at most one new leader while the other followers keep waiting. Set to `1` to fall back to waiting once for the leader and then fetching the key itself.
+
 ### quick setup
 
 ```yaml
@@ -420,6 +433,7 @@ Exported through the global `GET /api/metrics` endpoint. The cache plugin does n
 - `cache_insert_total`
 - `cache_skip_total{reason="truncated|no_ttl|incomplete_answer|low_positive_ttl"}`
 - `cache_lazy_refresh_total{result="started|success|failed"}`
+- `cache_single_flight_wait_total`
 - `cache_entry_count`
 
 ### Typical Uses

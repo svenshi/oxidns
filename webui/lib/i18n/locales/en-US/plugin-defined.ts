@@ -547,6 +547,16 @@ export const enUSPluginDefined = {
           description:
             "Controls whether the ECS scope is included in cache key calculation.",
         },
+        single_flight_wait_ms: {
+          label: "Single-flight wait limit (ms)",
+          description:
+            "Upper bound for waiting on an in-flight fetch of the same key after a cold/expired miss.",
+        },
+        single_flight_max_rounds: {
+          label: "Single-flight election rounds",
+          description:
+            "Maximum number of leader re-elections after a failed leader. Set to 1 to disable re-election.",
+        },
       },
       quickSetup: {
         paramPlaceholder: "short_circuit=true",
@@ -560,6 +570,7 @@ export const enUSPluginDefined = {
           cache_insert_total: "Writes",
           cache_skip_total: "Skipped",
           cache_lazy_refresh_total: "Lazy refresh",
+          cache_single_flight_wait_total: "Single-flight waits",
           cache_entry_count: "Entries",
         },
         help: {
@@ -576,6 +587,8 @@ export const enUSPluginDefined = {
             "The total number of responses that were skipped from cache due to write policy (truncated responses, no TTL, low positive TTL).",
           cache_lazy_refresh_total:
             "Total number of Lazy Cache background refresh attempts (by result: started / success / failed).",
+          cache_single_flight_wait_total:
+            "Total cold/expired misses that waited for an in-flight fetch of the same key (including waits after a leadership re-election).",
           cache_entry_count: "The number of entries currently in the cache.",
         },
         derived: {

@@ -115,6 +115,10 @@ export const enUSDocs = {
       "- Type: `integer`; Required: No; Default: None\n- Unit: seconds\n- Function: Define the minimum TTL required before writing a positive response to cache.\n- Notes: Positive responses whose effective cache TTL is lower than this value are not cached. The check runs after `max_positive_ttl` capping.",
     ecs_in_key:
       "- Type: `boolean`; required: no; default value: `false`\n- Function: Control whether the ECS scope is included in cache key calculation.",
+    single_flight_wait_ms:
+      "- Type: `integer`; required: no; default value: `5000`\n- Unit: milliseconds\n- Function: Define the wait budget for a cold or expired miss before fetching the same key itself.\n- Notes: Re-election after a failed leader does not extend the total wait budget of a single request.",
+    single_flight_max_rounds:
+      "- Type: `integer`; required: no; default value: `3`\n- Constraint: Must be greater than 0. Set to `1` to disable re-election.\n- Function: Define the maximum number of leader re-elections after a failed leader.",
   },
   fallback: {
     primary:

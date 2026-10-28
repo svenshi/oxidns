@@ -112,6 +112,10 @@ export const zhCNDocs = {
       "- 类型：`integer`；必填：否；默认值：无\n- 单位：秒\n- 作用：定义正响应进入缓存所需的最小 TTL。\n- 说明：正响应的有效缓存 TTL 低于该值时不会写入缓存。该判断在 `max_positive_ttl` 裁剪之后执行。",
     ecs_in_key:
       "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：控制 ECS scope 是否参与缓存键计算。",
+    single_flight_wait_ms:
+      "- 类型：`integer`；必填：否；默认值：`5000`\n- 单位：毫秒\n- 作用：定义冷/过期未命中时等待同 key 在途取数的上限。\n- 说明：leader 失败后重新选举不会延长单次请求的总等待预算。",
+    single_flight_max_rounds:
+      "- 类型：`integer`；必填：否；默认值：`3`\n- 配置要求：必须大于 0；设为 `1` 表示关闭重新选举。\n- 作用：定义 leader 失败后重新选举 leader 的次数上限。",
   },
   fallback: {
     primary: "- 类型：`string`；必填：是；默认值：无\n- 作用：指定主执行器。",

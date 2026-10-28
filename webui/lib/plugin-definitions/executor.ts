@@ -322,6 +322,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         cache_insert_total: "写入",
         cache_skip_total: "跳过",
         cache_lazy_refresh_total: "懒刷新",
+        cache_single_flight_wait_total: "单飞等待",
         cache_entry_count: "条目数",
       },
       metricHelp: {
@@ -335,6 +336,8 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
           "因写入策略（截断响应、无 TTL、正响应 TTL 过低）而跳过缓存的响应总数。",
         cache_lazy_refresh_total:
           "Lazy Cache 后台刷新尝试总数（按结果：started / success / failed）。",
+        cache_single_flight_wait_total:
+          "冷/过期未命中时等待同 key 在途取数的总次数（含重新选举后再次等待）。",
         cache_entry_count: "当前缓存中的条目数量。",
       },
       cardPriority: [
@@ -431,6 +434,22 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "ECS 参与缓存键",
         type: "switch",
         default: false,
+        advanced: true,
+      },
+      {
+        key: "single_flight_wait_ms",
+        description: "冷/过期未命中时等待同 key 在途取数的上限。",
+        label: "单飞等待上限(毫秒)",
+        type: "number",
+        default: 5000,
+        advanced: true,
+      },
+      {
+        key: "single_flight_max_rounds",
+        description: "leader 失败后重新选举的次数上限，设为 1 可关闭重新选举。",
+        label: "单飞选举轮次上限",
+        type: "number",
+        default: 3,
         advanced: true,
       },
     ],

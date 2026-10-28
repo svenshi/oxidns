@@ -36,6 +36,8 @@ const EXPECTED_ADVANCED_FIELDS: Record<string, string[]> = {
     "max_positive_ttl",
     "min_positive_ttl",
     "ecs_in_key",
+    "single_flight_wait_ms",
+    "single_flight_max_rounds",
   ],
   "executor/fallback": ["always_standby"],
   "executor/response": ["authoritative", "authentic_data"],
