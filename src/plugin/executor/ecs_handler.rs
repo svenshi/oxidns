@@ -12,8 +12,10 @@
 //! - `preset`: force ECS source IP regardless of client source address.
 //!
 //! Post-stage behavior:
-//! - when ECS was not forwarded from client, response ECS is stripped to avoid
-//!   leaking internally generated subnet metadata back to downstream clients.
+//! - when ECS was not forwarded from client, ECS is stripped from both the
+//!   response and the request after the downstream chain finishes, so neither
+//!   client-supplied nor internally generated subnet metadata lingers past this
+//!   stage.
 
 use std::net::IpAddr;
 
@@ -97,6 +99,7 @@ impl Executor for EcsHandler {
         if let Some(response) = context.response_mut() {
             strip_ecs_from_message(response);
         }
+        strip_ecs_from_message(context.request_mut());
         Ok(step)
     }
 }
@@ -239,10 +242,52 @@ fn ensure_opt_record(message: &mut Message) -> &mut Edns {
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::{Arc, Mutex};
 
     use super::*;
     use crate::core::context::DnsContext;
+    use crate::plugin::executor::sequence::chain::ChainProgram;
     use crate::proto::{Message, Name, Question, RecordType};
+
+    /// Downstream executor that records whether the request carried ECS at the
+    /// moment it ran, letting tests observe mid-chain state before the
+    /// post-stage cleanup strips it again.
+    #[derive(Debug)]
+    struct EcsProbe {
+        observed: Arc<Mutex<Vec<bool>>>,
+    }
+
+    #[async_trait]
+    impl Plugin for EcsProbe {
+        fn tag(&self) -> &str {
+            "ecs_probe"
+        }
+
+        async fn init(&mut self, _context: &crate::plugin::PluginInitContext<'_>) -> Result<()> {
+            Ok(())
+        }
+
+        async fn destroy(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Executor for EcsProbe {
+        async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
+            self.observed
+                .lock()
+                .unwrap()
+                .push(request_has_ecs(&context.request));
+            Ok(ExecStep::Next)
+        }
+    }
+
+    fn probe_next(observed: Arc<Mutex<Vec<bool>>>) -> ExecutorNext {
+        let program =
+            ChainProgram::single_with_next_executor_for_test(Arc::new(EcsProbe { observed }));
+        ExecutorNext::new(program, 0)
+    }
 
     #[test]
     fn test_parse_handler_from_value_validation() {
@@ -272,7 +317,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ecs_handler_send_inserts_request_ecs_and_strips_response_ecs() {
+    async fn test_ecs_handler_send_inserts_ecs_mid_chain_and_strips_both_after() {
         let plugin = EcsHandler {
             tag: "ecs".to_string(),
             forward: false,
@@ -287,11 +332,21 @@ mod tests {
         add_ecs_option(&mut response, IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 24);
         ctx.set_response(response);
 
+        let observed = Arc::new(Mutex::new(Vec::new()));
         plugin
-            .execute_with_next(&mut ctx, None)
+            .execute_with_next(&mut ctx, Some(probe_next(observed.clone())))
             .await
             .expect("continuation execute should succeed");
-        assert!(request_has_ecs(&ctx.request));
+
+        assert_eq!(
+            *observed.lock().unwrap(),
+            vec![true],
+            "synthesized ECS should be visible to downstream executors"
+        );
+        assert!(
+            !request_has_ecs(&ctx.request),
+            "request ECS should be stripped after the chain when not forwarded"
+        );
         assert!(
             !request_has_ecs(ctx.response().expect("response should exist")),
             "response ECS should be stripped when not forwarded from client"
@@ -378,11 +433,21 @@ mod tests {
         let mut ctx = make_context(DNSClass::IN);
         let _ = ensure_opt_record(ctx.request_mut());
 
+        let observed = Arc::new(Mutex::new(Vec::new()));
         plugin
-            .execute_with_next(&mut ctx, None)
+            .execute_with_next(&mut ctx, Some(probe_next(observed.clone())))
             .await
             .expect("continuation execute should succeed");
-        assert!(request_has_ecs(&ctx.request));
+
+        assert_eq!(
+            *observed.lock().unwrap(),
+            vec![true],
+            "synthesized ECS should be appended to the existing OPT mid-chain"
+        );
+        assert!(
+            !request_has_ecs(&ctx.request),
+            "request ECS should be stripped after the chain when not forwarded"
+        );
     }
 
     #[tokio::test]
@@ -397,12 +462,54 @@ mod tests {
         };
         let mut ctx = make_context(DNSClass::IN);
 
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        plugin
+            .execute_with_next(&mut ctx, Some(probe_next(observed.clone())))
+            .await
+            .expect("continuation execute should succeed");
+
+        assert_eq!(
+            *observed.lock().unwrap(),
+            vec![true],
+            "synthesized ECS should be visible mid-chain on a fresh OPT"
+        );
+        assert!(ctx.request.edns().is_some(), "OPT record should persist");
+        assert!(
+            !request_has_ecs(&ctx.request),
+            "request ECS should be stripped after the chain when not forwarded"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ecs_handler_strips_unforwarded_client_ecs_from_non_in_request() {
+        let plugin = EcsHandler {
+            tag: "ecs".to_string(),
+            forward: false,
+            send: false,
+            preset: None,
+            mask4: 24,
+            mask6: 48,
+        };
+        let mut ctx = make_context(DNSClass::CH);
+        add_ecs_option(ctx.request_mut(), IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 24);
+
+        let mut response = Message::new();
+        add_ecs_option(&mut response, IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 24);
+        ctx.set_response(response);
+
         plugin
             .execute_with_next(&mut ctx, None)
             .await
             .expect("continuation execute should succeed");
-        assert!(request_has_ecs(&ctx.request));
-        assert!(ctx.request.edns().is_some());
+
+        assert!(
+            !request_has_ecs(&ctx.request),
+            "unforwarded client ECS must not survive in the request"
+        );
+        assert!(
+            !request_has_ecs(ctx.response().expect("response should exist")),
+            "response ECS should be stripped when not forwarded from client"
+        );
     }
 
     #[tokio::test]
