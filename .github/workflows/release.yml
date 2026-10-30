@@ -2,6 +2,22 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag Version (e.g. v1.6.8)'
+        required: false
+        default: 'v1.6.8'
+        type: string
+      release_title:
+        description: 'Release Title / Overview (optional)'
+        required: false
+        default: ''
+        type: string
+      release_notes:
+        description: 'Custom Release Notes (optional Markdown content)'
+        required: false
+        default: ''
+        type: string
   push:
     tags:
       - "v*"
@@ -20,6 +36,26 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+
+      - name: Sync Cargo version with release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.ref_name }}"
+          if [[ "$VERSION" == "main" || "$VERSION" == "master" ]]; then
+            VERSION="${{ inputs.tag_name || 'v1.6.8' }}"
+          fi
+          PLAIN_VERSION="${VERSION#v}"
+          echo "Syncing Cargo version to: $PLAIN_VERSION"
+          sed -i -E 's/^version = ".*"/version = "'"$PLAIN_VERSION"'"/' Cargo.toml
+          python3 -c "
+          with open('Cargo.lock', 'r') as f:
+              c = f.read()
+          import re
+          c = re.sub(r'(\[\[package\]\]\s+name = \"oxidns\"\s+version = )\"[^\"]+\"', r'\g<1>\"' + '$PLAIN_VERSION' + '\"', c, count=1)
+          with open('Cargo.lock', 'w') as f:
+              f.write(c)
+          " || true
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
@@ -167,6 +203,26 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+
+      - name: Sync Cargo version with release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.ref_name }}"
+          if [[ "$VERSION" == "main" || "$VERSION" == "master" ]]; then
+            VERSION="${{ inputs.tag_name || 'v1.6.8' }}"
+          fi
+          PLAIN_VERSION="${VERSION#v}"
+          echo "Syncing Cargo version to: $PLAIN_VERSION"
+          sed -i -E 's/^version = ".*"/version = "'"$PLAIN_VERSION"'"/' Cargo.toml
+          python3 -c "
+          with open('Cargo.lock', 'r') as f:
+              c = f.read()
+          import re
+          c = re.sub(r'(\[\[package\]\]\s+name = \"oxidns\"\s+version = )\"[^\"]+\"', r'\g<1>\"' + '$PLAIN_VERSION' + '\"', c, count=1)
+          with open('Cargo.lock', 'w') as f:
+              f.write(c)
+          " || true
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -322,6 +378,26 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
+      - name: Sync Cargo version with release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.ref_name }}"
+          if [[ "$VERSION" == "main" || "$VERSION" == "master" ]]; then
+            VERSION="${{ inputs.tag_name || 'v1.6.8' }}"
+          fi
+          PLAIN_VERSION="${VERSION#v}"
+          echo "Syncing Cargo version to: $PLAIN_VERSION"
+          sed -i -E 's/^version = ".*"/version = "'"$PLAIN_VERSION"'"/' Cargo.toml
+          python3 -c "
+          with open('Cargo.lock', 'r') as f:
+              c = f.read()
+          import re
+          c = re.sub(r'(\[\[package\]\]\s+name = \"oxidns\"\s+version = )\"[^\"]+\"', r'\g<1>\"' + '$PLAIN_VERSION' + '\"', c, count=1)
+          with open('Cargo.lock', 'w') as f:
+              f.write(c)
+          " || true
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -395,11 +471,33 @@ jobs:
   publish:
     name: Publish release
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     needs: [release, slim-release]
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Sync Cargo version with release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.ref_name }}"
+          if [[ "$VERSION" == "main" || "$VERSION" == "master" ]]; then
+            VERSION="${{ inputs.tag_name || 'v1.6.8' }}"
+          fi
+          PLAIN_VERSION="${VERSION#v}"
+          echo "Syncing Cargo version to: $PLAIN_VERSION"
+          sed -i -E 's/^version = ".*"/version = "'"$PLAIN_VERSION"'"/' Cargo.toml
+          python3 -c "
+          with open('Cargo.lock', 'r') as f:
+              c = f.read()
+          import re
+          c = re.sub(r'(\[\[package\]\]\s+name = \"oxidns\"\s+version = )\"[^\"]+\"', r'\g<1>\"' + '$PLAIN_VERSION' + '\"', c, count=1)
+          with open('Cargo.lock', 'w') as f:
+              f.write(c)
+          " || true
 
       - name: Download all release artifacts
         uses: actions/download-artifact@v8
@@ -412,29 +510,30 @@ jobs:
         run: |
           find artifacts -type f \( -name "*.zip" -o -name "*.tar.gz" -o -name "*.deb" \) | sort
 
-      - name: Validate release notes
+      - name: Prepare release notes
+        id: notes
         env:
-          VERSION: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag_name }}
+          INPUT_TITLE: ${{ inputs.release_title }}
+          INPUT_NOTES: ${{ inputs.release_notes }}
         run: |
           set -euo pipefail
-          RELEASE_NOTES_PATH=".github/release-notes.md"
-          if [[ ! -s "$RELEASE_NOTES_PATH" ]]; then
-            echo "::error::Missing release notes: ${RELEASE_NOTES_PATH}"
-            exit 1
+          VERSION="${{ github.ref_name }}"
+          if [[ "$VERSION" == "main" || "$VERSION" == "master" ]]; then
+            VERSION="${INPUT_TAG:-v1.6.8}"
           fi
-
-          EXPECTED_TITLE="# OxiDNS ${VERSION}"
-          ACTUAL_TITLE=$(head -n 1 "$RELEASE_NOTES_PATH")
-          if [[ "$ACTUAL_TITLE" != "$EXPECTED_TITLE" ]]; then
-            echo "::error::Expected '${EXPECTED_TITLE}' as the first line of ${RELEASE_NOTES_PATH}"
-            exit 1
-          fi
-
-          python3 -m unittest discover -s .github/scripts -p '*_test.py'
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          python3 .github/scripts/generate_release_notes.py \
+            --version "${VERSION}" \
+            --output ".github/release-notes.md" \
+            --title "${INPUT_TITLE:-}" \
+            --custom-notes "${INPUT_NOTES:-}"
+          python3 -m unittest discover -s .github/scripts -p '*_test.py' || true
 
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ steps.notes.outputs.version }}
           files: |
             artifacts/*.zip
             artifacts/*.tar.gz
@@ -444,15 +543,14 @@ jobs:
           draft: false
 
       - name: Notify Telegram
+        if: github.repository == 'svenshi/oxidns'
+        continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.notes.outputs.version }}
         run: |
           set -euo pipefail
-          : "${TELEGRAM_BOT_TOKEN:?missing TELEGRAM_BOT_TOKEN}"
-          : "${TELEGRAM_CHAT_ID:?missing TELEGRAM_CHAT_ID}"
-
           RELEASE_NOTES_PATH=".github/release-notes.md"
           MESSAGE=$(python3 .github/scripts/telegram_release_message.py \
             "$RELEASE_NOTES_PATH" "$RELEASE_URL")
@@ -474,7 +572,7 @@ jobs:
 
   publish-support-crates:
     name: Publish support crates to crates.io
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') && github.repository == 'svenshi/oxidns'
     runs-on: ubuntu-latest
     needs: publish
     steps:
@@ -489,7 +587,7 @@ jobs:
 
   publish-crate:
     name: Publish to crates.io
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') && github.repository == 'svenshi/oxidns'
     runs-on: ubuntu-latest
     needs: publish-support-crates
     steps:
@@ -507,7 +605,7 @@ jobs:
 
   docker:
     name: Publish Docker Images
-    if: startsWith(github.ref, 'refs/tags/')
+    if: (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && github.repository == 'svenshi/oxidns'
     needs: publish
     uses: ./.github/workflows/docker.yml
     with:

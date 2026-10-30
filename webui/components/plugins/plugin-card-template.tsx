@@ -37,7 +37,8 @@ export function PluginCardTemplate({
   children,
 }: PluginCardTemplateProps) {
   const { locale, t } = useI18n();
-  const { setSelectedPlugin, setDetailOpen, togglePluginPin } = useAppStore();
+  const { setSelectedPlugin, setDetailOpen, togglePluginPin, togglePluginEnabled } =
+    useAppStore();
   const series = useAppStore((s) => s.pluginMetrics[plugin.name]);
   const matcherControl = useAppStore((s) =>
     plugin.type === "matcher" ? s.matcherControls[plugin.name] : undefined,
@@ -80,6 +81,7 @@ export function PluginCardTemplate({
       className={cn(
         "group relative flex h-full min-h-[10.75rem] cursor-pointer flex-col gap-0 overflow-hidden py-0 transition-[border-color,box-shadow,transform] duration-200 hover:-translate-y-px hover:border-primary/40 hover:shadow-md",
         plugin.pinned && "border-primary/30",
+        plugin.enabled === false && "opacity-65",
         matcherAlwaysFalse &&
           "border-warning/40 bg-warning/5 hover:border-warning/60",
         matcherAlwaysTrue &&
@@ -142,6 +144,34 @@ export function PluginCardTemplate({
                 {t(WEBUI.common.notCompiled)}
               </Badge>
             )}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void togglePluginEnabled(plugin.id);
+                  }}
+                  className={cn(
+                    "flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-mono font-medium transition-all ml-auto",
+                    plugin.enabled !== false
+                      ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25 hover:bg-emerald-500/20"
+                      : "bg-muted text-muted-foreground border border-border/40 hover:bg-muted/80 opacity-80",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "size-1.5 rounded-full",
+                      plugin.enabled !== false ? "bg-emerald-500 animate-pulse" : "bg-muted-foreground",
+                    )}
+                  />
+                  <span>{plugin.enabled !== false ? "启用" : "停用"}</span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {plugin.enabled !== false ? "功能已启用（点击停用）" : "功能已停用（点击启用）"}
+              </TooltipContent>
+            </Tooltip>
           </div>
           {definition?.description && !compact && !children && (
             <p className="mt-2 line-clamp-2 text-xs leading-4 text-muted-foreground">

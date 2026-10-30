@@ -19,7 +19,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { AlertTriangle, Pencil, Pin, PinOff, Rocket, Save } from "lucide-react";
+import { AlertTriangle, Pencil, Pin, PinOff, Power, Rocket, Save } from "lucide-react";
 import { shouldPersistPluginMutation, useAppStore } from "@/lib/store";
 import { extractOutboundProfileNames } from "@/lib/oxidns-config-schema";
 import { isPluginKindSupported } from "@/lib/build-capabilities";
@@ -57,6 +57,7 @@ export function PluginDetailTemplate({
   const { locale, t } = useI18n();
   const {
     togglePluginPin,
+    togglePluginEnabled,
     updatePluginConfig,
     renamePlugin,
     saveConfig,
@@ -320,6 +321,20 @@ export function PluginDetailTemplate({
           ) : null}
 
           <div className="mt-4 flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void togglePluginEnabled(plugin.id)}
+              className={cn(
+                "gap-1.5",
+                plugin.enabled !== false
+                  ? "text-emerald-600 dark:text-emerald-400 border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/10"
+                  : "text-muted-foreground",
+              )}
+            >
+              <Power className="mr-1.5 h-4 w-4" />
+              {plugin.enabled !== false ? "功能已启用 (点击停用)" : "功能已停用 (点击启用)"}
+            </Button>
             <Button
               variant="outline"
               size="sm"

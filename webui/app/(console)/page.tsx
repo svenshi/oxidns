@@ -3,16 +3,18 @@
 import { useMemo, useState } from "react";
 import { AppHeader } from "@/components/shell/app-header";
 import { SystemMetrics } from "@/components/dashboard/system-metrics";
+import { DnsOverview } from "@/components/dashboard/dns-overview";
 import { SortablePluginGrid } from "@/components/plugins/sortable-plugin-grid";
 import { useAppStore } from "@/lib/store";
 import type { PluginInstance } from "@/lib/types";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Activity, Server } from "lucide-react";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
 import { useAuthStore } from "@/lib/auth-store";
 import { useVisiblePolling } from "@/hooks/use-visible-polling";
+import { cn } from "@/lib/utils";
 import {
   DASHBOARD_HEALTH_POLL_INTERVAL_MS,
   DASHBOARD_SYSTEM_POLL_INTERVAL_MS,
@@ -63,6 +65,7 @@ export default function DashboardPage() {
   // client render also produces an empty pinned grid (plugins load after
   // mount), so applying a different order here cannot cause a hydration
   // mismatch.
+  const [dashboardTab, setDashboardTab] = useState<"dns" | "system">("dns");
   const [order, setOrder] = useState<string[]>(() =>
     typeof window === "undefined" ? [] : loadDashboardOrder(),
   );
@@ -97,43 +100,77 @@ export default function DashboardPage() {
   return (
     <>
       <AppHeader title={t(WEBUI.shell.dashboard)} />
-      <main className="oxidns-dialog-scrollbar min-h-0 flex-1 overflow-auto p-6">
-        <div className="space-y-8">
-          <section>
-            <h2 className="text-lg font-semibold mb-4">
-              {t(WEBUI.plugins.systemOverview)}
-            </h2>
-            <SystemMetrics />
-          </section>
-
-          <section>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold">
-                {t(WEBUI.plugins.pinnedPlugins)}
-                <span className="text-muted-foreground font-normal ml-2 text-sm">
-                  ({pinnedPlugins.length})
-                </span>
-              </h2>
-              <Button variant="ghost" size="sm" asChild>
-                <Link href="/plugins">
-                  {t(WEBUI.plugins.viewAll)}
-                  <ArrowRight className="h-4 w-4 ml-1" />
-                </Link>
-              </Button>
-            </div>
-            {pinnedPlugins.length > 0 ? (
-              <SortablePluginGrid
-                plugins={pinnedPlugins}
-                onReorder={handleReorder}
-              />
-            ) : (
-              <div className="border border-dashed rounded-lg p-8 text-center text-muted-foreground">
-                <p>{t(WEBUI.plugins.noPinned)}</p>
-                <p className="text-sm mt-1">{t(WEBUI.plugins.pinHint)}</p>
-              </div>
-            )}
-          </section>
+      <main className="oxidns-dialog-scrollbar min-h-0 flex-1 overflow-auto p-3 sm:p-6">
+        {/* macOS View Mode Switcher Header */}
+        <div className="flex items-center justify-between pb-3 sm:pb-4 mb-2 border-b border-border/40">
+          <div className="macos-segmented">
+            <button
+              type="button"
+              onClick={() => setDashboardTab("dns")}
+              className={cn(
+                "macos-segmented-item",
+                dashboardTab === "dns" && "active",
+              )}
+            >
+              <Activity className="h-4 w-4" />
+              <span className="sm:hidden">DNS 监控</span>
+              <span className="hidden sm:inline">DNS 监控总览</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setDashboardTab("system")}
+              className={cn(
+                "macos-segmented-item",
+                dashboardTab === "system" && "active",
+              )}
+            >
+              <Server className="h-4 w-4" />
+              <span className="sm:hidden">系统拓扑</span>
+              <span className="hidden sm:inline">系统与插件拓扑</span>
+            </button>
+          </div>
         </div>
+
+        {dashboardTab === "dns" ? (
+          <DnsOverview />
+        ) : (
+          <div className="space-y-8">
+            <section>
+              <h2 className="text-lg font-semibold mb-4">
+                {t(WEBUI.plugins.systemOverview)}
+              </h2>
+              <SystemMetrics />
+            </section>
+
+            <section>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold">
+                  {t(WEBUI.plugins.pinnedPlugins)}
+                  <span className="text-muted-foreground font-normal ml-2 text-sm">
+                    ({pinnedPlugins.length})
+                  </span>
+                </h2>
+                <Button variant="ghost" size="sm" asChild>
+                  <Link href="/plugins">
+                    {t(WEBUI.plugins.viewAll)}
+                    <ArrowRight className="h-4 w-4 ml-1" />
+                  </Link>
+                </Button>
+              </div>
+              {pinnedPlugins.length > 0 ? (
+                <SortablePluginGrid
+                  plugins={pinnedPlugins}
+                  onReorder={handleReorder}
+                />
+              ) : (
+                <div className="border border-dashed rounded-lg p-8 text-center text-muted-foreground">
+                  <p>{t(WEBUI.plugins.noPinned)}</p>
+                  <p className="text-sm mt-1">{t(WEBUI.plugins.pinHint)}</p>
+                </div>
+              )}
+            </section>
+          </div>
+        )}
       </main>
     </>
   );

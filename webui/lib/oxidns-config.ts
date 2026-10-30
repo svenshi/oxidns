@@ -206,7 +206,69 @@ function stripPluginsForCompare(text: string): Record<string, unknown> | null {
   return rest;
 }
 
+export const DEFAULT_INITIAL_CONFIG_YAML = `log:
+  level: info
+
+api:
+  http:
+    listen: ":9199"
+    webui:
+      root: "./webui"
+
+plugins:
+  - tag: forward_upstream
+    type: forward
+    args:
+      upstreams:
+        - addr: "223.5.5.5"
+        - addr: "119.29.29.29"
+        - addr: "https://dns.alidns.com/dns-query"
+
+  - tag: lazy_cache
+    type: cache
+    args:
+      size: 20000
+      lazy_cache_ttl: 86400
+
+  - tag: ad_blocklist
+    type: domain_set
+    args:
+      files:
+        - "/etc/oxidns/rules/adblock.txt"
+
+  - tag: query_recorder_main
+    type: query_recorder
+    args:
+      retention_days: 7
+
+  - tag: main_sequence
+    type: sequence
+    args:
+      - matches:
+          - qname: $ad_blocklist
+        exec: reject
+      - exec: $lazy_cache
+      - exec: $forward_upstream
+      - exec: accept
+
+  - tag: udp_server
+    type: udp_server
+    args:
+      entry: main_sequence
+      listen: ":5335"
+
+  - tag: tcp_server
+    type: tcp_server
+    args:
+      entry: main_sequence
+      listen: ":5335"
+`;
+
 export function createDefaultOxiDnsConfig(): OxiDnsConfig {
+  const parsed = parseOxiDnsYaml(DEFAULT_INITIAL_CONFIG_YAML);
+  if (parsed.config) {
+    return parsed.config;
+  }
   return {
     log: { level: "info" },
     plugins: [],
