@@ -172,6 +172,17 @@ impl IpSelector {
 
         let dnssec_sensitive = response_requires_dnssec_caution(context, qtype);
         if dnssec_sensitive && self.settings.dnssec_policy == DnssecPolicy::Skip {
+            if let Some(trace) = &context.observation
+                && let Some(span) = trace.span(
+                    context.observation_parent,
+                    "ip_selection",
+                    &self.tag,
+                    "",
+                    "",
+                )
+            {
+                span.finish("skipped_dnssec", None);
+            }
             // DNSSEC signatures may cover both content and ordering-sensitive
             // client expectations. In skip mode we leave the packet untouched.
             self.runtime
@@ -194,6 +205,50 @@ impl IpSelector {
         };
 
         let mut scores = self.cached_scores(&candidates);
+        if let Some(trace) = &context.observation {
+            for ip in unique_candidate_ips(&candidates) {
+                if let Some(span) = trace.span(
+                    context.observation_parent,
+                    "ip_candidate",
+                    &self.tag,
+                    &ip.to_string(),
+                    "",
+                ) {
+                    span.finish(
+                        "candidate",
+                        Some(self.settings.selection_mode.as_str().into()),
+                    );
+                }
+                for method in self
+                    .settings
+                    .probe_methods
+                    .iter()
+                    .copied()
+                    .filter(|m| m.is_active())
+                {
+                    if let Some(cached) =
+                        cached_observation(&self.runtime, &ProbeKey { ip, method })
+                        && let Some(span) = trace.span(
+                            context.observation_parent,
+                            "ip_probe",
+                            &self.tag,
+                            &ip.to_string(),
+                            &method.to_string(),
+                        )
+                    {
+                        span.probe(
+                            if cached.success {
+                                "cached_score"
+                            } else {
+                                "cached_failure"
+                            },
+                            cached.latency_ms,
+                            Some(AppClock::started_at_ms().saturating_add(cached.sampled_at_ms)),
+                        );
+                    }
+                }
+            }
+        }
         if !scores.is_empty() {
             // Cache hits are enough to produce a deterministic policy decision;
             // avoid active probes on the hot path whenever possible.
@@ -207,19 +262,20 @@ impl IpSelector {
                 // optimization. The current query sees upstream order; later
                 // queries can benefit from warmed scores.
                 self.spawn_background_probes(candidates);
+                self.record_candidates(context, &scores, "background");
                 self.runtime
                     .metrics
                     .record_selection(SelectionSource::Fallback);
             }
             SelectionMode::FirstSuccess => {
                 scores = self
-                    .probe_scores(candidates, ProbeWaitMode::FirstSuccess)
+                    .probe_scores(candidates, ProbeWaitMode::FirstSuccess, context)
                     .await;
                 self.apply_policy(context, qtype, &scores, effective_top_n);
             }
             SelectionMode::BestWithinBudget => {
                 scores = self
-                    .probe_scores(candidates, ProbeWaitMode::BestWithinBudget)
+                    .probe_scores(candidates, ProbeWaitMode::BestWithinBudget, context)
                     .await;
                 self.apply_policy(context, qtype, &scores, effective_top_n);
             }
@@ -260,6 +316,7 @@ impl IpSelector {
         &self,
         candidates: Vec<CandidateRecord>,
         wait_mode: ProbeWaitMode,
+        context: &DnsContext,
     ) -> AHashMap<IpAddr, IpScore> {
         let futures = FuturesUnordered::new();
         // Build one future per missing `(IP, method)` score. The futures are
@@ -281,11 +338,22 @@ impl IpSelector {
                 let runtime = self.runtime.clone();
                 let timeout = self.settings.probe_timeout;
                 let delay = delay_for_method(self.settings.probe_stagger, method_idx);
+                let span = context.observation.as_ref().and_then(|trace| {
+                    trace.span(
+                        context.observation_parent,
+                        "ip_probe",
+                        &self.tag,
+                        &ip.to_string(),
+                        &method.to_string(),
+                    )
+                });
                 futures.push(async move {
                     if !delay.is_zero() {
                         tokio::time::sleep(delay).await;
                     }
-                    let observation = probe_with_runtime(runtime, key.clone(), timeout).await;
+                    let observation =
+                        probe::probe_with_runtime_observed(runtime, key.clone(), timeout, span)
+                            .await;
                     (key, observation)
                 });
             }
@@ -353,6 +421,64 @@ impl IpSelector {
         };
         let source = apply_response_policy(response, qtype, scores, top_n);
         self.runtime.metrics.record_selection(source);
+        self.record_candidates(
+            context,
+            scores,
+            if scores.is_empty() {
+                "original_order"
+            } else {
+                "score_policy"
+            },
+        );
+    }
+
+    fn record_candidates(
+        &self,
+        context: &DnsContext,
+        scores: &AHashMap<IpAddr, IpScore>,
+        reason: &str,
+    ) {
+        let Some(trace) = &context.observation else {
+            return;
+        };
+        let retained: Vec<_> = context
+            .response()
+            .and_then(|r| {
+                context
+                    .request
+                    .first_qtype()
+                    .and_then(|q| candidate_records(r, q))
+            })
+            .map(|c| {
+                unique_candidate_ips(&c)
+                    .into_iter()
+                    .map(|ip| ip.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for event in trace
+            .snapshot()
+            .events
+            .into_iter()
+            .filter(|e| e.kind == "ip_candidate" && e.plugin == self.tag)
+        {
+            trace.update(event.id, |entry| {
+                entry.selected = retained.contains(&entry.target);
+                entry.status = if entry.selected {
+                    "retained"
+                } else {
+                    "excluded"
+                }
+                .into();
+                entry.reason = Some(reason.into());
+                entry.latency_ms = entry
+                    .target
+                    .parse()
+                    .ok()
+                    .and_then(|ip| scores.get(&ip))
+                    .map(|s| s.latency_ms);
+            });
+        }
     }
 }
 

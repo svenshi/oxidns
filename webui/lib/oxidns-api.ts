@@ -338,6 +338,50 @@ export interface QueryRecordRow {
   [key: string]: unknown;
 }
 
+export interface DNSObservationEvent {
+  id: number;
+  parent_id: number | null;
+  kind: string;
+  plugin: string;
+  target: string;
+  method: string;
+  status: string;
+  started_ms: number;
+  elapsed_ms: number | null;
+  latency_ms: number | null;
+  sampled_at_ms: number | null;
+  selected: boolean;
+  reason: string | null;
+  rcode: string | null;
+  answer_count: number | null;
+}
+
+export interface DNSObservation {
+  version: 0 | 1;
+  id: string;
+  record_id: number | null;
+  created_at_ms: number;
+  client_ip: string;
+  qname: string;
+  qtype: string;
+  status: string;
+  elapsed_ms: number;
+  rcode: string | null;
+  answers: string[];
+  events: DNSObservationEvent[];
+  truncated: boolean;
+}
+
+export interface DNSObservationsResponse {
+  ok: boolean;
+  enabled: boolean;
+  version: 1;
+  capacity: number;
+  dropped: number;
+  recorder_dropped: number;
+  queries: DNSObservation[];
+}
+
 export interface QueryRecordDetail extends QueryRecordRow {
   steps: QueryRecorderStep[];
 }
@@ -765,6 +809,17 @@ export async function fetchQueryRecords(
   return readJsonResponse<QueryRecordsResponse>(response);
 }
 
+export async function fetchDNSObservations(
+  tag: string,
+  signal?: AbortSignal,
+): Promise<DNSObservationsResponse> {
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/observations`),
+    { headers: apiHeaders(), cache: "no-store", signal },
+  );
+  return readJsonResponse<DNSObservationsResponse>(response);
+}
+
 export async function fetchQueryRecorderPluginStats(
   tag: string,
   options: QueryRecordFilters & {
@@ -786,10 +841,11 @@ export async function fetchQueryRecorderPluginStats(
 export async function fetchQueryRecordDetail(
   tag: string,
   id: number,
+  signal?: AbortSignal,
 ): Promise<QueryRecordDetailResponse> {
   const response = await fetch(
     apiUrl(`/plugins/${encodeURIComponent(tag)}/records/${id}`),
-    { method: "GET", headers: apiHeaders() },
+    { method: "GET", headers: apiHeaders(), signal },
   );
   return readJsonResponse<QueryRecordDetailResponse>(response);
 }

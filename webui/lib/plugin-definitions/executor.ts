@@ -1262,6 +1262,14 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
     icon: "Database",
     configSchema: [
       {
+        key: "observe_details",
+        label: "Detailed observations",
+        description:
+          "Collect per-query upstream races, IP probes, and live execution details.",
+        type: "switch",
+        default: false,
+      },
+      {
         key: "path",
         description: "指定当前 recorder 的 SQLite 文件路径。",
         label: "SQLite 文件",

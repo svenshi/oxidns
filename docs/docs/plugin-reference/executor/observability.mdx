@@ -199,6 +199,8 @@ import Admonition from "@theme/Admonition";
     cleanup_interval_hours: 1
     # SQLite 读取侧最大并发数；最小 1
     reader_concurrency: 2
+    # 可选：采集每条查询的上游竞速、缓存、回退和 IP 测速事件
+    observe_details: false
 ```
 
 ### 配置项
@@ -245,6 +247,14 @@ import Admonition from "@theme/Admonition";
 - 类型：`integer`；必填：否；默认值：`2`
 - 最小值：`1`
 - 作用：限制 WebUI / API 统计与历史查询同时运行的 SQLite reader 数量，避免突发读取在大库上占用过多阻塞线程和内存。
+
+#### `observe_details`
+
+- 类型：`boolean`；必填：否；默认值：`false`
+- 作用：为 WebUI 的 `/observability` 页面采集真实请求的上游尝试、组内胜出、主备选择、缓存和候选 IP 测速事件。未开启时保留原有查询记录行为。
+- 每条查询最多 128 个事件；活动请求容量最多 4096，达到上限时丢弃详细观测，不阻塞 DNS 处理。详细事件随原 SQLite payload 持久化，旧记录无需迁移，标记为“版本未采集”。
+- 上游耗时为单次请求测量；取消、超时、未启动分别呈现。组内胜出不等于最终采用，需结合主备分支查看。TCP 仅测连接建立，Ping 包含系统命令开销；它们不表示带宽或 TLS/HTTP 可用性。
+- 开启后会增加有界的内存、锁、序列化及存储开销；默认关闭。观测包含域名和客户端 IP，请沿用管理 API 认证并保护数据库文件。
 
 ### 行为说明
 
@@ -323,6 +333,10 @@ import Admonition from "@theme/Admonition";
   - 以 SSE 实时推送新写入记录。
   - 支持 `tail=<n>` 回放最近 `n` 条内存 tail。
   - 客户端应发送 `Accept: text/event-stream`，并容忍 heartbeat、错误事件、空 payload 和短暂断连。
+- `GET /plugins/<tag>/observations`
+  - 返回带版本号的最近 100 条观测快照，合并处理中与近期记录，包含启用状态、截断标记和丢弃计数。
+- `GET /plugins/<tag>/observations/stream`
+  - SSE 每秒推送相同快照；同时流数量受限，超限返回 HTTP 429。WebUI 使用每 1.5 秒轮询，支持暂停，页面隐藏时停止轮询。
 
 ### 典型用途
 

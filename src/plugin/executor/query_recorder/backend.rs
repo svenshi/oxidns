@@ -14,21 +14,24 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Semaphore, broadcast};
 use tracing::{error, info, warn};
 
-use super::model::{PendingRecord, RecordDetail, ResolvedRecorderConfig, TableNames};
+use super::model::{PendingRecord, ResolvedRecorderConfig, SharedRecordDetail, TableNames};
 use super::store::{create_schema, open_writer_database, run_writer_thread, table_names};
 use crate::infra::error::{DnsError, Result};
 
 #[derive(Debug)]
 pub(super) struct RecorderBackend {
+    pub(super) observe_details: bool,
+    pub(super) observations: crate::core::observation::ObservationStore,
+    pub(super) observation_readers: Arc<Semaphore>,
     pub(super) tag: String,
     pub(super) path: PathBuf,
     pub(super) tables: TableNames,
     pub(super) queue_tx: SyncSender<WriterCommand>,
     pub(super) stop_requested: Arc<AtomicBool>,
     pub(super) writer_handle: Mutex<Option<JoinHandle<()>>>,
-    pub(super) tail: Arc<Mutex<VecDeque<RecordDetail>>>,
+    pub(super) tail: Arc<Mutex<VecDeque<SharedRecordDetail>>>,
     pub(super) memory_tail: usize,
-    pub(super) broadcaster: broadcast::Sender<RecordDetail>,
+    pub(super) broadcaster: broadcast::Sender<SharedRecordDetail>,
     pub(super) dropped_total: Arc<AtomicU64>,
     pub(super) reader_semaphore: Arc<Semaphore>,
     pub(super) database_coordinator: Arc<DatabaseCoordinator>,
@@ -105,9 +108,9 @@ pub(super) struct WriterThreadContext {
     pub(super) path: PathBuf,
     pub(super) tables: TableNames,
     pub(super) stop_requested: Arc<AtomicBool>,
-    pub(super) tail: Arc<Mutex<VecDeque<RecordDetail>>>,
+    pub(super) tail: Arc<Mutex<VecDeque<SharedRecordDetail>>>,
     pub(super) memory_tail: usize,
-    pub(super) broadcaster: broadcast::Sender<RecordDetail>,
+    pub(super) broadcaster: broadcast::Sender<SharedRecordDetail>,
     pub(super) batch_size: usize,
     pub(super) flush_interval: Duration,
     pub(super) database_coordinator: Arc<DatabaseCoordinator>,
@@ -251,6 +254,9 @@ impl RecorderBackend {
             })?;
 
         Ok(Arc::new(Self {
+            observe_details: config.observe_details,
+            observations: crate::core::observation::ObservationStore::new(config.memory_tail),
+            observation_readers: Arc::new(Semaphore::new(8)),
             tag,
             path: config.path,
             tables,
@@ -298,6 +304,31 @@ impl RecorderBackend {
             );
         }
         result
+    }
+
+    pub(super) fn subscribe_tail(
+        &self,
+        count: usize,
+    ) -> std::result::Result<
+        (
+            Vec<SharedRecordDetail>,
+            broadcast::Receiver<SharedRecordDetail>,
+        ),
+        String,
+    > {
+        let tail = self
+            .tail
+            .lock()
+            .map_err(|_| "query_recorder tail buffer lock poisoned".to_string())?;
+        // Publication takes the same lock, so history and live records cannot
+        // have a gap.
+        let receiver = self.broadcaster.subscribe();
+        let initial = tail
+            .iter()
+            .skip(tail.len().saturating_sub(count))
+            .cloned()
+            .collect();
+        Ok((initial, receiver))
     }
 
     pub(super) fn clear_history(&self) -> ClearHistoryReply {

@@ -716,6 +716,8 @@ async fn test_hyper_serves_webui_static_files_and_spa_fallback() {
     // logs/ exists as an empty metadata directory next to it.
     fs::write(temp.path().join("logs.html"), "<html>logs</html>").expect("write logs.html");
     fs::create_dir_all(temp.path().join("logs")).expect("create logs dir");
+    fs::write(temp.path().join("logs/__next._tree.txt"), "route-tree")
+        .expect("write route metadata");
 
     let addr = reserve_local_addr();
     let hub = test_api_hub_with_webui(
@@ -824,6 +826,25 @@ async fn test_hyper_serves_webui_static_files_and_spa_fallback() {
         .expect("collect logs body")
         .to_bytes();
     assert_eq!(logs_body, Bytes::from_static(b"<html>logs</html>"));
+
+    let metadata = client
+        .request(
+            HyperRequest::builder()
+                .uri(format!("http://{addr}/logs/__next._tree.txt"))
+                .body(Empty::new())
+                .expect("metadata request"),
+        )
+        .await
+        .expect("metadata response");
+    assert_eq!(metadata.status(), StatusCode::OK);
+    assert_eq!(
+        metadata.headers().get(http::header::CACHE_CONTROL),
+        Some(&HeaderValue::from_static("no-cache"))
+    );
+    assert_eq!(
+        metadata.into_body().collect().await.unwrap().to_bytes(),
+        Bytes::from_static(b"route-tree")
+    );
 
     let api_unknown_uri: Uri = format!("http://{addr}/api/unknown")
         .parse()

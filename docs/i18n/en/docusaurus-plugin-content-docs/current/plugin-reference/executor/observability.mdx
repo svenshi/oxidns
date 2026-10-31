@@ -193,6 +193,8 @@ To reclaim space manually, resolve the actual `path` first (relative paths use t
     cleanup_interval_hours: 1
     # Maximum concurrent SQLite readers; minimum 1
     reader_concurrency: 2
+    # Optional: collect upstream races, cache, fallback and candidate IP probes
+    observe_details: false
 ```
 
 ### Configuration Details
@@ -236,6 +238,14 @@ To reclaim space manually, resolve the actual `path` first (relative paths use t
 
 - Type: `integer`; Required: no; Default: `2`; Minimum: `1`
 - Purpose: Limits concurrent SQLite readers used by WebUI / API history and stats queries, so read bursts on large recorder databases do not occupy too many blocking threads or too much memory.
+
+#### `observe_details`
+
+- Type: `boolean`; Required: no; Default: `false`
+- Purpose: Collect real per-request upstream attempts, forward race winners, fallback choices, cache outcomes and candidate IP probes for `/observability`. Existing query recording remains available when disabled.
+- Each query retains at most 128 events. At most 4096 active requests are observed; saturation drops details without blocking DNS. Events persist in the existing SQLite payload. Older records need no migration and are labeled as uninstrumented.
+- Upstream durations are measured per attempt; cancelled, timed out and unstarted attempts remain distinct. A forward race winner is not necessarily the selected fallback response. TCP measures connection establishment; ping includes command overhead. Neither measures bandwidth or TLS/HTTP availability.
+- Enabling details adds bounded memory, locking, serialization and storage work. Observations contain domains and client IPs; retain management API authentication and protect recorder databases.
 
 ### Behavior
 
@@ -314,6 +324,10 @@ To reclaim space manually, resolve the actual `path` first (relative paths use t
   - Streams newly written records over SSE.
   - Supports `tail=<n>` to replay the in-memory tail.
   - Clients should send `Accept: text/event-stream` and tolerate heartbeat frames, error events, empty payloads, and brief disconnects.
+- `GET /plugins/<tag>/observations`
+  - Returns a versioned snapshot of the latest 100 observations, merging in-flight queries and recent records, with enablement, truncation and drop counters.
+- `GET /plugins/<tag>/observations/stream`
+  - Sends the same snapshot every second over SSE. Concurrent streams are bounded; saturation returns HTTP 429. The WebUI uses serialized 1.5-second polling, supports pause, and stops polling while hidden.
 
 ### Typical Uses
 

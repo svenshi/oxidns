@@ -284,6 +284,7 @@ fn print_cli_apply_step(context: UpgradeContext, message: impl AsRef<str>) {
 mod tests {
     use http::header::AUTHORIZATION;
 
+    #[cfg(not(windows))]
     use super::install::copy_dir_all;
     use super::release::{
         GitHubRelease, ReleaseAsset, archive_name_for_bundle, github_request_headers,

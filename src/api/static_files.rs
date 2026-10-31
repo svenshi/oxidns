@@ -206,7 +206,10 @@ fn content_type_for_path(path: &Path) -> &'static str {
 }
 
 fn cache_control_for_path(path: &Path) -> &'static str {
-    if path.extension().and_then(|extension| extension.to_str()) == Some("html") {
+    if matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("html" | "txt")
+    ) {
         "no-cache"
     } else {
         "public, max-age=31536000, immutable"

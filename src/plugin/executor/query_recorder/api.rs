@@ -16,7 +16,7 @@ use super::backend::RecorderBackend;
 use super::model::{
     DistributionQuery, LatencyQuery, ListCursor, ListQuery, PluginStatsKind, PluginStatsRow,
     PluginsStatsQuery, QueryRecordFilter, QueryRecordStatus, RecordDetail, RecordRow,
-    TimeseriesBucket, TimeseriesQuery, TopQuery,
+    SharedRecordDetail, TimeseriesBucket, TimeseriesQuery, TopQuery,
 };
 use super::store::{
     load_latency_summary, load_plugin_stats, load_qtype_distribution, load_rcode_distribution,
@@ -275,26 +275,21 @@ impl ApiHandler for StreamHandler {
             Err(err) => return json_error(StatusCode::BAD_REQUEST, "invalid_query", err),
         };
 
-        let initial = {
-            let guard = match self.backend.tail.lock() {
-                Ok(guard) => guard,
-                Err(_) => {
-                    return json_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "query_recorder_stream_failed",
-                        "tail buffer lock poisoned",
-                    );
-                }
-            };
-            let skip = guard.len().saturating_sub(tail_count);
-            guard.iter().skip(skip).cloned().collect::<Vec<_>>()
+        let (initial, receiver) = match self.backend.subscribe_tail(tail_count) {
+            Ok(state) => state,
+            Err(err) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "query_recorder_stream_failed",
+                    err,
+                );
+            }
         };
 
         let pending = initial
             .into_iter()
             .map(|record| sse_record_frame(&record))
             .collect::<VecDeque<_>>();
-        let receiver = self.backend.broadcaster.subscribe();
         let heartbeat = tokio::time::interval(Duration::from_secs(SSE_HEARTBEAT_SECS));
         let stream = futures::stream::unfold(
             SseState {
@@ -344,7 +339,7 @@ impl ApiHandler for StreamHandler {
 #[derive(Debug)]
 struct SseState {
     pending: VecDeque<Bytes>,
-    receiver: broadcast::Receiver<RecordDetail>,
+    receiver: broadcast::Receiver<SharedRecordDetail>,
     heartbeat: tokio::time::Interval,
 }
 

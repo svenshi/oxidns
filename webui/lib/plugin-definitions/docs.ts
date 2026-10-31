@@ -258,6 +258,8 @@ export const pluginFieldDocs = {
       "- 类型：`duration`；必填：否；默认值：`1s`\n- 作用：限制 `async: false` 时等待 provider 写入完成的最长时间。\n- 支持单位：`ms`、`s`、`m`、`h`、`d`。",
   },
   query_recorder: {
+    observe_details:
+      "- Type: `boolean`; required: no; default: `false`\n- Collect bounded per-query upstream attempts, IP probes, and cache events. At most 128 events are retained per query; truncation is reported. Existing query recording is unchanged when disabled.",
     path: "- 类型：`string`；必填：是\n- 作用：指定当前 recorder 的 SQLite 文件路径。",
     queue_size:
       "- 类型：`integer`；必填：否；默认值：`8192`\n- 作用：定义热路径到后台写线程的有界队列大小。",

@@ -249,7 +249,30 @@ pub(super) async fn probe_with_runtime(
     key: ProbeKey,
     timeout: Duration,
 ) -> ProbeObservation {
+    probe_with_runtime_observed(runtime, key, timeout, None).await
+}
+
+pub(super) async fn probe_with_runtime_observed(
+    runtime: Arc<ProbeRuntime>,
+    key: ProbeKey,
+    timeout: Duration,
+    span: Option<crate::core::observation::ObservationSpan>,
+) -> ProbeObservation {
+    if let Some(span) = &span {
+        span.start();
+    }
     if let Some(cached) = cached_observation(&runtime, &key) {
+        if let Some(span) = &span {
+            span.probe(
+                if cached.success {
+                    "cached_score"
+                } else {
+                    "cached_failure"
+                },
+                cached.latency_ms,
+                Some(AppClock::started_at_ms().saturating_add(cached.sampled_at_ms)),
+            );
+        }
         return cached;
     }
 
@@ -274,12 +297,16 @@ pub(super) async fn probe_with_runtime(
         }
     };
 
+    let executed = std::sync::atomic::AtomicBool::new(false);
+    let limited = std::sync::atomic::AtomicBool::new(false);
     let observation = *cell
         .get_or_init(|| async {
+            executed.store(true, std::sync::atomic::Ordering::Relaxed);
             // Use try-acquire to preserve the resolver latency budget. If the
             // plugin is saturated we record a bounded failure and keep the
             // original DNS response instead of queueing unbounded work.
             let Ok(_permit) = runtime.semaphore.clone().try_acquire_owned() else {
+                limited.store(true, std::sync::atomic::Ordering::Relaxed);
                 runtime.metrics.record_dropped_parallel_limit();
                 let observation = ProbeObservation::failure();
                 runtime.metrics.record_probe(key.method, observation);
@@ -298,6 +325,26 @@ pub(super) async fn probe_with_runtime(
         .await;
 
     drop(owner_guard);
+    if let Some(span) = &span {
+        let status = if limited.load(std::sync::atomic::Ordering::Relaxed) {
+            "skipped_limit"
+        } else if !executed.load(std::sync::atomic::Ordering::Relaxed) {
+            if observation.success {
+                "shared_success"
+            } else {
+                "shared_failure"
+            }
+        } else if observation.success {
+            "success"
+        } else {
+            "failed"
+        };
+        span.probe(
+            status,
+            observation.latency_ms,
+            Some(AppClock::started_at_ms().saturating_add(observation.sampled_at_ms)),
+        );
+    }
 
     observation
 }

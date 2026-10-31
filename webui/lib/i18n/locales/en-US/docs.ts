@@ -278,6 +278,8 @@ export const enUSDocs = {
       "- Type: `duration`; required: no; default value: `1s`\n- Function: Limit the maximum time to wait for provider writing to complete when `async: false` is used.\n- Supported units: `ms`, `s`, `m`, `h`, `d`.",
   },
   query_recorder: {
+    observe_details:
+      "- Type: `boolean`; Required: No; Default: `false`\n- Function: Collect bounded per-query upstream attempts, IP probes, and cache events for DNS observability. Each query retains at most 128 events and explicitly reports truncation. Disabling this preserves existing request, response, and execution-path recording.",
     path: "- Type: `string`; Required: Yes\n- Function: Specify the SQLite file path of the current recorder.",
     queue_size:
       "- Type: `integer`; Required: No; Default: `8192`\n- Function: Define the bounded queue size between the request path and the background writer.",

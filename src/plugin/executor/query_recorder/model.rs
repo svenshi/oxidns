@@ -3,6 +3,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use oxidns_proto::Message;
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,7 @@ use crate::core::context::ExecutionPath;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub(super) struct QueryRecorderConfig {
     pub(super) path: String,
+    pub(super) observe_details: Option<bool>,
     pub(super) queue_size: Option<usize>,
     pub(super) batch_size: Option<usize>,
     pub(super) flush_interval_ms: Option<u64>,
@@ -24,6 +26,7 @@ pub(super) struct QueryRecorderConfig {
 #[derive(Debug, Clone)]
 pub(super) struct ResolvedRecorderConfig {
     pub(super) path: PathBuf,
+    pub(super) observe_details: bool,
     pub(super) queue_size: usize,
     pub(super) batch_size: usize,
     pub(super) flush_interval_ms: u64,
@@ -91,6 +94,8 @@ pub(super) struct StepJson {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(super) struct RecordRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) observation: Option<crate::core::observation::QueryObservation>,
     pub(super) id: i64,
     pub(super) created_at_ms: i64,
     pub(super) elapsed_ms: u64,
@@ -127,8 +132,11 @@ pub(super) struct RecordDetail {
     pub(super) steps: Vec<StepJson>,
 }
 
+pub(super) type SharedRecordDetail = Arc<RecordDetail>;
+
 #[derive(Debug, Clone)]
 pub(super) struct PendingRecord {
+    pub(super) observation: Option<crate::core::observation::QueryObservation>,
     pub(super) request: Message,
     pub(super) response: Option<Message>,
     pub(super) created_at_ms: i64,

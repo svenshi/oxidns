@@ -29,6 +29,7 @@ impl PendingRecord {
         error: Option<String>,
     ) -> Self {
         Self {
+            observation: None,
             request,
             response,
             created_at_ms,
@@ -42,6 +43,7 @@ impl PendingRecord {
 
     pub(super) fn take_to_record(self) -> (RecordRow, Vec<StepJson>) {
         let PendingRecord {
+            observation,
             request,
             response,
             created_at_ms,
@@ -68,6 +70,7 @@ impl PendingRecord {
         let no_err = error.is_none();
 
         let mut record = RecordRow {
+            observation,
             id: 0,
             created_at_ms,
             elapsed_ms,

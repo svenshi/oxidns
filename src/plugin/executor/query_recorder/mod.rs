@@ -21,6 +21,7 @@ mod api;
 mod backend;
 mod capture;
 mod model;
+mod observation_api;
 mod payload;
 mod persistence;
 mod schema;
@@ -43,6 +44,7 @@ use self::backend::RecorderBackend;
 use self::model::{PendingRecord, QueryRecorderConfig, ResolvedRecorderConfig};
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
+use crate::core::observation::Observation;
 use crate::infra::clock::AppClock;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::task as task_center;
@@ -76,6 +78,7 @@ impl Plugin for QueryRecorder {
     async fn init(&mut self, _context: &crate::plugin::PluginInitContext<'_>) -> Result<()> {
         let backend = RecorderBackend::run(self.tag.clone(), self.config.clone())?;
         api::register(&backend)?;
+        observation_api::register(&backend)?;
 
         let recorder_backend = backend.clone();
         let retention_ms = self.config.retention_days.saturating_mul(ONE_DAY_MS) as i64;
@@ -172,8 +175,54 @@ impl Executor for QueryRecorder {
         let step_start_index = context.execution_path_len();
         let instant = AppClock::now();
         let timestamp = Timestamp::now();
+        let previous_parent = context.observation_parent;
+        let previous = if self.config.observe_details {
+            context.observation_parent = None;
+            context.observation.take()
+        } else {
+            None
+        };
+        let trace = self
+            .config
+            .observe_details
+            .then(|| {
+                let question = context.request.first_question();
+                Observation::new(
+                    timestamp.as_millisecond(),
+                    context.peer_addr().ip().to_string(),
+                    question.map(|q| q.name().to_fqdn()).unwrap_or_default(),
+                    question.map(|q| q.qtype().to_string()).unwrap_or_default(),
+                )
+            })
+            .filter(|trace| backend.observations.insert(trace));
+        if let Some(trace) = &trace {
+            context.observation = Some(trace.clone());
+        }
         let result = continue_next!(next, context);
-        let pending_record = PendingRecord::new(
+        if let Some(trace) = &trace {
+            trace.finish(
+                if result.is_err() {
+                    "error"
+                } else if context.response.is_some() {
+                    "success"
+                } else {
+                    "no_response"
+                },
+                context.response.as_ref().map(|r| r.rcode().to_string()),
+                context
+                    .response
+                    .as_ref()
+                    .map(|r| {
+                        r.answers()
+                            .iter()
+                            .take(64)
+                            .filter_map(|record| record.ip_addr().map(|ip| ip.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            );
+        }
+        let mut pending_record = PendingRecord::new(
             request,
             context.response.clone(),
             timestamp.as_millisecond(),
@@ -183,6 +232,11 @@ impl Executor for QueryRecorder {
             context.peer_addr(),
             result.as_ref().err().map(ToString::to_string),
         );
+        pending_record.observation = trace.as_ref().map(|trace| trace.snapshot());
+        if self.config.observe_details {
+            context.observation = previous;
+            context.observation_parent = previous_parent;
+        }
         backend.enqueue(pending_record);
         result
     }
@@ -261,6 +315,7 @@ fn resolve_config(args: Option<YamlValue>) -> Result<ResolvedRecorderConfig> {
 
     Ok(ResolvedRecorderConfig {
         path: PathBuf::from(path),
+        observe_details: parsed.observe_details.unwrap_or(false),
         queue_size,
         batch_size,
         flush_interval_ms,
