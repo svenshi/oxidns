@@ -51,6 +51,18 @@ import {
   type QueryRecorderTimeseriesPoint,
 } from "@/lib/oxidns-api";
 import { GlassProgress } from "@/components/ui/glass-progress";
+import {
+  recordMinuteSample,
+  get24hTrafficPointsFromStore,
+  get24hTotalFromStore,
+  getWeeklyTotalFromStore,
+  exportMinuteStatsJson,
+  importMinuteStatsJson,
+  clearMinuteStatsStore,
+  loadMinuteStatsStore,
+  type MinuteStatsFile,
+} from "@/lib/minute-stats-store";
+import { Download, Upload, Trash2, FileText, CheckCircle2, X } from "lucide-react";
 
 // --- Types ---
 type TimeRange = "1h" | "24h" | "live";
@@ -262,6 +274,10 @@ export function DnsOverview() {
   const [isAutoRefresh, setIsAutoRefresh] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [activeDistTab, setActiveDistTab] = useState<"protocol" | "qtype">("protocol");
+  const [showStatsModal, setShowStatsModal] = useState(false);
+  const [statsStore, setStatsStore] = useState<MinuteStatsFile | null>(null);
+  const [statsMessage, setStatsMessage] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [timeseriesData, setTimeseriesData] = useState<TrafficPoint[]>([]);
   const [topClients, setTopClients] = useState<TopItem[]>([]);
   const [topQueries, setTopQueries] = useState<TopItem[]>([]);
@@ -533,86 +549,49 @@ export function DnsOverview() {
           calculatedPeriodCount = Math.max(0, latestId - beforeRangeId);
         }
 
+        // Calculate overall block rate for minute recording
+        let overallBlockRate = 0;
+        if (rcodeRes.status === "fulfilled" && rcodeRes.value.ok && rcodeRes.value.rows?.length > 0) {
+          const totalRcodes = rcodeRes.value.rows.reduce((acc, r) => acc + r.count, 0);
+          const blockedRcodes = rcodeRes.value.rows
+            .filter((r) => {
+              const k = (r.key || "").trim().toUpperCase();
+              return k === "NXDOMAIN" || k === "REFUSED" || k === "NON-EXISTENT DOMAIN";
+            })
+            .reduce((acc, r) => acc + r.count, 0);
+          if (totalRcodes > 0) {
+            overallBlockRate = blockedRcodes / totalRcodes;
+          }
+        }
+
+        // Record telemetry into the persistent frontend minute-by-minute stats file
+        if (latestId > 0) {
+          recordMinuteSample({
+            latestId,
+            blockRate: overallBlockRate,
+            avgMs: newRecorderLatency?.avg_ms ?? 1.8,
+            estimated24hTotal: latestId > beforeRangeId ? latestId - beforeRangeId : undefined,
+            estimatedWeeklyTotal: latestId > beforeWeekId ? latestId - beforeWeekId : undefined,
+            now,
+          });
+        }
+
+        // Sync weekly total queries directly from frontend minute stats file (relieving backend pressure)
+        const fileWeeklyTotal = getWeeklyTotalFromStore(now);
+        if (fileWeeklyTotal > 0) {
+          setWeeklyTotalQueries(fileWeeklyTotal);
+        } else if (calculatedWeeklyTotal > 0) {
+          setWeeklyTotalQueries(calculatedWeeklyTotal);
+        }
+
         let newTimeseriesData: TrafficPoint[] = [];
 
-        // For 24h: Extract true uncapped hourly volume directly using SQLite indexed boundary lookups
-        if (targetRange === "24h" && latestId > 0) {
-          const stepMs = 3600 * 1000;
-          const totalSlots = 24;
-          const currentSlot = Math.floor(now / stepMs) * stepMs;
-          const startSlot = currentSlot - (totalSlots - 1) * stepMs;
-
-          // 23 hourly boundary timestamps
-          const checkpointTimestamps = Array.from(
-            { length: totalSlots - 1 },
-            (_, i) => startSlot + (i + 1) * stepMs - 1,
-          );
-
-          // Fast parallel indexed B-tree lookups (limit: 1 runs in <0.5ms per query)
-          const checkpointResults = await Promise.allSettled(
-            checkpointTimestamps.map((ts) =>
-              fetchQueryRecords(tag, { limit: 1, untilMs: ts, signal: abortController.signal }),
-            ),
-          );
-
-          const boundaryIds: number[] = [beforeRangeId];
-          for (let i = 0; i < checkpointResults.length; i++) {
-            const res = checkpointResults[i];
-            let id = 0;
-            if (res.status === "fulfilled" && res.value.ok && res.value.records?.[0]?.id) {
-              id = res.value.records[0].id;
-            } else {
-              id = boundaryIds[boundaryIds.length - 1];
-            }
-            if (id < boundaryIds[boundaryIds.length - 1]) {
-              id = boundaryIds[boundaryIds.length - 1];
-            }
-            boundaryIds.push(id);
-          }
-          boundaryIds.push(latestId);
-
-          let overallBlockRate = 0;
-          if (rcodeRes.status === "fulfilled" && rcodeRes.value.ok && rcodeRes.value.rows?.length > 0) {
-            const totalRcodes = rcodeRes.value.rows.reduce((acc, r) => acc + r.count, 0);
-            const blockedRcodes = rcodeRes.value.rows
-              .filter((r) => {
-                const k = (r.key || "").trim().toUpperCase();
-                return k === "NXDOMAIN" || k === "REFUSED" || k === "NON-EXISTENT DOMAIN";
-              })
-              .reduce((acc, r) => acc + r.count, 0);
-            if (totalRcodes > 0) {
-              overallBlockRate = blockedRcodes / totalRcodes;
-            }
-          }
-
-          const avgLatencyMs =
-            newRecorderLatency && newRecorderLatency.sample_size > 0 && newRecorderLatency.avg_ms > 0
-              ? Number(newRecorderLatency.avg_ms.toFixed(1))
-              : 0;
-
-          const formatHourLabel = (d: Date) => `${String(d.getHours()).padStart(2, "0")}:00`;
-
-          for (let i = 0; i < totalSlots; i++) {
-            const slotTime = startSlot + i * stepMs;
-            const startId = boundaryIds[i];
-            const endId = boundaryIds[i + 1];
-            const count = Math.max(0, endId - startId);
-            const blocked = Math.round(count * overallBlockRate);
-            const success = Math.max(0, count - blocked);
-            const d = new Date(slotTime);
-
-            newTimeseriesData.push({
-              time: formatHourLabel(d),
-              timestamp: slotTime,
-              total: count,
-              success,
-              blocked,
-              avgMs: avgLatencyMs,
-              p95Ms: newRecorderLatency?.p95_ms ?? 0,
-              qps: Number((count / 3600).toFixed(1)),
-            });
-          }
+        // For 24h: 100% powered by the frontend minute data file (0 backend queries, 0 SQLite pressure)
+        if (targetRange === "24h") {
+          newTimeseriesData = get24hTrafficPointsFromStore(now);
+          calculatedPeriodCount = get24hTotalFromStore(now);
         } else if (tsRes.status === "fulfilled" && tsRes.value.ok) {
+          // 1h and live (5s) continue using original direct query telemetry as requested
           const rawPoints = [...(tsRes.value.points || [])];
           newTimeseriesData = normalizeTimeseriesData(rawPoints, targetRange, now);
         } else {
@@ -789,6 +768,20 @@ export function DnsOverview() {
       timeRangeRef.current = newRange;
       setTimeRange(newRange);
 
+      // For 24h: Instant zero-latency rendering from local minute stats file
+      if (newRange === "24h") {
+        const storePoints = get24hTrafficPointsFromStore();
+        const store24hTotal = get24hTotalFromStore();
+        const storeWeekly = getWeeklyTotalFromStore();
+        setTimeseriesData(storePoints);
+        setPeriodTotalQueries(store24hTotal);
+        if (storeWeekly > 0) setWeeklyTotalQueries(storeWeekly);
+        setIsRefreshing(false);
+        // Silently fetch telemetry for top clients/qnames/rcodes only
+        void loadRecorderData(newRange, true);
+        return;
+      }
+
       const cached = dataCacheRef.current[newRange];
       if (cached) {
         // 0ms instant display from cache
@@ -877,6 +870,8 @@ export function DnsOverview() {
   }, [dbTotalRecords, trafficMetrics, windowTotalQueries]);
 
   const displayedWeeklyTotal = useMemo(() => {
+    const storeWeekly = getWeeklyTotalFromStore();
+    if (storeWeekly > 0) return storeWeekly;
     if (weeklyTotalQueries > 0) return weeklyTotalQueries;
     if (dbTotalRecords > 0) return dbTotalRecords;
     if (trafficMetrics?.status === "available" && trafficMetrics.requestTotal > 0) {
@@ -886,9 +881,13 @@ export function DnsOverview() {
   }, [weeklyTotalQueries, dbTotalRecords, trafficMetrics, windowTotalQueries]);
 
   const displayedPeriodTotal = useMemo(() => {
+    if (timeRange === "24h") {
+      const store24h = get24hTotalFromStore();
+      if (store24h > 0) return store24h;
+    }
     if (periodTotalQueries > 0) return periodTotalQueries;
     return windowTotalQueries;
-  }, [periodTotalQueries, windowTotalQueries]);
+  }, [timeRange, periodTotalQueries, windowTotalQueries]);
 
   const currentQps = useMemo(() => {
     if (trafficMetrics?.qps !== null && trafficMetrics?.qps !== undefined) {
@@ -1098,6 +1097,20 @@ export function DnsOverview() {
               className={cn("h-3.5 w-3.5", isRefreshing && "animate-spin text-primary")}
             />
           </button>
+
+          {/* Minute Stats Data File Manager Button */}
+          <button
+            type="button"
+            onClick={() => {
+              setStatsStore(loadMinuteStatsStore());
+              setShowStatsModal(true);
+            }}
+            className="h-8 px-2.5 rounded-xl border border-border/40 flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-foreground/[0.04] transition-all"
+            title="前端每分钟统计数据文件（减轻后端压力，支持导出备份）"
+          >
+            <Database className="h-3.5 w-3.5 text-primary" />
+            <span className="hidden md:inline">统计文件</span>
+          </button>
         </div>
       </div>
 
@@ -1241,6 +1254,11 @@ export function DnsOverview() {
             <div className="flex items-center gap-2">
               <BarChart3 className="h-4 w-4 text-primary" />
               <h2 className="text-base font-semibold text-foreground">DNS 流量与解析趋势</h2>
+              {timeRange === "24h" && (
+                <span className="liquid-glass-pill bg-primary/10 text-primary border border-primary/20 text-[10px] py-0.5">
+                  前端分钟数据引擎 (零后端压力)
+                </span>
+              )}
             </div>
             <p className="text-xs text-muted-foreground mt-0.5">
               实时展示总解析查询量、正常解析响应与安全规则阻断的动态走势
@@ -1993,6 +2011,162 @@ export function DnsOverview() {
           </div>
         </div>
       </div>
+      {/* ── Minute Stats Data File Management Modal ── */}
+      {showStatsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/60 backdrop-blur-md animate-in fade-in-0 duration-150">
+          <div className="liquid-glass-card w-full max-w-lg p-5 sm:p-6 shadow-2xl border border-border/60 relative">
+            <button
+              type="button"
+              onClick={() => {
+                setShowStatsModal(false);
+                setStatsMessage(null);
+              }}
+              className="absolute top-4 right-4 h-7 w-7 rounded-lg text-muted-foreground hover:text-foreground hover:bg-foreground/[0.06] flex items-center justify-center transition-all"
+            >
+              <X className="h-4 w-4" />
+            </button>
+
+            <div className="flex items-center gap-2.5 mb-2">
+              <div className="h-8 w-8 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+                <FileText className="h-4 w-4" />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">前端分钟级统计数据文件</h3>
+                <p className="text-[11px] text-muted-foreground">本地聚合每分钟解析指标，24h 走势图与每周总量直读此文件，完全免除后端数据库负担</p>
+              </div>
+            </div>
+
+            {statsMessage && (
+              <div className="my-3 p-2.5 rounded-xl bg-primary/10 text-primary border border-primary/20 text-xs flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                <span>{statsMessage}</span>
+              </div>
+            )}
+
+            <div className="my-4 grid grid-cols-2 gap-2.5 text-xs">
+              <div className="p-3 rounded-xl bg-foreground/[0.03] border border-border/40">
+                <span className="text-muted-foreground text-[11px]">已记录分钟数</span>
+                <div className="font-bold text-foreground text-base mt-0.5">
+                  {statsStore?.records?.length ?? 0} <span className="text-[11px] font-normal text-muted-foreground">分钟</span>
+                </div>
+                <span className="text-[10px] text-muted-foreground">
+                  覆盖过去约 {Math.min(24, Math.round(((statsStore?.records?.length ?? 0) / 60) * 10) / 10)} 小时
+                </span>
+              </div>
+
+              <div className="p-3 rounded-xl bg-foreground/[0.03] border border-border/40">
+                <span className="text-muted-foreground text-[11px]">24h 累计解析</span>
+                <div className="font-bold text-foreground text-base mt-0.5 text-primary">
+                  {formatCompactCount(get24hTotalFromStore())}
+                </div>
+                <span className="text-[10px] text-muted-foreground">
+                  精准求和: {get24hTotalFromStore().toLocaleString()} 次
+                </span>
+              </div>
+
+              <div className="p-3 rounded-xl bg-foreground/[0.03] border border-border/40">
+                <span className="text-muted-foreground text-[11px]">本周累计解析 (周一至今)</span>
+                <div className="font-bold text-foreground text-base mt-0.5 text-emerald-600 dark:text-emerald-400">
+                  {formatCompactCount(getWeeklyTotalFromStore())}
+                </div>
+                <span className="text-[10px] text-muted-foreground">
+                  每周重置，与周规则同步
+                </span>
+              </div>
+
+              <div className="p-3 rounded-xl bg-foreground/[0.03] border border-border/40">
+                <span className="text-muted-foreground text-[11px]">当前数据水位</span>
+                <div className="font-bold text-foreground text-base mt-0.5 font-mono">
+                  #{statsStore?.lastSeenId ?? 0}
+                </div>
+                <span className="text-[10px] text-muted-foreground">
+                  最后同步: {statsStore?.updatedAt ? new Date(statsStore.updatedAt).toLocaleTimeString() : "刚刚"}
+                </span>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-border/40 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const json = exportMinuteStatsJson();
+                    const blob = new Blob([json], { type: "application/json" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `oxidns-minute-stats-${new Date().toISOString().slice(0, 10)}.json`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    setStatsMessage("统计数据文件已导出至本地");
+                  }}
+                  className="h-8 px-3 rounded-xl bg-primary text-primary-foreground hover:opacity-90 text-xs font-medium flex items-center gap-1.5 transition-all shadow-sm"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  导出数据文件 (.json)
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="h-8 px-3 rounded-xl border border-border/60 hover:bg-foreground/[0.04] text-xs font-medium flex items-center gap-1.5 text-foreground transition-all"
+                >
+                  <Upload className="h-3.5 w-3.5 text-muted-foreground" />
+                  导入数据文件
+                </button>
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  accept=".json,application/json"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = (ev) => {
+                      const str = ev.target?.result as string;
+                      if (importMinuteStatsJson(str)) {
+                        const updated = loadMinuteStatsStore();
+                        setStatsStore(updated);
+                        setStatsMessage("已成功导入并恢复分钟级统计数据文件");
+                        if (timeRange === "24h") {
+                          setTimeseriesData(get24hTrafficPointsFromStore());
+                          setPeriodTotalQueries(get24hTotalFromStore());
+                        }
+                        setWeeklyTotalQueries(getWeeklyTotalFromStore());
+                      } else {
+                        setStatsMessage("导入失败：文件格式不符合 MinuteStatsFile 规范");
+                      }
+                    };
+                    reader.readAsText(file);
+                    e.target.value = "";
+                  }}
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm("确定要清空前端记录的分钟统计数据文件吗？")) {
+                    clearMinuteStatsStore();
+                    setStatsStore(loadMinuteStatsStore());
+                    setStatsMessage("数据文件已重置");
+                    if (timeRange === "24h") {
+                      setTimeseriesData(get24hTrafficPointsFromStore());
+                      setPeriodTotalQueries(get24hTotalFromStore());
+                    }
+                  }
+                }}
+                className="h-8 px-2.5 rounded-xl text-xs text-rose-500 hover:bg-rose-500/10 flex items-center gap-1 transition-all"
+                title="清空重置"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>清空</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
