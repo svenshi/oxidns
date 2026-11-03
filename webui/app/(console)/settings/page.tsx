@@ -800,7 +800,7 @@ export default function SettingsPage() {
   return (
     <>
       <AppHeader title={t(WEBUI.shell.settings)} />
-      <main className="oxidns-dialog-scrollbar min-h-0 flex-1 overflow-auto p-6">
+      <main className="oxidns-dialog-scrollbar min-h-0 flex-1 overflow-auto p-3 sm:p-6">
         <div className="max-w-4xl space-y-6">
           <Card>
             <CardHeader>

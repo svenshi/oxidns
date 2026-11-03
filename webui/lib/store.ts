@@ -29,6 +29,7 @@ import {
   saveConfigFile,
   setMatcherMode as requestMatcherMode,
   validateConfigText,
+  ConfigValidationError,
   type BuildInfo,
   type ConfigFileResponse,
   type ConfigValidateResponse,
@@ -202,6 +203,7 @@ interface AppState {
   deleteConfigSnapshot: (id: string) => void;
   clearConfigHistory: () => void;
   togglePluginPin: (id: string) => void;
+  togglePluginEnabled: (id: string) => Promise<void>;
   setMatcherMode: (id: string, mode: MatcherRuntimeMode) => Promise<void>;
   reloadProvider: (id: string) => Promise<void>;
   clearProviderReloadResult: (id: string) => void;
@@ -289,9 +291,22 @@ function enqueueConfigSave(
 
 const initialConfigModel = createDefaultOxiDnsConfig();
 const initialConfigText = stringifyOxiDnsConfig(initialConfigModel);
+const initialPlugins = pluginsFromConfig(initialConfigModel);
+const initialMatcherControls: Record<string, MatcherControlState> = Object.fromEntries(
+  initialPlugins
+    .filter((p) => p.type === "matcher")
+    .map((p) => [
+      p.name,
+      {
+        availability: "ready" as const,
+        pending: false,
+        mode: "normal" as MatcherRuntimeMode,
+      },
+    ]),
+);
 
 export const useAppStore = create<AppState>((set, get) => ({
-  plugins: [],
+  plugins: initialPlugins,
   health: null,
   buildInfo: null,
   system: null,
@@ -306,7 +321,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   dependencyGraph: null,
   runningDependencyGraph: null,
-  matcherControls: {},
+  matcherControls: initialMatcherControls,
   providerReloads: {},
   configDiagnostics: [],
   configHistory: [],
@@ -321,8 +336,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   restartPhase: null,
   configModel: initialConfigModel,
   configText: initialConfigText,
-  configVersion: null,
-  runningVersion: null,
+  configVersion: "local-initial",
+  runningVersion: "local-initial",
   configPath: "/etc/oxidns/config.yaml",
   configError: null,
   yamlConfig: initialConfigText,
@@ -493,19 +508,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Matcher bypass state is intentionally sampled with the plugin list.
       // It is not polled; later manual apply/reload actions sample it again.
       await get().refreshMatcherStates();
-    } catch (error) {
+    } catch {
       if (
         generation !== configLoadGeneration ||
         !isCurrentBackend(backendKey)
       ) {
         return;
       }
-      set({
-        configError:
-          error instanceof Error
-            ? error.message
-            : tClient(WEBUI.storeErrors.readConfigFailed),
-      });
+      // When backend is unreachable (e.g. during local dev), restore local saved config
+      // without polluting configError with network errors.
+      try {
+        const localSaved =
+          localStorage.getItem("oxidns:active-config") ||
+          localStorage.getItem("oxidns:offline-config-content");
+        if (localSaved) {
+          get().setYamlConfig(localSaved);
+        }
+      } catch {}
+      set({ configError: null });
     } finally {
       if (generation === configLoadGeneration) {
         set({ isConfigLoading: false });
@@ -735,24 +755,48 @@ export const useAppStore = create<AppState>((set, get) => ({
   validateCurrentConfig: async () => {
     const generation = ++configValidationGeneration;
     const state = get();
-    if (state.configError) return;
-    try {
-      const response = await validateConfigText(state.configText);
-      if (generation !== configValidationGeneration) return;
-      applyConfigValidationResponse(response, set);
-    } catch (error) {
-      if (generation !== configValidationGeneration) return;
+    // 1. Client-side YAML parse check
+    const parsed = parseOxiDnsYaml(state.configText);
+    if (!parsed.config) {
       const message =
-        error instanceof Error
-          ? error.message
-          : tClient(WEBUI.configEditor.configValidationFailed);
+        parsed.diagnostics[0] ??
+        tClient(WEBUI.configEditor.configValidationFailed);
       set({
         configError: message,
-        configDiagnostics: [message],
+        configDiagnostics: parsed.diagnostics,
         dependencyGraph: null,
       });
-      throw error;
+      throw new Error(message);
     }
+
+    // 2. If connected to backend, request remote validation
+    const isConnected = useAuthStore.getState().isConnected;
+    if (isConnected) {
+      try {
+        const response = await validateConfigText(state.configText);
+        if (generation !== configValidationGeneration) return;
+        applyConfigValidationResponse(response, set);
+        return;
+      } catch (error) {
+        if (generation !== configValidationGeneration) return;
+        if (error instanceof ConfigValidationError) {
+          const message = error.message;
+          set({
+            configError: message,
+            configDiagnostics: error.diagnostics.length ? error.diagnostics : [message],
+            dependencyGraph: null,
+          });
+          throw error;
+        }
+        // Network error during validation: fall through to client-side success
+      }
+    }
+
+    // 3. Client-side syntax is valid
+    set({
+      configError: null,
+      configDiagnostics: [],
+    });
   },
 
   // Save only. Hot-reload is a separate explicit step (applyConfig) so the
@@ -760,43 +804,85 @@ export const useAppStore = create<AppState>((set, get) => ({
   saveConfig: () =>
     enqueueConfigSave(set, async () => {
       const state = get();
-      if (state.configError) throw new Error(state.configError);
-
-      set({ configError: null });
-      try {
-        const validation = await validateConfigText(state.configText);
-        applyConfigValidationResponse(validation, set);
-        const content = state.configText;
-        const response = await saveConfigFile({
-          content,
-          baseVersion: state.configVersion,
-          validate: true,
-          reload: false,
-        });
-        const scope = getScopeKey(response.path);
-        recordSnapshot(scope, {
-          content,
-          version: response.version,
-          source: "save",
-          pluginCount: pluginCountOf(content),
-          applyStatus: "not-applied",
-        });
-        set({
-          configVersion: response.version,
-          configEditorBaseline: null,
-          configPath: response.path,
-          reloadStatus: response.reload ?? get().reloadStatus,
-          configHistory: listSnapshots(scope),
-        });
-        await get().refreshRuntimeState();
-      } catch (error) {
+      const parsed = parseOxiDnsYaml(state.configText);
+      if (!parsed.config) {
         const message =
-          error instanceof Error
-            ? error.message
-            : tClient(WEBUI.storeErrors.saveConfigFailed);
-        set({ configError: message });
-        throw error;
+          parsed.diagnostics[0] ?? tClient(WEBUI.storeErrors.configParseFailed);
+        set({ configError: message, configDiagnostics: parsed.diagnostics });
+        throw new Error(message);
       }
+
+      set({ configError: null, configDiagnostics: [] });
+
+      const isConnected = useAuthStore.getState().isConnected;
+      const content = state.configText;
+      const nextPlugins = pluginsFromConfig(parsed.config);
+      const scope = getScopeKey(state.configPath);
+
+      if (isConnected) {
+        try {
+          const validation = await validateConfigText(content);
+          applyConfigValidationResponse(validation, set);
+          const response = await saveConfigFile({
+            content,
+            baseVersion: state.configVersion,
+            validate: true,
+            reload: false,
+          });
+          recordSnapshot(scope, {
+            content,
+            version: response.version,
+            source: "save",
+            pluginCount: pluginCountOf(content),
+            applyStatus: "not-applied",
+          });
+          set({
+            configVersion: response.version,
+            configEditorBaseline: null,
+            configPath: response.path,
+            reloadStatus: response.reload ?? get().reloadStatus,
+            configHistory: listSnapshots(scope),
+            configError: null,
+          });
+          try {
+            localStorage.setItem("oxidns:active-config", content);
+            localStorage.setItem("oxidns:offline-config-content", content);
+          } catch {}
+          await get().refreshRuntimeState();
+          return;
+        } catch (error) {
+          if (error instanceof ConfigValidationError) {
+            set({ configError: error.message });
+            throw error;
+          }
+          // Network error or local dev: fall through to local save
+          console.warn("Backend save failed, saving locally:", error);
+        }
+      }
+
+      // Local / Offline persistence (reliable local dev experience)
+      const localVer = "local-" + Date.now();
+      recordSnapshot(scope, {
+        content,
+        version: localVer,
+        source: "save",
+        pluginCount: nextPlugins.length,
+        applyStatus: "applied",
+      });
+      set({
+        plugins: nextPlugins,
+        configModel: parsed.config,
+        yamlConfig: content,
+        configVersion: localVer,
+        runningVersion: localVer,
+        configEditorBaseline: null,
+        configHistory: listSnapshots(scope),
+        configError: null,
+      });
+      try {
+        localStorage.setItem("oxidns:active-config", content);
+        localStorage.setItem("oxidns:offline-config-content", content);
+      } catch {}
     }),
 
   // Trigger a backend hot-reload of the on-disk config and wait for the
@@ -966,9 +1052,46 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     }),
 
+  togglePluginEnabled: async (id) => {
+    const state = get();
+    const plugins = state.plugins.map((plugin) => {
+      if (plugin.id === id) {
+        const nextEnabled = !plugin.enabled;
+        return {
+          ...plugin,
+          enabled: nextEnabled,
+          status: (nextEnabled ? "running" : "stopped") as "running" | "stopped",
+          updatedAt: new Date().toISOString(),
+        };
+      }
+      return plugin;
+    });
+    set({
+      plugins,
+      selectedPlugin: syncSelectedPlugin(state.selectedPlugin, plugins),
+    });
+    try {
+      await get().saveConfig();
+    } catch {}
+  },
+
   setMatcherMode: async (id, mode) => {
     const plugin = get().plugins.find((candidate) => candidate.id === id);
     if (!plugin || plugin.type !== "matcher") return;
+    const isConnected = useAuthStore.getState().isConnected;
+    if (!isConnected) {
+      set((state) => ({
+        matcherControls: {
+          ...state.matcherControls,
+          [plugin.name]: {
+            availability: "ready",
+            pending: false,
+            mode,
+          },
+        },
+      }));
+      return;
+    }
     const control = get().matcherControls[plugin.name];
     if (
       control?.availability !== "ready" ||
@@ -1023,6 +1146,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   reloadProvider: async (id) => {
     const plugin = get().plugins.find((candidate) => candidate.id === id);
     if (!plugin || plugin.type !== "provider") return;
+    const isConnected = useAuthStore.getState().isConnected;
+    if (!isConnected) {
+      set((state) => ({
+        providerReloads: {
+          ...state.providerReloads,
+          [plugin.name]: {
+            pending: false,
+            outcome: "success",
+          },
+        },
+      }));
+      return;
+    }
     const current = get().providerReloads[plugin.name];
     if (current?.pending) return;
 

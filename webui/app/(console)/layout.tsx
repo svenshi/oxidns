@@ -6,7 +6,6 @@ import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/shell/app-sidebar";
 import { PluginDetailSheet } from "@/components/plugins/plugin-detail-sheet";
 import { ConfigEditorView } from "@/components/config/config-editor-view";
-import { OfflineConfigImport } from "@/components/config/offline-config-import";
 import { ConfigHistorySheet } from "@/components/config/config-history-sheet";
 import { ConfigPatchConfirmationDialog } from "@/components/config/config-patch-confirmation-dialog";
 import { useAppStore } from "@/lib/store";
@@ -14,8 +13,6 @@ import { useAuthStore } from "@/lib/auth-store";
 import { useUpdateStore } from "@/lib/update-store";
 import { AppHeader } from "@/components/shell/app-header";
 import {
-  ConnectionRequired,
-  ConnectionPending,
   LoginRequired,
 } from "@/components/shell/connection-required";
 import { RestartingOverlay } from "@/components/shell/restarting-overlay";
@@ -45,12 +42,7 @@ export default function ConsoleLayout({
   const exitOfflineMode = useAppStore((s) => s.exitOfflineMode);
   const isConnected = useAuthStore((s) => s.isConnected);
   const connectionEpoch = useAuthStore((s) => s.connectionEpoch);
-  const isConnecting = useAuthStore((s) => s.isConnecting);
-  const connectionError = useAuthStore((s) => s.connectionError);
   const needsCredentials = useAuthStore((s) => s.needsCredentials);
-  const hasAttemptedAutoConnect = useAuthStore(
-    (s) => s.hasAttemptedAutoConnect,
-  );
   const attemptAutoConnect = useAuthStore((s) => s.attemptAutoConnect);
   const isAuthHydrated = useAuthStore((s) => s.isHydrated);
   const pathname = usePathname();
@@ -81,15 +73,6 @@ export default function ConsoleLayout({
     if (!isAuthHydrated) return;
     void attemptAutoConnect();
   }, [isAuthHydrated, attemptAutoConnect]);
-
-  // While the initial auto-connect is still in flight, neither render
-  // backend-dependent pages nor the connection-required prompt; show a pending state.
-  const isAutoConnectPending =
-    isAuthHydrated &&
-    !isConnected &&
-    (!hasAttemptedAutoConnect || (isConnecting && !connectionError));
-  const canUseBackendPages =
-    !isAuthHydrated || isConnected || pathname === "/settings";
 
   useEffect(() => {
     if (isConnected) void loadConfig();
@@ -172,7 +155,7 @@ export default function ConsoleLayout({
   return (
     <TooltipProvider>
       <SidebarProvider
-        className="h-svh overflow-hidden"
+        className="h-svh overflow-hidden bg-transparent"
         open={editorMode ? false : sidebarOpen}
         onOpenChange={(open) => {
           if (!editorMode) {
@@ -181,33 +164,19 @@ export default function ConsoleLayout({
         }}
       >
         <AppSidebar />
-        <SidebarInset className="h-svh min-h-0 overflow-hidden md:h-[calc(100svh-1rem)]">
+        <SidebarInset className="h-svh min-h-0 overflow-hidden md:h-[calc(100svh-1.25rem)] md:my-2.5 md:mr-2.5 md:ml-1 rounded-none md:rounded-2xl liquid-glass-panel md:shadow-2xl border-0 md:border md:border-white/30 dark:md:border-white/10 bg-transparent flex flex-col">
           {editorMode ? (
             <div className="flex h-full min-h-0 flex-col overflow-hidden">
               <AppHeader title={t(WEBUI.shell.configEditor)} />
-              {!isAuthHydrated || isConnected || isOfflineMode ? (
-                <ConfigEditorView />
-              ) : (
-                <OfflineConfigImport />
-              )}
+              <ConfigEditorView />
             </div>
-          ) : canUseBackendPages ? (
-            children
-          ) : isAutoConnectPending ? (
-            <>
-              <AppHeader title={t(WEBUI.shell.connectBackend)} />
-              <ConnectionPending />
-            </>
           ) : needsCredentials ? (
             <>
               <AppHeader title={t(WEBUI.shell.login)} />
               <LoginRequired />
             </>
           ) : (
-            <>
-              <AppHeader title={t(WEBUI.shell.connectBackend)} />
-              <ConnectionRequired />
-            </>
+            children
           )}
         </SidebarInset>
         <PluginDetailSheet />

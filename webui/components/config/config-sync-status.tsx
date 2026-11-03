@@ -166,7 +166,35 @@ export function ConfigSyncControl() {
   const [diffOpen, setDiffOpen] = useState(false);
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
 
-  if (!isConnected) return null;
+  if (!isConnected) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={async () => {
+              try {
+                await saveConfig();
+              } catch {}
+            }}
+            disabled={isConfigSaving}
+            className="h-8 rounded-xl px-2.5 text-xs font-medium border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-all flex items-center gap-1.5 shadow-xs"
+          >
+            {isConfigSaving ? (
+              <Spinner className="h-3.5 w-3.5" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5" />
+            )}
+            <span>{isConfigSaving ? "保存中..." : "保存本地配置"}</span>
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">
+          本地热重载调试模式：点击将配置持久化至本地存储
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
 
   const hasLoadedConfig = Boolean(configVersion);
   const pendingRestartOnlyChange =

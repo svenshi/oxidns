@@ -65,7 +65,7 @@ export function ConfigHistorySheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="flex w-full flex-col gap-0 bg-background p-0 sm:max-w-md">
+      <SheetContent className="flex w-full flex-col gap-0 bg-background/85 backdrop-blur-2xl border-l border-white/20 dark:border-white/10 p-0 sm:max-w-md">
         <SheetHeader className="border-b px-5 py-4">
           <SheetTitle className="flex items-center gap-2 text-base">
             <History className="h-4 w-4 text-muted-foreground" />

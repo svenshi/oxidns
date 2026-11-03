@@ -316,7 +316,7 @@ export function LogViewer() {
 
         {/* Search */}
         <Input
-          className="h-7 w-48 text-xs"
+          className="h-7 w-32 sm:w-48 text-xs"
           placeholder={t(WEBUI.logs.searchPlaceholder)}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -329,7 +329,7 @@ export function LogViewer() {
               {t(WEBUI.logs.timeFormat)}
             </Button>
           </PopoverTrigger>
-          <PopoverContent align="start" className="w-[22rem] gap-2">
+          <PopoverContent align="start" className="w-[calc(100vw-2rem)] sm:w-[22rem] gap-2">
             <PopoverHeader className="gap-0.5">
               <PopoverTitle className="text-[13px] leading-5">
                 {t(WEBUI.logs.timeFormat)}
@@ -463,7 +463,7 @@ export function LogViewer() {
       {/* Log content */}
       <div
         ref={scrollRef}
-        className="oxidns-dialog-scrollbar min-h-0 flex-1 overflow-auto overscroll-contain bg-zinc-950 p-2 pb-4 font-mono text-xs leading-relaxed dark:bg-zinc-950"
+        className="oxidns-dialog-scrollbar min-h-0 flex-1 overflow-auto overscroll-contain bg-slate-950/65 dark:bg-black/65 backdrop-blur-xl p-2 pb-4 font-mono text-xs leading-relaxed border border-white/10"
       >
         {filtered.length === 0 ? (
           <div className="flex items-center justify-center h-full text-zinc-600">

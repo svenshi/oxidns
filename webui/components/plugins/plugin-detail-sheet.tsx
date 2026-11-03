@@ -49,7 +49,7 @@ export function PluginDetailSheet() {
         overlayClassName="bg-background/45 backdrop-blur-[1px]"
         showCloseButton={false}
         className={cn(
-          "gap-0 overflow-hidden bg-background p-0 shadow-2xl data-[side=right]:!max-w-none data-[side=right]:!w-full",
+          "gap-0 overflow-hidden bg-background/85 backdrop-blur-2xl p-0 shadow-2xl border-l border-white/20 dark:border-white/10 data-[side=right]:!max-w-none data-[side=right]:!w-full",
           expanded
             ? "data-[side=right]:!inset-0 data-[side=right]:!h-svh data-[side=right]:!border-l-0 sm:data-[side=right]:!w-full"
             : "sm:data-[side=right]:!w-[min(1120px,calc(100vw-2rem))]",

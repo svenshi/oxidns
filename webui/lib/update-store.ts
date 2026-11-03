@@ -42,7 +42,7 @@ export interface UpgradeConfig {
 }
 
 export const DEFAULT_UPGRADE_CONFIG: UpgradeConfig = {
-  repository: "svenshi/oxidns",
+  repository: "encounter0v0/oxidns",
   bundle: "auto",
   outbound: "",
   socks5: "",

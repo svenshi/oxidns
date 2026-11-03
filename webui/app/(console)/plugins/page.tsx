@@ -115,16 +115,16 @@ function PluginsPageContent() {
           className="flex min-h-0 flex-1 flex-col"
         >
           {/* Fixed toolbar + tab headers */}
-          <div className="shrink-0 space-y-4 border-b px-6 pt-5 pb-4">
-            <div className="flex items-center justify-between gap-4 flex-wrap">
-              <div className="flex items-center gap-3 flex-1 min-w-[200px] max-w-md">
+          <div className="shrink-0 space-y-3 sm:space-y-4 border-b px-3 sm:px-6 pt-3 sm:pt-5 pb-3 sm:pb-4">
+            <div className="flex items-center justify-between gap-3 sm:gap-4 flex-wrap">
+              <div className="flex items-center gap-3 flex-1 min-w-[180px] max-w-md">
                 <div className="relative flex-1">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
                     placeholder={t(WEBUI.plugins.searchPlaceholder)}
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    className="pl-9"
+                    className="pl-9 h-8 text-xs"
                   />
                 </div>
               </div>
@@ -133,7 +133,7 @@ function PluginsPageContent() {
                   <Button
                     variant={viewMode === "grid" ? "secondary" : "ghost"}
                     size="sm"
-                    className="rounded-r-none"
+                    className="rounded-r-none h-8 w-8 p-0"
                     onClick={() => setViewMode("grid")}
                   >
                     <LayoutGrid className="h-4 w-4" />
@@ -141,7 +141,7 @@ function PluginsPageContent() {
                   <Button
                     variant={viewMode === "table" ? "secondary" : "ghost"}
                     size="sm"
-                    className="rounded-l-none rounded-r-none"
+                    className="rounded-l-none rounded-r-none h-8 w-8 p-0"
                     onClick={() => setViewMode("table")}
                   >
                     <List className="h-4 w-4" />
@@ -149,7 +149,7 @@ function PluginsPageContent() {
                   <Button
                     variant={viewMode === "topology" ? "secondary" : "ghost"}
                     size="sm"
-                    className="rounded-l-none"
+                    className="rounded-l-none h-8 w-8 p-0"
                     onClick={() => setViewMode("topology")}
                   >
                     <GitBranch className="h-4 w-4" />
@@ -166,7 +166,7 @@ function PluginsPageContent() {
               // it horizontally scrollable. -mx-6 px-6 lets the pills bleed to
               // the screen edges while staying aligned with the toolbar inset;
               // on desktop the list fits and nothing scrolls.
-              <div className="oxidns-no-scrollbar -mx-6 overflow-x-auto px-6">
+              <div className="oxidns-no-scrollbar -mx-3 sm:-mx-6 overflow-x-auto px-3 sm:px-6">
                 <TabsList>
                   <TabsTrigger value="all">
                     {t(WEBUI.common.all)}
@@ -190,7 +190,7 @@ function PluginsPageContent() {
 
           {/* Scrollable content area */}
           <div className="oxidns-dialog-scrollbar min-h-0 flex-1 overflow-auto">
-            <TabsContent value={activeTab} className="m-0 p-6">
+            <TabsContent value={activeTab} className="m-0 p-3 sm:p-6">
               {viewMode === "grid" ? (
                 <SortablePluginGrid
                   plugins={filteredPlugins}
@@ -198,7 +198,7 @@ function PluginsPageContent() {
                   disabled={search.trim() !== ""}
                 />
               ) : viewMode === "table" ? (
-                <div className="border rounded-lg overflow-hidden">
+                <div className="border rounded-lg overflow-x-auto">
                   <Table>
                     <TableHeader>
                       <TableRow>
