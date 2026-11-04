@@ -439,6 +439,7 @@ import Admonition from "@theme/Admonition";
 
 - 类型：`boolean`；必填：否；默认值：`false`
 - 作用：控制 ECS scope 是否参与缓存键计算。
+- 位置注意：缓存键在进入 cache 时即已计算。若下游存在会注入 ECS 的执行器（如 `ecs_handler` 且 `send: true`），或响应回显了非零 scope 的 ECS，该响应不会写入缓存（以 `cache_skip_total{reason="ecs_scope_mismatch"...}` 计）——因此不会出现跨客户端污染。需要子网相关答案各自缓存时，把 `cache` 放在 `ecs_handler` 之后，或让客户端自带 ECS 并开启 `ecs_in_key`（仅覆盖客户端提供的 ECS）。
 
 ### quick setup
 
@@ -454,6 +455,8 @@ import Admonition from "@theme/Admonition";
 - 其它高级参数仍建议使用完整插件形式。
 
 ### 行为说明
+
+- 相同键的并发冷查询或过期查询会合并为一次下游取数（single-flight），其余请求等待该结果，避免热门域名过期时对上游的请求风暴。
 
 - 既会读缓存，也会在后续拿到响应后写缓存。
 - 命中缓存时，返回缓存副本并按剩余 TTL 输出。
