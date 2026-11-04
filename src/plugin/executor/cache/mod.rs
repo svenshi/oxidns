@@ -3156,7 +3156,10 @@ mod tests {
             ChainProgram::single_with_next_executor_for_test(Arc::new(EcsInjectingExecutor));
         let next = ExecutorNext::from_program_for_test(program, 0);
 
-        cache.execute_with_next(&mut context, Some(next)).await.unwrap();
+        cache
+            .execute_with_next(&mut context, Some(next))
+            .await
+            .unwrap();
 
         assert!(context.response().is_some());
         assert_eq!(cache.cache_map.get().unwrap().len(), 0);
