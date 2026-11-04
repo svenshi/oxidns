@@ -49,7 +49,8 @@ struct FallbackConfig {
     /// Executor tag used as the standby path.
     secondary: String,
     /// Timeout threshold in milliseconds before primary is treated as slow.
-    #[serde(default)]
+    /// `0` starts the standby path immediately.
+    #[serde(default = "default_threshold_ms")]
     threshold: u64,
     /// Always run standby path in parallel regardless of primary latency.
     #[serde(default)]
@@ -57,6 +58,10 @@ struct FallbackConfig {
     /// Whether to stop the executor chain after fallback picks a response.
     #[serde(default)]
     short_circuit: bool,
+}
+
+fn default_threshold_ms() -> u64 {
+    500
 }
 
 #[derive(Debug)]
@@ -194,7 +199,10 @@ impl Executor for FallbackExecutor {
                 tokio::pin!(sleeper);
                 loop {
                     tokio::select! {
-                        _ = &mut sleeper => break,
+                        // Poll the primary state first: when the sleeper and a
+                        // primary success are both ready, avoid firing a
+                        // wasted standby query that the main loop would abort.
+                        biased;
                         changed = primary_state_rx.changed() => {
                             if changed.is_err() {
                                 break;
@@ -214,6 +222,7 @@ impl Executor for FallbackExecutor {
                                 PrimaryState::Failed => break,
                             }
                         }
+                        _ = &mut sleeper => break,
                     }
                 }
             }
@@ -354,11 +363,7 @@ impl PluginFactory for FallbackFactory {
             secondary_tag: cfg.secondary.clone(),
             primary,
             secondary,
-            threshold: Duration::from_millis(if cfg.threshold == 0 {
-                500
-            } else {
-                cfg.threshold
-            }),
+            threshold: Duration::from_millis(cfg.threshold),
             always_standby: cfg.always_standby,
             short_circuit: cfg.short_circuit,
             metrics: Arc::new(FallbackMetrics::new(plugin_config.tag.clone())),

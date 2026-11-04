@@ -226,12 +226,13 @@ async fn run_server(
                         let handler_clone = handler.clone();
                         let task_shutdown = shutdown_token.clone();
                         let active_connections = active_connections.clone();
+                        let stream_tasks = tasks.clone();
                         tasks.spawn(async move {
                             let _connection_guard =
                                 ConnectionGuard::new(active_connections.clone(), connecting.remote_address(), "QUIC");
                             tokio::select! {
                                 _ = task_shutdown.cancelled() => {}
-                                _ = handle_quic_connection(connecting, handler_clone) => {}
+                                _ = handle_quic_connection(connecting, handler_clone, stream_tasks) => {}
                             }
                         });
                         debug!("New QUIC connection started (active: {})", active);
@@ -251,8 +252,15 @@ async fn run_server(
 /// Accept a QUIC connection and handle all bidirectional streams (DNS over
 /// QUIC). Each bi-directional stream represents a single DNS query/response
 /// exchange.
+///
+/// Per-stream tasks are spawned on `tasks` so shutdown drains in-flight
+/// queries before the plugin registry destroys their executor dependencies.
 #[hotpath::measure]
-async fn handle_quic_connection(connecting: quinn::Incoming, handler: Arc<RequestHandle>) {
+async fn handle_quic_connection(
+    connecting: quinn::Incoming,
+    handler: Arc<RequestHandle>,
+    tasks: TaskTracker,
+) {
     let remote_addr = connecting.remote_address();
     let connection = match connecting.await {
         Ok(c) => c,
@@ -274,7 +282,7 @@ async fn handle_quic_connection(connecting: quinn::Incoming, handler: Arc<Reques
             Ok((reader, writer)) => {
                 let handler = handler.clone();
                 let server_name = server_name.clone();
-                tokio::spawn(async move {
+                tasks.spawn(async move {
                     if let Err(e) = handle_doq_bi_stream(
                         reader,
                         writer,
