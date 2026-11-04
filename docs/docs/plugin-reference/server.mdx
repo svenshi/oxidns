@@ -30,6 +30,8 @@ sidebar_position: 2
 
 监听地址支持 `ip:port`、`[ipv6]:port` 和 `:port`。其中 `:port` 会解析为 `[::]:port`，监听 socket 会关闭 `IPV6_V6ONLY`，用于在同一个监听器上同时接收 IPv6 和 IPv4 流量；如只想监听 IPv4，请显式写 `0.0.0.0:port` 或具体 IPv4 地址。
 
+不支持的 DNS opcode 会直接返回 `NOTIMP`，不进入执行链；不支持的 EDNS 版本返回带 OPT 的 `BADVERS`。UDP 上的 `QR=1` 响应报文会被直接丢弃。
+
 ### Metrics
 
 所有服务端插件通过全局 `GET /api/metrics` 导出统一的请求级指标，带 `plugin_tag` 与 `protocol`（`udp`/`tcp`/`dot`/`quic`/`doh`）标签：

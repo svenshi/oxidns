@@ -210,12 +210,10 @@ async fn run_server(
             recv = transport.read_message_from(&mut buf) => {
                 match recv {
                     Ok((msg, reply_target)) => {
-                        // Drop spoofed responses and unsupported opcodes before
-                        // spawning a task: garbage floods must not pay the
-                        // per-packet task creation cost. handle_request keeps
-                        // the same check for the stream-based servers.
+                        // Drop unsolicited responses before spawning a task.
+                        // Unsupported query opcodes still need a NOTIMP reply
+                        // from the shared request handler.
                         if msg.message_type() != crate::proto::MessageType::Query
-                            || msg.opcode() != crate::proto::Opcode::Query
                         {
                             debug!(
                                 listen = %addr,

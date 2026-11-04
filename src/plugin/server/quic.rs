@@ -244,6 +244,9 @@ async fn run_server(
     }
 
     shutdown_token.cancel();
+    // Stream tasks retain the connection while reading or writing. Close the
+    // transport to release those waits, then drain accepted executor work.
+    endpoint.close(0u32.into(), b"server shutting down");
     tasks.close();
     tasks.wait().await;
     info!(listen = %addr, "QUIC server stopped");

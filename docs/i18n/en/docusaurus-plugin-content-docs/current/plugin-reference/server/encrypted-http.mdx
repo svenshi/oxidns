@@ -229,6 +229,7 @@ Provides DNS over QUIC.
 - DoQ always requires TLS, so `cert` and `key` are mandatory.
 - ALPN is fixed to `doq`.
 - Each bidirectional stream represents one independent DNS exchange.
+- Shutdown or reload closes QUIC connections to interrupt unfinished reads and writes, then waits for accepted executor work to finish. Drain time depends on the executor chain's own timeouts.
 
 ### Good Fits
 

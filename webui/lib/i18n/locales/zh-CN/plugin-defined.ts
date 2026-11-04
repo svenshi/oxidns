@@ -540,7 +540,7 @@ export const zhCNPluginDefined = {
         },
         threshold: {
           label: "接管阈值(ms)",
-          description: "定义主路径超时或延迟判定阈值。",
+          description: "定义备用路径的等待阈值；0 表示无需等待即可执行和接管。",
         },
         always_standby: {
           label: "备用路径并行待命",

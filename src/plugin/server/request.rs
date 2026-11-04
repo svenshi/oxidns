@@ -13,7 +13,7 @@ use crate::core::context::DnsContext;
 pub use crate::core::context::RequestMeta;
 use crate::infra::network::ip::normalize_ipv4_mapped_socket_addr;
 use crate::plugin::executor::{ExecStep, Executor};
-use crate::proto::{Edns, Message, Rcode};
+use crate::proto::{Edns, Message, MessageType, Opcode, Rcode};
 
 #[derive(Debug)]
 pub struct RequestHandle {
@@ -51,53 +51,23 @@ impl RequestHandle {
         let mut context = DnsContext::new(normalize_ipv4_mapped_socket_addr(src_addr), msg);
         self.apply_request_meta(&mut context, meta);
 
-        // Ingress validation: a spoofed response (QR=1) or a non-query
-        // opcode must not run the pipeline, touch the cache, or reach any
-        // upstream; answer REFUSED directly instead.
-        if context.request.message_type() != crate::proto::MessageType::Query
-            || context.request.opcode() != crate::proto::Opcode::Query
-        {
-            debug!(
-                "Dropping non-query ingress from {} (QR=1 or unsupported opcode), id {}",
-                src_addr,
-                context.request.id()
-            );
-            let mut response = context.request.response(Rcode::Refused);
-            Self::finalize_response(&context.request, &mut response);
-            if let (Some(metrics), Some(start_ms)) = (self.metrics.as_ref(), metrics_start) {
-                metrics.on_request_finish(start_ms, RequestExit::Controlled);
-            }
-            return RequestResult {
-                request: context.request,
-                response,
-                exit: RequestExit::Controlled,
-            };
-        }
-
-        // RFC 6891 6.1.3: an OPT with an unsupported EDNS version must be
-        // answered with BADVERS instead of executing the query.
-        if context
+        // Invalid ingress must not execute the pipeline. An unsupported opcode
+        // needs NOTIMP (RFC 8906 3.1.4), while unsupported EDNS versions need
+        // BADVERS (RFC 6891 6.1.3).
+        let ingress_error = if context.request.message_type() != MessageType::Query {
+            Some(Rcode::Refused)
+        } else if context.request.opcode() != Opcode::Query {
+            Some(Rcode::NotImp)
+        } else if context
             .request
             .edns()
             .as_ref()
             .is_some_and(|edns| edns.version() > 0)
         {
-            debug!(
-                "Refusing unsupported EDNS version from {}, id {}",
-                src_addr,
-                context.request.id()
-            );
-            let mut response = context.request.response(Rcode::BADVERS);
-            Self::finalize_response(&context.request, &mut response);
-            if let (Some(metrics), Some(start_ms)) = (self.metrics.as_ref(), metrics_start) {
-                metrics.on_request_finish(start_ms, RequestExit::Controlled);
-            }
-            return RequestResult {
-                request: context.request,
-                response,
-                exit: RequestExit::Controlled,
-            };
-        }
+            Some(Rcode::BADVERS)
+        } else {
+            None
+        };
 
         if event_enabled!(Level::DEBUG) {
             debug!(
@@ -110,30 +80,34 @@ impl RequestHandle {
             );
         }
 
-        let exec_outcome = self
-            .entry_executor
-            .execute_with_next(&mut context, None)
-            .await;
-        let (mut response, exit) = match exec_outcome {
-            Ok(step) => {
-                let exit = match step {
-                    ExecStep::Next => RequestExit::Completed,
-                    ExecStep::Stop | ExecStep::Return => RequestExit::Controlled,
-                };
-                let response = context
-                    .take_response()
-                    .unwrap_or_else(|| self.build_empty_response(&context));
-                (response, exit)
-            }
-            Err(e) => {
-                warn!(
-                    "Entry executor '{}' failed for source {} id {}: {}",
-                    self.entry_executor.tag(),
-                    src_addr,
-                    context.request.id(),
-                    e
-                );
-                (self.build_servfail_response(&context), RequestExit::Failed)
+        let (mut response, exit) = if let Some(rcode) = ingress_error {
+            (context.request.response(rcode), RequestExit::Controlled)
+        } else {
+            match self
+                .entry_executor
+                .execute_with_next(&mut context, None)
+                .await
+            {
+                Ok(step) => {
+                    let exit = match step {
+                        ExecStep::Next => RequestExit::Completed,
+                        ExecStep::Stop | ExecStep::Return => RequestExit::Controlled,
+                    };
+                    let response = context
+                        .take_response()
+                        .unwrap_or_else(|| self.build_empty_response(&context));
+                    (response, exit)
+                }
+                Err(e) => {
+                    warn!(
+                        "Entry executor '{}' failed for source {} id {}: {}",
+                        self.entry_executor.tag(),
+                        src_addr,
+                        context.request.id(),
+                        e
+                    );
+                    (self.build_servfail_response(&context), RequestExit::Failed)
+                }
             }
         };
 
@@ -341,6 +315,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_handle_request_answers_notimp_without_running_pipeline() {
+        let observed = Arc::new(Mutex::new(None));
+        let request_handle = make_request_handle(Arc::new(CaptureMetaExecutor {
+            observed: observed.clone(),
+        }));
+        for opcode in [
+            Opcode::Status,
+            Opcode::Notify,
+            Opcode::Update,
+            Opcode::Unknown(15),
+        ] {
+            let mut request = make_request(23, "example.com.");
+            request.set_opcode(opcode);
+            let result = request_handle
+                .handle_request(
+                    request,
+                    SocketAddr::from(([127, 0, 0, 1], 5303)),
+                    RequestMeta {
+                        server_name: None,
+                        url_path: None,
+                    },
+                )
+                .await;
+            let response = Message::from_bytes(&result.response.to_bytes().unwrap()).unwrap();
+            assert_eq!(response.rcode(), Rcode::NotImp);
+            assert_eq!(response.opcode(), opcode);
+            assert_eq!(response.id(), 23);
+            assert_eq!(response.message_type(), MessageType::Response);
+            assert_eq!(response.questions(), result.request.questions());
+            assert_eq!(result.exit, RequestExit::Controlled);
+        }
+        assert!(
+            observed.lock().unwrap().is_none(),
+            "pipeline must not run for unsupported opcodes"
+        );
+    }
+
+    #[tokio::test]
     async fn test_handle_request_answers_badvers_for_unsupported_edns_version() {
         let observed = Arc::new(Mutex::new(None));
         let request_handle = make_request_handle(Arc::new(CaptureMetaExecutor {
@@ -368,6 +380,9 @@ mod tests {
 
         assert_eq!(result.response.rcode(), Rcode::BADVERS);
         assert!(result.response.edns().is_some(), "BADVERS requires an OPT");
+        let response = Message::from_bytes(&result.response.to_bytes().unwrap()).unwrap();
+        assert_eq!(response.rcode(), Rcode::BADVERS);
+        assert_eq!(response.edns().as_ref().unwrap().version(), 0);
         assert!(
             observed
                 .lock()

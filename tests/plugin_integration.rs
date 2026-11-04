@@ -6183,3 +6183,220 @@ plugins:
         .map_err(|_| DnsError::runtime("TCP test cleanup timed out"))?;
     outcome
 }
+
+#[tokio::test]
+async fn test_server_unknown_opcode_returns_notimp_over_udp_and_tcp() -> Result<()> {
+    use oxidns::infra::network::transport::tcp::{TcpTransportReader, TcpTransportWriter};
+    use oxidns::proto::{MessageType, Opcode};
+
+    let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let listen = reservation.local_addr()?;
+    let config = parse_config(&format!(
+        r#"
+plugins:
+  - tag: ingress_sink
+    type: black_hole
+  - tag: ingress_udp
+    type: udp_server
+    args:
+      entry: ingress_sink
+      listen: "{listen}"
+  - tag: ingress_tcp
+    type: tcp_server
+    args:
+      entry: ingress_sink
+      listen: "{listen}"
+"#
+    ))?;
+    drop(reservation);
+    let runtime = plugin::init(config).await?;
+    let outcome = async {
+        let client = UdpSocket::bind("127.0.0.1:0").await?;
+        let mut unsolicited = Message::new();
+        unsolicited.set_id(400);
+        unsolicited.set_message_type(MessageType::Response);
+        client.send_to(&unsolicited.to_bytes()?, listen).await?;
+
+        // RFC 8906's unknown-opcode probe is a header-only query.
+        let mut query = Message::new();
+        query.set_id(401);
+        query.set_opcode(Opcode::Unknown(15));
+        client.send_to(&query.to_bytes()?, listen).await?;
+        let mut buf = [0; 2048];
+        let (len, _) = timeout(Duration::from_secs(2), client.recv_from(&mut buf))
+            .await
+            .map_err(|_| DnsError::runtime("unknown UDP opcode did not receive a response"))??;
+        let response = Message::from_bytes(&buf[..len])?;
+        assert_eq!(
+            response.id(),
+            query.id(),
+            "unsolicited responses must be dropped"
+        );
+        assert_eq!(response.rcode(), Rcode::NotImp);
+        assert_eq!(response.opcode(), query.opcode());
+        assert!(response.questions().is_empty());
+
+        let stream = tokio::net::TcpStream::connect(listen).await?;
+        let (reader, writer) = stream.into_split();
+        let mut reader = TcpTransportReader::new(reader);
+        let mut writer = TcpTransportWriter::new(writer);
+        writer.write_message(&query).await?;
+        let response = timeout(Duration::from_secs(2), reader.read_message())
+            .await
+            .map_err(|_| DnsError::runtime("unknown TCP opcode did not receive a response"))??;
+        assert_eq!(response.id(), query.id());
+        assert_eq!(response.rcode(), Rcode::NotImp);
+        assert_eq!(response.opcode(), query.opcode());
+        Ok::<(), DnsError>(())
+    }
+    .await;
+    timeout(Duration::from_secs(3), runtime.destroy())
+        .await
+        .map_err(|_| DnsError::runtime("ingress test cleanup timed out"))?;
+    outcome
+}
+
+#[cfg(feature = "server-doq")]
+#[tokio::test]
+async fn test_doq_shutdown_closes_partial_stream_and_drains_accepted_request() -> Result<()> {
+    let upstream = UdpSocket::bind("127.0.0.1:0").await?;
+    let upstream_addr = upstream.local_addr()?;
+    let reservation = UdpSocket::bind("127.0.0.1:0").await?;
+    let listen = reservation.local_addr()?;
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/server-tls");
+    let config = parse_config(&format!(
+        r#"
+plugins:
+  - tag: doq_drain_cache
+    type: cache
+    args:
+      short_circuit: true
+  - tag: doq_drain_forward
+    type: forward
+    args:
+      upstreams:
+        - addr: "udp://{upstream_addr}"
+          timeout: 5s
+  - tag: doq_drain_sequence
+    type: sequence
+    args:
+      - exec: $doq_drain_cache
+      - exec: $doq_drain_forward
+  - tag: doq_drain_server
+    type: quic_server
+    args:
+      entry: doq_drain_sequence
+      listen: "{listen}"
+      cert: {}
+      key: {}
+"#,
+        serde_json::to_string(&fixtures.join("cert.pem"))?,
+        serde_json::to_string(&fixtures.join("key.pem"))?
+    ))?;
+    drop(reservation);
+    let runtime = plugin::init(config).await?;
+    let outcome = async {
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in
+            rustls_pemfile::certs(&mut include_bytes!("fixtures/server-tls/cert.pem").as_slice())
+        {
+            roots
+                .add(cert?)
+                .map_err(|error| DnsError::runtime(error.to_string()))?;
+        }
+        let mut tls = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        tls.alpn_protocols = vec![b"doq".to_vec()];
+        let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls)
+            .map_err(|error| DnsError::runtime(error.to_string()))?;
+        let mut client_config = quinn::ClientConfig::new(Arc::new(crypto));
+        let mut transport = quinn::TransportConfig::default();
+        transport.keep_alive_interval(Some(Duration::from_millis(100)));
+        client_config.transport_config(Arc::new(transport));
+        let mut client = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap())?;
+        client.set_default_client_config(client_config);
+        let connection = timeout(Duration::from_secs(2), client.connect(listen, "localhost")?)
+            .await
+            .map_err(|_| DnsError::runtime("DoQ handshake timed out"))?
+            .map_err(|error| DnsError::runtime(error.to_string()))?;
+
+        // Keep a stream blocked on an incomplete length prefix while another
+        // stream reaches the executor. Shutdown must close only the transport
+        // waits, preserving the accepted request's cache side effect.
+        let (mut partial_send, mut partial_recv) = connection
+            .open_bi()
+            .await
+            .map_err(|error| DnsError::runtime(error.to_string()))?;
+        partial_send
+            .write_all(&[0])
+            .await
+            .map_err(|error| DnsError::runtime(error.to_string()))?;
+        let query = make_context(runtime.clone(), "doq-drain.test.")
+            .request()
+            .clone();
+        let (mut send, _recv) = connection
+            .open_bi()
+            .await
+            .map_err(|error| DnsError::runtime(error.to_string()))?;
+        let body = query.to_bytes()?;
+        send.write_all(&(body.len() as u16).to_be_bytes())
+            .await
+            .map_err(|error| DnsError::runtime(error.to_string()))?;
+        send.write_all(&body)
+            .await
+            .map_err(|error| DnsError::runtime(error.to_string()))?;
+        send.finish()
+            .map_err(|error| DnsError::runtime(error.to_string()))?;
+        let mut buf = [0; 4096];
+        let (len, peer) = timeout(Duration::from_secs(2), upstream.recv_from(&mut buf))
+            .await
+            .map_err(|_| DnsError::runtime("DoQ request did not reach upstream"))??;
+        let pending = Message::from_bytes(&buf[..len])?;
+        let server = runtime.get_plugin("doq_drain_server").unwrap();
+        let shutdown = server.as_plugin().destroy();
+        tokio::pin!(shutdown);
+        assert!(futures::poll!(&mut shutdown).is_pending());
+        timeout(Duration::from_secs(2), connection.closed())
+            .await
+            .map_err(|_| DnsError::runtime("DoQ shutdown retained a partial stream"))?;
+        assert!(
+            futures::poll!(&mut shutdown).is_pending(),
+            "accepted executor work must drain"
+        );
+        assert!(
+            timeout(Duration::from_secs(2), partial_recv.read(&mut [0; 1]))
+                .await
+                .map_err(|_| DnsError::runtime("partial DoQ stream did not close"))?
+                .is_err()
+        );
+
+        let mut response = pending.response(Rcode::NoError);
+        response.add_answer(oxidns::proto::Record::from_rdata(
+            pending.first_question().unwrap().name().clone(),
+            60,
+            oxidns::proto::RData::A(oxidns::proto::rdata::A(Ipv4Addr::new(192, 0, 2, 35))),
+        ));
+        upstream.send_to(&response.to_bytes()?, peer).await?;
+        timeout(Duration::from_secs(2), &mut shutdown)
+            .await
+            .map_err(|_| DnsError::runtime("DoQ shutdown did not drain accepted request"))??;
+        let cache = runtime.get_plugin("doq_drain_cache").unwrap().to_executor();
+        let mut cached = make_context(runtime.clone(), "doq-drain.test.");
+        cache.execute(&mut cached).await?;
+        assert_eq!(
+            cached
+                .response()
+                .expect("accepted request must populate cache")
+                .answers()
+                .len(),
+            1
+        );
+        Ok::<(), DnsError>(())
+    }
+    .await;
+    timeout(Duration::from_secs(8), runtime.destroy())
+        .await
+        .map_err(|_| DnsError::runtime("DoQ test cleanup timed out"))?;
+    outcome
+}

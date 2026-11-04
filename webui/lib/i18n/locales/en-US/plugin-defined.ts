@@ -604,7 +604,7 @@ export const enUSPluginDefined = {
         threshold: {
           label: "Takeover threshold (ms)",
           description:
-            "Define the primary path timeout or delay determination threshold.",
+            "Sets the standby delay; 0 allows immediate execution and takeover.",
         },
         always_standby: {
           label: "Alternate path on standby in parallel",

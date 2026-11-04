@@ -123,7 +123,7 @@ export const pluginFieldDocs = {
     secondary:
       "- 类型：`string`；必填：是；默认值：无\n- 作用：指定备用执行器。",
     threshold:
-      "- 类型：`integer`；必填：否；默认值：`0`\n- 单位：毫秒\n- 作用：定义主路径超时或延迟判定阈值。",
+      "- 类型：`integer`；必填：否；默认值：`500`\n- 单位：毫秒\n- 作用：定义备用路径的等待阈值；0 表示无需等待即可执行和接管。",
     always_standby:
       "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：控制备用路径是否与主路径同时待命。",
     short_circuit:
