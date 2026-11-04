@@ -1099,11 +1099,13 @@ export const zhCNPluginDefined = {
           description: "仅响应包含 answer 时学习；只在 after 阶段生效。",
         },
         rule_kind: {
-          label: "规则类型",
-          description: "控制写入 dynamic_domain_set 的规则类型。",
+          label: "学习策略",
+          description:
+            "选择学习范围：仅当前域名、当前域名及其子域，或可注册域及其子域。",
           options: {
-            full: "Full",
-            domain: "Domain",
+            full: "仅当前域名",
+            domain: "当前域名及子域",
+            registrable_domain: "可注册域及子域",
           },
         },
         async: {

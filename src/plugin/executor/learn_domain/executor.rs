@@ -8,9 +8,10 @@ use async_trait::async_trait;
 use tracing::warn;
 
 use super::config::{
-    LearnDomainConfig, LearnErrorMode, LearnPhase, QuestionMode, build_config,
+    LearnDomainConfig, LearnErrorMode, LearnPhase, LearnRuleKind, QuestionMode, build_config,
     parse_provider_from_value,
 };
+use super::domain::registrable_domain;
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
 use crate::infra::error::{DnsError, Result};
@@ -129,13 +130,17 @@ impl LearnDomainExecutor {
             // Async mode is the default for request latency: enqueue only, then
             // let `dynamic_domain_set` batch and flush in the background.
             provider
-                .append_rules_async(rules, self.config.rule_kind)
+                .append_rules_async(rules, self.config.rule_kind.output_kind())
                 .map(|_| ())
         } else {
             // Sync mode is intended for tests or strict policies that need the
             // learned rule to be visible before the current sequence continues.
             provider
-                .append_rules_sync(rules, self.config.rule_kind, self.config.timeout)
+                .append_rules_sync(
+                    rules,
+                    self.config.rule_kind.output_kind(),
+                    self.config.timeout,
+                )
                 .await
                 .map(|_| ())
         }
@@ -177,20 +182,28 @@ impl LearnDomainExecutor {
 
         let questions = context.request().questions();
         let selected = match self.config.questions {
-            QuestionMode::First => questions.iter().take(1).collect::<Vec<_>>(),
-            QuestionMode::All => questions.iter().collect::<Vec<_>>(),
+            QuestionMode::First => &questions[..questions.len().min(1)],
+            QuestionMode::All => questions,
         };
         let mut rules = Vec::new();
         let mut seen = AHashSet::new();
+        let output_kind = self.config.rule_kind.output_kind();
         for question in selected {
             if !self.config.qtypes.contains(&u16::from(question.qtype())) {
                 continue;
             }
-            // Only the request qname is learned in v1. CNAME target learning is
-            // intentionally left out because it broadens policy side effects
-            // and needs separate operator controls.
-            let rule =
-                learned_rule_for_domain(question.name().normalized(), self.config.rule_kind)?;
+            // Learning observes request names only, never CNAME targets.
+            let qname = question.name().normalized();
+            let domain = match self.config.rule_kind {
+                LearnRuleKind::Full | LearnRuleKind::Domain => qname,
+                LearnRuleKind::RegistrableDomain => {
+                    let Some(domain) = registrable_domain(qname) else {
+                        continue;
+                    };
+                    domain
+                }
+            };
+            let rule = learned_rule_for_domain(domain, output_kind)?;
             if seen.insert(rule.clone()) {
                 rules.push(rule);
             }

@@ -1213,12 +1213,13 @@ export const enUSPluginDefined = {
             "Only learned when the response contains answer; only takes effect in the after stage.",
         },
         rule_kind: {
-          label: "Rule type",
+          label: "Learning Strategy",
           description:
-            "Controls the type of rules written to dynamic_domain_set.",
+            "Learn only the request name, the request name and its subdomains, or its registrable domain and subdomains.",
           options: {
-            full: "Full",
-            domain: "Domain",
+            full: "Exact Name",
+            domain: "Name and Subdomains",
+            registrable_domain: "Registrable Domain and Subdomains",
           },
         },
         async: {
