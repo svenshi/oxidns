@@ -1,0 +1,102 @@
+name: Hotpath
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  upload:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    strategy: &benchmark-strategy
+      fail-fast: false
+      matrix:
+        include:
+          # message_codec Criterion benchmarks, each its own series, through
+          # hotpath's Criterion adapter: `iterations` fixes the routine runs per report.
+          - benchmark: message-compression-heavy-encode
+            artifact: hotpath-message-compression-heavy-encode
+            report: message-compression-heavy-encode.json
+            id: message_compression_heavy/encode/655
+            iterations: 100000
+          - benchmark: message-compression-heavy-decode
+            artifact: hotpath-message-compression-heavy-decode
+            report: message-compression-heavy-decode.json
+            id: message_compression_heavy/decode/655
+            iterations: 100000
+          - benchmark: message-response-then-encode-a
+            artifact: hotpath-message-response-then-encode-a
+            report: message-response-then-encode-a.json
+            id: message_response_builders/response_then_encode_a
+            iterations: 100000
+    concurrency:
+      group: hotpath-upload-${{ matrix.benchmark }}-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env: &benchmark-env
+      HOTPATH_BENCHMARK: ${{ matrix.benchmark }}
+      HOTPATH_OUTPUT_FORMAT: json
+      HOTPATH_USER_METADATA: runner=Linux-X64,toolchain=1.99.0,profile=hotpath,valgrind=3.26.0
+      HOTPATH_CRITERION_ITERATIONS: ${{ matrix.iterations }}
+    steps: &benchmark-steps
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install Valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind=1:3.26.0-0ubuntu1
+          valgrind --version
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - name: Run benchmark natively
+        env:
+          HOTPATH_OUTPUT_PATH: ${{ runner.temp }}/native.json
+        run: just bench-hotpath '${{ matrix.id }}'
+      - name: Run benchmark under Callgrind and merge the native report
+        env:
+          HOTPATH_UPLOAD: ${{ github.event_name == 'push' && 'fail-on-error' || '0' }}
+          HOTPATH_UPLOAD_RESPONSE_PATH: ${{ runner.temp }}/upload.json
+          HOTPATH_OUTPUT_PATH: ${{ github.workspace }}/${{ matrix.report }}
+          HOTPATH_MERGE_REPORT: ${{ runner.temp }}/native.json
+          HOTPATH_CALLGRIND_OUT_FILE: ${{ runner.temp }}/callgrind.out.%p
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: valgrind -q --tool=callgrind --instr-atstart=no --callgrind-out-file=${{ runner.temp }}/callgrind.out.%p
+        run: |
+          just bench-hotpath '${{ matrix.id }}'
+          jq -e --arg id '${{ matrix.id }}' '.meta.run == "merged" and (.functions_icount.data | length > 0) and (.functions_timing.data | length > 0) and .user_metadata.criterion_benchmark == $id' "$HOTPATH_OUTPUT_PATH" > /dev/null
+          jq -e '.meta.policy.source | type == "string" and length > 0' "$HOTPATH_OUTPUT_PATH" > /dev/null
+          if [ "$HOTPATH_UPLOAD" = fail-on-error ]; then
+            test -s "$HOTPATH_UPLOAD_RESPONSE_PATH"
+          fi
+      - name: Upload report
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.report }}
+          retention-days: 1
+          if-no-files-found: error
+  report:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    strategy: *benchmark-strategy
+    concurrency:
+      group: hotpath-report-${{ matrix.benchmark }}-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    env: *benchmark-env
+    steps: *benchmark-steps

@@ -5,7 +5,7 @@ use std::hint::black_box;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use hotpath::criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use oxidns::proto::rdata::{self};
 use oxidns::proto::{
     DNSClass, EdnsCode, EdnsOption, Message, MessageType, Opcode, Question, RData, Rcode, Record,
@@ -421,4 +421,4 @@ fn bench_message_encode_decode(c: &mut Criterion) {
 }
 
 criterion_group!(message_codec, bench_message_encode_decode);
-criterion_main!(message_codec);
+criterion_main!(allocator = none; message_codec);

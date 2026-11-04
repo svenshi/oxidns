@@ -5,6 +5,7 @@
 [![license](https://img.shields.io/github/license/svenshi/oxidns)](LICENSE)
 [![Rust CI](https://github.com/svenshi/oxidns/actions/workflows/rust-ci.yml/badge.svg?branch=main)](https://github.com/svenshi/oxidns/actions/workflows/rust-ci.yml)
 [![WebUI CI](https://github.com/svenshi/oxidns/actions/workflows/webui-ci.yml/badge.svg)](https://github.com/svenshi/oxidns/actions/workflows/webui-ci.yml)
+[![hotpath-cloud](https://img.shields.io/endpoint?url=https://hotpath.rs/badge-cloud.json)](https://hotpath.rs/app/repos/svenshi/oxidns)
 
 [中文](README.md) | [English](README_EN.md) · [文档](https://oxidns.org/) · [快速开始](https://oxidns.org/quickstart) · [插件参考](https://oxidns.org/plugin-reference/overview)
 

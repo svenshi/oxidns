@@ -1,0 +1,33 @@
+name: Hotpath relay
+
+on:
+  workflow_run:
+    workflows: [Hotpath]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  relay:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - benchmark: message-compression-heavy-encode
+            artifact: hotpath-message-compression-heavy-encode
+            report: message-compression-heavy-encode.json
+          - benchmark: message-compression-heavy-decode
+            artifact: hotpath-message-compression-heavy-decode
+            report: message-compression-heavy-decode.json
+          - benchmark: message-response-then-encode-a
+            artifact: hotpath-message-response-then-encode-a
+            report: message-response-then-encode-a.json
+    uses: hotpath-rs/hotpath/.github/workflows/hotpath-relay.yml@f9b96d36318755f82c4399a135dad4711ff10295 # v0.30.0
+    permissions:
+      actions: read
+      id-token: write
+      pull-requests: read
+    with:
+      benchmark: ${{ matrix.benchmark }}
+      artifact_name: ${{ matrix.artifact }}
+      report_file: ${{ matrix.report }}

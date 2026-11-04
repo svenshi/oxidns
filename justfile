@@ -35,7 +35,7 @@ check-full:
     cargo +nightly clippy --all-features --all-targets -- -D warnings
 
 # Private/profiling features that should never be enabled on their own.
-_hack_excluded := "hotpath,hotpath-alloc,_task-cron,_tls-base,_tls-client,_tls-server,_http-server,_http-client"
+_hack_excluded := "hotpath,hotpath-alloc,hotpath-cloud,hotpath-callgrind,_task-cron,_tls-base,_tls-client,_tls-server,_http-server,_http-client"
 
 # Compile every public feature individually (and the bare no-default-features
 # core). Catches "feature X fails to build in isolation" regressions.
@@ -61,3 +61,10 @@ test-standard:
 # clippy gates + bundle tests + the all-features test suite.
 check-matrix: check-each-feature check-minimal check-standard check-full test-minimal test-standard
     cargo test --all-features
+
+# One message_codec Criterion benchmark as a hotpath report, run
+# HOTPATH_CRITERION_ITERATIONS times. The `hotpath` profile keeps the symbols
+# Callgrind needs, e.g.
+# `HOTPATH_CRITERION_ITERATIONS=100000 just bench-hotpath message_compression_heavy/decode/655`
+bench-hotpath benchmark:
+    cargo bench --profile hotpath --bench message_codec --no-default-features --features minimal,hotpath-alloc,hotpath-cloud,hotpath-callgrind -- --test --exact "{{benchmark}}"
