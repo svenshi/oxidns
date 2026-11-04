@@ -272,7 +272,7 @@ export const zhCNDocs = {
     answer_required:
       "- 类型：`boolean`；必填：否；默认值：`true`\n- 作用：仅响应包含 answer 记录时学习。\n- 使用条件：仅 `phase: after` 生效。",
     rule_kind:
-      "- 类型：`string`；必填：否；默认值：`full`\n- 可选值：\n  - `full`：写入 `full:example.com` 精确规则。\n  - `domain`：写入 `domain:example.com` 后缀规则。\n- 运行影响：默认精确规则可避免意外扩大匹配范围；改为 `domain` 时整棵子域都会命中。",
+      "- 类型：`string`；必填：否；默认值：`full`\n- 作用：选择学习时生成规则的方式。以请求 `security.snssdk.com` 为例：\n  - `full`：生成 `full:security.snssdk.com`，仅匹配该名称。\n  - `domain`：生成 `domain:security.snssdk.com`，匹配该名称及其子域。\n  - `registrable_domain`：生成 `domain:snssdk.com`，匹配可注册域及其所有子域。\n- 边界：可注册域策略使用内置 ICANN + PRIVATE 公共后缀表，识别 `example.co.uk` 并保留 `foo.github.io` 的租户边界；无需联网，列表随二进制更新。\n- 跳过：可注册域策略跳过根域、公共后缀本身、未知后缀、单标签名称、反向解析名称及含转义标签的名称；跳过不触发 `error_mode`。\n- 使用条件：整域学习应显式启用，适用于希望同一可注册域采用一致策略的场景。规则会持久保存，不随 DNS 答案 TTL 自动过期。",
     async:
       "- 类型：`boolean`；必填：否；默认值：`true`\n- 作用：控制是否只入队后继续执行。\n- 运行影响：\n  - `true`：写入异步入队，请求路径零等待。\n  - `false`：在当前请求路径同步等待 provider 写入完成，受 `timeout` 限制。",
     error_mode:

@@ -3401,6 +3401,103 @@ plugins:
 
 #[cfg(feature = "plugin-dynamic-domain")]
 #[tokio::test]
+async fn test_learn_domain_registrable_rules_match_siblings_and_survive_restart() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let learned_file = temp_dir.path().join("learned-domains.txt");
+    let yaml = format!(
+        r#"
+plugins:
+  - tag: learned_domains
+    type: dynamic_domain_set
+    args:
+      path: "{}"
+      batch_size: 1
+  - tag: learn_main
+    type: learn_domain
+    args:
+      provider: learned_domains
+      rule_kind: registrable_domain
+      async: false
+      error_mode: fail
+  - tag: learn_seq
+    type: sequence
+    args:
+      - exec: "$learn_main"
+  - tag: combined_domains
+    type: domain_set
+    args:
+      sets: [learned_domains]
+  - tag: match_direct
+    type: qname
+    args: ["$learned_domains"]
+  - tag: match_combined
+    type: qname
+    args: ["$combined_domains"]
+"#,
+        yaml_path(&learned_file)
+    );
+    let registry = plugin::init(parse_config(&yaml)?).await?;
+    let executor = registry.get_plugin("learn_seq").unwrap().to_executor();
+    let matcher = registry.get_plugin("match_direct").unwrap().to_matcher();
+    assert!(!matcher.is_match(&mut make_context(registry.clone(), "aweme.snssdk.com.")));
+
+    for qname in [
+        "Security.SNSSDK.COM.",
+        "aweme.snssdk.com.",
+        "api.example.co.uk.",
+        "api.foo.github.io.",
+        "co.uk.",
+        "github.io.",
+        "printer.local.",
+    ] {
+        let mut ctx = make_context(registry.clone(), qname);
+        let mut response = ctx.request().response(Rcode::NoError);
+        response.answers_mut().push(Record::from_rdata(
+            Name::from_ascii(qname)?,
+            60,
+            RData::A(A(Ipv4Addr::new(192, 0, 2, 9))),
+        ));
+        ctx.set_response(response);
+        let original_request = ctx.request().clone();
+        let original_response = ctx.response().unwrap().clone();
+        assert!(matches!(executor.execute(&mut ctx).await?, ExecStep::Next));
+        assert_eq!(ctx.request(), &original_request);
+        assert_eq!(ctx.response(), Some(&original_response));
+    }
+    assert_eq!(
+        fs::read_to_string(&learned_file)?,
+        "domain:snssdk.com\ndomain:example.co.uk\ndomain:foo.github.io\n"
+    );
+    for tag in ["match_direct", "match_combined"] {
+        let matcher = registry.get_plugin(tag).unwrap().to_matcher();
+        for (qname, expected) in [
+            ("snssdk.com.", true),
+            ("frontier.snssdk.com.", true),
+            ("www.example.co.uk.", true),
+            ("bar.foo.github.io.", true),
+            ("bar.github.io.", false),
+            ("other.co.uk.", false),
+            ("notsnssdk.com.", false),
+        ] {
+            assert_eq!(
+                matcher.is_match(&mut make_context(registry.clone(), qname)),
+                expected,
+                "{tag}: {qname}"
+            );
+        }
+    }
+    registry.destroy().await;
+
+    let restarted = plugin::init(parse_config(&yaml)?).await?;
+    let matcher = restarted.get_plugin("match_combined").unwrap().to_matcher();
+    assert!(matcher.is_match(&mut make_context(restarted.clone(), "frontier.snssdk.com.")));
+    assert!(!matcher.is_match(&mut make_context(restarted.clone(), "bar.github.io.")));
+    restarted.destroy().await;
+    Ok(())
+}
+
+#[cfg(feature = "plugin-dynamic-domain")]
+#[tokio::test]
 async fn test_learn_domain_rejects_non_dynamic_domain_set_provider() -> Result<()> {
     let yaml = r#"
 log:

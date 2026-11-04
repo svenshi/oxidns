@@ -1231,12 +1231,14 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "rule_kind",
-        description: "控制写入 dynamic_domain_set 的规则类型。",
-        label: "规则类型",
+        description:
+          "选择学习范围：仅当前域名、当前域名及其子域，或可注册域及其子域。",
+        label: "学习策略",
         type: "select",
         options: [
-          { label: "Full", value: "full" },
-          { label: "Domain", value: "domain" },
+          { label: "仅当前域名", value: "full" },
+          { label: "当前域名及子域", value: "domain" },
+          { label: "可注册域及子域", value: "registrable_domain" },
         ],
         default: "full",
       },

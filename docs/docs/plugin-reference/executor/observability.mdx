@@ -13,7 +13,7 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 
 ### 作用
 
-观察 DNS 流水线中的请求域名，并把命中的 qname 写入指定 `dynamic_domain_set`。它只产生副作用，不修改请求或响应。
+观察 DNS 流水线中的请求域名，并把请求域名或其可注册主域名写入指定 `dynamic_domain_set`。它只产生副作用，不修改请求或响应。
 
 ### 配置示例
 
@@ -78,8 +78,13 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 #### `rule_kind`
 
 - 类型：`string`；必填：否；默认值：`full`
-- 可选值：`full`、`domain`
-- 作用：控制学习到 `dynamic_domain_set` 的规则类型。
+- 作用：选择学习时生成规则的方式。
+- 可选值：
+  - `full`：生成完整请求域名的精确规则，仅匹配该名称。
+  - `domain`：生成完整请求域名的后缀规则，匹配该名称及其子域。
+  - `registrable_domain`：按公共后缀表提取可注册域（eTLD+1），生成匹配该域及其所有子域的后缀规则。例如 `security.snssdk.com` 生成 `domain:snssdk.com`，`api.example.co.uk` 生成 `domain:example.co.uk`。
+- 边界：可注册域策略使用内置 ICANN + PRIVATE 公共后缀表，因此 `api.foo.github.io` 生成 `domain:foo.github.io`，不会扩大到其他租户。列表无需联网，随依赖和二进制更新。
+- 跳过：`registrable_domain` 策略跳过根域、公共后缀本身（如 `co.uk`、`github.io`）、未知后缀、单标签名称、`in-addr.arpa` / `ip6.arpa` 反向解析名称及含转义标签的名称。跳过不属于错误，不触发 `error_mode`。
 
 #### `async`
 
@@ -103,7 +108,35 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 - 默认生成 `full:example.com` 精确规则，避免意外扩大匹配范围。
 - `phase: after` 默认只学习成功且有 answer 的 `A` / `AAAA` 响应。
 - `phase: before` 不检查响应条件。
-- v1 只学习请求 question 的 qname，不学习 CNAME target。
+- 只从请求 question 提取学习域名，不学习 CNAME target。
+- 省略 `rule_kind` 默认使用 `full`；原有 `full`、`domain` 配置保持兼容。修改策略不转换或删除文件中已有的规则。
+
+### 学习同一站点的所有子域
+
+在按响应 IP 判断分流的链路中调用以下 executor，即可把 `security.snssdk.com` 学习为 `domain:snssdk.com`，使后续 `aweme.snssdk.com`、`frontier.snssdk.com` 等请求也命中同一个动态集合。
+
+```yaml
+- tag: learned_cn
+  type: dynamic_domain_set
+  args:
+    path: "/etc/oxidns/learned-cn.txt"
+
+- tag: learn_domain_cn
+  type: learn_domain
+  args:
+    provider: learned_cn
+    rule_kind: registrable_domain
+```
+
+以请求 `security.snssdk.com` 为例，三种策略分别生成：
+
+| `rule_kind` | 写入规则 | 匹配范围 |
+|---|---|---|
+| `full`（默认） | `full:security.snssdk.com` | 仅请求域名 |
+| `domain` | `domain:security.snssdk.com` | 请求域名及其子域 |
+| `registrable_domain` | `domain:snssdk.com` | 可注册域及其所有子域 |
+
+整域学习需要显式启用。它会把一个子域的学习结果推广到同一可注册域的其他子域，适用于希望统一分流的场景；同一可注册域下不同服务可能需要不同策略，公共后缀表不提供分流归属判定。规则会持久保存，不随 DNS 答案 TTL 自动过期，可通过动态集合管理 API 删除或清空。
 
 ### 典型用途
 

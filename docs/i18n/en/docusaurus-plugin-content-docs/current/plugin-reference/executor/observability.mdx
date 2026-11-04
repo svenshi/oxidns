@@ -13,7 +13,7 @@ These executors record queries, export metrics, or support debugging and tests. 
 
 ### Purpose
 
-Observes qnames in the DNS pipeline and writes matching request names into a target `dynamic_domain_set`. It is a side-effect executor and never modifies the DNS request or response.
+Observes qnames in the DNS pipeline and writes request names or their registrable domains into a target `dynamic_domain_set`. It is a side-effect executor and never modifies the DNS request or response.
 
 ### Example Configuration
 
@@ -78,8 +78,13 @@ Observes qnames in the DNS pipeline and writes matching request names into a tar
 #### `rule_kind`
 
 - Type: `string`; Required: no; Default: `full`
-- Values: `full`, `domain`
-- Purpose: Rule kind written into the target `dynamic_domain_set`.
+- Purpose: Select the learned rule generation strategy.
+- Values:
+  - `full`: Generate an exact rule for the complete request name, matching only that name.
+  - `domain`: Generate a suffix rule for the complete request name, matching that name and its subdomains.
+  - `registrable_domain`: Extract the registrable domain (eTLD+1) using the Public Suffix List, then generate a suffix rule matching that domain and all its subdomains. For example, `security.snssdk.com` generates `domain:snssdk.com`, and `api.example.co.uk` generates `domain:example.co.uk`.
+- Boundaries: The registrable-domain strategy uses an embedded ICANN + PRIVATE Public Suffix List, so `api.foo.github.io` generates `domain:foo.github.io` without covering other tenants. No network access is needed; the list updates with the dependency and binary.
+- Skips: The `registrable_domain` strategy skips the DNS root, public suffixes themselves (such as `co.uk` and `github.io`), unknown suffixes, single-label names, `in-addr.arpa` / `ip6.arpa` reverse lookup names, and escaped DNS names. Skips are normal results and do not trigger `error_mode`.
 
 #### `async`
 
@@ -103,7 +108,35 @@ Observes qnames in the DNS pipeline and writes matching request names into a tar
 - The default output is `full:example.com` to avoid broad accidental matches.
 - With the default `phase: after`, only successful `A` / `AAAA` responses with answers are learned.
 - `phase: before` does not inspect response conditions.
-- v1 only learns the request question qname and does not learn CNAME targets.
+- Learning only extracts names from request questions, never CNAME targets.
+- Omitting `rule_kind` defaults to `full`; existing `full` and `domain` configurations remain compatible. Changing strategies does not convert or delete rules already stored in the file.
+
+### Learn All Subdomains of a Site
+
+Call the following executor from a response-IP routing branch to learn `security.snssdk.com` as `domain:snssdk.com`. Later queries for `aweme.snssdk.com`, `frontier.snssdk.com`, and other subdomains can then match the same dynamic set.
+
+```yaml
+- tag: learned_cn
+  type: dynamic_domain_set
+  args:
+    path: "/etc/oxidns/learned-cn.txt"
+
+- tag: learn_domain_cn
+  type: learn_domain
+  args:
+    provider: learned_cn
+    rule_kind: registrable_domain
+```
+
+For a request for `security.snssdk.com`, the three strategies generate:
+
+| `rule_kind` | Stored Rule | Matching Range |
+|---|---|---|
+| `full` (default) | `full:security.snssdk.com` | Only the request name |
+| `domain` | `domain:security.snssdk.com` | The request name and its subdomains |
+| `registrable_domain` | `domain:snssdk.com` | The registrable domain and all its subdomains |
+
+Whole-domain learning requires explicit opt-in. It applies a learned result from one subdomain to others under the same registrable domain. Use it when those names should share one routing policy; different services may need different policies, and the Public Suffix List does not determine routing classification. Rules persist and do not automatically expire with DNS answer TTLs. Use the dynamic set management API to remove or clear them.
 
 ### Typical Uses
 
