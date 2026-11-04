@@ -173,9 +173,10 @@ Runs a primary executor first and falls back to a secondary executor when the pr
 
 #### `threshold`
 
-- Type: `integer`; Required: no
+- Type: `integer`; Required: no; Default: `500`
 - Unit: milliseconds
-- Purpose: Delay before the secondary is allowed to take over.
+- Purpose: Standby delay; `0` allows immediate execution and takeover.
+- Compatibility: Earlier versions treated explicit `0` as `500` ms. Set `500` explicitly to preserve that behavior.
 
 #### `always_standby`
 

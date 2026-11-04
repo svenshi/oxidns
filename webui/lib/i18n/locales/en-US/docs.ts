@@ -127,7 +127,7 @@ export const enUSDocs = {
     secondary:
       "- Type: `string`; Required: Yes; Default: None\n- Function: Specify the secondary executor.",
     threshold:
-      "- Type: `integer`; required: no; default value: `0`\n- Unit: milliseconds\n- Function: Define the main path timeout or delay determination threshold.",
+      "- Type: `integer`; required: no; default value: `500`\n- Unit: milliseconds\n- Function: Sets the standby delay; 0 allows immediate execution and takeover.",
     always_standby:
       "- Type: `boolean`; required: no; default value: `false`\n- Function: Control whether the backup path is on standby at the same time as the main path.",
     short_circuit:
