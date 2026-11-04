@@ -3,10 +3,13 @@ title: Resolution and Request Handling
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 These executors provide upstream resolution, caching, local answers, request rewriting, and EDNS propagation.
 
 ## `forward`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 
@@ -282,6 +285,8 @@ Per-upstream series are also exported with an `upstream` label (the upstream tag
 
 ## `cache`
 
+<PluginAvailability from="minimal" />
+
 ### Purpose
 
 Provides TTL-aware response caching with negative cache support and persistence.
@@ -452,6 +457,8 @@ Exported through the global `GET /api/metrics` endpoint. The cache plugin does n
 
 ## `hosts`
 
+<PluginAvailability from="minimal" />
+
 ### Purpose
 
 Returns local static answers using host-style entries.
@@ -479,38 +486,58 @@ Returns local static answers using host-style entries.
     short_circuit: true
 ```
 
+The example omits `format`, which is equivalent to `format: oxidns` and preserves the existing syntax and override behavior. To read standard hosts files directly:
+
+```yaml
+- tag: github_hosts
+  type: hosts
+  args:
+    format: standard
+    entries:
+      - "192.168.1.1 router.local gateway.local"
+      - "fd00::1 router.local gateway.local"
+    files:
+      # Read downloaded standard hosts files without converting column order
+      - "./hosts/github_hosts_raw.txt"
+    short_circuit: true
+```
+
 ### Configuration Details
+
+#### `format`
+
+- Type: `string`; Required: no; Default: `oxidns`
+- Selects the format for both `entries` and every file in `files`. Unknown values are configuration errors; formats are never switched automatically.
+- During startup loading, a rule that fails the configured format but matches the other format aborts loading with its source location, current format, and suggested `format` value. Alternatively, convert that rule to the configured format.
+- `oxidns`: `<domain_rule> <IP> [IP…]`, preserving existing matcher prefixes and last-write-wins behavior.
+- `standard`: `<IP> <hostname> [aliases…]`, matching each name exactly without interpreting matcher prefixes; names ignore case and trailing dots.
+- `standard` supports blank lines, spaces or tabs, CRLF line endings, and `#` full-line or trailing comments, with the same syntax for inline entries and files.
+- `standard` merges and deduplicates IPv4 / IPv6 addresses for each name across all sources, preserving first-seen order per family. Invalid IPs or missing hostnames abort loading with the source location.
 
 #### `entries`
 
 - Type: `array`; Required: no; Default: empty array
-- Purpose: Defines inline hosts rules.
-- Rule format:
-  - `<domain_rule> <ip1> <ip2> ...`
+- Purpose: Defines inline hosts rules using the selected `format`.
+- `oxidns`: `<domain_rule> <IP> [IP…]`.
+- `standard`: `<IP> <hostname> [aliases…]`.
 
 #### `files`
 
 - Type: `array`; Required: no; Default: empty array
-- Purpose: Specifies the list of external hosts rule files.
+- Purpose: Specifies external hosts rule files, all using the selected `format`.
 
 #### `short_circuit`
 
 - Type: `bool`; Required: no; Default: `false`
 - Purpose: Stops the remaining executor chain after a local answer is generated.
 
-Rule format:
-
-```text
-<domain_rule> <ip1> <ip2> ...
-```
-
 ### Behavior
 
 - Handles only `IN` class `A` / `AAAA` requests with exactly one question.
-- Unprefixed rules default to `full:` to match mosdns `hosts`.
-- Rule-family priority is fixed as `full -> domain -> regexp -> keyword`.
+- In `oxidns` format, unprefixed rules default to `full:`.
+- In `oxidns` format, rule-family priority is fixed as `full -> domain -> regexp -> keyword`.
 - `domain:` uses the longest matching suffix.
-- Repeated patterns use last-write-wins semantics in load order: inline `entries` first, then each configured file line by line.
+- Load order is inline `entries` first, then each configured file line by line. `oxidns` uses last-write-wins for repeated patterns; `standard` merges and deduplicates addresses for each name.
 - Positive local answers return same-family addresses with a fixed TTL of `10`.
 - If the domain matches but the requested address family is missing, the plugin returns `NoError + empty answer + fake SOA` instead of passing through.
 - Non-matching queries pass through to subsequent execution.
@@ -531,6 +558,8 @@ Exported through the global `GET /api/metrics` endpoint:
 ---
 
 ## `arbitrary`
+
+<PluginAvailability from="standard" />
 
 ### Purpose
 
@@ -610,6 +639,8 @@ Injects arbitrary DNS records from zone-style rule strings.
 
 ## `response`
 
+<PluginAvailability from="standard" />
+
 ### Purpose
 
 Unconditionally builds and replaces the current DNS response. Use an outer `sequence` matcher to decide when it runs; the plugin is suited to fixed answers, SOA-backed NODATA, and responses that need explicit Answer, Authority, and Additional sections.
@@ -682,6 +713,8 @@ args:
 ---
 
 ## `redirect`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 
@@ -782,6 +815,8 @@ Common `sequence` usage:
 
 ## `client_ip_from_ecs`
 
+<PluginAvailability from="standard" />
+
 ### Purpose
 
 Sets the current `DnsContext` client IP from the request's EDNS Client Subnet
@@ -852,6 +887,8 @@ complete client IP.
 ---
 
 ## `ecs_handler`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 
@@ -936,6 +973,8 @@ Controls EDNS Client Subnet forwarding or injection.
 ---
 
 ## `forward_edns0opt`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 

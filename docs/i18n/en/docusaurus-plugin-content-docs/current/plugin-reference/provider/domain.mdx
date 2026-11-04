@@ -3,10 +3,13 @@ title: Domain Providers
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 These providers manage static, dynamic, V2Ray geosite, or AdGuard-style domain rule assets.
 
 ## `domain_set`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 
@@ -110,11 +113,7 @@ Provides a high-performance domain rule set that can be referenced by plugins su
 
 ## `dynamic_domain_set`
 
-<Admonition type="warning" title="Experimental Plugin (Introduced in v1.2.0)">
-
-`dynamic_domain_set` was first introduced in `v1.2.0` and is currently in an **experimental** stage. Related configuration options may change in future releases. Before deploying in production, please evaluate the impact of learning rates and disk writes on the persistence layer.
-
-</Admonition>
+<PluginAvailability from="standard" />
 
 ### Purpose
 
@@ -204,6 +203,8 @@ These plugin endpoints are exposed under the default management prefix as `/api/
 ---
 
 ## `geosite`
+
+<PluginAvailability from="standard" />
 
 ### Purpose
 
@@ -313,6 +314,8 @@ Combine geosite data with local rules behind one reusable entrypoint:
 ---
 
 ## `adguard_rule`
+
+<PluginAvailability from="standard" />
 
 ### Purpose
 

@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { zhCNPluginDefined } from "../zh-CN/plugin-defined";
 import type { LocaleResourceShape } from "../../types";
 
@@ -612,7 +617,7 @@ export const enUSPluginDefined = {
         threshold: {
           label: "Takeover threshold (ms)",
           description:
-            "Define the primary path timeout or delay determination threshold.",
+            "Sets the standby delay; 0 allows immediate execution and takeover.",
         },
         always_standby: {
           label: "Alternate path on standby in parallel",
@@ -650,9 +655,19 @@ export const enUSPluginDefined = {
       description:
         "Directly return static A/AAAA according to domain name rules",
       fields: {
+        format: {
+          label: "Rule format",
+          description:
+            "Choose the rule format for entries and files; defaults to oxidns when omitted.",
+          options: {
+            oxidns: "OxiDNS (domain first)",
+            standard: "Standard hosts (IP first)",
+          },
+        },
         entries: {
           label: "Inline hosts rules",
-          description: "Define inline hosts rules.",
+          description:
+            "The format field selects the syntax; standard uses IP hostname [aliases…].",
           example:
             "router.local 192.168.1.1\nfull:gateway.local 192.168.1.2\ndomain:svc.local 10.0.0.10\nkeyword:nas 192.168.1.20\nregexp:^api[0-9]+\\.corp\\.local$ 10.10.0.5",
         },
@@ -662,7 +677,8 @@ export const enUSPluginDefined = {
         },
         files: {
           label: "hosts file",
-          description: "Specify a list of external hosts rule files.",
+          description:
+            "Load external hosts rule files using the selected format.",
           example: "/etc/oxidns/hosts.txt",
         },
         "files[]": {
@@ -1210,12 +1226,13 @@ export const enUSPluginDefined = {
             "Only learned when the response contains answer; only takes effect in the after stage.",
         },
         rule_kind: {
-          label: "Rule type",
+          label: "Learning Strategy",
           description:
-            "Controls the type of rules written to dynamic_domain_set.",
+            "Learn only the request name, the request name and its subdomains, or its registrable domain and subdomains.",
           options: {
-            full: "Full",
-            domain: "Domain",
+            full: "Exact Name",
+            domain: "Name and Subdomains",
+            registrable_domain: "Registrable Domain and Subdomains",
           },
         },
         async: {
@@ -2482,6 +2499,12 @@ export const enUSPluginDefined = {
       quickSetup: {
         paramPlaceholder: "SERVFAIL,NXDOMAIN or 2,3",
       },
+    },
+    has_cname: {
+      name: "Has CNAME",
+      description:
+        "Match when the response Answer section contains a CNAME record",
+      fields: {},
     },
     has_resp: {
       name: "Has Response",

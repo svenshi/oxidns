@@ -3,10 +3,13 @@ title: 维护与调度
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 这些执行器执行下载、升级、provider reload、全量 reload 和后台调度。生产环境应限制触发来源并准备回滚。
 
 ## `upgrade`
+
+<PluginAvailability from="standard" />
 
 ### 作用
 
@@ -102,6 +105,8 @@ import Admonition from "@theme/Admonition";
 - 不支持 `mode`；插件固定执行 apply。
 
 ## `download`
+
+<PluginAvailability from="standard" />
 
 ### 作用
 
@@ -270,6 +275,8 @@ WebUI 的 download 插件详情页在运行清单上方提供 **下载全部**�
 
 ## `reload_provider`
 
+<PluginAvailability from="minimal" />
+
 ### 作用
 
 按 tag 定向刷新一个或多个 provider，使用它们启动时的同一份配置重建内部快照，而不会触发应用级全量重载。
@@ -314,6 +321,8 @@ WebUI 的 download 插件详情页在运行清单上方提供 **下载全部**�
 
 ## `reload`
 
+<PluginAvailability from="minimal" />
+
 ### 作用
 
 触发一次与管理 API `POST /reload` 相同的应用级全量 reload，重新加载当前配置并重建所有插件。
@@ -354,6 +363,8 @@ WebUI 的 download 插件详情页在运行清单上方提供 **下载全部**�
 ---
 
 ## `cron`
+
+<PluginAvailability from="standard" />
 
 ### 作用
 
@@ -397,6 +408,7 @@ WebUI 的 download 插件详情页在运行清单上方提供 **下载全部**�
 - 运行影响：
   - 仅对 `schedule` 生效。
   - 未配置时会使用系统本地时区；无法获取时退回 `UTC`。
+  - OpenWrt 未提供 `/etc/localtime` 时，会读取 `/etc/TZ` 中的 POSIX 时区规则，保留夏令时转换；显式 `TZ` 环境变量优先。
   - 应填写 IANA 时区名称，例如 `Asia/Shanghai`、`UTC`、`America/Los_Angeles`。
 
 #### `args.jobs[].name`

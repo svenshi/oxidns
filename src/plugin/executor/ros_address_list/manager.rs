@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Address-list manager state machine for ros_address_list executor.
 //!
 //! Responsibilities:

@@ -210,6 +210,11 @@ fn infer_server_name(address: &str) -> Option<&str> {
         .filter(|host| !host.is_empty())
 }
 
+/// RouterOS trap message emitted when an insert targets a value the router
+/// already holds for the same object.
+#[cfg(any(feature = "plugin-ros-address-list", test))]
+const DUPLICATE_ENTRY_TRAP_MESSAGE: &str = "already have such entry";
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum RouterOsErrorKind {
     Backoff,
@@ -253,6 +258,22 @@ impl RouterOsError {
     pub(crate) fn is_missing_item(&self) -> bool {
         self.kind == RouterOsErrorKind::Trap
             && self.trap_category == Some(TrapCategory::MissingItemOrCommand)
+    }
+
+    /// Whether the trap reports that an equivalent row already exists.
+    ///
+    /// RouterOS refuses a plain insert when the target already holds the same
+    /// value and reports it as a `failure:` message rather than a dedicated
+    /// category, so the message text is the only stable signal. Callers that
+    /// map a desired state onto RouterOS objects must treat this as an
+    /// idempotent outcome instead of a failure.
+    #[cfg(any(feature = "plugin-ros-address-list", test))]
+    pub(crate) fn is_duplicate_entry(&self) -> bool {
+        self.kind == RouterOsErrorKind::Trap
+            && self
+                .message
+                .to_ascii_lowercase()
+                .contains(DUPLICATE_ENTRY_TRAP_MESSAGE)
     }
 }
 
@@ -732,6 +753,61 @@ mod tests {
         assert_eq!(error.kind, RouterOsErrorKind::Trap);
         assert!(error.is_missing_item());
         assert_eq!(transport.snapshot().await.backoff_total, 0);
+    }
+
+    #[tokio::test]
+    async fn duplicate_entry_trap_is_classified_without_a_category() {
+        let transport = RouterOsTransport::new(RouterOsConnectionConfig::plaintext_for_test());
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        sender
+            .send(Event::Trap {
+                tag: Tag::default(),
+                response: TrapResponse {
+                    tag: Tag::default(),
+                    category: None,
+                    message: "failure: already have such entry".to_string(),
+                },
+            })
+            .expect("trap event");
+        let mut stream = RouterOsCommandStream {
+            action: "add address-list entry".to_string(),
+            receiver,
+            generation: 0,
+            transport,
+            completed: false,
+        };
+
+        let error = stream.next().await.expect_err("trap");
+
+        assert!(error.is_duplicate_entry());
+        assert!(!error.is_missing_item());
+    }
+
+    #[tokio::test]
+    async fn unrelated_trap_is_not_a_duplicate_entry() {
+        let transport = RouterOsTransport::new(RouterOsConnectionConfig::plaintext_for_test());
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        sender
+            .send(Event::Trap {
+                tag: Tag::default(),
+                response: TrapResponse {
+                    tag: Tag::default(),
+                    category: Some(TrapCategory::ArgumentValueFailure),
+                    message: "input does not match any value of interface".to_string(),
+                },
+            })
+            .expect("trap event");
+        let mut stream = RouterOsCommandStream {
+            action: "add address-list entry".to_string(),
+            receiver,
+            generation: 0,
+            transport,
+            completed: false,
+        };
+
+        let error = stream.next().await.expect_err("trap");
+
+        assert!(!error.is_duplicate_entry());
     }
 
     #[tokio::test]

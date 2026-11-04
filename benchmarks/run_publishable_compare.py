@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Sven Shi
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Run the publishable multi-engine DNS benchmark matrix.
 
 The runner intentionally uses only Python's standard library.  It requires a

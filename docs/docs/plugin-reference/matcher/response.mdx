@@ -3,10 +3,13 @@ title: 响应匹配器
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 这些 matcher 检查响应地址、CNAME、RCODE，以及是否已有期望类型的 answer。
 
 ## `resp_ip`
+
+<PluginAvailability from="minimal" />
 
 ### 作用
 
@@ -50,6 +53,8 @@ import Admonition from "@theme/Admonition";
 ---
 
 ## `cname`
+
+<PluginAvailability from="minimal" />
 
 ### 作用
 
@@ -97,6 +102,8 @@ import Admonition from "@theme/Admonition";
 
 ## `rcode`
 
+<PluginAvailability from="minimal" />
+
 ### 作用
 
 匹配当前响应的 rcode。
@@ -137,7 +144,55 @@ import Admonition from "@theme/Admonition";
 
 ---
 
+## `has_cname`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+判断当前响应的 Answer 区是否包含 CNAME 记录，不限制请求 qtype 或响应 RCODE。
+
+- 只要 Answer 中存在一条 CNAME 就返回 `true`，也支持 CNAME 链及 CNAME 与 A/AAAA 混合应答。
+- 无响应、空 Answer 或仅 Authority/Additional 含 CNAME 时返回 `false`。
+- 只检查当前响应，不修改记录，不发起额外查询，也不依赖其它插件。
+- 如需匹配 CNAME 目标域名，请使用 [`cname`](#cname)。
+
+### 配置示例
+
+```yaml
+- tag: response_has_cname
+  type: has_cname
+```
+
+在 `sequence` 中通过 `matches: "$response_has_cname"` 引用，也可以使用 `matches: "!$response_has_cname"` 取反。
+
+### 配置项
+
+无独立配置字段，无需 `args`；初始化和销毁不分配额外运行时资源。
+
+### quick setup
+
+不接受参数。建议在上游解析或本地应答之后判断：
+
+```yaml
+- exec: "$forward_main"
+- matches: "has_cname"
+  exec: "mark 100"
+- matches: "!has_cname"
+  exec: "mark 200"
+```
+
+`!has_cname` 在无响应时也会命中；若只处理已有响应且不含 CNAME 的情况，可组合 `has_resp` 和 `!has_cname`。
+
+### 典型用途
+
+- 按响应是否含 CNAME 分支执行后续策略，无需预先配置目标域名规则。
+
+---
+
 ## `has_resp`
+
+<PluginAvailability from="minimal" />
 
 ### 作用
 
@@ -167,6 +222,8 @@ import Admonition from "@theme/Admonition";
 ---
 
 ## `has_wanted_ans`
+
+<PluginAvailability from="minimal" />
 
 ### 作用
 

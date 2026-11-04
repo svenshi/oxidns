@@ -23,6 +23,8 @@ These forms appear in plugins such as `qname`, `cname`, `domain_set`, `hosts`, a
     `domain_set` usually treat it as `domain:example.com`; `hosts` and
     `redirect` treat it as an exact `full:example.com` match.
 
+For `hosts`, these domain rules apply to the default `format: oxidns`. With `format: standard`, use `<IP> <hostname> [aliases…]`; names match exactly without interpreting matcher prefixes, and addresses for each name are merged and deduplicated.
+
 ### IP Rules
 
 These forms appear in `client_ip`, `resp_ip`, `ptr_ip`, `ip_set`, and related plugins:

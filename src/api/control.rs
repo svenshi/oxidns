@@ -501,6 +501,11 @@ fn read_config_file_response(path: &Path) -> std::result::Result<ConfigFileRespo
     })
 }
 
+/// Serializes config saves so the version check and the write happen as one
+/// step: two concurrent PUTs would otherwise both pass against the same
+/// base_version and silently last-write-win.
+static CONFIG_SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn save_config_file(
     controller: Arc<AppController>,
     request: ConfigSaveRequest,
@@ -509,6 +514,10 @@ fn save_config_file(
     if format != "yaml" {
         return Err(ConfigSaveError::InvalidFormat(format.to_string()));
     }
+
+    let _save_guard = CONFIG_SAVE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     let path = controller.config_path();
     let current = fs::read_to_string(path).map_err(|err| {
@@ -533,13 +542,26 @@ fn save_config_file(
         }
     };
 
-    fs::write(path, request.content.as_bytes()).map_err(|err| {
-        ConfigSaveError::Io(format!("failed to write config {}: {err}", path.display()))
-    })?;
-
-    let saved = fs::read_to_string(path).map_err(|err| {
+    // Write through a temp file in the same directory and rename over the
+    // target, so a crash or full disk mid-write cannot leave a truncated
+    // config at the live path (std::fs::rename replaces existing files on
+    // Windows too).
+    let tmp_path = path.with_file_name(format!(
+        "{}.oxidns-save.tmp",
+        path.file_name()
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_else(|| std::borrow::Cow::Borrowed("config"))
+    ));
+    fs::write(&tmp_path, request.content.as_bytes()).map_err(|err| {
         ConfigSaveError::Io(format!(
-            "failed to read saved config {}: {err}",
+            "failed to write config staging file {}: {err}",
+            tmp_path.display()
+        ))
+    })?;
+    fs::rename(&tmp_path, path).map_err(|err| {
+        let _ = fs::remove_file(&tmp_path);
+        ConfigSaveError::Io(format!(
+            "failed to replace config {}: {err}",
             path.display()
         ))
     })?;
@@ -558,7 +580,7 @@ fn save_config_file(
         ok: true,
         path: path.display().to_string(),
         format: "yaml",
-        version: config_version(&saved),
+        version: config_version(&request.content),
         updated_at_ms: config_updated_at_ms(path),
         plugin_count: summary.plugin_count,
         init_order: summary.dependency_graph.init_order,

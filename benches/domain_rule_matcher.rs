@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};

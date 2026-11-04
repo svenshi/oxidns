@@ -3,10 +3,13 @@ title: Response Processing
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 These executors adjust TTLs, address selection, interception results, and reverse-lookup data on existing or synthetic responses.
 
 ## `ttl`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 
@@ -66,11 +69,7 @@ Full object form:
 
 ## `ip_selector`
 
-<Admonition type="warning" title="Experimental Plugin (Introduced in v1.2.0)">
-
-`ip_selector` was first introduced in `v1.2.0` and is currently in an **experimental** stage. Configuration fields, default values, probing strategies, and cache semantics may be adjusted in future releases based on real-world usage feedback. It is recommended to validate the plugin in non-critical environments first and monitor the release notes for related changes.
-
-</Admonition>
+<PluginAvailability from="standard" />
 
 ### Purpose
 
@@ -210,6 +209,8 @@ This lets `cache` store the original upstream response while `ip_selector` appli
 
 ## `prefer_ipv4` / `prefer_ipv6`
 
+<PluginAvailability from="minimal" />
+
 ### Purpose
 
 Biases dual-stack results toward one address family.
@@ -303,6 +304,8 @@ Biases dual-stack results toward one address family.
 
 ## `black_hole`
 
+<PluginAvailability from="minimal" />
+
 ### Purpose
 
 Generates local interception responses for matched DNS queries, covering every qtype.
@@ -391,6 +394,8 @@ Exported through the global `GET /api/metrics` endpoint:
 
 ## `drop_resp`
 
+<PluginAvailability from="minimal" />
+
 ### Purpose
 
 Drops the current response.
@@ -425,6 +430,8 @@ No standalone configuration fields.
 ---
 
 ## `reverse_lookup`
+
+<PluginAvailability from="standard" />
 
 ### Purpose
 

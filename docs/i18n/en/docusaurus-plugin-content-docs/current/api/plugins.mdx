@@ -230,6 +230,8 @@ Query parameters:
   * Exact match against response code.
 * `status=all|error|has_response|no_response`
   * Filter by recorder row status.
+* `matcher_tag=<tag>`
+  * Filter matching queries by exact Matcher tag, including historical tags; an empty value removes the filter.
 
 `client_ip` is the transport peer observed by the DNS server. If record lists or `/stats/top_clients` show only `127.0.0.1`, the queries are usually passing through a local forwarder first, such as systemd-resolved, dnsmasq, AdGuardHome, dae, or clash. Check the deployment chain, point clients directly at OxiDNS, or configure a trusted `src_ip_header` for HTTP/DoH reverse-proxy deployments.
 
@@ -317,6 +319,10 @@ Responses:
 }
 ```
 
+All `/stats/*` aggregation endpoints require `since_ms` and `until_ms` in Unix milliseconds, with the start earlier than the end and a span of at most 24 hours. Missing or invalid intervals return HTTP 400. Each statistic uses at most the latest 10,000 saved records within the interval, ordered by timestamp and record ID descending. Existing calls without time bounds must add them; record-list, detail, and SSE parameter semantics are unchanged.
+
+Every aggregation response includes `sample_limit` (10,000), `sample_truncated`, `sample_since_ms`, and `sample_until_ms`. Truncation is checked by probing only one extra row, excluded from statistics. Exactly 10,000 records is not truncation; empty sample timestamps are `null`. Record and statistics filters also accept `qname_exact`, `client_ip_exact`, and `rcode_bucket=_ERROR|_NO_RESPONSE|_UNKNOWN` for exact drilldown. Existing `qname` and `client_ip` substring semantics remain unchanged. Special RCODE categories prioritize an actual response code, then errors, missing responses, and missing response codes.
+
 #### `GET /api/plugins/<tag>/stats/plugins`
 
 Aggregates plugin hit information from recorded path events.
@@ -383,10 +389,26 @@ Aggregates query trends into time buckets.
 
 Query parameters:
 
-* `bucket=minute|hour`
+* `bucket=auto|minute|hour`
 * `buckets=<n>`
   * Number of buckets to return. Defaults to `60`, maximum `720`.
 * Same as `/records`, supports time range and filter parameters.
+
+Response fields:
+
+* `sample_size`, `sample_limit`: included record count and the statistics limit (10,000).
+* `sample_truncated`: whether additional matching records exist; only the 10,001st row is probed. Exactly 10,000 records does not imply truncation.
+* `sample_since_ms`, `sample_until_ms`: earliest/latest included record timestamps; `null` when empty.
+* `bucket_ms`: the resolved interval in milliseconds.
+* `points[]`: nonempty buckets containing `bucket_ms` (bucket start), `total`, `error_count`, `no_response_count`, `servfail_count`, `partial`, `avg_ms`, and `p95_ms`. The three anomaly counts are mutually exclusive.
+
+The default `bucket` remains `minute`. `auto` chooses the smallest common interval that fits the entire requested range; truncated samples start at the oldest included record. Fixed minute/hour modes retain the latest nonempty buckets when `buckets` is exceeded; sample metadata describes all included records. The WebUI automatic mode does not drop buckets within coverage.
+
+Example (querying a historical interval):
+
+```http
+GET /api/plugins/rec/stats/timeseries?since_ms=1700000000000&until_ms=1700003600000&bucket=auto&buckets=120
+```
 
 #### `GET /api/plugins/<tag>/stream`
 

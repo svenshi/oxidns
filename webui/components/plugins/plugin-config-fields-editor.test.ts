@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { describe, expect, it } from "vitest";
 
 import { matcherPluginDefinitions } from "@/lib/plugin-definitions/matcher";
@@ -517,6 +522,33 @@ describe("optional object config fields", () => {
       expect(
         serializePluginConfigValues(definition.configSchema, values),
       ).toHaveProperty("tls", {});
+    }
+  });
+});
+
+describe("hosts format config", () => {
+  const schema = pluginKindDefinitions.find(
+    (definition) => definition.kind === "hosts",
+  )!.configSchema;
+
+  it("keeps the inherited format out of generated config", () => {
+    const values = createDefaultPluginConfigValues(schema);
+    expect(serializePluginConfigValues(schema, values)).not.toHaveProperty(
+      "format",
+    );
+  });
+
+  it("preserves an explicitly selected format when editing entries", () => {
+    for (const format of ["oxidns", "standard"]) {
+      const entries =
+        format === "standard"
+          ? ["192.0.2.1 example.test"]
+          : ["example.test 192.0.2.1"];
+      const values = createPluginConfigFormValues(schema, { format, entries });
+      expect(serializePluginConfigValues(schema, values)).toMatchObject({
+        format,
+        entries,
+      });
     }
   });
 });

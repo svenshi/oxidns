@@ -3,10 +3,13 @@ title: Request Matchers
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 These matchers inspect query names, questions, types, classes, client addresses, or addresses encoded in PTR queries.
 
 ## `qname`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 
@@ -59,6 +62,8 @@ Matches the query name in the request.
 
 ## `question`
 
+<PluginAvailability from="minimal" />
+
 ### Purpose
 
 Matches request questions using provider implementations of `contains_question`.
@@ -105,6 +110,8 @@ soon as any question is matched by any referenced provider.
 
 ## `qtype`
 
+<PluginAvailability from="minimal" />
+
 ### Purpose
 
 Matches request qtypes.
@@ -143,6 +150,8 @@ This example mixes text and numeric forms. Both formats are equivalent and can b
 ---
 
 ## `qclass`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 
@@ -183,6 +192,8 @@ This example mixes text and numeric forms. Both formats are equivalent and can b
 
 ## `client_ip`
 
+<PluginAvailability from="minimal" />
+
 ### Purpose
 
 Matches the client source IP.
@@ -222,6 +233,8 @@ Matches the client source IP.
 ---
 
 ## `ptr_ip`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 

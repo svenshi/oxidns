@@ -3,10 +3,13 @@ title: HTTP 与 QUIC 加密入口
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 基于 HTTP 和 QUIC 的加密 DNS 入口，包括 DoH、HTTP/2、可选 HTTP/3 和 DoQ。
 
 ## `http_server`
+
+<PluginAvailability from="standard" note="HTTP/3 支持：仅 full" />
 
 ### 作用
 
@@ -153,6 +156,8 @@ import Admonition from "@theme/Admonition";
 
 ## `quic_server`
 
+<PluginAvailability from="standard" />
+
 ### 作用
 
 提供 DNS over QUIC 服务。
@@ -224,6 +229,7 @@ import Admonition from "@theme/Admonition";
 - DoQ 强制要求 TLS，所以 `cert` 和 `key` 是必填项。
 - ALPN 固定为 `doq`。
 - 每个双向流代表一次独立 DNS 交换。
+- 关停或重载时关闭 QUIC 连接，终止未完成的收包和写回，并等待已经进入执行链的请求完成。排空时间取决于执行链自身的超时。
 
 ### 适用策略
 

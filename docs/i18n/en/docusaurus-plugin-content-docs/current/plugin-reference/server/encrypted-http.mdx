@@ -3,10 +3,13 @@ title: HTTP and QUIC Encrypted Ingress
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 Encrypted DNS ingress over HTTP and QUIC, including DoH, HTTP/2, optional HTTP/3, and DoQ.
 
 ## `http_server`
+
+<PluginAvailability from="standard" note="HTTP/3 support: full only" />
 
 ### Purpose
 
@@ -153,6 +156,8 @@ Provides DNS over HTTPS and can serve HTTP/1.1, HTTP/2, and optional HTTP/3.
 
 ## `quic_server`
 
+<PluginAvailability from="standard" />
+
 ### Purpose
 
 Provides DNS over QUIC.
@@ -224,6 +229,7 @@ Provides DNS over QUIC.
 - DoQ always requires TLS, so `cert` and `key` are mandatory.
 - ALPN is fixed to `doq`.
 - Each bidirectional stream represents one independent DNS exchange.
+- Shutdown or reload closes QUIC connections to interrupt unfinished reads and writes, then waits for accepted executor work to finish. Drain time depends on the executor chain's own timeouts.
 
 ### Good Fits
 

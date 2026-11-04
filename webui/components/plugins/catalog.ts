@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import type { PluginType } from "@/lib/types";
 import type { PluginKindDefinition } from "@/lib/plugin-definitions";
 import { createElement, type SVGProps } from "react";

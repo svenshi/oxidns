@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Shared helpers for the live netlink integration tests.
 //!
 //! - Skip with a useful message if the required cli tools aren't on PATH (e.g.

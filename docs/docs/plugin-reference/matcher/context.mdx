@@ -3,10 +3,13 @@ title: 上下文与策略匹配器
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 这些 matcher 使用 mark、环境、时间、概率、速率限制或字符串表达式决定策略分支。
 
 ## `mark`
+
+<PluginAvailability from="minimal" />
 
 ### 作用
 
@@ -52,6 +55,8 @@ import Admonition from "@theme/Admonition";
 ---
 
 ## `env`
+
+<PluginAvailability from="minimal" />
 
 ### 作用
 
@@ -110,6 +115,8 @@ args:
 
 ## `time`
 
+<PluginAvailability from="minimal" />
+
 ### 作用
 
 按当前墙上时间匹配日内时间段、星期和每月日期。
@@ -138,6 +145,7 @@ args:
 - 类型：`string`；必填：否；默认值：系统时区
 - 使用 IANA 时区名称，例如 `Asia/Shanghai`、`UTC`。
 - 未配置时会解析系统时区；无法解析时插件初始化失败，不会静默退回 UTC。
+- OpenWrt 未提供 `/etc/localtime` 时，会读取 `/etc/TZ` 中的 POSIX 时区规则，保留夏令时转换；显式 `TZ` 环境变量优先。
 
 #### `periods`
 
@@ -170,6 +178,8 @@ quick setup 仅支持系统时区下的单个每日窗口；星期、月日和�
 ---
 
 ## `random`
+
+<PluginAvailability from="minimal" />
 
 ### 作用
 
@@ -209,6 +219,8 @@ quick setup 仅支持系统时区下的单个每日窗口；星期、月日和�
 ---
 
 ## `rate_limiter`
+
+<PluginAvailability from="minimal" />
 
 ### 作用
 

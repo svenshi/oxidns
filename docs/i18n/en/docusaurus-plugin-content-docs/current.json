@@ -62,5 +62,53 @@
   "sidebar.docsSidebar.category.版本更新": {
     "message": "Release Notes",
     "description": "The label for category '版本更新' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.入门.link.generated-index.title": {
+    "message": "Getting Started",
+    "description": "The generated-index page title for category '入门' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.入门.link.generated-index.description": {
+    "message": "Start with quick setup, installation, and common scenarios to build your first DNS policy pipeline.",
+    "description": "The generated-index page description for category '入门' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.安装与部署.link.generated-index.title": {
+    "message": "Installation & Deployment",
+    "description": "The generated-index page title for category '安装与部署' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.安装与部署.link.generated-index.description": {
+    "message": "Choose an installation method: native binaries, system packages, Docker, or OpenWrt.",
+    "description": "The generated-index page description for category '安装与部署' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.部署与运维.link.generated-index.title": {
+    "message": "Deployment & Operations",
+    "description": "The generated-index page title for category '部署与运维' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.部署与运维.link.generated-index.description": {
+    "message": "Learn about WebUI management, runtime operations, and secure deployment.",
+    "description": "The generated-index page description for category '部署与运维' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.接口参考.link.generated-index.title": {
+    "message": "Interface Reference",
+    "description": "The generated-index page title for category '接口参考' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.接口参考.link.generated-index.description": {
+    "message": "Find usage details for the command line, management API, and DNS status codes.",
+    "description": "The generated-index page description for category '接口参考' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.架构与开发.link.generated-index.title": {
+    "message": "Architecture & Development",
+    "description": "The generated-index page title for category '架构与开发' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.架构与开发.link.generated-index.description": {
+    "message": "Explore the architecture, customize your build, and review performance benchmarks.",
+    "description": "The generated-index page description for category '架构与开发' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.项目与社区.link.generated-index.title": {
+    "message": "Project & Community",
+    "description": "The generated-index page title for category '项目与社区' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.项目与社区.link.generated-index.description": {
+    "message": "Learn about documentation maintenance, contributions, project support, the roadmap, and release notes.",
+    "description": "The generated-index page description for category '项目与社区' in sidebar 'docsSidebar'"
   }
 }

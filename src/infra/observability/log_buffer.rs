@@ -16,7 +16,8 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
-use jiff::Zoned;
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 use serde::Serialize;
 use tokio::sync::broadcast;
 use tracing::field::{Field, Visit};
@@ -154,11 +155,12 @@ pub fn level_passes(level_str: &str, min: LevelFilter) -> bool {
 
 pub struct LogLayer {
     buffer: Arc<LogBuffer>,
+    timezone: TimeZone,
 }
 
 impl LogLayer {
-    pub fn new(buffer: Arc<LogBuffer>) -> Self {
-        Self { buffer }
+    pub fn new(buffer: Arc<LogBuffer>, timezone: TimeZone) -> Self {
+        Self { buffer, timezone }
     }
 }
 
@@ -171,7 +173,12 @@ where
         let level = metadata.level().to_string();
         let target = metadata.target().to_string();
         let elapsed_ms = AppClock::elapsed_millis();
-        let timestamp = format!("{}", Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%.3f%:z"));
+        let timestamp = format!(
+            "{}",
+            Timestamp::now()
+                .to_zoned(self.timezone.clone())
+                .strftime("%Y-%m-%dT%H:%M:%S%.3f%:z")
+        );
 
         let mut visitor = FieldCollector::default();
         event.record(&mut visitor);

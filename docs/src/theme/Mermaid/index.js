@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import React from 'react';
 import BrowserOnly from '@docusaurus/BrowserOnly';
 import Mermaid from '@theme-original/Mermaid';

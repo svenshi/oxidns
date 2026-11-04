@@ -225,6 +225,8 @@ GET /api/plugins/reverse_lookup_main?ip=8.8.8.8
   * 按响应码精确匹配。
 * `status=all|error|has_response|no_response`
   * 按记录状态过滤。
+* `matcher_tag=<tag>`
+  * 按 Matcher 标签精确筛选命中的查询，支持历史标签；留空不筛选 Matcher。
 
 `client_ip` 是 DNS 传输层看到的对端地址。若记录列表或 `/stats/top_clients` 全部显示 `127.0.0.1`，通常说明请求先经过了本机转发器，例如 systemd-resolved、dnsmasq、AdGuardHome、dae 或 clash；请检查部署链路，让客户端直接访问 OxiDNS，或在 HTTP/DoH 反向代理场景配置可信的 `src_ip_header`。
 
@@ -312,6 +314,10 @@ GET /api/plugins/reverse_lookup_main?ip=8.8.8.8
 }
 ```
 
+所有 `/stats/*` 聚合接口必须提供 `since_ms` 和 `until_ms`（Unix 毫秒），开始时间须早于结束时间，跨度最多 24 小时；缺失或非法区间返回 HTTP 400。各项统计最多使用区间内按时间及记录 ID 倒序选取的最近 10,000 条查询记录。旧的不带时间调用需要补齐参数；记录列表、详情和 SSE 接口的时间参数语义保持不变。
+
+所有聚合响应均提供 `sample_limit`（10,000）、`sample_truncated`、`sample_since_ms`、`sample_until_ms`。仅额外探测一条判断截断，不参与统计；恰好 10,000 条不视为截断，无记录时入选时间为 `null`。记录和统计筛选额外支持 `qname_exact`、`client_ip_exact` 及 `rcode_bucket=_ERROR|_NO_RESPONSE|_UNKNOWN`，用于精确下钻；原有 `qname`、`client_ip` 的包含匹配语义不变。RCODE 特殊分类优先使用实际响应码，再依次判断执行错误、无响应、无响应码。
+
 #### `GET /api/plugins/<tag>/stats/plugins`
 
 按路径事件聚合插件命中情况。
@@ -378,10 +384,26 @@ GET /api/plugins/reverse_lookup_main?ip=8.8.8.8
 
 查询参数：
 
-* `bucket=minute|hour`
+* `bucket=auto|minute|hour`
 * `buckets=<n>`
   * 返回桶数，默认 `60`，最大 `720`。
 * 同 `/records` 支持时间范围与过滤参数。
+
+返回字段：
+
+* `sample_size`、`sample_limit`：入选记录数及统计上限（10,000）。
+* `sample_truncated`：是否存在额外的匹配记录，仅探测第 10,001 条，恰好 10,000 条不视为截断。
+* `sample_since_ms`、`sample_until_ms`：入选记录最早／最晚时间；无记录时为 `null`。
+* `bucket_ms`：实际聚合间隔（毫秒）。
+* `points[]`：非空桶，包含 `bucket_ms`（桶起点）、`total`、`error_count`、`no_response_count`、`servfail_count`、`partial`、`avg_ms`、`p95_ms`。三种异常计数互斥。
+
+`bucket` 默认仍为 `minute`。`auto` 根据请求区间选择能容纳整个区间的最小常用粒度；记录截断时从最早入选记录开始计算。固定分钟／小时模式超过 `buckets` 时保留最近的非空桶；样本元数据描述所有入选记录。WebUI 的自动模式不丢弃覆盖范围内的桶。
+
+示例（查询指定历史区间）：
+
+```http
+GET /api/plugins/rec/stats/timeseries?since_ms=1700000000000&until_ms=1700003600000&bucket=auto&buckets=120
+```
 
 #### `GET /api/plugins/<tag>/stream`
 

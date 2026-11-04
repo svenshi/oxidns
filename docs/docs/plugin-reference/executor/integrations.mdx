@@ -3,10 +3,13 @@ title: 外部与系统集成
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 这些执行器把 DNS 上下文投影到 HTTP、脚本、Linux 集合或 RouterOS。副作用失败策略应与主解析路径隔离。
 
 ## `http_request`
+
+<PluginAvailability from="standard" />
 
 ### 作用
 
@@ -168,6 +171,8 @@ import Admonition from "@theme/Admonition";
 
 ## `script`
 
+<PluginAvailability from="standard" />
+
 ### 作用
 
 执行一个显式声明的外部命令，并把当前 `DnsContext` 中的一部分稳定字段注入为参数或环境变量。
@@ -264,6 +269,8 @@ import Admonition from "@theme/Admonition";
 
 ## `ipset`
 
+<PluginAvailability from="full" />
+
 ### 作用
 
 把响应中的 IP 写入 Linux `ipset`。底层通过内置 Rust netlink 后端完成，不依赖运行时 `ipset` 命令。
@@ -341,6 +348,8 @@ import Admonition from "@theme/Admonition";
 ---
 
 ## `nftset`
+
+<PluginAvailability from="full" />
 
 ### 作用
 
@@ -458,6 +467,8 @@ import Admonition from "@theme/Admonition";
 ---
 
 ## `ros_address_list`
+
+<PluginAvailability from="full" />
 
 ### 作用
 
@@ -674,7 +685,8 @@ args:
 - 动态项是 DNS 观察结果，不是期望状态，不参与启动或周期全表对账。用户手工删除、修改动态项后插件不主动纠偏；只有后续 DNS 再次观察到同一 IP 并触发写入时才可能覆盖该变化。
 - 有限 TTL 动态项在有效 TTL 的 75% 处允许由后续 DNS 观察再次刷新；插件不会为动态项启动独立刷新定时器，`fixed_ttl: 0` 的永久项也不会自动刷新。
 - 同一列表内同一 IP 的多次观察保留最晚的有效到期时间；刷新时按该合并租约的剩余时间设置 RouterOS `timeout`，后续较短的 TTL 不会提前结束仍有效的租约。
-- 删除地址项前会重新确认内部 ID、目标 list/address key 和完整 ownership comment；RouterOS `timeout` 只是租约数据，不属于删除授权条件。RouterOS 最终仍只支持按内部 ID 删除，不提供原子 compare-and-delete。
+- 更新或删除地址项前会按内部 ID 和 list 重新查询，再核对规范化 address key 和完整 ownership comment，避免存储地址文本差异导致复核漏掉已有条目；RouterOS `timeout` 只是租约数据，不属于删除授权条件。RouterOS 最终仍只支持按内部 ID 删除，不提供原子 compare-and-delete。
+- RouterOS 在列表已存在同一地址时会拒绝新增，插件把该拒绝视为幂等结果而不是写入错误：重新扫描目标列表，条目归属本插件时按常规归属流程更新，否则该 key 交给已有条目。
 
 ### 典型用途
 
@@ -694,6 +706,8 @@ args:
 </Admonition>
 
 ## `ros_route`
+
+<PluginAvailability from="full" />
 
 ### 作用
 

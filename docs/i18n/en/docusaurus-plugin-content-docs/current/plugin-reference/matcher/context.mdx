@@ -3,10 +3,13 @@ title: Context and Policy Matchers
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 These matchers branch on marks, environment, time, probability, rate limits, or string expressions.
 
 ## `mark`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 
@@ -43,6 +46,8 @@ Matches marks already written into the DNS context.
 ---
 
 ## `env`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 
@@ -101,6 +106,8 @@ args:
 
 ## `time`
 
+<PluginAvailability from="minimal" />
+
 ### Purpose
 
 Matches the current wall-clock time against daily windows, weekdays, and days of the month.
@@ -129,6 +136,7 @@ Matches the current wall-clock time against daily windows, weekdays, and days of
 - Type: `string`; Required: no; Default: system timezone
 - Uses an IANA timezone name such as `Asia/Shanghai` or `UTC`.
 - When omitted, OxiDNS resolves the system timezone. Initialization fails if it is unavailable; the matcher never silently falls back to UTC.
+- On OpenWrt without `/etc/localtime`, OxiDNS reads POSIX timezone rules from `/etc/TZ`, including daylight saving transitions. An explicit `TZ` environment variable takes precedence.
 
 #### `periods`
 
@@ -161,6 +169,8 @@ Quick setup supports one daily window in the system timezone. Use the full confi
 ---
 
 ## `random`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 
@@ -196,6 +206,8 @@ Matches probabilistically for rollout or sampling.
 ---
 
 ## `rate_limiter`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 

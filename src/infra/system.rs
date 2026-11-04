@@ -7,6 +7,9 @@
 use std::path::Path;
 use std::time::Duration;
 
+#[cfg(any(target_os = "linux", test))]
+use jiff::fmt::temporal::DateTimeParser;
+use jiff::fmt::temporal::DateTimePrinter;
 use jiff::tz::TimeZone;
 use serde::{Deserialize, Deserializer, de};
 use tokio::fs;
@@ -24,15 +27,55 @@ pub fn unix_timestamp() -> u64 {
     AppClock::now_timestamp()
 }
 
-/// Resolve the current system IANA timezone name.
+/// Resolve the system timezone, including OpenWrt's POSIX `/etc/TZ` file.
 ///
-/// Returns `UTC` when the local timezone name is unavailable.
-#[inline]
+/// An explicit `TZ` environment variable and the platform's native timezone
+/// detection take precedence. Call this during initialization, not per query.
+pub fn try_system_timezone() -> Result<TimeZone, jiff::Error> {
+    let detected = TimeZone::try_system();
+    #[cfg(target_os = "linux")]
+    {
+        resolve_system_timezone(detected, std::env::var_os("TZ").is_some(), || {
+            std::fs::read_to_string("/etc/TZ")
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        detected
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn resolve_system_timezone(
+    detected: Result<TimeZone, jiff::Error>,
+    has_tz_override: bool,
+    read_fallback: impl FnOnce() -> std::io::Result<String>,
+) -> Result<TimeZone, jiff::Error> {
+    detected.or_else(|error| {
+        if has_tz_override {
+            return Err(error);
+        }
+        read_fallback()
+            .ok()
+            .and_then(|raw| DateTimeParser::new().parse_time_zone(raw.trim()).ok())
+            .ok_or(error)
+    })
+}
+
+/// Resolve the current system timezone as an IANA name or POSIX rule.
+///
+/// Returns `UTC` when the timezone cannot be detected or represented by name.
 pub fn system_timezone_name() -> String {
-    TimeZone::system()
-        .iana_name()
-        .map(ToOwned::to_owned)
+    try_system_timezone()
+        .ok()
+        .and_then(|timezone| timezone_name(&timezone).ok())
         .unwrap_or_else(|| "UTC".to_string())
+}
+
+fn timezone_name(timezone: &TimeZone) -> Result<String, jiff::Error> {
+    let mut name = String::new();
+    DateTimePrinter::new().print_time_zone(timezone, &mut name)?;
+    Ok(name)
 }
 
 /// Read file length if the path exists.
@@ -178,6 +221,71 @@ mod tests {
     #[test]
     fn test_system_timezone_name_is_non_empty() {
         assert!(!system_timezone_name().trim().is_empty());
+    }
+
+    fn missing_system_timezone() -> Result<TimeZone, jiff::Error> {
+        TimeZone::get("Invalid/SystemTimezone")
+    }
+
+    #[test]
+    fn test_system_timezone_preserves_native_detection_and_tz_override() {
+        let timezone = resolve_system_timezone(Ok(TimeZone::UTC), false, || {
+            panic!("native detection must take precedence over /etc/TZ")
+        })
+        .unwrap();
+        assert_eq!(timezone, TimeZone::UTC);
+
+        assert!(
+            resolve_system_timezone(missing_system_timezone(), true, || {
+                panic!("an invalid explicit TZ must not use /etc/TZ")
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_system_timezone_reads_openwrt_posix_rules() {
+        for (raw, winter_offset, summer_offset) in [
+            (" CST-8\n", 8, 8),
+            ("UTC\n", 0, 0),
+            ("EST5EDT,M3.2.0,M11.1.0\n", -5, -4),
+        ] {
+            let timezone =
+                resolve_system_timezone(missing_system_timezone(), false, || Ok(raw.to_string()))
+                    .unwrap();
+            for (timestamp, hours) in [
+                ("2026-01-15T12:00:00Z", winter_offset),
+                ("2026-07-15T12:00:00Z", summer_offset),
+            ] {
+                assert_eq!(
+                    timezone.to_offset(timestamp.parse().unwrap()).seconds(),
+                    hours * 3600,
+                    "{raw:?} at {timestamp}"
+                );
+            }
+            let name = timezone_name(&timezone).unwrap();
+            let reparsed = DateTimeParser::new().parse_time_zone(&name).unwrap();
+            assert_eq!(timezone, reparsed);
+            #[cfg(feature = "_task-cron")]
+            crate::infra::task::validate_cron("0 9 * * *", &name).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_system_timezone_rejects_missing_or_invalid_fallback() {
+        for raw in ["", " \n", "invalid timezone", "CST-99"] {
+            assert!(
+                resolve_system_timezone(missing_system_timezone(), false, || Ok(raw.to_string()))
+                    .is_err(),
+                "{raw:?}"
+            );
+        }
+        assert!(
+            resolve_system_timezone(missing_system_timezone(), false, || {
+                Err(std::io::ErrorKind::NotFound.into())
+            })
+            .is_err()
+        );
     }
 
     #[test]

@@ -3,10 +3,13 @@ title: Policy Orchestration
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 `sequence` and `fallback` define branching, sub-chain calls, and primary/fallback execution.
 
 ## `sequence`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 
@@ -134,6 +137,8 @@ Besides plugin calls, `sequence.args[].exec` can also use built-in control flow:
 
 ## `fallback`
 
+<PluginAvailability from="minimal" />
+
 ### Purpose
 
 Runs a primary executor first and falls back to a secondary executor when the primary is too slow or fails.
@@ -168,9 +173,10 @@ Runs a primary executor first and falls back to a secondary executor when the pr
 
 #### `threshold`
 
-- Type: `integer`; Required: no
+- Type: `integer`; Required: no; Default: `500`
 - Unit: milliseconds
-- Purpose: Delay before the secondary is allowed to take over.
+- Purpose: Standby delay; `0` allows immediate execution and takeover.
+- Compatibility: Earlier versions treated explicit `0` as `500` ms. Set `500` explicitly to preserve that behavior.
 
 #### `always_standby`
 

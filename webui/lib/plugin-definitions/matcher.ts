@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import type { PluginKindDefinition, PluginMetricsDef } from "./shared";
 import {
   inputArrayItem,
@@ -223,6 +228,15 @@ export const matcherPluginDefinitions: PluginKindDefinition[] = [
     quickSetup: {
       paramPlaceholder: "SERVFAIL,NXDOMAIN 或 2,3",
     },
+  },
+  {
+    kind: "has_cname",
+    type: "matcher",
+    name: "Has CNAME",
+    description: "响应 Answer 区包含 CNAME 记录时命中",
+    icon: "CheckCircle",
+    configSchema: [],
+    quickSetup: {},
   },
   {
     kind: "has_resp",

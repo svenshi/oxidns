@@ -3,10 +3,13 @@ title: 响应处理
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 这些执行器在已有或合成响应上调整 TTL、地址选择、拦截结果和反向查询数据。
 
 ## `ttl`
+
+<PluginAvailability from="minimal" />
 
 ### 作用
 
@@ -67,11 +70,7 @@ import Admonition from "@theme/Admonition";
 
 ## `ip_selector`
 
-<Admonition type="warning" title="实验性插件（v1.2.0 引入）">
-
-`ip_selector` 在 `v1.2.0` 首次发布，目前处于**实验阶段**：配置字段、默认值、探测策略与缓存语义可能在后续版本根据实际使用反馈调整。建议在非关键链路先行验证，关注 release notes 中的相关变更说明。
-
-</Admonition>
+<PluginAvailability from="standard" />
 
 ### 作用
 
@@ -209,6 +208,8 @@ import Admonition from "@theme/Admonition";
 
 ## `prefer_ipv4` / `prefer_ipv6`
 
+<PluginAvailability from="minimal" />
+
 ### 作用
 
 双栈优选器。对偏好类型做学习，对非偏好类型做抑制。
@@ -304,6 +305,8 @@ import Admonition from "@theme/Admonition";
 
 ## `black_hole`
 
+<PluginAvailability from="minimal" />
+
 ### 作用
 
 按指定模式对命中的 DNS 请求生成本地拦截响应，覆盖所有 qtype。
@@ -392,6 +395,8 @@ import Admonition from "@theme/Admonition";
 
 ## `drop_resp`
 
+<PluginAvailability from="minimal" />
+
 ### 作用
 
 清空当前上下文中的响应。
@@ -427,6 +432,8 @@ import Admonition from "@theme/Admonition";
 ---
 
 ## `reverse_lookup`
+
+<PluginAvailability from="standard" />
 
 ### 作用
 

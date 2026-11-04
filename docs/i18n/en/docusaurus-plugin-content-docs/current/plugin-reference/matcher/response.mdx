@@ -3,10 +3,13 @@ title: Response Matchers
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 These matchers inspect response addresses, CNAMEs, RCODEs, and whether a response contains the wanted answer type.
 
 ## `resp_ip`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 
@@ -45,6 +48,8 @@ Matches A and AAAA addresses in the response answers.
 ---
 
 ## `cname`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 
@@ -89,6 +94,8 @@ Matches CNAME targets in the response.
 
 ## `rcode`
 
+<PluginAvailability from="minimal" />
+
 ### Purpose
 
 Matches the current response code.
@@ -126,7 +133,55 @@ This example mixes text and numeric forms. Both formats are equivalent and can b
 
 ---
 
+## `has_cname`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Check whether the current response's Answer section contains a CNAME record, regardless of request qtype or response RCODE.
+
+- Returns `true` for any CNAME in Answer, including CNAME chains and answers mixing CNAME with A/AAAA records.
+- Returns `false` for a missing response, an empty Answer section, or CNAME records only in Authority/Additional.
+- Only inspects the current response: it does not modify records, issue additional queries, or depend on other plugins.
+- Use [`cname`](#cname) to match CNAME target domain names.
+
+### Configuration Example
+
+```yaml
+- tag: response_has_cname
+  type: has_cname
+```
+
+Reference it in a `sequence` with `matches: "$response_has_cname"`, or negate it with `matches: "!$response_has_cname"`.
+
+### Configuration Fields
+
+No independent configuration fields; `args` is unnecessary. Initialization and destruction allocate no additional runtime resources.
+
+### quick setup
+
+Accepts no parameters. Evaluate after upstream resolution or local response creation:
+
+```yaml
+- exec: "$forward_main"
+- matches: "has_cname"
+  exec: "mark 100"
+- matches: "!has_cname"
+  exec: "mark 200"
+```
+
+`!has_cname` also matches when there is no response. Combine `has_resp` with `!has_cname` to match only existing responses without CNAME records.
+
+### Typical Uses
+
+- Branch on the presence of CNAME records without configuring target domain rules.
+
+---
+
 ## `has_resp`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 
@@ -156,6 +211,8 @@ No standalone configuration fields.
 ---
 
 ## `has_wanted_ans`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 

@@ -3,10 +3,13 @@ title: 解析与请求处理
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 这些执行器负责上游解析、缓存、本地应答、请求改写和 EDNS 信息传递。
 
 ## `forward`
+
+<PluginAvailability from="minimal" />
 
 ### 作用
 
@@ -330,6 +333,8 @@ import Admonition from "@theme/Admonition";
 
 ## `cache`
 
+<PluginAvailability from="minimal" />
+
 ### 作用
 
 对响应做 TTL 感知缓存，支持负缓存与持久化。
@@ -517,6 +522,8 @@ import Admonition from "@theme/Admonition";
 
 ## `hosts`
 
+<PluginAvailability from="minimal" />
+
 ### 作用
 
 按域名规则直接返回静态 `A` / `AAAA`。
@@ -544,19 +551,45 @@ import Admonition from "@theme/Admonition";
     short_circuit: true
 ```
 
+上例省略 `format`，等同于 `format: oxidns`，保留原有格式和覆盖行为。直接读取标准 hosts 文件时，可配置：
+
+```yaml
+- tag: github_hosts
+  type: hosts
+  args:
+    format: standard
+    entries:
+      - "192.168.1.1 router.local gateway.local"
+      - "fd00::1 router.local gateway.local"
+    files:
+      # 直接读取下载的标准 hosts 文件，无需转换列顺序
+      - "./hosts/github_hosts_raw.txt"
+    short_circuit: true
+```
+
 ### 配置项
+
+#### `format`
+
+- 类型：`string`；必填：否；默认值：`oxidns`
+- 同时决定 `entries` 和所有 `files` 的格式，不自动切换格式；未知值报配置错误。
+- 启动加载时，若规则不符合当前格式但符合另一种格式，会中止加载并提示来源位置、当前格式和建议的 `format` 值；也可将该规则转换为当前格式。
+- `oxidns`：`<域名规则> <IP> [IP…]`，保留现有匹配前缀及后写覆盖行为。
+- `standard`：`<IP> <主机名> [别名…]`，每个主机名均精确匹配，不解释匹配前缀；忽略大小写和尾点。
+- `standard` 支持空行、空格或 Tab 分隔、CRLF 换行，以及 `#` 整行或行尾注释，内联与文件语法一致。
+- `standard` 中同名主机的 IPv4 / IPv6 地址跨所有来源合并去重，各地址家族保留首次出现顺序；无效 IP 或缺少主机名时中止加载并报告来源位置。
 
 #### `entries`
 
 - 类型：`array`；必填：否；默认值：空数组
-- 作用：定义内联 hosts 规则。
-- 规则格式：
-  - `<域名规则> <ip1> <ip2> ...`
+- 作用：定义内联 hosts 规则，格式由 `format` 决定。
+- `oxidns`：`<域名规则> <IP> [IP…]`。
+- `standard`：`<IP> <主机名> [别名…]`。
 
 #### `files`
 
 - 类型：`array`；必填：否；默认值：空数组
-- 作用：指定外部 hosts 规则文件列表。
+- 作用：指定外部 hosts 规则文件列表，全部使用 `format` 指定的格式。
 
 #### `short_circuit`
 
@@ -566,10 +599,10 @@ import Admonition from "@theme/Admonition";
 ### 行为说明
 
 - 仅处理“恰好一个 question”的 `IN` 类 `A` / `AAAA` 请求。
-- 无前缀规则默认等价于 `full:`，与 mosdns `hosts` 保持一致。
-- 规则优先级固定为 `full -> domain -> regexp -> keyword`。
+- `oxidns` 中无前缀规则默认等价于 `full:`。
+- `oxidns` 规则优先级固定为 `full -> domain -> regexp -> keyword`。
 - `domain:` 按最长后缀命中。
-- 相同 pattern 按加载顺序后写覆盖前写；加载顺序为 `entries` 先，再按 `files` 顺序逐文件逐行覆盖。
+- 加载顺序为 `entries` 先，再按 `files` 顺序逐文件逐行加载。`oxidns` 中相同 pattern 后写覆盖前写；`standard` 中同名主机的地址合并去重。
 - 根据查询类型返回同族地址，正向本地答案 TTL 固定为 `10`。
 - 域名命中但请求家族没有对应地址时，返回 `NoError + 空 Answer + fake SOA`，不会透传后续执行。
 - 未命中时透传后续执行。
@@ -591,6 +624,8 @@ import Admonition from "@theme/Admonition";
 ---
 
 ## `arbitrary`
+
+<PluginAvailability from="standard" />
 
 ### 作用
 
@@ -668,6 +703,8 @@ import Admonition from "@theme/Admonition";
 
 ## `response`
 
+<PluginAvailability from="standard" />
+
 ### 作用
 
 无条件构造并覆盖当前 DNS 响应。它适合策略性返回固定答案、带 SOA 的 NODATA、或需要同时控制 Answer、Authority 和 Additional 的响应；调用条件由外层 `sequence` 的 matcher 决定。
@@ -740,6 +777,8 @@ args:
 ---
 
 ## `redirect`
+
+<PluginAvailability from="minimal" />
 
 ### 作用
 
@@ -832,6 +871,8 @@ old-static.example.com static.example.net
 
 ## `client_ip_from_ecs`
 
+<PluginAvailability from="standard" />
+
 ### 作用
 
 把请求 EDNS Client Subnet（ECS）中的地址设为当前 `DnsContext` 的客户端 IP。
@@ -895,6 +936,8 @@ ECS 可由请求方伪造。请把 dnsmasq 的真实连接地址或网段明确�
 ---
 
 ## `ecs_handler`
+
+<PluginAvailability from="minimal" />
 
 ### 作用
 
@@ -985,6 +1028,8 @@ ECS 可由请求方伪造。请把 dnsmasq 的真实连接地址或网段明确�
 ---
 
 ## `forward_edns0opt`
+
+<PluginAvailability from="minimal" />
 
 ### 作用
 

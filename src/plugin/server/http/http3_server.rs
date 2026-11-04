@@ -93,12 +93,13 @@ pub async fn run_server(
                     let src_ip_header = src_ip_header.clone();
                     let task_shutdown = shutdown_token.clone();
                     let active_connections = active_connections.clone();
+                    let request_tasks = tasks.clone();
                     tasks.spawn(async move {
                         let _connection_guard =
                             ConnectionGuard::new(active_connections.clone(), connecting.remote_address(), "HTTP/3");
                         tokio::select! {
                             _ = task_shutdown.cancelled() => {}
-                            _ = handle_h3_connection(connecting, dispatcher, src_ip_header) => {}
+                            _ = handle_h3_connection(connecting, dispatcher, src_ip_header, request_tasks) => {}
                         }
                     });
                     debug!("New QUIC connection started (active: {})", active);
@@ -114,11 +115,15 @@ pub async fn run_server(
 }
 
 /// Handle a single QUIC connection and all its HTTP/3 request streams
+///
+/// Per-request tasks are spawned on `tasks` so shutdown drains in-flight
+/// queries before the plugin registry destroys their executor dependencies.
 #[hotpath::measure]
 async fn handle_h3_connection(
     connecting: quinn::Incoming,
     dispatcher: Arc<HttpDispatcher>,
     src_ip_header: Option<Arc<str>>,
+    tasks: TaskTracker,
 ) {
     let src = connecting.remote_address();
 
@@ -170,7 +175,7 @@ async fn handle_h3_connection(
         let src_ip_header = src_ip_header.clone();
         let server_name = server_name.clone();
 
-        tokio::spawn(async move {
+        tasks.spawn(async move {
             handle_h3_request(request, stream, dispatcher, src, src_ip_header, server_name).await;
         });
     }

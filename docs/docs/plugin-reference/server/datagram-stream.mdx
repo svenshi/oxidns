@@ -3,10 +3,13 @@ title: UDP 与 TCP 入口
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 传统 DNS 入口，包括 UDP、TCP 和可选的 TCP TLS（DoT）配置。
 
 ## `udp_server`
+
+<PluginAvailability from="minimal" />
 
 ### 作用
 
@@ -81,6 +84,8 @@ import Admonition from "@theme/Admonition";
 ---
 
 ## `tcp_server`
+
+<PluginAvailability from="minimal" note="DoT 支持：standard / full" />
 
 ### 作用
 

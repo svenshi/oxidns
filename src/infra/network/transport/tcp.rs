@@ -66,9 +66,9 @@ where
 
         msg.append_to(&mut self.write_buf)?;
 
-        let body_len = self.write_buf.len() - 2;
+        let body_len = self.frame_len()?;
 
-        self.write_buf[..2].copy_from_slice(&(body_len as u16).to_be_bytes());
+        self.write_buf[..2].copy_from_slice(&body_len.to_be_bytes());
 
         self.writer.write_all(&self.write_buf).await?;
         Ok(())
@@ -83,17 +83,23 @@ where
         msg.append_to_with_id(id, &mut self.write_buf)
             .map_err(|e| DnsError::protocol(format!("Failed to serialize DNS message: {}", e)))?;
 
-        let body_len = self.write_buf.len() - 2;
+        let body_len = self.frame_len()?;
 
-        debug_assert!(body_len < u16::MAX as usize);
-
-        self.write_buf[..2].copy_from_slice(&(body_len as u16).to_be_bytes());
+        self.write_buf[..2].copy_from_slice(&body_len.to_be_bytes());
 
         self.writer
             .write_all(&self.write_buf)
             .await
             .map_err(|e| DnsError::protocol(format!("Failed to write DNS frame: {}", e)))?;
         Ok(())
+    }
+
+    /// Validate the encoded body against the 2-byte length prefix; an
+    /// unchecked `as u16` would silently wrap and desynchronize the stream.
+    #[inline]
+    fn frame_len(&self) -> Result<u16> {
+        u16::try_from(self.write_buf.len() - 2)
+            .map_err(|_| DnsError::protocol("DNS message exceeds the TCP framing size limit"))
     }
 }
 

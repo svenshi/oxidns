@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -185,7 +190,7 @@ function collectRequiredAdvancedPaths(
 
 describe("plugin advanced field classification", () => {
   it("covers the complete plugin registry with the reviewed field paths", () => {
-    expect(pluginKindDefinitions).toHaveLength(65);
+    expect(pluginKindDefinitions).toHaveLength(66);
 
     const actual = Object.fromEntries(
       pluginKindDefinitions

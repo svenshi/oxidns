@@ -3,10 +3,13 @@ title: Maintenance and Scheduling
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 These executors handle downloads, upgrades, provider reloads, full reloads, and background scheduling. Restrict triggers and prepare rollback in production.
 
 ## `upgrade`
+
+<PluginAvailability from="standard" />
 
 ### Purpose
 
@@ -97,6 +100,8 @@ Runs the OxiDNS upgrade flow from the executor pipeline. It is suitable for main
 - `mode` is not supported; the plugin always applies upgrades.
 
 ## `download`
+
+<PluginAvailability from="standard" />
 
 ### Purpose
 
@@ -267,6 +272,8 @@ The corresponding [management API](../../api/plugins.mdx#download) supports sing
 
 ## `reload_provider`
 
+<PluginAvailability from="minimal" />
+
 ### Purpose
 
 Reloads one or more providers in place by tag, rebuilding their internal snapshots with the same startup configuration without triggering a full application reload.
@@ -311,6 +318,8 @@ Reloads one or more providers in place by tag, rebuilding their internal snapsho
 
 ## `reload`
 
+<PluginAvailability from="minimal" />
+
 ### Purpose
 
 Triggers the same application-level full reload as the management API `POST /reload`, reloading the active configuration and rebuilding all plugins.
@@ -351,6 +360,8 @@ Triggers the same application-level full reload as the management API `POST /rel
 ---
 
 ## `cron`
+
+<PluginAvailability from="standard" />
 
 ### Purpose
 
@@ -395,6 +406,7 @@ Schedules a list of executors in the background. It does not participate in the 
 - Notes:
   - Only affects `schedule`.
   - When omitted, OxiDNS uses the system local time zone and falls back to `UTC` if unavailable.
+  - On OpenWrt without `/etc/localtime`, OxiDNS reads POSIX timezone rules from `/etc/TZ`, including daylight saving transitions. An explicit `TZ` environment variable takes precedence.
   - Use IANA names such as `Asia/Shanghai`, `UTC`, or `America/Los_Angeles`.
 
 #### `args.jobs[].name`

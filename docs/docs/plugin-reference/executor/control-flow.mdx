@@ -3,10 +3,13 @@ title: 策略编排
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 `sequence` 和 `fallback` 定义请求如何进入分支、调用子链并在主备路径之间切换。
 
 ## `sequence`
+
+<PluginAvailability from="minimal" />
 
 ### 作用
 
@@ -142,6 +145,8 @@ import Admonition from "@theme/Admonition";
 
 ## `fallback`
 
+<PluginAvailability from="minimal" />
+
 ### 作用
 
 在主路径失败或过慢时，切换到备用路径。
@@ -176,9 +181,10 @@ import Admonition from "@theme/Admonition";
 
 #### `threshold`
 
-- 类型：`integer`；必填：否；默认值：`0`
+- 类型：`integer`；必填：否；默认值：`500`
 - 单位：毫秒
-- 作用：定义主路径超时或延迟判定阈值。
+- 作用：定义备用路径的等待阈值；设为 `0` 时，无需等待即可执行和接管。
+- 兼容性：早期版本将显式 `0` 按 `500` 毫秒处理；若需保持原行为，请显式配置 `500`。
 
 #### `always_standby`
 

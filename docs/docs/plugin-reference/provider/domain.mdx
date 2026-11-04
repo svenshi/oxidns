@@ -3,10 +3,13 @@ title: 域名 provider
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 这些 provider 管理静态、动态、V2Ray geosite 或 AdGuard 形式的域名规则资产。
 
 ## `domain_set`
+
+<PluginAvailability from="minimal" />
 
 ### 作用
 
@@ -110,11 +113,7 @@ import Admonition from "@theme/Admonition";
 
 ## `dynamic_domain_set`
 
-<Admonition type="warning" title="实验性插件（v1.2.0 引入）">
-
-`dynamic_domain_set` 在 `v1.2.0` 首次发布，目前处于**实验阶段**：相关配置可能在后续版本调整。生产部署前请评估学习速率与磁盘写入对持久化层的影响。
-
-</Admonition>
+<PluginAvailability from="standard" />
 
 ### 作用
 
@@ -204,6 +203,8 @@ import Admonition from "@theme/Admonition";
 ---
 
 ## `geosite`
+
+<PluginAvailability from="standard" />
 
 ### 作用
 
@@ -318,6 +319,8 @@ plugins:
 ---
 
 ## `adguard_rule`
+
+<PluginAvailability from="standard" />
 
 ### 作用
 

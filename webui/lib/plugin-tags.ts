@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { WEBUI } from "./i18n";
 
 export const MAX_PLUGIN_TAG_LENGTH = 64;

@@ -3,10 +3,13 @@ title: Composition and Constant Matchers
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 These matchers combine other expressions or provide always-true and always-false conditions.
 
 ## `any_match`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 
@@ -44,6 +47,8 @@ Composes multiple matcher expressions and returns `true` when any one of them ma
 ---
 
 ## `string_exp`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 
@@ -136,6 +141,8 @@ Supported `op` values:
 
 ## `_true`
 
+<PluginAvailability from="minimal" />
+
 ### Purpose
 
 Always returns true.
@@ -167,6 +174,8 @@ No standalone configuration fields.
 <span id="false"></span>
 
 ## `_false`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 

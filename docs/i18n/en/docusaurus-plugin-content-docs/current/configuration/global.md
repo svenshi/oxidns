@@ -156,6 +156,8 @@ Field notes:
 
 ### `log`
 
+Log timestamps use the system local timezone detected at startup, consistently across stdout, files, and the API log buffer. On OpenWrt without `/etc/localtime`, OxiDNS reads POSIX timezone rules from `/etc/TZ`; an explicit `TZ` environment variable takes precedence. Restart OxiDNS after changing the system timezone to update log timestamps.
+
 ```yaml
 log:
   level: info

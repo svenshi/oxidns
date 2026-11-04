@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import type { PluginKindDefinition, PluginMetricsDef } from "./shared";
 import {
   executorRef,
@@ -499,10 +504,10 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       ),
       {
         key: "threshold",
-        description: "定义主路径超时或延迟判定阈值。",
+        description: "定义备用路径的等待阈值；0 表示无需等待即可执行和接管。",
         label: "接管阈值(ms)",
         type: "number",
-        default: 0,
+        default: 500,
       },
       {
         key: "always_standby",
@@ -548,19 +553,30 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       ],
     } satisfies PluginMetricsDef,
     configSchema: [
+      {
+        key: "format",
+        description: "选择 entries 和 files 的规则格式；省略时使用 oxidns。",
+        label: "规则格式",
+        type: "select",
+        default: "oxidns",
+        options: [
+          { label: "OxiDNS（域名在前）", value: "oxidns" },
+          { label: "标准 hosts（IP 在前）", value: "standard" },
+        ],
+      },
       stringArrayField(
         "entries",
         "内联 hosts 规则",
         "router.local 192.168.1.1\nfull:gateway.local 192.168.1.2\ndomain:svc.local 10.0.0.10\nkeyword:nas 192.168.1.20\nregexp:^api[0-9]+\\.corp\\.local$ 10.10.0.5",
         false,
-        "定义内联 hosts 规则。",
+        "规则格式由 format 决定；standard 使用 IP 主机名 [别名…]。",
       ),
       stringArrayField(
         "files",
         "hosts 文件",
         "/etc/oxidns/hosts.txt",
         false,
-        "指定外部 hosts 规则文件列表。",
+        "按 format 指定的格式加载外部 hosts 规则文件。",
       ),
       {
         key: "short_circuit",
@@ -1234,12 +1250,14 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "rule_kind",
-        description: "控制写入 dynamic_domain_set 的规则类型。",
-        label: "规则类型",
+        description:
+          "选择学习范围：仅当前域名、当前域名及其子域，或可注册域及其子域。",
+        label: "学习策略",
         type: "select",
         options: [
-          { label: "Full", value: "full" },
-          { label: "Domain", value: "domain" },
+          { label: "仅当前域名", value: "full" },
+          { label: "当前域名及子域", value: "domain" },
+          { label: "可注册域及子域", value: "registrable_domain" },
         ],
         default: "full",
       },

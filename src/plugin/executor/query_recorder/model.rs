@@ -170,9 +170,12 @@ pub(super) struct PluginsStatsQuery {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct QueryRecordFilter {
     pub(super) qname: Option<String>,
+    pub(super) qname_exact: Option<String>,
     pub(super) qtype: Option<String>,
     pub(super) client_ip: Option<String>,
+    pub(super) client_ip_exact: Option<String>,
     pub(super) rcode: Option<String>,
+    pub(super) rcode_bucket: Option<String>,
     pub(super) status: QueryRecordStatus,
     pub(super) matcher_tag: Option<String>,
 }
@@ -207,10 +210,20 @@ pub(super) struct TopBucketRow {
     pub(super) share: f64,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+pub(super) struct StatsSampleMetadata {
+    pub(super) sample_limit: usize,
+    pub(super) sample_truncated: bool,
+    pub(super) sample_since_ms: Option<i64>,
+    pub(super) sample_until_ms: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct TopBucketsResponse {
     pub(super) ok: bool,
     pub(super) sample_size: u64,
+    #[serde(flatten)]
+    pub(super) sample: StatsSampleMetadata,
     pub(super) rows: Vec<TopBucketRow>,
 }
 
@@ -225,6 +238,8 @@ pub(super) struct DistributionRow {
 pub(super) struct DistributionResponse {
     pub(super) ok: bool,
     pub(super) sample_size: u64,
+    #[serde(flatten)]
+    pub(super) sample: StatsSampleMetadata,
     pub(super) rows: Vec<DistributionRow>,
 }
 
@@ -246,6 +261,8 @@ pub(super) struct LatencySlowRow {
 pub(super) struct LatencySummary {
     pub(super) ok: bool,
     pub(super) sample_size: u64,
+    #[serde(flatten)]
+    pub(super) sample: StatsSampleMetadata,
     pub(super) avg_ms: f64,
     pub(super) p50_ms: u64,
     pub(super) p95_ms: u64,
@@ -261,6 +278,8 @@ pub(super) struct TimeseriesPoint {
     pub(super) total: u64,
     pub(super) error_count: u64,
     pub(super) no_response_count: u64,
+    pub(super) servfail_count: u64,
+    pub(super) partial: bool,
     pub(super) avg_ms: f64,
     pub(super) p95_ms: u64,
 }
@@ -269,21 +288,46 @@ pub(super) struct TimeseriesPoint {
 pub(super) struct TimeseriesResponse {
     pub(super) ok: bool,
     pub(super) sample_size: u64,
+    pub(super) sample_limit: usize,
+    pub(super) sample_truncated: bool,
+    pub(super) sample_since_ms: Option<i64>,
+    pub(super) sample_until_ms: Option<i64>,
     pub(super) bucket_ms: i64,
     pub(super) points: Vec<TimeseriesPoint>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TimeseriesBucket {
+    Auto,
     Minute,
     Hour,
 }
 
 impl TimeseriesBucket {
-    pub(super) fn millis(self) -> i64 {
+    pub(super) fn millis(self, since_ms: i64, until_ms: i64, max_buckets: usize) -> i64 {
         match self {
             Self::Minute => 60_000,
             Self::Hour => 3_600_000,
+            Self::Auto => {
+                let intervals = [
+                    1_000, 5_000, 10_000, 30_000, 60_000, 300_000, 900_000, 1_800_000, 3_600_000,
+                    10_800_000, 21_600_000, 43_200_000, 86_400_000,
+                ];
+                let fits = |width: i64| {
+                    let count = until_ms.div_euclid(width) - since_ms.div_euclid(width) + 1;
+                    count <= max_buckets.max(1) as i64
+                };
+                for width in intervals {
+                    if fits(width) {
+                        return width;
+                    }
+                }
+                let mut width: i64 = 86_400_000;
+                while !fits(width) && width < i64::MAX {
+                    width = width.saturating_mul(2);
+                }
+                width
+            }
         }
     }
 }

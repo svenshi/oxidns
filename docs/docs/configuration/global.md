@@ -156,6 +156,8 @@ runtime:
 
 ### `log`
 
+日志时间使用启动时识别的系统本地时区，标准输出、文件和 API 日志缓冲区保持一致。OpenWrt 未提供 `/etc/localtime` 时，会读取 `/etc/TZ` 中的 POSIX 时区规则；显式 `TZ` 环境变量优先。修改系统时区后，重启 OxiDNS 以更新日志时区。
+
 ```yaml
 log:
   level: info

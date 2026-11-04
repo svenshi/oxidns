@@ -3,10 +3,13 @@ title: UDP and TCP Ingress
 ---
 
 import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
 
 Traditional DNS ingress over UDP, TCP, and optional TLS on TCP (DoT).
 
 ## `udp_server`
+
+<PluginAvailability from="minimal" />
 
 ### Purpose
 
@@ -81,6 +84,8 @@ Listens for DNS over UDP and forwards requests to `entry`.
 ---
 
 ## `tcp_server`
+
+<PluginAvailability from="minimal" note="DoT support: standard / full" />
 
 ### Purpose
 

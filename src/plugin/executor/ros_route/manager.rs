@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Route manager for DNS-observed RouterOS route leases.
 //!
 //! Dynamic state is keyed only by the destination host route. DNS answers add

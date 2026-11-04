@@ -98,6 +98,28 @@ plugins:
 
 ---
 
+## WebUI 演示
+
+### 配置编辑
+
+直接编辑 YAML 配置，通过插件索引快速定位插件定义。
+
+![WebUI 配置编辑器与插件索引演示](.github/img/config_editor.gif)
+
+### 插件依赖图
+
+以依赖图查看插件引用、`sequence` 分支和执行器组合。
+
+![WebUI 插件依赖图与 sequence 分支演示](.github/img/plugin_dep.gif)
+
+### 查询追踪
+
+从查询记录查看响应详情、匹配结果和实际执行路径。
+
+![WebUI 查询记录与执行路径追踪演示](.github/img/query_tracing.gif)
+
+---
+
 ## 快速开始
 
 一条命令安装最新 release，并默认注册和启动为系统服务：
@@ -198,3 +220,8 @@ OxiDNS 主要由 [Sven Shi](https://github.com/svenshi) 创建和维护。
 ## 许可证
 
 本项目基于 [GNU General Public License v3.0 or later](LICENSE) 开源。
+
+独立的自有库 [oxidns-proto](crates/proto/README.md) 和
+[oxidns-macros](crates/macros/README.md) 采用 `MIT OR Apache-2.0` 双重许可证，
+使用者可以任选其一。其他 workspace crate 的许可证见各自的 `Cargo.toml`
+和许可证文件。

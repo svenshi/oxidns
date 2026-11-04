@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { zhCNDocs } from "../zh-CN/docs";
 import type { LocaleResourceShape } from "../../types";
 
@@ -126,17 +131,19 @@ export const enUSDocs = {
     secondary:
       "- Type: `string`; Required: Yes; Default: None\n- Function: Specify the secondary executor.",
     threshold:
-      "- Type: `integer`; required: no; default value: `0`\n- Unit: milliseconds\n- Function: Define the main path timeout or delay determination threshold.",
+      "- Type: `integer`; required: no; default value: `500`\n- Unit: milliseconds\n- Function: Sets the standby delay; 0 allows immediate execution and takeover.",
     always_standby:
       "- Type: `boolean`; required: no; default value: `false`\n- Function: Control whether the backup path is on standby at the same time as the main path.",
     short_circuit:
       "- Type: `boolean`; required: no; default value: `false`\n- Function: Control whether to stop the subsequent executor chain immediately after the primary/backup path selects the final response.",
   },
   hosts: {
+    format:
+      "- Type: `string`; Required: No; Default: `oxidns`\n- Purpose: Select the rule format for both entries and files.\n- `oxidns`: `<domain_rule> <IP> [IP…]`, preserving matcher prefixes and last-write-wins behavior.\n- `standard`: `<IP> <hostname> [aliases…]`, using exact names without interpreting matcher prefixes; names ignore case and trailing dots, and addresses for each name are merged and deduplicated in load order.\n- Unknown formats are rejected; formats are never switched automatically.\n- During startup loading, a rule that fails the configured format but matches the other format produces an error with its source location, current format, and suggested format value. Alternatively, convert the rule to the configured format.",
     entries:
-      "- Type: `array`; Required: No; Default: empty array\n- Function: Define inline hosts rules.\n- Rule format:\n  - `<Domain Name Rules> <ip1> <ip2> ...`\n- `<Domain Name Rules>` supports:\n  - `full:`\n  - `domain:`\n  - `keyword:`\n  - `regexp:`\n  - Unprefixed domain name (processed by `full:` exact match)",
+      "- Type: `array`; Required: No; Default: empty array\n- Purpose: Define inline hosts rules using the selected format.\n- `oxidns`: `<domain_rule> <IP> [IP…]`, supporting full:, domain:, keyword:, and regexp:; unprefixed names are exact matches and repeated patterns use last-write-wins.\n- `standard`: `<IP> <hostname> [aliases…]`, merging and deduplicating addresses for each name in first-seen order per family; supports blank lines, spaces/tabs, and # full-line or trailing comments.",
     files:
-      "- Type: `array`; Required: No; Default: empty array\n- Function: Specify the external hosts rule file list.",
+      "- Type: `array`; Required: No; Default: empty array\n- Purpose: Load external hosts rule files using the selected format.\n- Load order: entries first, then each file in files order, line by line. standard merges addresses across all sources; oxidns uses last-write-wins.",
     short_circuit:
       "- Type: `bool`; required: no; default value: `false`\n- Function: After hitting and generating a local response, whether to immediately stop the subsequent executor chain.",
   },
@@ -273,7 +280,7 @@ export const enUSDocs = {
     answer_required:
       "- Type: `boolean`; required: no; default value: `true`\n- Function: Only learn when the response contains answer records.\n- Conditions of use: Only `phase: after` takes effect.",
     rule_kind:
-      "- Type: `string`; Required: No; Default: `full`\n- Optional values:\n  - `full`: Write `full:example.com` exact rules.\n  - `domain`: Write `domain:example.com` suffix rule.\n- Operational impact: The default precise rule can avoid accidentally expanding the matching range; when changed to `domain`, the entire subdomain will be hit.",
+      "- Type: `string`; Required: No; Default: `full`\n- Function: Select the learned rule generation strategy. For a request for `security.snssdk.com`:\n  - `full`: Generate `full:security.snssdk.com`, matching only that name.\n  - `domain`: Generate `domain:security.snssdk.com`, matching that name and its subdomains.\n  - `registrable_domain`: Generate `domain:snssdk.com`, matching the registrable domain and all its subdomains.\n- Boundaries: The registrable-domain strategy uses an embedded ICANN + PRIVATE Public Suffix List, recognizing `example.co.uk` and preserving tenant boundaries such as `foo.github.io`. No network access is needed; the list updates with the binary.\n- Skips: The registrable-domain strategy skips the DNS root, public suffixes themselves, unknown suffixes, single-label names, reverse lookup names, and escaped DNS names. Skips do not trigger `error_mode`.\n- Usage: Explicitly enable whole-domain learning when one routing policy should cover the registrable domain. Rules persist and do not automatically expire with DNS answer TTLs.",
     async:
       "- Type: `boolean`; required: no; default value: `true`\n- Function: Control whether to continue execution only after joining the queue.\n- Operational impact:\n  - `true`: writes are queued asynchronously, with zero wait on the request path.\n  - `false`: synchronously wait for provider writing to complete on the current request path, limited by `timeout`.",
     error_mode:
@@ -581,6 +588,9 @@ export const enUSDocs = {
   },
   rcode: {
     args: "`args` of `rcode` is a list of rcodes.\n\n- Type: `array`; Required: Yes; Default: None\n- Function: Define the set of response codes that can be hit.\n- Supports both enum literals and decimal values, such as `NOERROR` / `SERVFAIL` / `NXDOMAIN` or `0` / `2` / `3`; both formats can be mixed in the same list.\n- Unknown or future extended response codes can continue to be matched using numeric values.\n- Operational impact:\n  - Return `true` only if there is already a response in the context and rcode hits the configuration collection.",
+  },
+  has_cname: {
+    args: "No independent configuration fields; quick setup accepts no parameters. Checks only for CNAME records in the current response's Answer section, regardless of request qtype or response RCODE. Returns `false` for a missing response, an empty Answer section, or CNAME records only in Authority/Additional. Use after upstream resolution or local response creation; use `cname` to match target domain names.",
   },
   has_resp: {
     args: "No independent configuration fields.",
