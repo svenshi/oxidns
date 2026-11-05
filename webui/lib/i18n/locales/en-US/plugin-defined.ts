@@ -328,6 +328,11 @@ export const enUSPluginDefined = {
       name: "Forward",
       description: "Initiate a query to one or more upstream DNS",
       fields: {
+        forward_mac: {
+          label: "Forward client MAC",
+          description:
+            "Allow forwarding an existing EDNS MAC option (65001) to upstreams without generating a MAC",
+        },
         concurrent: {
           label: "Number of concurrent upstreams",
           description:

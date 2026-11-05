@@ -52,6 +52,8 @@ export const zhCNDocs = {
       "- 类型：`string`；必填：否；默认值：无\n- 作用：定义规则命中后要执行的动作。\n- 支持内容：\n  - 插件引用\n  - 快捷表达式\n  - 内建控制流，例如 `accept`、`reject SERVFAIL`、`reject NOERROR`、`reject 3`、`jump <tag>`\n- 说明：`reject` 的 RCODE 参数支持大小写不敏感的英文名称和十进制数字。\n- 运行影响：\n  - 直接决定当前规则的执行行为。",
   },
   forward: {
+    forward_mac:
+      "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：允许向上游转发请求中已有的 EDNS MAC 选项（65001）\n- 关闭时仅从上游请求副本中移除该选项，不改变原始请求和其他 EDNS 选项\n- 开启时保留已有 MAC，不会查询或生成客户端 MAC\n- 单上游和多上游均适用，简写配置默认关闭\n- 兼容性：需要保留旧版 MAC 透传行为时，显式设置 `forward_mac: true`",
     concurrent:
       "- 类型：`integer`；必填：否；默认值：`1`\n- 取值范围：实际运行时会限制在 `1..=32`，且不会超过 upstream 数量。\n- 建议范围：`2..=8`；更高值适合高级观测或特殊部署。\n- 作用：定义多上游模式下的并发查询扇出数。\n- 运行影响：\n  - 值越大，多上游竞争越积极，但同时会增加上游请求量。",
     response_selection:

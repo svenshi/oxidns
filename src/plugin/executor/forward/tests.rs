@@ -186,6 +186,7 @@ async fn concurrent_returns_error_when_all_upstreams_fail() {
             Arc::new(MockUpstream::fail("u2 fail", Duration::ZERO)),
         ],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::default(),
         metrics: metrics.clone(),
     };
@@ -340,6 +341,7 @@ async fn concurrent_success_sets_response() {
         active_concurrent: 1,
         upstreams: vec![Arc::new(MockUpstream::ok())],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::default(),
         metrics: test_metrics(),
     };
@@ -357,6 +359,7 @@ async fn single_success_stops_when_short_circuit_enabled() {
         tag: "forward-test".to_string(),
         upstream: Box::new(MockUpstream::ok()),
         short_circuit: true,
+        forward_mac: false,
         metrics: metrics.clone(),
     };
 
@@ -379,6 +382,7 @@ async fn single_metrics_record_error_and_timeout() {
             Duration::ZERO,
         )),
         short_circuit: false,
+        forward_mac: false,
         metrics: metrics.clone(),
     };
 
@@ -399,6 +403,7 @@ async fn single_does_not_classify_for_incomplete_alias_metric() {
         tag: "forward-test".to_string(),
         upstream: Box::new(MockUpstream::ok_with_cname_answer(Duration::ZERO)),
         short_circuit: false,
+        forward_mac: false,
         metrics: metrics.clone(),
     };
 
@@ -425,6 +430,7 @@ async fn concurrent_selection_records_selected_incomplete_alias() {
             Arc::new(MockUpstream::ok_with_cname_answer(Duration::ZERO)),
         ],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::Balanced,
         metrics: metrics.clone(),
     };
@@ -452,6 +458,7 @@ async fn fastest_does_not_classify_for_incomplete_alias_metric() {
             Arc::new(MockUpstream::ok_with_cname_answer(Duration::ZERO)),
         ],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::Fastest,
         metrics: metrics.clone(),
     };
@@ -475,6 +482,7 @@ async fn concurrent_success_stops_when_short_circuit_enabled() {
         active_concurrent: 1,
         upstreams: vec![Arc::new(MockUpstream::ok())],
         short_circuit: true,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::default(),
         metrics: test_metrics(),
     };
@@ -498,6 +506,7 @@ async fn concurrent_prefers_noerror_over_early_servfail() {
             )),
         ],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::default(),
         metrics: test_metrics(),
     };
@@ -524,6 +533,7 @@ async fn concurrent_returns_last_non_preferred_rcode_when_no_preferred_response(
             )),
         ],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::default(),
         metrics: test_metrics(),
     };
@@ -547,6 +557,7 @@ async fn fastest_selection_returns_early_nxdomain() {
             Arc::new(MockUpstream::ok_with_answer(Duration::from_millis(20))),
         ],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::Fastest,
         metrics: test_metrics(),
     };
@@ -570,6 +581,7 @@ async fn balanced_selection_waits_briefly_for_positive_after_negative() {
             Arc::new(MockUpstream::ok_with_answer(Duration::from_millis(20))),
         ],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::Balanced,
         metrics: test_metrics(),
     };
@@ -592,6 +604,7 @@ async fn balanced_selection_waits_for_complete_answer_after_cname_only() {
             Arc::new(MockUpstream::ok_with_answer(Duration::from_millis(200))),
         ],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::Balanced,
         metrics: test_metrics(),
     };
@@ -617,6 +630,7 @@ async fn balanced_selection_keeps_cname_only_above_negative_fallback() {
             )),
         ],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::Balanced,
         metrics: test_metrics(),
     };
@@ -640,6 +654,7 @@ async fn prefer_positive_waits_for_late_positive() {
             Arc::new(MockUpstream::ok_with_answer(Duration::from_millis(200))),
         ],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::PreferPositive,
         metrics: test_metrics(),
     };
@@ -662,6 +677,7 @@ async fn prefer_positive_waits_for_complete_answer_after_cname_only() {
             Arc::new(MockUpstream::ok_with_answer(Duration::from_millis(200))),
         ],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::PreferPositive,
         metrics: test_metrics(),
     };
@@ -687,6 +703,7 @@ async fn prefer_positive_keeps_cname_only_above_negative_fallback() {
             )),
         ],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::PreferPositive,
         metrics: test_metrics(),
     };
@@ -714,6 +731,7 @@ async fn consensus_selection_returns_after_two_negative_votes() {
             Arc::new(MockUpstream::ok_with_answer(Duration::from_millis(200))),
         ],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::Consensus,
         metrics: Arc::new(ForwardMetrics::new(
             "forward-test".to_string(),
@@ -747,6 +765,7 @@ async fn consensus_selection_returns_negative_over_incomplete_alias() {
             )),
         ],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::Consensus,
         metrics: Arc::new(ForwardMetrics::new(
             "forward-test".to_string(),
@@ -776,6 +795,7 @@ async fn consensus_selection_waits_when_negative_votes_disagree() {
             Arc::new(MockUpstream::ok_with_answer(Duration::from_millis(200))),
         ],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::Consensus,
         metrics: Arc::new(ForwardMetrics::new(
             "forward-test".to_string(),
@@ -805,6 +825,7 @@ async fn consensus_selection_does_not_count_cname_only_as_negative_vote() {
             Arc::new(MockUpstream::ok_with_answer(Duration::from_millis(200))),
         ],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::Consensus,
         metrics: Arc::new(ForwardMetrics::new(
             "forward-test".to_string(),
@@ -833,6 +854,7 @@ async fn consensus_selection_keeps_cname_only_above_negative_fallback() {
             )),
         ],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::Consensus,
         metrics: test_metrics(),
     };
@@ -858,6 +880,7 @@ async fn consensus_selection_counts_cname_with_soa_as_nodata() {
             ))),
         ],
         short_circuit: false,
+        forward_mac: false,
         response_selection: ResponseSelectionMode::Consensus,
         metrics: test_metrics(),
     };

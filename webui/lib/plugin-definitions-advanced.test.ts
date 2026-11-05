@@ -18,6 +18,7 @@ const EXPECTED_ADVANCED_FIELDS: Record<string, string[]> = {
   "executor/forward": [
     "concurrent",
     "response_selection",
+    "forward_mac",
     "upstreams[].outbound",
     "upstreams[].dial_addr",
     "upstreams[].port",

@@ -25,6 +25,8 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
     concurrent: 3
     # 并发上游结果选择模式：fastest / balanced / prefer_positive / consensus
     response_selection: balanced
+    # 默认不向上游转发客户端 MAC，仅在上游明确需要时开启
+    forward_mac: false
     upstreams:
       # 最简单的 UDP 上游
       - tag: "cf_udp"
@@ -96,6 +98,16 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 - `CNAME + SOA` 且没有最终请求类型会识别为 NODATA；`NXDOMAIN` 即使带有 CNAME 也仍是负响应。
 - `forward` 不执行隐藏式 fallback 或 CNAME chase；需要更多上游竞争时请显式提高 `concurrent`。
 - `fallback` executor 只判断分支是否产生了 response，不理解 response disposition；incomplete alias 或 `SERVFAIL` Message 也会被视为成功响应。若希望这些结果显式触发另一个上游，应使用 `has_wanted_ans`、`rcode` 等 matcher 组合 sequence，而不是依赖隐藏式 fallback。
+
+#### `forward_mac`
+
+- 类型：`boolean`；必填：否；默认值：`false`
+- 作用：控制是否向上游转发请求中已有的 EDNS MAC 选项（code `65001`）
+- 默认仅从发往上游的请求副本中移除该选项，不改变原始请求、ECS、COOKIE、DNSSEC 标记或其他 EDNS 选项
+- 设置为 `true` 时保留已有 MAC，不会查询邻居表、网卡或主动生成 MAC
+- 对单上游、多上游以及所有上游协议均生效，简写配置保持默认关闭
+- 兼容性变化：旧版默认保留该选项，需要原有 MAC 透传行为时，在完整配置的 `args` 中显式设置 `forward_mac: true`
+- 部分公共 DNS 不接受 MAC 选项，仅在已确认上游需要并支持时开启
 
 #### `upstreams`
 

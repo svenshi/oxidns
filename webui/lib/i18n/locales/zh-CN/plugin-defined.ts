@@ -293,6 +293,11 @@ export const zhCNPluginDefined = {
       name: "Forward",
       description: "向一个或多个上游 DNS 发起查询",
       fields: {
+        forward_mac: {
+          label: "转发客户端 MAC",
+          description:
+            "允许向上游转发请求中已有的 EDNS MAC 选项（65001），不会生成 MAC",
+        },
         concurrent: {
           label: "并发上游数",
           description: "定义多上游模式下的并发查询扇出数。",
