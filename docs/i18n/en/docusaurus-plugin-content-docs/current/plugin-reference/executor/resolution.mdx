@@ -66,9 +66,11 @@ Sends DNS queries to upstreams.
 
 - Type: `integer`; Required: no; Default: `1`
 - Runtime range is clamped to `1..=32` and never exceeds the upstream count.
-- Purpose: Number of concurrent upstream fan-out requests.
-- This is the number of upstreams actually started for one request. OxiDNS does not sequentially retry unstarted upstreams after a CNAME-only response, so `concurrent: 1` retains single-attempt selection semantics.
-- Recommendation: use `2..=8` for routine racing; higher values are intended for short-term observation or explicit multi-protocol racing.
+- Purpose: Number of concurrent upstream fan-out requests in multi-upstream mode.
+- Runtime impact:
+  - Higher values race more aggressively across upstreams but also increase upstream request volume.
+  - This is the number of upstreams actually started for one request. OxiDNS does not sequentially retry unstarted upstreams after a CNAME-only response, so `concurrent: 1` retains single-attempt selection semantics.
+  - Use `2..=8` for routine racing; higher values are intended for short-term observation or explicit multi-protocol racing.
 
 #### `response_selection`
 
@@ -114,34 +116,43 @@ Sends DNS queries to upstreams.
 
 #### `upstreams[].addr`
 
-- Type: `string`; Required: yes
+- Type: `string`; Required: yes; Default: none
 - Purpose: Upstream address, protocol, and target.
-- Supports:
-  - `udp://`
-  - `tcp://`
-  - `tcp+pipeline://`
-  - `tls://`
-  - `tls+pipeline://`
-  - `quic://` / `doq://`
-  - `https://` / `doh://`
-  - `h3://`
-- Notes:
+- Examples:
+  - `addr: "8.8.8.8:53"`
+  - `addr: "tls://dns.example:853"`
+  - `addr: "https://resolver.example/dns-query"`
+- Supported formats:
+  - `udp://8.8.8.8:53` or `8.8.8.8:53`
+  - `tcp://8.8.8.8:53`
+  - `tcp+pipeline://8.8.8.8:53`
+  - `tls://dns.example:853`
+  - `tls+pipeline://dns.example:853`
+  - `quic://dns.example:853` or `doq://dns.example:853`
+  - `https://resolver.example/dns-query` or `doh://resolver.example/dns-query`
+  - `h3://resolver.example/dns-query`
+- Rules:
   - No scheme means UDP.
-  - DoH addresses should include the full request path.
-  - Startup and config validation do not resolve domain-based upstreams. Without `bootstrap` or `dial_addr`, the hostname is resolved through the OS resolver when the first connection is created.
-  - For domain-based upstreams, choose either `bootstrap` or `dial_addr` to avoid runtime bootstrap dependency on the local DNS setup.
-  - `bootstrap` and `dial_addr` are mutually exclusive at runtime. If both are configured, only `dial_addr` is effective and `bootstrap` is ignored.
+  - `https://` / `doh://` means DoH; `h3://` forces DoH over HTTP/3.
+  - `tcp+pipeline://` and `tls+pipeline://` enable pipeline mode directly.
+  - DoH addresses should include the actual request path, for example `/dns-query`.
+- Resolution behavior: startup and config validation do not resolve domain-based upstreams. Without `bootstrap` or `dial_addr`, the hostname is resolved through the OS resolver when the first connection is created.
+- Recommendation: for domain-based upstreams set either `bootstrap` or `dial_addr` to avoid a runtime bootstrap dependency on the local DNS setup.
+- Mutual exclusion: when `bootstrap` and `dial_addr` are both configured, only `dial_addr` is effective and `bootstrap` is ignored.
 
 #### `upstreams[].tag`
 
-- Type: `string`; Required: no
-- Purpose: Per-upstream log label.
+- Type: `string`; Required: no; Default: none
+- Purpose: Per-upstream log label for troubleshooting multi-upstream racing results.
+- Example: `tag: "upstream_google"`
 
 #### `upstreams[].dial_addr`
 
-- Type: `ip`; Required: no
+- Type: `ip`; Required: no; Default: none
 - Purpose: Actual connection IP while preserving the hostname from `addr` for SNI, Host, and certificate validation.
-- Notes: Takes precedence over `bootstrap` when both are configured.
+- Example: `dial_addr: "1.1.1.1"`
+- Typical use: fixed dial addresses, bypassing local resolution, or combining with custom routing egress.
+- Mutual exclusion: takes precedence over `bootstrap` when both are configured.
 
 #### `upstreams[].outbound`
 
@@ -153,64 +164,93 @@ Sends DNS queries to upstreams.
 
 #### `upstreams[].port`
 
-- Type: `integer`; Required: no
+- Type: `integer`; Required: no; Default: protocol default port
 - Purpose: Override the protocol default port.
+- Example: `port: 5353`
 
 #### `upstreams[].bootstrap`
 
-- Type: `string`; Required: no
+- Type: `string`; Required: no; Default: none
 - Purpose: Bootstrap resolver for domain-based upstreams.
-- Notes: Must use an `IP:port` address. With bootstrap enabled, OxiDNS resolves the upstream hostname through that resolver and caches it according to DNS TTL. Ignored when `dial_addr` is also configured.
+- Examples:
+  - `bootstrap: "8.8.8.8:53"`
+  - `bootstrap: "[2606:4700:4700::1111]:53"`
+- Rules:
+  - Only meaningful when `addr` uses a hostname.
+  - Must be an `IP:port` address; hostnames are not allowed.
+  - Typically used for the first resolution of DoT, DoQ, and DoH domain upstreams.
+  - With `bootstrap` configured, OxiDNS resolves the upstream hostname through that resolver and caches it according to DNS TTL.
+  - Ignored when `dial_addr` is also configured.
 
 #### `upstreams[].bootstrap_version`
 
-- Type: `integer`; Required: no
-- Allowed values: `4`, `6`
+- Type: `integer`; Required: no; Default: none
 - Purpose: Force bootstrap resolution toward IPv4 or IPv6.
+- Examples:
+  - `bootstrap_version: 4`
+  - `bootstrap_version: 6`
+- Allowed values: `4` or `6`.
 
 #### `upstreams[].socks5`
 
-- Type: `string`; Required: no
+- Type: `string`; Required: no; Default: none
 - Purpose: SOCKS5 proxy for upstream connections.
-- Supports:
+- Examples:
+  - `socks5: "127.0.0.1:1080"`
+  - `socks5: "user:pass@127.0.0.1:1080"`
+  - `socks5: "user:pass@[2001:db8::1]:1080"`
+- Supported formats:
   - `host:port`
   - `username:password@host:port`
-- Notes: SOCKS5 applies only to TCP, DoT, and DoH2. UDP, DoQ, and DoH3 upstreams ignore this setting.
+  - IPv6 must be written as `[addr]:port`
+  - Authenticated IPv6 must be written as `username:password@[addr]:port`
+- Rules:
+  - The proxy host may be an IP or a hostname; hostnames use system resolution.
+  - Authentication is split on the first `:` only, so the format must be `username:password@...`.
+  - SOCKS5 applies only to TCP, DoT, and DoH2. UDP, DoQ, and DoH3 upstreams ignore this setting.
+- Note: malformed formats, invalid ports, or proxy hostname resolution failures prevent the upstream from being created normally.
 
 #### `upstreams[].idle_timeout`
 
 - Type: `integer`; Required: no; Default: `10`
 - Unit: seconds
 - Purpose: Idle pooled connection lifetime.
+- Example: `idle_timeout: 30`
 
 #### `upstreams[].max_conns`
 
 - Type: `integer`; Required: no; Default: `64`
 - Purpose: Maximum pooled connections.
 - Range: `1..4096`
+- Example: `max_conns: 256`
 
 #### `upstreams[].min_conns`
 
 - Type: `integer`; Required: no; Default: `0`
 - Purpose: Minimum warmed connections kept by the pool.
 - Range: `0..4096`, and it must not exceed the upstream's effective `max_conns`.
-- Notes: When omitted, connections remain lazy and are not pre-created when the pool is created.
+- Notes: When omitted, connections remain lazy and are not pre-created at startup or when the pool is created.
+- Example: `min_conns: 2`
 
 #### `upstreams[].insecure_skip_verify`
 
 - Type: `boolean`; Required: no; Default: `false`
 - Purpose: Skip TLS certificate validation.
+- Example: `insecure_skip_verify: true`
+- Note: only suitable for testing, self-signed certificates, or controlled environments.
 
 #### `upstreams[].timeout`
 
 - Type: `duration`; Required: no; Default: `5s`
 - Purpose: Per-upstream query timeout.
+- Example: `timeout: 3s`
 
 #### `upstreams[].enable_pipeline`
 
 - Type: `boolean`; Required: no; Default: `false`
 - Purpose: Enable pipelining for TCP or DoT.
-- Notes: `tcp+pipeline://` and `tls+pipeline://` force this on.
+- Example: `enable_pipeline: true`
+- Notes: can also be enabled directly through `tcp+pipeline://` or `tls+pipeline://` in `addr`.
 - Recommendation: Before enabling it, run `oxidns probe upstream <addr>` against the target upstream. For TCP/DoT, the probe forces concurrent queries through one connection so you can decide whether that upstream is safe for pipeline mode and catch timeouts, connection closes, response ID confusion, or crossed questions first.
 - Verdict: If the probe reports `supported`, enabling pipeline is reasonable. If it reports `unsupported`, `unstable`, or `inconclusive`, keep pipeline disabled or retest with lower concurrency / a longer timeout.
 
@@ -218,16 +258,20 @@ Sends DNS queries to upstreams.
 
 - Type: `boolean`; Required: no; Default: `false`
 - Purpose: Use HTTP/3 for DoH.
+- Example: `enable_http3: true`
+- Notes: can also be enabled directly through `h3://` in `addr`.
 
 #### `upstreams[].so_mark`
 
-- Type: `integer`; Required: no
+- Type: `integer`; Required: no; Default: none
 - Purpose: Linux `SO_MARK`.
+- Example: `so_mark: 100`
 
 #### `upstreams[].bind_to_device`
 
-- Type: `string`; Required: no
+- Type: `string`; Required: no; Default: none
 - Purpose: Linux `SO_BINDTODEVICE`.
+- Example: `bind_to_device: "eth1"`
 
 ### quick setup
 
@@ -237,8 +281,12 @@ Sends DNS queries to upstreams.
 - exec: "forward 1.1.1.1 short_circuit=true"
 ```
 
-Quick setup supports the trailing flag forms `short_circuit`, `short_circuit=true`, and `short_circuit=false`.
-Use the full plugin form for bootstrap, proxy, HTTP/3, pool settings, and other advanced options.
+Notes:
+
+- A single address creates single-upstream forwarding.
+- Multiple addresses create concurrent racing forwarding.
+- Quick setup supports the trailing flag forms `short_circuit`, `short_circuit=true`, and `short_circuit=false`.
+- Other advanced options require the full plugin form.
 
 ### Behavior
 
@@ -277,6 +325,7 @@ Per-upstream series are also exported with an `upstream` label (the upstream tag
 
 <Admonition type="note" title="Notes">
 
+- Use the full `upstreams` configuration when you need finer concurrency, proxy, bootstrap resolution, or HTTP/3 settings.
 - More upstreams are not automatically better. Keep upstream groups semantically clear.
 
 </Admonition>
@@ -332,22 +381,26 @@ For A/AAAA and other non-CNAME queries, cache admission requires the requested t
 
 #### `lazy_cache_ttl`
 
-- Type: `duration`; Required: no
+- Type: `integer`; Required: no; Default: none
+- Unit: seconds
 - Purpose: Enable lazy cache for successful positive responses.
-- Behavior:
+- Runtime impact:
   - The original response TTL still defines the fresh-hit window.
   - `lazy_cache_ttl` defines the stale reply TTL and keeps entries briefly available after freshness expires.
   - Stale hits trigger an asynchronous background refresh.
   - This setting does not shorten the original fresh TTL.
+  - Note: the entry expiry is `max(original TTL, lazy_cache_ttl)`. When the original TTL already exceeds `lazy_cache_ttl`, the entry expires entirely once the fresh window ends, with no extra stale window; to keep a stale fallback for long-TTL domains, set `lazy_cache_ttl` above those domains' original TTLs.
+  - When `short_circuit` is disabled, the chain keeps running downstream after a stale hit; if the downstream produces a new response, that response is not written back to this cache (the background refresh is responsible for updating it).
 
 #### `dump_file`
 
-- Type: `string`; Required: no
+- Type: `string`; Required: no; Default: none
 - Purpose: Persistence dump file path.
 
 #### `dump_interval`
 
-- Type: `duration`; Required: no; Default: `600s`
+- Type: `integer`; Required: no; Default: `600`
+- Unit: seconds
 - Purpose: Periodic dump interval.
 
 #### `short_circuit`
@@ -365,29 +418,40 @@ For A/AAAA and other non-CNAME queries, cache admission requires the requested t
 
 #### `max_negative_ttl`
 
-- Type: `duration`; Required: no; Default: `300s`
+- Type: `integer`; Required: no; Default: `300`
+- Unit: seconds
 - Purpose: Cap negative-cache TTL.
 
 #### `negative_ttl_without_soa`
 
-- Type: `duration`; Required: no; Default: `60s`
+- Type: `integer`; Required: no; Default: `60`
+- Unit: seconds
 - Purpose: Fallback TTL for negative answers without SOA.
 
 #### `max_positive_ttl`
 
-- Type: `duration`; Required: no
+- Type: `integer`; Required: no; Default: none
+- Unit: seconds
 - Purpose: Cap positive-cache TTL.
 
 #### `min_positive_ttl`
 
-- Type: `duration`; Required: no
+- Type: `integer`; Required: no; Default: none
+- Unit: seconds
 - Purpose: Require a minimum positive TTL before writing a response to cache.
 - Notes: Positive responses whose effective cache TTL is lower than this value are not cached. The check runs after `max_positive_ttl` capping.
 
 #### `ecs_in_key`
 
 - Type: `boolean`; Required: no; Default: `false`
-- Purpose: Include ECS information in the cache key.
+- Purpose: Controls whether the ECS scope participates in cache key computation.
+- Key composition: the cache key contains the domain, QTYPE, QCLASS, DO, and CD bits; when enabled it additionally includes a scope digest of the request's current ECS (address family, source/scope prefix, and the network truncated to the source prefix).
+- Write validation: the cache key is computed when the request enters cache, while cache writes happen after the entire downstream chain (including every executor's return path) finishes. Before writing, cache re-validates that the request's current ECS still matches the key, and that an ECS-free key never stores a response echoing a non-zero-scope ECS; otherwise the write is skipped and counted as `cache_skip_total{reason="ecs_scope_mismatch"}`. The lazy cache background refresh applies the same validation.
+- Placement relative to `ecs_handler`:
+  - `cache` after `ecs_handler`: the key is built with forwarded or injected ECS already visible. Enable `ecs_in_key` to cache per subnet; with `false`, any request that still carries ECS when it reaches cache (forwarded or injected) mismatches the ECS-free key and is not cached, while requests whose client ECS was stripped by `forward: false` before reaching cache can be cached under the global key normally.
+  - `cache` before `ecs_handler`, client-supplied ECS with `forward: true`: with `ecs_in_key: false`, every ECS-bearing request is skipped as `ecs_scope_mismatch`; with `ecs_in_key: true`, answers are cached per client subnet.
+  - `cache` before `ecs_handler`, client-supplied ECS with `forward: false`: the upstream is queried for the global answer after ECS stripping. With `ecs_in_key: false` it can be cached under the global key normally; with `ecs_in_key: true` the key keeps the client ECS captured at key-build time, which mismatches the ECS-free request at write time, so ECS-bearing requests are skipped.
+  - Risk combination: with `cache` before an `ecs_handler` that injects per-client subnets (`send: true`), the handler's return path clears ECS from both the request and the response, so the write validation sees no ECS on either side and cannot tell that the answer was actually computed for the first fetching client's subnet. The answer is then stored under the global key and may be served to clients from other subnets, and this scenario does not increment `ecs_scope_mismatch`. When injecting ECS, place `cache` after that `ecs_handler` and enable `ecs_in_key`.
 
 #### `single_flight_wait_ms`
 
@@ -415,9 +479,13 @@ For A/AAAA and other non-CNAME queries, cache admission requires the requested t
 
 ### Behavior
 
-- Reads from cache on the forward path and writes responses on the return path.
-- Respects DNS TTL semantics instead of using a fixed timeout.
-- Can persist cache contents through dump and load operations.
+- Concurrent cold or expired lookups of the same key are merged into one downstream fetch (single-flight); the other requests wait for that result, preventing an upstream request storm when a popular entry expires.
+
+- Before writing the cache (including the lazy cache background refresh), cache validates key consistency against the current request: the response Question must match the key, the request's current ECS scope must match key-build time, and an ECS-free key does not accept responses echoing a non-zero-scope ECS. Inconsistent writes are skipped as `ecs_scope_mismatch`; see `ecs_in_key`.
+
+- Reads from cache and also writes to cache after it obtains a response downstream.
+- On a hit, returns a copy of the cached response with the remaining TTL.
+- Built-in expiry cleanup and approximate LRU eviction.
 
 ### Plugin API
 
@@ -436,20 +504,21 @@ Exported through the global `GET /api/metrics` endpoint. The cache plugin does n
 - `cache_miss_total`
 - `cache_expired_total`
 - `cache_insert_total`
-- `cache_skip_total{reason="truncated|no_ttl|incomplete_answer|low_positive_ttl"}`
+- `cache_skip_total{reason="truncated|no_ttl|incomplete_answer|low_positive_ttl|ecs_scope_mismatch"}`
 - `cache_lazy_refresh_total{result="started|success|failed"}`
 - `cache_single_flight_wait_total`
 - `cache_entry_count`
 
 ### Typical Uses
 
-- Lower upstream latency
-- Protect upstreams from repeated identical traffic
-- Preserve warm cache state across restarts
+- Front-cache every forwarding entry
+- Build high-hit-ratio, low-latency policies
+- Persist the cache in controlled scenarios to speed up warm-up after restarts
 
 <Admonition type="note" title="Notes">
 
-- Decide carefully whether ECS should be part of the cache key. It improves correctness for ECS-aware policies but reduces hit ratio.
+- If plugins ahead of cache can produce direct local answers, placement decides whether those results enter the cache.
+- Enabling `ecs_in_key` significantly increases cache fragmentation.
 
 </Admonition>
 
@@ -553,6 +622,7 @@ Exported through the global `GET /api/metrics` endpoint:
 ### Typical Uses
 
 - Local service discovery
+- Fixed internal address mappings
 - Small fixed overrides
 
 ---
@@ -624,8 +694,9 @@ Injects arbitrary DNS records from zone-style rule strings.
 
 ### Typical Uses
 
-- TXT test records
-- Local authority-style data
+- A small number of static authoritative records.
+- Local TXT / MX / PTR / CNAME data.
+- Local responses for testing or experimental environments.
 
 <Admonition type="note" title="Notes">
 
@@ -925,28 +996,28 @@ Controls EDNS Client Subnet forwarding or injection.
 
 #### `forward`
 
-- Type: `boolean`; Required: no
-- Purpose: Preserve ECS from the client side.
+- Type: `boolean`; Required: no; Default: `false`
+- Purpose: Preserve ECS supplied by the client.
 
 #### `send`
 
-- Type: `boolean`; Required: no
-- Purpose: Send ECS to upstreams.
+- Type: `boolean`; Required: no; Default: `false`
+- Purpose: When the request lacks ECS, synthesize one from the source address.
 
 #### `preset`
 
-- Type: `string`; Required: no
-- Purpose: Use a preset ECS source.
+- Type: `string`; Required: no; Default: none
+- Purpose: Fixed ECS source address.
 
 #### `mask4`
 
-- Type: `integer`; Required: no
-- Purpose: IPv4 ECS mask.
+- Type: `integer`; Required: no; Default: `24`
+- Purpose: IPv4 ECS prefix length.
 
 #### `mask6`
 
-- Type: `integer`; Required: no
-- Purpose: IPv6 ECS mask.
+- Type: `integer`; Required: no; Default: `48`
+- Purpose: IPv6 ECS prefix length.
 
 ### quick setup
 
@@ -954,10 +1025,18 @@ Controls EDNS Client Subnet forwarding or injection.
 - exec: "ecs_handler 203.0.113.10/24"
 ```
 
+The current quick setup mainly takes a preset IP. Use the full configuration form when advanced switches are involved.
+
 ### Behavior
 
-- Can preserve, synthesize, or normalize ECS before forwarding.
-- Interacts with cache correctness if ECS is also part of the cache key.
+- Forward phase:
+  - Can strip existing ECS.
+  - Can preserve existing ECS.
+  - Can inject ECS from the client address or a preset (only when the request carries no ECS).
+  - When the request already carries ECS, `send` and `preset` have no effect: `forward: true` preserves the original ECS, `forward: false` strips it.
+- Return phase:
+  - If the ECS was not forwarded from the client as-is, the ECS is removed from the response to avoid leaking internally constructed subnet information to clients.
+  - Under the same condition, residual ECS in the request (unforwarded client ECS or subnets injected by this plugin) is cleared as well, so it does not linger in the context after the chain finishes; the cleanup happens after the downstream chain completes, and executors inside the chain still see the request prepared in the forward phase.
 
 ### Typical Uses
 
@@ -966,7 +1045,7 @@ Controls EDNS Client Subnet forwarding or injection.
 
 <Admonition type="note" title="Notes">
 
-- Keep ECS handling and cache-key policy aligned.
+- `mask4` is capped at `32`; `mask6` is capped at `128`.
 
 </Admonition>
 
@@ -994,8 +1073,10 @@ Forwards selected EDNS0 options to upstreams.
 
 #### `codes`
 
-- Type: `array`; Required: yes
-- Purpose: EDNS0 option codes to preserve and forward.
+- Type: `array`; Required: no; Default: empty array
+- Purpose: Defines the set of EDNS0 option codes allowed to be copied from the request into the response.
+- Runtime impact:
+  - Without configuration the plugin effectively degrades to a no-op.
 
 ### quick setup
 
@@ -1005,7 +1086,9 @@ Forwards selected EDNS0 options to upstreams.
 
 ### Behavior
 
-- Keeps only selected EDNS0 options instead of blindly forwarding everything.
+- The forward phase collects the target options from the request.
+- The return phase writes those options back into the response OPT record.
+- Duplicates are removed.
 
 ### Typical Uses
 
