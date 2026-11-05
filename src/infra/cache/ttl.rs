@@ -13,6 +13,7 @@
 
 use std::hash::Hash;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ahash::RandomState as AHashBuilder;
 use dashmap::{DashMap, Entry};
@@ -46,6 +47,9 @@ where
     K: Eq + Hash,
 {
     map: Arc<DashMap<K, TtlCacheEntry<V>, AHashBuilder>>,
+    /// Rotating offset for sampled-LRU scans so successive samples cover
+    /// different regions of the map instead of always the first shards.
+    scan_cursor: Arc<AtomicU64>,
 }
 
 impl<K, V> Clone for TtlCache<K, V>
@@ -55,6 +59,7 @@ where
     fn clone(&self) -> Self {
         Self {
             map: self.map.clone(),
+            scan_cursor: self.scan_cursor.clone(),
         }
     }
 }
@@ -72,6 +77,7 @@ where
                 capacity,
                 AHashBuilder::default(),
             )),
+            scan_cursor: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -254,12 +260,33 @@ where
     }
 
     /// Collect up to `limit` key + last-access pairs for sampled LRU eviction.
+    ///
+    /// The window rotates across the map between calls: always sampling the
+    /// first `limit` iteration slots would leave entries in later shards
+    /// immune to eviction while early-shard entries get re-victimized.
     #[inline]
     pub fn sample_last_access(&self, limit: usize) -> Vec<(K, u64)> {
-        let cap = self.map.len().min(limit);
+        let len = self.map.len();
+        if len == 0 {
+            return Vec::new();
+        }
+        let cap = len.min(limit);
+        let start = if len > cap {
+            let cursor = self.scan_cursor.fetch_add(1, Ordering::Relaxed);
+            (cursor as usize) % (len - cap)
+        } else {
+            0
+        };
+
         let mut sample = Vec::with_capacity(cap);
-        for item in self.map.iter().take(limit) {
+        for (idx, item) in self.map.iter().enumerate() {
+            if idx < start {
+                continue;
+            }
             sample.push((item.key().clone(), item.value().last_access_ms));
+            if sample.len() >= cap {
+                break;
+            }
         }
         sample
     }

@@ -11,14 +11,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_yaml_ng::Value;
-use tokio::sync::OnceCell;
+use tokio::sync::{Notify, OnceCell};
 use tracing::{Level, debug, event_enabled, warn};
 
-use self::key::{CacheKey, build_cache_key as build_cache_key_internal};
+use self::key::{
+    CacheKey, build_cache_key as build_cache_key_internal, extract_any_ecs_scope,
+    response_echoes_scoped_ecs,
+};
 use self::persistence::{dump_cache_to_file, load_cache_from_file};
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
@@ -81,6 +84,17 @@ const FULL_TRIM_CACHE_SIZE_LIMIT: usize = 100_000;
 const LARGE_CACHE_EVICTION_MAX_BATCH: usize = 65_536;
 const DEFAULT_LAZY_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Default how long a follower waits for the in-flight leader before fetching
+/// the key itself (milliseconds). Overridden by `single_flight_wait_ms`.
+const DEFAULT_SINGLE_FLIGHT_WAIT_MS: u64 = 5_000;
+
+/// Default maximum number of leadership rounds a waiter may enter before
+/// fetching the key itself. When a leader finishes without caching the entry,
+/// waiters wake and re-elect a new leader instead of stampeding the upstream,
+/// but repeated failures must not leave the request stalled indefinitely.
+/// Overridden by `single_flight_max_rounds`.
+const MISS_SINGLE_FLIGHT_MAX_ROUNDS: usize = 3;
+
 #[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 pub struct CacheConfig {
@@ -122,6 +136,19 @@ pub struct CacheConfig {
     ///
     /// Default: false.
     ecs_in_key: Option<bool>,
+
+    /// Waiter wait budget (milliseconds) for a cold/expired miss single-flight
+    /// leader before fetching the key itself.
+    ///
+    /// Default: 5000.
+    single_flight_wait_ms: Option<u64>,
+
+    /// Maximum number of leadership rounds a cold/expired miss waiter may enter
+    /// before fetching the key itself. Set to 1 to disable re-election after a
+    /// failed leader.
+    ///
+    /// Default: 3.
+    single_flight_max_rounds: Option<usize>,
 }
 
 type CacheMap = TtlCache<CacheKey, Arc<CacheItem>>;
@@ -186,6 +213,7 @@ enum CacheSkipReason {
     NoTtl,
     IncompleteAnswer,
     LowPositiveTtl,
+    EcsScopeMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,9 +250,11 @@ struct CacheMetrics {
     skip_no_ttl_total: AtomicU64,
     skip_incomplete_answer_total: AtomicU64,
     skip_low_positive_ttl_total: AtomicU64,
+    skip_ecs_scope_mismatch_total: AtomicU64,
     lazy_refresh_started_total: AtomicU64,
     lazy_refresh_success_total: AtomicU64,
     lazy_refresh_failed_total: AtomicU64,
+    single_flight_wait_total: AtomicU64,
 }
 
 impl CacheMetrics {
@@ -242,9 +272,11 @@ impl CacheMetrics {
             skip_no_ttl_total: AtomicU64::new(0),
             skip_incomplete_answer_total: AtomicU64::new(0),
             skip_low_positive_ttl_total: AtomicU64::new(0),
+            skip_ecs_scope_mismatch_total: AtomicU64::new(0),
             lazy_refresh_started_total: AtomicU64::new(0),
             lazy_refresh_success_total: AtomicU64::new(0),
             lazy_refresh_failed_total: AtomicU64::new(0),
+            single_flight_wait_total: AtomicU64::new(0),
         }
     }
 
@@ -263,6 +295,10 @@ impl CacheMetrics {
             }
             CacheSkipReason::LowPositiveTtl => {
                 self.skip_low_positive_ttl_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            CacheSkipReason::EcsScopeMismatch => {
+                self.skip_ecs_scope_mismatch_total
                     .fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -364,6 +400,16 @@ impl MetricSource for CacheMetrics {
             &skip_low_positive_ttl,
             self.skip_low_positive_ttl_total.load(Ordering::Relaxed),
         ));
+        let skip_ecs_scope_mismatch = [
+            MetricLabel::new("plugin_tag", self.tag.as_str()),
+            MetricLabel::new("reason", "ecs_scope_mismatch"),
+        ];
+        sink.emit(MetricSample::counter(
+            "cache_skip_total",
+            "Total responses skipped by cache write policy.",
+            &skip_ecs_scope_mismatch,
+            self.skip_ecs_scope_mismatch_total.load(Ordering::Relaxed),
+        ));
         let lazy_started = [
             MetricLabel::new("plugin_tag", self.tag.as_str()),
             MetricLabel::new("result", "started"),
@@ -383,6 +429,12 @@ impl MetricSource for CacheMetrics {
             "Total lazy refresh attempts by result.",
             &lazy_success,
             self.lazy_refresh_success_total.load(Ordering::Relaxed),
+        ));
+        sink.emit(MetricSample::counter(
+            "cache_single_flight_wait_total",
+            "Total cold/expired misses that waited for an in-flight fetch of the same key.",
+            &base,
+            self.single_flight_wait_total.load(Ordering::Relaxed),
         ));
         let lazy_failed = [
             MetricLabel::new("plugin_tag", self.tag.as_str()),
@@ -453,6 +505,17 @@ pub struct Cache {
     /// Deduplicates background refreshes for stale lazy cache hits.
     lazy_refresh_inflight: Arc<Mutex<AHashSet<CacheKey>>>,
 
+    /// Single-flight map for cold/expired misses: the leader fetches while
+    /// concurrent misses for the same key wait for its entry instead of
+    /// stampeding the upstream.
+    miss_single_flight: Arc<Mutex<AHashMap<CacheKey, Arc<Notify>>>>,
+
+    /// Resolved cold/expired miss single-flight wait budget.
+    miss_single_flight_wait: Duration,
+
+    /// Resolved maximum number of single-flight leadership rounds.
+    miss_single_flight_max_rounds: usize,
+
     /// Next timestamp when an inline write-side maintenance pass may run.
     next_inline_maintenance_ms: AtomicU64,
 
@@ -461,6 +524,31 @@ pub struct Cache {
 
     /// Next timestamp when the hit-side touch interval may be recomputed.
     next_touch_interval_refresh_ms: AtomicU64,
+}
+
+/// Outcome of entering the cold-miss single-flight map for one key.
+enum MissFlight {
+    Leader(MissSingleFlightGuard),
+    Follower(Arc<Notify>),
+}
+
+/// Removes the key from the single-flight map and wakes all waiters when the
+/// leader's fetch finishes (success, failure, or cancellation via drop).
+struct MissSingleFlightGuard {
+    inflight: Arc<Mutex<AHashMap<CacheKey, Arc<Notify>>>>,
+    key: CacheKey,
+    notify: Arc<Notify>,
+}
+
+impl Drop for MissSingleFlightGuard {
+    fn drop(&mut self) {
+        let removed = {
+            let mut map = self.inflight.lock().expect("miss_single_flight poisoned");
+            map.remove(&self.key)
+        };
+        let notify = removed.unwrap_or_else(|| self.notify.clone());
+        notify.notify_waiters();
+    }
 }
 
 impl Cache {
@@ -1125,6 +1213,32 @@ impl Cache {
         self.maybe_prune_after_insert(cache_map, now);
     }
 
+    /// Register `key` in the single-flight map, becoming its fetch leader, or
+    /// obtain the leader's [`Notify`] to wait on as a follower.
+    fn enter_miss_single_flight(&self, key: &CacheKey) -> MissFlight {
+        let mut map = self
+            .miss_single_flight
+            .lock()
+            .expect("miss_single_flight poisoned");
+        if let Some(notify) = map.get(key) {
+            return MissFlight::Follower(notify.clone());
+        }
+        let notify = Arc::new(Notify::new());
+        map.insert(key.clone(), notify.clone());
+        MissFlight::Leader(MissSingleFlightGuard {
+            inflight: self.miss_single_flight.clone(),
+            key: key.clone(),
+            notify,
+        })
+    }
+
+    fn miss_single_flight_still_tracked(&self, key: &CacheKey) -> bool {
+        self.miss_single_flight
+            .lock()
+            .expect("miss_single_flight poisoned")
+            .contains_key(key)
+    }
+
     fn try_start_lazy_refresh(
         &self,
         key: &CacheKey,
@@ -1173,7 +1287,10 @@ impl Cache {
             .await;
 
             match refresh {
-                Ok(Ok(Some(response))) if !response.truncated() => {
+                Ok(Ok(Some(response)))
+                    if !response.truncated()
+                        && cache_key_ecs_scope_matches(&key, sub_ctx.request(), &response) =>
+                {
                     let (ttl, disposition) = compute_cache_ttl_with_policy(
                         &response,
                         &key,
@@ -1227,6 +1344,12 @@ impl Cache {
                             .lazy_refresh_failed_total
                             .fetch_add(1, Ordering::Relaxed);
                     }
+                }
+                Ok(Ok(Some(_))) => {
+                    metrics.record_skip(CacheSkipReason::EcsScopeMismatch);
+                    metrics
+                        .lazy_refresh_failed_total
+                        .fetch_add(1, Ordering::Relaxed);
                 }
                 Ok(Ok(_)) => {
                     metrics
@@ -1374,7 +1497,63 @@ impl Executor for Cache {
             return continue_next!(next, context);
         };
 
-        let cache_lookup = self.try_cache_hit(context, cache_map);
+        let mut cache_lookup = self.try_cache_hit(context, cache_map);
+
+        // Cold/expired miss single-flight: when a popular entry expires,
+        // concurrent misses of the same key wait briefly for the in-flight
+        // leader instead of stampeding the upstream. The leader guard is held
+        // until the function returns (a `_` binding still delays Drop) so
+        // waiters only wake after the insert path finishes.
+        let mut _miss_leader: Option<MissSingleFlightGuard> = None;
+        if let Some(lookup) = cache_lookup.as_ref()
+            && lookup.hit_kind.is_none()
+        {
+            let key = lookup.key.clone();
+            // Shared wait budget: repeated leader takeovers must not extend
+            // this request's stall beyond a single configured wait budget.
+            let deadline = tokio::time::Instant::now() + self.miss_single_flight_wait;
+            for _ in 0..self.miss_single_flight_max_rounds {
+                match self.enter_miss_single_flight(&key) {
+                    MissFlight::Leader(guard) => {
+                        _miss_leader = Some(guard);
+                        break;
+                    }
+                    MissFlight::Follower(notify) => {
+                        self.metrics
+                            .single_flight_wait_total
+                            .fetch_add(1, Ordering::Relaxed);
+                        let notified = notify.notified();
+                        tokio::pin!(notified);
+                        // Enable first, then re-check the map: if the leader
+                        // already left, its wakeup raced with our registration
+                        // and the resulting entry (or failure) is already
+                        // visible.
+                        notified.as_mut().enable();
+                        if self.miss_single_flight_still_tracked(&key)
+                            && let Some(remaining) =
+                                deadline.checked_duration_since(tokio::time::Instant::now())
+                        {
+                            let _ = tokio::time::timeout(remaining, notified.as_mut()).await;
+                        }
+                        if let Some(lookup) = self.try_cache_hit(context, cache_map)
+                            && lookup.hit_kind.is_some()
+                        {
+                            cache_lookup = Some(lookup);
+                            break;
+                        }
+                        // The leader finished without caching this key (fetch
+                        // failure or a skipped insert). Re-register so exactly
+                        // one waiter takes over leadership while the others
+                        // keep waiting, instead of every waiter fetching the
+                        // same key downstream at once.
+                    }
+                }
+            }
+            // Exhausted the round budget: fetch this key ourselves without
+            // becoming leader so a permanently failing upstream cannot pin
+            // waiters in the election loop.
+        }
+
         let cache_hit = cache_lookup
             .as_ref()
             .and_then(|lookup| lookup.hit_kind)
@@ -1423,6 +1602,11 @@ impl Executor for Cache {
                 return Ok(next_step);
             }
 
+            if !cache_key_ecs_scope_matches(&key, context.request(), response) {
+                self.metrics.record_skip(CacheSkipReason::EcsScopeMismatch);
+                return Ok(next_step);
+            }
+
             let disposition = response_disposition_for_cache(response, &key);
             match self.compute_cache_ttl_for_disposition(response, &key, disposition) {
                 CacheTtlDecision::Cache(ttl) => {
@@ -1435,6 +1619,22 @@ impl Executor for Cache {
         }
         Ok(next_step)
     }
+}
+
+/// Whether `key` still reflects the request's EDNS Client Subnet state at
+/// insert time.
+///
+/// The key is built before the remaining chain runs; executors such as
+/// `ecs_handler` may inject a subnet afterwards, making the upstream answer
+/// subnet-specific. Storing it under the pre-chain key would serve one
+/// client's subnet answer to every other client, so require the request's
+/// current ECS scope to equal the keyed scope, and reject scoped echo
+/// answers under unscoped keys.
+fn cache_key_ecs_scope_matches(key: &CacheKey, request: &Message, response: &Message) -> bool {
+    if extract_any_ecs_scope(request) != key.ecs_scope {
+        return false;
+    }
+    key.ecs_scope.is_some() || !response_echoes_scoped_ecs(response)
 }
 
 fn compute_positive_ttl_with_policy(
@@ -1617,6 +1817,8 @@ fn parse_cache_config(args: Option<Value>) -> Result<CacheConfig> {
         max_positive_ttl: None,
         min_positive_ttl: None,
         ecs_in_key: None,
+        single_flight_wait_ms: None,
+        single_flight_max_rounds: None,
     })
 }
 
@@ -1676,6 +1878,22 @@ fn validate_cache_config(config: &CacheConfig) -> Result<()> {
         ));
     }
 
+    if let Some(wait_ms) = config.single_flight_wait_ms
+        && wait_ms == 0
+    {
+        return Err(DnsError::plugin(
+            "cache single_flight_wait_ms must be greater than 0",
+        ));
+    }
+
+    if let Some(rounds) = config.single_flight_max_rounds
+        && rounds == 0
+    {
+        return Err(DnsError::plugin(
+            "cache single_flight_max_rounds must be greater than 0",
+        ));
+    }
+
     Ok(())
 }
 
@@ -1718,12 +1936,21 @@ impl CacheFactory {
             short_circuit: cache_config.short_circuit.unwrap_or(false),
             ecs_in_key: cache_config.ecs_in_key.unwrap_or(false),
             cache_size: cache_config.size.unwrap_or(DEFAULT_CACHE_SIZE),
+            miss_single_flight_wait: Duration::from_millis(
+                cache_config
+                    .single_flight_wait_ms
+                    .unwrap_or(DEFAULT_SINGLE_FLIGHT_WAIT_MS),
+            ),
+            miss_single_flight_max_rounds: cache_config
+                .single_flight_max_rounds
+                .unwrap_or(MISS_SINGLE_FLIGHT_MAX_ROUNDS),
             config: cache_config,
             updated_keys: Arc::new(AtomicU64::new(0)),
             metrics,
             dump_task_handle: Mutex::new(None),
             cleanup_task_handle: Mutex::new(None),
             lazy_refresh_inflight: Arc::new(Mutex::new(AHashSet::new())),
+            miss_single_flight: Arc::new(Mutex::new(AHashMap::new())),
             next_inline_maintenance_ms: AtomicU64::new(0),
             touch_interval_ms: AtomicU64::new(0),
             next_touch_interval_refresh_ms: AtomicU64::new(0),
@@ -1759,6 +1986,8 @@ fn parse_cache_quick_setup(raw: &str) -> Result<CacheConfig> {
         max_positive_ttl: None,
         min_positive_ttl: None,
         ecs_in_key: None,
+        single_flight_wait_ms: None,
+        single_flight_max_rounds: None,
     };
 
     for token in raw.split_whitespace() {
@@ -1826,6 +2055,14 @@ mod tests {
         let cache_size = config.size.unwrap_or(DEFAULT_CACHE_SIZE);
         let ecs_in_key = config.ecs_in_key.unwrap_or(false);
         let short_circuit = config.short_circuit.unwrap_or(false);
+        let miss_single_flight_wait = Duration::from_millis(
+            config
+                .single_flight_wait_ms
+                .unwrap_or(DEFAULT_SINGLE_FLIGHT_WAIT_MS),
+        );
+        let miss_single_flight_max_rounds = config
+            .single_flight_max_rounds
+            .unwrap_or(MISS_SINGLE_FLIGHT_MAX_ROUNDS);
 
         Cache {
             cache_map: OnceCell::new(),
@@ -1835,6 +2072,8 @@ mod tests {
             negative_ttl_without_soa,
             short_circuit,
             ecs_in_key,
+            miss_single_flight_wait,
+            miss_single_flight_max_rounds,
             config,
             updated_keys: Arc::new(AtomicU64::new(0)),
             metrics: Arc::new(CacheMetrics::new("cache_test".to_string())),
@@ -1842,6 +2081,7 @@ mod tests {
             dump_task_handle: Mutex::new(None),
             cleanup_task_handle: Mutex::new(None),
             lazy_refresh_inflight: Arc::new(Mutex::new(AHashSet::new())),
+            miss_single_flight: Arc::new(Mutex::new(AHashMap::new())),
             next_inline_maintenance_ms: AtomicU64::new(0),
             touch_interval_ms: AtomicU64::new(0),
             next_touch_interval_refresh_ms: AtomicU64::new(0),
@@ -1861,6 +2101,8 @@ mod tests {
             max_positive_ttl: None,
             min_positive_ttl: None,
             ecs_in_key: None,
+            single_flight_wait_ms: None,
+            single_flight_max_rounds: None,
         }
     }
 
@@ -2119,6 +2361,40 @@ mod tests {
         let mut edns = request.edns().clone().unwrap_or_default();
         edns.insert(EdnsOption::Subnet(subnet.parse().unwrap()));
         request.set_edns(edns);
+    }
+
+    #[derive(Debug)]
+    struct EcsInjectingExecutor;
+
+    #[async_trait]
+    impl Plugin for EcsInjectingExecutor {
+        fn tag(&self) -> &str {
+            "ecs_injecting_executor"
+        }
+    }
+
+    #[async_trait]
+    impl Executor for EcsInjectingExecutor {
+        async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
+            // Mimics `ecs_handler` with `send: true` placed downstream of the
+            // cache: the upstream answer becomes subnet-specific after the
+            // cache key was already built.
+            add_ecs(context.request_mut(), "1.2.3.0/24");
+            let mut response = Message::new();
+            response.set_rcode(Rcode::NoError);
+            response.add_question(Question::new(
+                Name::from_ascii("example.com.").unwrap(),
+                RecordType::A,
+                DNSClass::IN,
+            ));
+            response.add_answer(Record::from_rdata(
+                Name::from_ascii("example.com.").unwrap(),
+                55,
+                RData::A(crate::proto::rdata::A(Ipv4Addr::new(9, 9, 9, 9))),
+            ));
+            context.set_response(response);
+            Ok(ExecStep::Next)
+        }
     }
 
     #[derive(Debug)]
@@ -2639,6 +2915,209 @@ mod tests {
         assert_eq!(cache.compute_negative_ttl(&cname_only, &key), None);
     }
 
+    #[derive(Debug)]
+    struct CountingFetchExecutor {
+        calls: Arc<AtomicUsize>,
+        delay: Duration,
+        fail_first: bool,
+    }
+
+    #[async_trait]
+    impl Plugin for CountingFetchExecutor {
+        fn tag(&self) -> &str {
+            "counting_fetch_executor"
+        }
+    }
+
+    #[async_trait]
+    impl Executor for CountingFetchExecutor {
+        async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
+            let call = self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            if self.fail_first && call == 0 {
+                tokio::time::sleep(self.delay).await;
+                return Err(DnsError::plugin("upstream unavailable"));
+            }
+            tokio::time::sleep(self.delay).await;
+            let mut response = Message::new();
+            response.set_rcode(Rcode::NoError);
+            response.add_question(Question::new(
+                Name::from_ascii("example.com.").unwrap(),
+                RecordType::A,
+                DNSClass::IN,
+            ));
+            response.add_answer(Record::from_rdata(
+                Name::from_ascii("example.com.").unwrap(),
+                55,
+                RData::A(crate::proto::rdata::A(Ipv4Addr::new(9, 9, 9, 9))),
+            ));
+            context.set_response(response);
+            Ok(ExecStep::Next)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn concurrent_cold_misses_share_one_downstream_fetch() {
+        AppClock::start();
+        let mut config = default_test_config();
+        config.short_circuit = Some(true);
+        let mut cache = test_cache(config);
+        let _ = cache.init_for_test().await;
+        let cache = Arc::new(cache);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let program = Arc::new(CountingFetchExecutor {
+            calls: calls.clone(),
+            delay: Duration::from_millis(100),
+            fail_first: false,
+        });
+
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            let cache = cache.clone();
+            let program = ChainProgram::single_with_next_executor_for_test(program.clone());
+            handles.push(tokio::spawn(async move {
+                let mut context =
+                    make_context(make_request_with_query("example.com.", false, false));
+                let next = ExecutorNext::from_program_for_test(program, 0);
+                cache.execute_with_next(&mut context, Some(next)).await
+            }));
+        }
+
+        let mut responses = 0usize;
+        for handle in handles {
+            handle
+                .await
+                .expect("task should join")
+                .expect("cache execution should succeed");
+            responses += 1;
+        }
+
+        assert_eq!(responses, 5);
+        assert_eq!(
+            calls.load(AtomicOrdering::SeqCst),
+            1,
+            "single-flight must collapse concurrent cold misses into one fetch"
+        );
+        assert_eq!(cache.cache_map.get().unwrap().len(), 1);
+        assert!(
+            cache
+                .metrics
+                .single_flight_wait_total
+                .load(AtomicOrdering::Relaxed)
+                >= 1,
+            "at least one follower should have waited on the leader"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn miss_single_flight_follower_falls_back_when_leader_fails() {
+        AppClock::start();
+        let mut config = default_test_config();
+        config.short_circuit = Some(true);
+        let mut cache = test_cache(config);
+        let _ = cache.init_for_test().await;
+        let cache = Arc::new(cache);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let program = Arc::new(CountingFetchExecutor {
+            calls: calls.clone(),
+            delay: Duration::from_millis(50),
+            fail_first: true,
+        });
+
+        let leader_program = ChainProgram::single_with_next_executor_for_test(program.clone());
+        let leader_cache = cache.clone();
+        let leader = tokio::spawn(async move {
+            let mut context = make_context(make_request_with_query("example.com.", false, false));
+            let next = ExecutorNext::from_program_for_test(leader_program, 0);
+            leader_cache
+                .execute_with_next(&mut context, Some(next))
+                .await
+        });
+        // Let the leader register and enter its delayed failing fetch.
+        tokio::task::yield_now().await;
+
+        let follower_program = ChainProgram::single_with_next_executor_for_test(program);
+        let follower_result = cache
+            .execute_with_next(
+                &mut make_context(make_request_with_query("example.com.", false, false)),
+                Some(ExecutorNext::from_program_for_test(follower_program, 0)),
+            )
+            .await;
+
+        let leader_result = leader.await.expect("leader task should join");
+
+        assert!(leader_result.is_err(), "leader fetch failed by design");
+        follower_result.expect("follower should fall back to its own fetch");
+        assert_eq!(
+            calls.load(AtomicOrdering::SeqCst),
+            2,
+            "leader failed once; the re-elected follower must retry the fetch itself"
+        );
+        assert_eq!(cache.cache_map.get().unwrap().len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn miss_single_flight_reelects_one_leader_when_the_first_fails() {
+        AppClock::start();
+        let mut config = default_test_config();
+        config.short_circuit = Some(true);
+        let mut cache = test_cache(config);
+        let _ = cache.init_for_test().await;
+        let cache = Arc::new(cache);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let program = Arc::new(CountingFetchExecutor {
+            calls: calls.clone(),
+            delay: Duration::from_millis(100),
+            fail_first: true,
+        });
+
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            let cache = cache.clone();
+            let program = ChainProgram::single_with_next_executor_for_test(program.clone());
+            handles.push(tokio::spawn(async move {
+                let mut context =
+                    make_context(make_request_with_query("example.com.", false, false));
+                let next = ExecutorNext::from_program_for_test(program, 0);
+                cache.execute_with_next(&mut context, Some(next)).await
+            }));
+        }
+
+        let mut succeeded = 0usize;
+        let mut leader_failures = 0usize;
+        for handle in handles {
+            match handle.await.expect("task should join") {
+                Ok(_) => succeeded += 1,
+                Err(_) => leader_failures += 1,
+            }
+        }
+
+        assert_eq!(
+            leader_failures, 1,
+            "only the original leader's fetch should fail by design"
+        );
+        assert_eq!(
+            succeeded, 4,
+            "every follower should be served by the re-elected leader's fetch"
+        );
+        assert_eq!(
+            calls.load(AtomicOrdering::SeqCst),
+            2,
+            "exactly one waiter must take over leadership after the first leader fails"
+        );
+        assert_eq!(cache.cache_map.get().unwrap().len(), 1);
+        assert!(
+            cache
+                .metrics
+                .single_flight_wait_total
+                .load(AtomicOrdering::Relaxed)
+                >= 2,
+            "waiters should wait for both the failed and the re-elected leader"
+        );
+    }
+
     #[tokio::test]
     async fn truncated_response_is_not_cached() {
         AppClock::start();
@@ -2660,6 +3139,70 @@ mod tests {
             cache
                 .metrics
                 .skip_truncated_total
+                .load(AtomicOrdering::Relaxed),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn ecs_injected_by_downstream_executor_is_not_cached() {
+        AppClock::start();
+        let mut cache = test_cache(default_test_config());
+        let _ = cache.init_for_test().await;
+
+        let mut context = make_context(make_request_with_query("example.com.", false, false));
+
+        let program =
+            ChainProgram::single_with_next_executor_for_test(Arc::new(EcsInjectingExecutor));
+        let next = ExecutorNext::from_program_for_test(program, 0);
+
+        cache
+            .execute_with_next(&mut context, Some(next))
+            .await
+            .unwrap();
+
+        assert!(context.response().is_some());
+        assert_eq!(cache.cache_map.get().unwrap().len(), 0);
+        assert_eq!(
+            cache
+                .metrics
+                .skip_ecs_scope_mismatch_total
+                .load(AtomicOrdering::Relaxed),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn client_supplied_ecs_is_not_cached_under_global_key() {
+        AppClock::start();
+        let mut cache = test_cache(default_test_config());
+        let _ = cache.init_for_test().await;
+
+        let mut request = make_request_with_query("example.com.", false, false);
+        add_ecs(&mut request, "1.2.3.0/24");
+        let mut context = make_context(request);
+
+        let mut response = Message::new();
+        response.set_rcode(Rcode::NoError);
+        response.add_question(Question::new(
+            Name::from_ascii("example.com.").unwrap(),
+            RecordType::A,
+            DNSClass::IN,
+        ));
+        response.add_answer(Record::from_rdata(
+            Name::from_ascii("example.com.").unwrap(),
+            55,
+            RData::A(crate::proto::rdata::A(Ipv4Addr::new(9, 9, 9, 9))),
+        ));
+        context.set_response(response);
+
+        cache.execute_with_next(&mut context, None).await.unwrap();
+
+        assert_eq!(cache.cache_map.get().unwrap().len(), 0);
+        assert_eq!(
+            cache
+                .metrics
+                .skip_ecs_scope_mismatch_total
                 .load(AtomicOrdering::Relaxed),
             1
         );
@@ -3466,6 +4009,8 @@ mod tests {
             max_positive_ttl: None,
             min_positive_ttl: None,
             ecs_in_key: None,
+            single_flight_wait_ms: None,
+            single_flight_max_rounds: None,
         };
 
         assert!(validate_cache_config(&cfg).is_err());
@@ -3486,5 +4031,33 @@ mod tests {
         cfg.max_positive_ttl = Some(10);
 
         assert!(validate_cache_config(&cfg).is_err());
+    }
+
+    #[test]
+    fn validate_config_rejects_zero_single_flight_wait() {
+        let mut cfg = default_test_config();
+        cfg.single_flight_wait_ms = Some(0);
+
+        assert!(validate_cache_config(&cfg).is_err());
+    }
+
+    #[test]
+    fn validate_config_rejects_zero_single_flight_max_rounds() {
+        let mut cfg = default_test_config();
+        cfg.single_flight_max_rounds = Some(0);
+
+        assert!(validate_cache_config(&cfg).is_err());
+    }
+
+    #[test]
+    fn single_flight_config_overrides_are_resolved() {
+        let mut cfg = default_test_config();
+        cfg.single_flight_wait_ms = Some(250);
+        cfg.single_flight_max_rounds = Some(2);
+
+        let cache = test_cache(cfg);
+
+        assert_eq!(cache.miss_single_flight_wait, Duration::from_millis(250));
+        assert_eq!(cache.miss_single_flight_max_rounds, 2);
     }
 }

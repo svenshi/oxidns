@@ -481,8 +481,12 @@ function labelValueLabel(key: string, value: string, locale: Locale): string {
   }
   if (key === "reason" && value === "no_ttl")
     return translate(locale, WEBUI.metrics.noTtl);
+  if (key === "reason" && value === "incomplete_answer")
+    return translate(locale, WEBUI.metrics.incompleteAnswer);
   if (key === "reason" && value === "low_positive_ttl")
     return translate(locale, WEBUI.metrics.lowPositiveTtl);
+  if (key === "reason" && value === "ecs_scope_mismatch")
+    return translate(locale, WEBUI.metrics.ecsScopeMismatch);
   if (key === "result" && value === "started") {
     return translate(locale, WEBUI.metrics.started);
   }

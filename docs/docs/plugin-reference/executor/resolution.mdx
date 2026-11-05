@@ -388,6 +388,8 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
   - `lazy_cache_ttl` 决定 stale 回包 TTL，并允许在原始 TTL 过期后短时间返回 stale 响应。
   - stale 命中会在后台异步刷新缓存。
   - 该配置不会缩短原始 fresh TTL。
+  - 注意:条目的过期时间取 `max(原始 TTL, lazy_cache_ttl)`。当原始 TTL 已大于 `lazy_cache_ttl` 时,条目在 fresh 窗口结束后直接整体过期,不会有额外的 stale 窗口;如需对长 TTL 域名保留 stale 兜底,应把 `lazy_cache_ttl` 设得比这些域名的原始 TTL 更长。
+  - 未开启 `short_circuit` 时,stale 命中后链会继续执行下游;若下游产生了新响应,该响应不会回写本缓存(由后台刷新负责更新)。
 
 #### `dump_file`
 
@@ -442,6 +444,26 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 
 - 类型：`boolean`；必填：否；默认值：`false`
 - 作用：控制 ECS scope 是否参与缓存键计算。
+- 键构成：缓存键包含域名、QTYPE、QCLASS、DO、CD 位；开启本项后额外加入请求当前 ECS 的 scope 摘要（地址族、source/scope prefix 与按 source prefix 截断的网段）。
+- 写入校验：缓存键在进入 cache 时即已计算，而写缓存发生在整个下游链（含各执行器回程）结束之后。写入前会重新校验请求当前的 ECS 与键一致，且无 ECS 的键不会保存回显非零 scope ECS 的响应；不满足时跳过写入，以 `cache_skip_total{reason="ecs_scope_mismatch"}` 计数。lazy cache 后台刷新执行同一校验。
+- 与 `ecs_handler` 的位置关系：
+  - `cache` 放在 `ecs_handler` 之后：建键时已能看到透传或注入后的 ECS。开启 `ecs_in_key` 可按子网分片缓存；保持 `false` 时，凡到达 cache 时仍带有 ECS 的请求（透传或注入）都会与无 ECS 键不一致，响应不会写入缓存；而被 `forward: false` 剥除客户端 ECS 后到达 cache 的请求可按全局键正常缓存。
+  - `cache` 放在 `ecs_handler` 之前、客户端自带 ECS 且 `forward: true`：`ecs_in_key: false` 时带 ECS 的请求会全部因 `ecs_scope_mismatch` 跳过；`ecs_in_key: true` 时按客户端子网分片缓存。
+  - `cache` 放在 `ecs_handler` 之前、客户端自带 ECS 且 `forward: false`：上游查询的是剥除 ECS 后的全局答案。`ecs_in_key: false` 时可正常按全局键缓存；`ecs_in_key: true` 时键中保留了建键时的客户端 ECS，与写入时“请求已无 ECS”不一致，带 ECS 的请求会被跳过。
+  - 风险组合：`cache` 放在按客户端注入子网的 `ecs_handler`（`send: true`）之前时，`ecs_handler` 回程会清除请求与响应中的 ECS，写入校验看到的是两侧均无 ECS，无法识别答案实际按首个取数客户端的子网计算，该答案会以全局键写入并可能被其他子网的客户端命中，且此场景不会产生 `ecs_scope_mismatch` 计数。需要注入 ECS 时，应把 `cache` 放在该 `ecs_handler` 之后并开启 `ecs_in_key`。
+
+#### `single_flight_wait_ms`
+
+- 类型：`integer`；必填：否；默认值：`5000`
+- 单位：毫秒
+- 作用：冷/过期未命中时，跟随者等待同 key 在途 leader 取数的最长时间。
+- 说明：所有重新选举轮次共享同一等待预算；超时后该请求自行取数。
+
+#### `single_flight_max_rounds`
+
+- 类型：`integer`；必填：否；默认值：`3`
+- 作用：leader 失败或未写入缓存后，跟随者重新注册并参与选举的最大轮次。
+- 说明：每轮只会产生一个新 leader，其余跟随者继续等待；设为 `1` 时退化为“等待一次 leader 后自行取数”。
 
 ### quick setup
 
@@ -457,6 +479,10 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 - 其它高级参数仍建议使用完整插件形式。
 
 ### 行为说明
+
+- 相同键的并发冷查询或过期查询会合并为一次下游取数（single-flight），其余请求等待该结果，避免热门域名过期时对上游的请求风暴。
+
+- 写缓存（含 lazy cache 后台刷新）前会校验缓存键与当前请求的一致性：响应 Question 需与键匹配，请求当前 ECS scope 需与建键时一致，且无 ECS 的键不接受回显非零 scope ECS 的响应；不一致时跳过写入（`ecs_scope_mismatch`），详见 `ecs_in_key`。
 
 - 既会读缓存，也会在后续拿到响应后写缓存。
 - 命中缓存时，返回缓存副本并按剩余 TTL 输出。
@@ -482,8 +508,9 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 - `cache_miss_total`
 - `cache_expired_total`
 - `cache_insert_total`
-- `cache_skip_total{reason="truncated|no_ttl|incomplete_answer|low_positive_ttl"}`
+- `cache_skip_total{reason="truncated|no_ttl|incomplete_answer|low_positive_ttl|ecs_scope_mismatch"}`
 - `cache_lazy_refresh_total{result="started|success|failed"}`
+- `cache_single_flight_wait_total`
 - `cache_entry_count`
 
 ### 典型用途
@@ -991,9 +1018,11 @@ ECS 可由请求方伪造。请把 dnsmasq 的真实连接地址或网段明确�
 - 正向阶段：
   - 可删掉已有 ECS。
   - 可保留已有 ECS。
-  - 可根据客户端地址或 preset 注入 ECS。
+  - 可根据客户端地址或 preset 注入 ECS（仅限请求未携带 ECS 时）。
+  - 请求已携带 ECS 时，`send` 与 `preset` 均不生效：`forward: true` 保留原 ECS，`forward: false` 剥除原 ECS。
 - 回程阶段：
-  - 如果 ECS 不是从客户端原样转发的，会把响应里的 ECS 去掉，避免泄露内部构造信息。
+  - 如果 ECS 不是从客户端原样转发的，会把响应里的 ECS 去掉，避免向客户端泄露内部构造的子网信息。
+  - 同一条件下也会清除请求中残留的 ECS（未转发的客户端 ECS 或本插件注入的子网），避免其滞留在链结束后的上下文中；清除发生在下游链执行完成之后，链内执行器看到的仍是正向阶段准备好的请求。
 
 ### 典型用途
 
