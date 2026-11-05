@@ -17,6 +17,22 @@ pub use factory::ForwardFactory;
 pub use selection::ResponseSelectionMode;
 
 use crate::infra::error::DnsError;
+use crate::proto::{EdnsCode, Message};
+
+const MAC_OPTION_CODE: EdnsCode = EdnsCode::Unknown(65001);
+
+fn prepare_request(mut request: Message, forward_mac: bool) -> Message {
+    if !forward_mac
+        && request
+            .edns()
+            .as_ref()
+            .is_some_and(|edns| edns.option(MAC_OPTION_CODE).is_some())
+        && let Some(edns) = request.edns_mut().as_mut()
+    {
+        edns.remove(MAC_OPTION_CODE);
+    }
+    request
+}
 
 fn is_timeout_error(err: &DnsError) -> bool {
     err.to_string().to_ascii_lowercase().contains("timeout")

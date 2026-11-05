@@ -22,6 +22,8 @@ Sends DNS queries to upstreams.
     concurrent: 3
     # Concurrent upstream response selection: fastest / balanced / prefer_positive / consensus
     response_selection: balanced
+    # Client MAC forwarding is disabled unless explicitly required by the upstream
+    forward_mac: false
     upstreams:
       # Simplest UDP upstream
       - tag: "cf_udp"
@@ -92,6 +94,16 @@ Sends DNS queries to upstreams.
 - `CNAME + SOA` without the requested type is treated as NODATA. `NXDOMAIN` remains negative even when its answer section contains CNAME records.
 - `forward` does not perform hidden fallback or CNAME chasing. Raise `concurrent` when more upstreams must participate in the race.
 - The `fallback` executor checks only whether a branch produced a response; it does not understand response dispositions. An incomplete alias or a `SERVFAIL` Message therefore counts as a successful branch result. To make those outcomes explicitly trigger another upstream, compose a sequence with matchers such as `has_wanted_ans` or `rcode` instead of relying on hidden fallback.
+
+#### `forward_mac`
+
+- Type: `boolean`; required: no; default: `false`
+- Controls whether an existing EDNS MAC option (code `65001`) is forwarded to upstreams
+- By default, removes only that option from the upstream request copy, preserving the original request, ECS, COOKIE, DNSSEC flags, and other EDNS options
+- When `true`, preserves an existing MAC without reading neighbor tables or network interfaces or generating one
+- Applies to single and multiple upstreams across all upstream protocols; quick setup keeps it disabled
+- Compatibility change: previous versions preserved this option by default; set `forward_mac: true` in the full configuration's `args` to retain that behavior
+- Some public resolvers reject MAC options; enable this only when the upstream requires and supports them
 
 #### `upstreams`
 

@@ -25,6 +25,10 @@ pub struct ForwardConfig {
     #[serde(default)]
     pub response_selection: ResponseSelectionMode,
 
+    /// Forward the client's EDNS MAC option (65001) to upstreams.
+    #[serde(default)]
+    pub forward_mac: bool,
+
     /// List of upstream DNS servers
     pub upstreams: Vec<UpstreamConfig>,
 

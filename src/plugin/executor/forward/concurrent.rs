@@ -8,9 +8,9 @@ use rand::RngExt;
 use tokio::task::JoinSet;
 use tracing::{Level, debug, event_enabled, info, warn};
 
-use super::is_timeout_error;
 use super::metrics::ForwardMetrics;
 use super::selection::{ResponseSelectionMode, SelectedResponse, select_response};
+use super::{is_timeout_error, prepare_request};
 use crate::core::context::DnsContext;
 use crate::core::response::ResponseDisposition;
 use crate::infra::error::{DnsError, Result};
@@ -32,6 +32,8 @@ pub(super) struct ConcurrentForwarder {
 
     /// Whether to stop the executor chain after a successful upstream response.
     pub(super) short_circuit: bool,
+
+    pub(super) forward_mac: bool,
 
     pub(super) response_selection: ResponseSelectionMode,
 
@@ -60,7 +62,8 @@ impl Executor for ConcurrentForwarder {
     #[hotpath::measure]
     async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
         let start_ms = self.metrics.record_query_start();
-        let (response, last_error, timed_out) = self.query_upstreams(context.request.clone()).await;
+        let request = prepare_request(context.request.clone(), self.forward_mac);
+        let (response, last_error, timed_out) = self.query_upstreams(request).await;
         if let Some(selected) = response {
             if selected.disposition == Some(ResponseDisposition::IncompleteAlias) {
                 self.metrics.record_incomplete_alias_selected();

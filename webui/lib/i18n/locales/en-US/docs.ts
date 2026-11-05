@@ -50,6 +50,8 @@ export const enUSDocs = {
       "- Type: `string`; Required: No; Default: None\n- Function: Define the action to be performed after the rule is hit.\n- Support content:\n  - Plugin reference\n  - Shortcut expressions\n  - Built-in control flow, for example `accept`, `reject SERVFAIL`, `reject NOERROR`, `reject 3`, `jump <tag>`\n- Note: the RCODE argument for `reject` accepts case-insensitive English names and decimal numbers.\n- Operational impact:\n  - Directly determines the execution behavior of the current rule.",
   },
   forward: {
+    forward_mac:
+      "- Type: `boolean`; required: no; default: `false`\n- Allows forwarding an existing EDNS MAC option (65001) to upstreams\n- When disabled, removes only that option from the upstream request copy, preserving the original request and other EDNS options\n- When enabled, preserves an existing MAC without discovering or generating one\n- Applies to single and multiple upstreams; quick setup keeps it disabled\n- Compatibility: explicitly set `forward_mac: true` to retain the previous MAC forwarding behavior",
     concurrent:
       "- Type: `integer`; required: no; default value: `1`\n- Value range: clamped to `1..=32` during actual operation, and never above the upstream count.\n- Recommended range: `2..=8`; higher values are intended for advanced observation or special deployments.\n- Function: Define the number of concurrent query fanouts in multi-upstream mode.\n- Operational impact:\n  - The larger the value, the more active the multi-upstream competition will be, but at the same time it will increase the amount of upstream requests.",
     response_selection:

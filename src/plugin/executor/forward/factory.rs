@@ -32,6 +32,7 @@ impl PluginFactory for ForwardFactory {
     ) -> Result<UninitializedPlugin> {
         let forward_config = parse_forward_config(plugin_config)?;
         let short_circuit = forward_config.short_circuit;
+        let forward_mac = forward_config.forward_mac;
         let response_selection = forward_config.response_selection;
 
         if forward_config.upstreams.len() == 1 {
@@ -50,6 +51,7 @@ impl PluginFactory for ForwardFactory {
                     tag: plugin_config.tag.clone(),
                     upstream,
                     short_circuit,
+                    forward_mac,
                     metrics: Arc::new(ForwardMetrics::new(plugin_config.tag.clone(), names)),
                 },
             )))
@@ -78,6 +80,7 @@ impl PluginFactory for ForwardFactory {
                     active_concurrent,
                     upstreams,
                     short_circuit,
+                    forward_mac,
                     response_selection,
                     metrics: Arc::new(ForwardMetrics::new(plugin_config.tag.clone(), names)),
                 },
@@ -108,6 +111,7 @@ impl PluginFactory for ForwardFactory {
                     tag: tag.to_string(),
                     upstream,
                     short_circuit,
+                    forward_mac: false,
                     metrics: Arc::new(ForwardMetrics::new(tag.to_string(), names)),
                 },
             )))
@@ -130,6 +134,7 @@ impl PluginFactory for ForwardFactory {
                     ),
                     upstreams,
                     short_circuit,
+                    forward_mac: false,
                     response_selection: ResponseSelectionMode::default(),
                     metrics: Arc::new(ForwardMetrics::new(tag.to_string(), names)),
                 },

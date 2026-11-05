@@ -6,8 +6,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::{info, warn};
 
-use super::is_timeout_error;
 use super::metrics::ForwardMetrics;
+use super::{is_timeout_error, prepare_request};
 use crate::core::context::DnsContext;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::network::upstream::Upstream;
@@ -30,6 +30,8 @@ pub(super) struct SingleDnsForwarder {
 
     /// Whether to stop the executor chain after a successful upstream response.
     pub(super) short_circuit: bool,
+
+    pub(super) forward_mac: bool,
 
     pub(super) metrics: Arc<ForwardMetrics>,
 }
@@ -57,7 +59,11 @@ impl Executor for SingleDnsForwarder {
     async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
         let start_ms = self.metrics.record_query_start();
         self.metrics.record_upstream_start(0);
-        match self.upstream.query(context.request.clone()).await {
+        match self
+            .upstream
+            .query(prepare_request(context.request.clone(), self.forward_mac))
+            .await
+        {
             Ok(res) => {
                 context.set_response(res);
                 self.metrics.record_success(start_ms);

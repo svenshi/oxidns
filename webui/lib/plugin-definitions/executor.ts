@@ -140,6 +140,15 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         ],
       },
       {
+        key: "forward_mac",
+        description:
+          "允许向上游转发请求中已有的 EDNS MAC 选项（65001），不会生成 MAC",
+        label: "转发客户端 MAC",
+        type: "switch",
+        default: false,
+        advanced: true,
+      },
+      {
         key: "upstreams",
         description: "定义一个或多个上游目标。",
         label: "上游列表",
