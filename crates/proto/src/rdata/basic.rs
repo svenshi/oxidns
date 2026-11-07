@@ -581,6 +581,11 @@ impl From<EdnsOption> for EdnsCode {
 }
 
 impl EdnsOption {
+    /// Return the wire option code of this EDNS0 option.
+    pub fn code(&self) -> u16 {
+        u16::from(EdnsCode::from(self))
+    }
+
     /// Return the encoded payload length of this option, excluding the 4-byte
     /// TL header.
     pub fn payload_len(&self) -> usize {
