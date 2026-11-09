@@ -877,6 +877,11 @@ export const zhCNWebui = {
   },
   connection: {
     loginTitle: "登录",
+    loginSubtitle: "登录 OxiDNS 仪表盘",
+    togglePasswordVisibility: "切换密码显示",
+    serverAddress: "API 服务地址",
+    advancedSettings: "高级设置",
+    hideAdvancedSettings: "收起设置",
     credentialsExpired: "登录凭据已失效，请重新输入密码",
     authRequired: "此服务已开启身份验证，请输入账号密码继续",
     username: "用户名",

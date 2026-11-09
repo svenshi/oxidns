@@ -12,9 +12,7 @@ import { useAppStore } from "@/lib/store";
 import { useAuthStore } from "@/lib/auth-store";
 import { useUpdateStore } from "@/lib/update-store";
 import { AppHeader } from "@/components/shell/app-header";
-import {
-  LoginRequired,
-} from "@/components/shell/connection-required";
+import { LoginView } from "@/components/auth/login-view";
 import { RestartingOverlay } from "@/components/shell/restarting-overlay";
 import { UpgradeOverlay } from "@/components/shell/upgrade-overlay";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -152,6 +150,15 @@ export default function ConsoleLayout({
     previousEditorMode.current = editorMode;
   }, [editorMode, sidebarOpen]);
 
+  // If credentials are required and user is not in offline editor mode, render dedicated LoginView
+  if (needsCredentials && !editorMode) {
+    return (
+      <TooltipProvider>
+        <LoginView />
+      </TooltipProvider>
+    );
+  }
+
   return (
     <TooltipProvider>
       <SidebarProvider
@@ -170,11 +177,6 @@ export default function ConsoleLayout({
               <AppHeader title={t(WEBUI.shell.configEditor)} />
               <ConfigEditorView />
             </div>
-          ) : needsCredentials ? (
-            <>
-              <AppHeader title={t(WEBUI.shell.login)} />
-              <LoginRequired />
-            </>
           ) : (
             children
           )}
