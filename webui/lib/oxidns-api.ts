@@ -1182,7 +1182,11 @@ function appendQueryRecordFilters(
 
 export function apiHeaders() {
   const { serverConfig } = useAuthStore.getState();
-  const headers: Record<string, string> = { Accept: "application/json" };
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "X-Requested-With": "XMLHttpRequest",
+    "X-No-Browser-Auth": "true",
+  };
   if (serverConfig.requiresAuth && serverConfig.username) {
     headers.Authorization = `Basic ${btoa(`${serverConfig.username}:${serverConfig.password}`)}`;
   }
