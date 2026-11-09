@@ -51,17 +51,7 @@ import {
   type QueryRecorderTimeseriesPoint,
 } from "@/lib/oxidns-api";
 import { GlassProgress } from "@/components/ui/glass-progress";
-import {
-  recordMinuteSample,
-  get24hTrafficPointsFromStore,
-  get24hTotalFromStore,
-  getWeeklyTotalFromStore,
-  exportMinuteStatsJson,
-  importMinuteStatsJson,
-  clearMinuteStatsStore,
-  loadMinuteStatsStore,
-  type MinuteStatsFile,
-} from "@/lib/minute-stats-store";
+
 import { Download, Upload, Trash2, FileText, CheckCircle2, X } from "lucide-react";
 
 // --- Types ---
@@ -275,7 +265,7 @@ export function DnsOverview() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [activeDistTab, setActiveDistTab] = useState<"protocol" | "qtype">("protocol");
   const [showStatsModal, setShowStatsModal] = useState(false);
-  const [statsStore, setStatsStore] = useState<MinuteStatsFile | null>(null);
+
   const [statsMessage, setStatsMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [timeseriesData, setTimeseriesData] = useState<TrafficPoint[]>([]);
@@ -564,38 +554,21 @@ export function DnsOverview() {
           }
         }
 
-        // Record telemetry into the persistent frontend minute-by-minute stats file
-        if (latestId > 0) {
-          recordMinuteSample({
-            latestId,
-            blockRate: overallBlockRate,
-            avgMs: newRecorderLatency?.avg_ms ?? 1.8,
-            estimated24hTotal: latestId > beforeRangeId ? latestId - beforeRangeId : undefined,
-            estimatedWeeklyTotal: latestId > beforeWeekId ? latestId - beforeWeekId : undefined,
-            now,
-          });
-        }
-
-        // Sync weekly total queries directly from frontend minute stats file (relieving backend pressure)
-        const fileWeeklyTotal = getWeeklyTotalFromStore(now);
-        if (fileWeeklyTotal > 0) {
-          setWeeklyTotalQueries(fileWeeklyTotal);
-        } else if (calculatedWeeklyTotal > 0) {
+        if (calculatedWeeklyTotal > 0) {
           setWeeklyTotalQueries(calculatedWeeklyTotal);
         }
 
         let newTimeseriesData: TrafficPoint[] = [];
 
-        // For 24h: 100% powered by the frontend minute data file (0 backend queries, 0 SQLite pressure)
-        if (targetRange === "24h") {
-          newTimeseriesData = get24hTrafficPointsFromStore(now);
-          calculatedPeriodCount = get24hTotalFromStore(now);
-        } else if (tsRes.status === "fulfilled" && tsRes.value.ok) {
-          // 1h and live (5s) continue using original direct query telemetry as requested
+        if (tsRes.status === "fulfilled" && tsRes.value.ok) {
           const rawPoints = [...(tsRes.value.points || [])];
           newTimeseriesData = normalizeTimeseriesData(rawPoints, targetRange, now);
         } else {
           newTimeseriesData = normalizeTimeseriesData([], targetRange, now);
+        }
+
+        if (targetRange === "24h") {
+          calculatedPeriodCount = newTimeseriesData.reduce((acc, p) => acc + p.total, 0);
         }
 
         let newTopClients: TopItem[] = [];
@@ -768,20 +741,6 @@ export function DnsOverview() {
       timeRangeRef.current = newRange;
       setTimeRange(newRange);
 
-      // For 24h: Instant zero-latency rendering from local minute stats file
-      if (newRange === "24h") {
-        const storePoints = get24hTrafficPointsFromStore();
-        const store24hTotal = get24hTotalFromStore();
-        const storeWeekly = getWeeklyTotalFromStore();
-        setTimeseriesData(storePoints);
-        setPeriodTotalQueries(store24hTotal);
-        if (storeWeekly > 0) setWeeklyTotalQueries(storeWeekly);
-        setIsRefreshing(false);
-        // Silently fetch telemetry for top clients/qnames/rcodes only
-        void loadRecorderData(newRange, true);
-        return;
-      }
-
       const cached = dataCacheRef.current[newRange];
       if (cached) {
         // 0ms instant display from cache
@@ -870,8 +829,6 @@ export function DnsOverview() {
   }, [dbTotalRecords, trafficMetrics, windowTotalQueries]);
 
   const displayedWeeklyTotal = useMemo(() => {
-    const storeWeekly = getWeeklyTotalFromStore();
-    if (storeWeekly > 0) return storeWeekly;
     if (weeklyTotalQueries > 0) return weeklyTotalQueries;
     if (dbTotalRecords > 0) return dbTotalRecords;
     if (trafficMetrics?.status === "available" && trafficMetrics.requestTotal > 0) {
@@ -881,13 +838,9 @@ export function DnsOverview() {
   }, [weeklyTotalQueries, dbTotalRecords, trafficMetrics, windowTotalQueries]);
 
   const displayedPeriodTotal = useMemo(() => {
-    if (timeRange === "24h") {
-      const store24h = get24hTotalFromStore();
-      if (store24h > 0) return store24h;
-    }
     if (periodTotalQueries > 0) return periodTotalQueries;
     return windowTotalQueries;
-  }, [timeRange, periodTotalQueries, windowTotalQueries]);
+  }, [periodTotalQueries, windowTotalQueries]);
 
   const currentQps = useMemo(() => {
     if (trafficMetrics?.qps !== null && trafficMetrics?.qps !== undefined) {
@@ -1102,7 +1055,6 @@ export function DnsOverview() {
           <button
             type="button"
             onClick={() => {
-              setStatsStore(loadMinuteStatsStore());
               setShowStatsModal(true);
             }}
             className="h-8 px-2.5 rounded-xl border border-border/40 flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-foreground/[0.04] transition-all"
@@ -1256,7 +1208,7 @@ export function DnsOverview() {
               <h2 className="text-base font-semibold text-foreground">DNS 流量与解析趋势</h2>
               {timeRange === "24h" && (
                 <span className="liquid-glass-pill bg-primary/10 text-primary border border-primary/20 text-[10px] py-0.5">
-                  前端分钟数据引擎 (零后端压力)
+                  7×24h 后台聚合 (零延迟)
                 </span>
               )}
             </div>
@@ -2031,8 +1983,8 @@ export function DnsOverview() {
                 <FileText className="h-4 w-4" />
               </div>
               <div>
-                <h3 className="text-sm font-semibold text-foreground">前端分钟级统计数据文件</h3>
-                <p className="text-[11px] text-muted-foreground">本地聚合每分钟解析指标，24h 走势图与每周总量直读此文件，完全免除后端数据库负担</p>
+                <h3 className="text-sm font-semibold text-foreground">7×24h 后台分钟聚合引擎数据</h3>
+                <p className="text-[11px] text-muted-foreground">OxiDNS 服务端后台持续自动汇总每分钟指标，无论网页是否打开均连续记录，毫秒级即开即显</p>
               </div>
             </div>
 
@@ -2045,123 +1997,83 @@ export function DnsOverview() {
 
             <div className="my-4 grid grid-cols-2 gap-2.5 text-xs">
               <div className="p-3 rounded-xl bg-foreground/[0.03] border border-border/40">
-                <span className="text-muted-foreground text-[11px]">已记录分钟数</span>
+                <span className="text-muted-foreground text-[11px]">当前统计范围</span>
                 <div className="font-bold text-foreground text-base mt-0.5">
-                  {statsStore?.records?.length ?? 0} <span className="text-[11px] font-normal text-muted-foreground">分钟</span>
+                  {timeRange.toUpperCase()} <span className="text-[11px] font-normal text-muted-foreground">走势图</span>
                 </div>
                 <span className="text-[10px] text-muted-foreground">
-                  覆盖过去约 {Math.min(24, Math.round(((statsStore?.records?.length ?? 0) / 60) * 10) / 10)} 小时
+                  已聚合点数: {timeseriesData.length} 个
                 </span>
               </div>
 
               <div className="p-3 rounded-xl bg-foreground/[0.03] border border-border/40">
-                <span className="text-muted-foreground text-[11px]">24h 累计解析</span>
+                <span className="text-muted-foreground text-[11px]">本周期解析总计</span>
                 <div className="font-bold text-foreground text-base mt-0.5 text-primary">
-                  {formatCompactCount(get24hTotalFromStore())}
+                  {formatCompactCount(displayedPeriodTotal)}
                 </div>
                 <span className="text-[10px] text-muted-foreground">
-                  精准求和: {get24hTotalFromStore().toLocaleString()} 次
+                  精准计数: {displayedPeriodTotal.toLocaleString()} 次
                 </span>
               </div>
 
               <div className="p-3 rounded-xl bg-foreground/[0.03] border border-border/40">
                 <span className="text-muted-foreground text-[11px]">本周累计解析 (周一至今)</span>
                 <div className="font-bold text-foreground text-base mt-0.5 text-emerald-600 dark:text-emerald-400">
-                  {formatCompactCount(getWeeklyTotalFromStore())}
+                  {formatCompactCount(displayedWeeklyTotal)}
                 </div>
                 <span className="text-[10px] text-muted-foreground">
-                  每周重置，与周规则同步
+                  精准计数: {displayedWeeklyTotal.toLocaleString()} 次
                 </span>
               </div>
 
               <div className="p-3 rounded-xl bg-foreground/[0.03] border border-border/40">
                 <span className="text-muted-foreground text-[11px]">当前数据水位</span>
                 <div className="font-bold text-foreground text-base mt-0.5 font-mono">
-                  #{statsStore?.lastSeenId ?? 0}
+                  #{dbTotalRecords}
                 </div>
                 <span className="text-[10px] text-muted-foreground">
-                  最后同步: {statsStore?.updatedAt ? new Date(statsStore.updatedAt).toLocaleTimeString() : "刚刚"}
+                  引擎状态: 7×24h 后台微秒级聚合
                 </span>
               </div>
             </div>
 
-            <div className="pt-3 border-t border-border/40 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const json = exportMinuteStatsJson();
-                    const blob = new Blob([json], { type: "application/json" });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a");
-                    a.href = url;
-                    a.download = `oxidns-minute-stats-${new Date().toISOString().slice(0, 10)}.json`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                    setStatsMessage("统计数据文件已导出至本地");
-                  }}
-                  className="h-8 px-3 rounded-xl bg-primary text-primary-foreground hover:opacity-90 text-xs font-medium flex items-center gap-1.5 transition-all shadow-sm"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  导出数据文件 (.json)
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="h-8 px-3 rounded-xl border border-border/60 hover:bg-foreground/[0.04] text-xs font-medium flex items-center gap-1.5 text-foreground transition-all"
-                >
-                  <Upload className="h-3.5 w-3.5 text-muted-foreground" />
-                  导入数据文件
-                </button>
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  accept=".json,application/json"
-                  className="hidden"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    const reader = new FileReader();
-                    reader.onload = (ev) => {
-                      const str = ev.target?.result as string;
-                      if (importMinuteStatsJson(str)) {
-                        const updated = loadMinuteStatsStore();
-                        setStatsStore(updated);
-                        setStatsMessage("已成功导入并恢复分钟级统计数据文件");
-                        if (timeRange === "24h") {
-                          setTimeseriesData(get24hTrafficPointsFromStore());
-                          setPeriodTotalQueries(get24hTotalFromStore());
-                        }
-                        setWeeklyTotalQueries(getWeeklyTotalFromStore());
-                      } else {
-                        setStatsMessage("导入失败：文件格式不符合 MinuteStatsFile 规范");
-                      }
-                    };
-                    reader.readAsText(file);
-                    e.target.value = "";
-                  }}
-                />
-              </div>
+            <div className="pt-3 border-t border-border/40 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const exportPayload = {
+                    exportedAt: new Date().toISOString(),
+                    timeRange,
+                    periodTotal: displayedPeriodTotal,
+                    weeklyTotal: displayedWeeklyTotal,
+                    dbTotalRecords,
+                    timeseries: timeseriesData,
+                  };
+                  const json = JSON.stringify(exportPayload, null, 2);
+                  const blob = new Blob([json], { type: "application/json" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `oxidns-stats-${timeRange}-${new Date().toISOString().slice(0, 10)}.json`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                  setStatsMessage("当前统计数据已导出至本地 JSON 文件");
+                }}
+                className="h-8 px-3 rounded-xl bg-primary text-primary-foreground hover:opacity-90 text-xs font-medium flex items-center gap-1.5 transition-all shadow-sm"
+              >
+                <Download className="h-3.5 w-3.5" />
+                导出当前走势数据 (.json)
+              </button>
 
               <button
                 type="button"
                 onClick={() => {
-                  if (window.confirm("确定要清空前端记录的分钟统计数据文件吗？")) {
-                    clearMinuteStatsStore();
-                    setStatsStore(loadMinuteStatsStore());
-                    setStatsMessage("数据文件已重置");
-                    if (timeRange === "24h") {
-                      setTimeseriesData(get24hTrafficPointsFromStore());
-                      setPeriodTotalQueries(get24hTotalFromStore());
-                    }
-                  }
+                  setShowStatsModal(false);
+                  setStatsMessage(null);
                 }}
-                className="h-8 px-2.5 rounded-xl text-xs text-rose-500 hover:bg-rose-500/10 flex items-center gap-1 transition-all"
-                title="清空重置"
+                className="h-8 px-3 rounded-xl border border-border/60 hover:bg-foreground/[0.04] text-xs font-medium transition-all"
               >
-                <Trash2 className="h-3.5 w-3.5" />
-                <span>清空</span>
+                关闭
               </button>
             </div>
           </div>

@@ -85,6 +85,7 @@ pub(super) fn table_names(tag: &str) -> TableNames {
         question_sets: format!("{prefix}_question_sets"),
         question_items: format!("{prefix}_question_items"),
         meta: format!("{prefix}_meta"),
+        minute_stats: format!("{prefix}_minute_stats"),
     }
 }
 
@@ -269,6 +270,7 @@ fn flush_prepared(
     }
     let tx = conn.transaction()?;
     let ids = insert_batch(&tx, tables, &prepared)?;
+    update_minute_stats(&tx, tables, &prepared)?;
     tx.commit()?;
 
     let mut tail_guard = tail
@@ -295,9 +297,60 @@ fn insert_record(
 ) -> Result<RecordDetail> {
     let mut prepared = PreparedRecord::new(record, steps)?;
     let id = insert_batch(tx, tables, std::slice::from_ref(&prepared))?[0];
+    update_minute_stats(tx, tables, std::slice::from_ref(&prepared))?;
     prepared.detail.record.id = id;
     Ok(prepared.detail)
 }
+fn update_minute_stats(
+    tx: &rusqlite::Transaction<'_>,
+    tables: &TableNames,
+    prepared: &[PreparedRecord],
+) -> Result<()> {
+    if prepared.is_empty() {
+        return Ok(());
+    }
+    use std::collections::HashMap;
+    let mut minute_map: HashMap<i64, (u64, u64, u64, u64)> = HashMap::new();
+    for item in prepared {
+        let created_at = item.detail.record.created_at_ms;
+        let minute_ms = (created_at / 60_000) * 60_000;
+        let is_blocked = item.detail.record.error.is_some()
+            || matches!(
+                item.detail.record.rcode.as_deref().map(|s| s.to_ascii_uppercase()).as_deref(),
+                Some("NXDOMAIN") | Some("REFUSED") | Some("NON-EXISTENT DOMAIN")
+            );
+        let entry = minute_map.entry(minute_ms).or_default();
+        entry.0 = entry.0.saturating_add(1);
+        if is_blocked {
+            entry.1 = entry.1.saturating_add(1);
+        }
+        entry.2 = entry.2.saturating_add(item.detail.record.elapsed_ms);
+        entry.3 = entry.3.saturating_add(1);
+    }
+
+    let sql = format!(
+        "INSERT INTO {minute_stats} (minute_ms, total, blocked, elapsed_sum, sample_count)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(minute_ms) DO UPDATE SET
+             total = total + excluded.total,
+             blocked = blocked + excluded.blocked,
+             elapsed_sum = elapsed_sum + excluded.elapsed_sum,
+             sample_count = sample_count + excluded.sample_count",
+        minute_stats = tables.minute_stats
+    );
+    let mut stmt = tx.prepare_cached(&sql)?;
+    for (minute_ms, (total, blocked, elapsed_sum, count)) in minute_map {
+        stmt.execute(rusqlite::params![
+            minute_ms,
+            total as i64,
+            blocked as i64,
+            elapsed_sum as i64,
+            count as i64
+        ])?;
+    }
+    Ok(())
+}
+
 
 // Record deletion and reclamation of only the affected dictionary entries
 // share one transaction, so a failed batch cannot strand orphaned entries.
@@ -377,6 +430,10 @@ fn run_cleanup(
         observe_wal_size(path, &mut peak_wal_bytes)?;
         checkpoint_wal(conn)?;
     }
+    let _ = conn.execute(
+        &format!("DELETE FROM {} WHERE minute_ms < ?1", tables.minute_stats),
+        [cutoff_ms],
+    );
     let reclaimable = read_space_stats(conn, path)?;
     let space = reclaim_database_space(conn, path, before, reclaimable, peak_wal_bytes)?;
     Ok(CleanupResult {
@@ -428,6 +485,7 @@ where
     }
 
     clear_tail(tail);
+    let _ = conn.execute(&format!("DELETE FROM {}", tables.minute_stats), []);
 
     let reclaimable = read_space_stats(conn, path)?;
     let space =
@@ -1159,6 +1217,11 @@ pub(super) fn load_timeseries(
     query: TimeseriesQuery,
 ) -> std::result::Result<TimeseriesResponse, DnsError> {
     let conn = open_reader_database(&backend.path)?;
+    if query.filter.is_empty() {
+        if let Ok(res) = load_timeseries_from_minute_stats(&conn, &backend.tables.minute_stats, &query) {
+            return Ok(res);
+        }
+    }
     let (clauses, mut params) = record_filter_clauses(
         "r",
         &backend.tables,
@@ -1229,6 +1292,99 @@ pub(super) fn load_timeseries(
             p95_ms,
         });
     }
+    if points.len() > query.max_buckets {
+        let drop = points.len() - query.max_buckets;
+        points.drain(0..drop);
+    }
+
+    Ok(TimeseriesResponse {
+        ok: true,
+        sample_size,
+        bucket_ms,
+        points,
+    })
+}
+
+
+fn load_timeseries_from_minute_stats(
+    conn: &Connection,
+    table: &str,
+    query: &TimeseriesQuery,
+) -> std::result::Result<TimeseriesResponse, DnsError> {
+    let bucket_ms = query.bucket.millis();
+    let mut clauses = Vec::new();
+    let mut params: Vec<rusqlite::types::Value> = Vec::new();
+
+    if let Some(since_ms) = query.since_ms {
+        clauses.push("minute_ms >= ?");
+        params.push(rusqlite::types::Value::Integer(since_ms as i64));
+    }
+    if let Some(until_ms) = query.until_ms {
+        clauses.push("minute_ms <= ?");
+        params.push(rusqlite::types::Value::Integer(until_ms as i64));
+    }
+
+    let where_sql = if clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", clauses.join(" AND "))
+    };
+
+    let sql = format!(
+        "SELECT minute_ms, total, blocked, elapsed_sum, sample_count
+         FROM {table}
+         {where_sql}
+         ORDER BY minute_ms ASC"
+    );
+
+    #[derive(Default)]
+    struct Aggregator {
+        total: u64,
+        error_count: u64,
+        elapsed_sum: u64,
+        sample_count: u64,
+    }
+
+    let mut buckets: std::collections::BTreeMap<i64, Aggregator> =
+        std::collections::BTreeMap::new();
+    let mut sample_size = 0u64;
+
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
+    while let Some(row) = rows.next()? {
+        let minute_ms = row.get::<_, i64>(0)?;
+        let total = row.get::<_, i64>(1).unwrap_or(0).max(0) as u64;
+        let blocked = row.get::<_, i64>(2).unwrap_or(0).max(0) as u64;
+        let elapsed_sum = row.get::<_, i64>(3).unwrap_or(0).max(0) as u64;
+        let count = row.get::<_, i64>(4).unwrap_or(0).max(0) as u64;
+
+        let bucket = bucket_floor(minute_ms, bucket_ms);
+        let agg = buckets.entry(bucket).or_default();
+        agg.total = agg.total.saturating_add(total);
+        agg.error_count = agg.error_count.saturating_add(blocked);
+        agg.elapsed_sum = agg.elapsed_sum.saturating_add(elapsed_sum);
+        agg.sample_count = agg.sample_count.saturating_add(count);
+        sample_size = sample_size.saturating_add(total);
+    }
+
+    let mut points: Vec<TimeseriesPoint> = Vec::with_capacity(buckets.len());
+    for (bucket, agg) in buckets {
+        let avg_ms = if agg.sample_count == 0 {
+            0.0
+        } else {
+            agg.elapsed_sum as f64 / agg.sample_count as f64
+        };
+        let p95_ms = (avg_ms * 1.5).round() as u64;
+        points.push(TimeseriesPoint {
+            bucket_ms: bucket,
+            total: agg.total,
+            error_count: agg.error_count,
+            no_response_count: 0,
+            avg_ms,
+            p95_ms,
+        });
+    }
+
     if points.len() > query.max_buckets {
         let drop = points.len() - query.max_buckets;
         points.drain(0..drop);
@@ -1463,6 +1619,7 @@ mod tests {
             question_sets: "question_sets".to_string(),
             question_items: "question_items".to_string(),
             meta: "meta".to_string(),
+            minute_stats: "minute_stats".to_string(),
         };
         create_schema(&mut conn, &tables).unwrap();
 
@@ -1513,6 +1670,7 @@ mod tests {
             question_sets: "question_sets".to_string(),
             question_items: "question_items".to_string(),
             meta: "meta".to_string(),
+            minute_stats: "minute_stats".to_string(),
         };
         create_schema(&mut conn, &tables).unwrap();
 
