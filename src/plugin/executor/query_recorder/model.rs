@@ -41,6 +41,7 @@ pub(super) struct TableNames {
     pub(super) question_sets: String,
     pub(super) question_items: String,
     pub(super) meta: String,
+    pub(super) minute_stats: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -175,6 +176,17 @@ pub(super) struct QueryRecordFilter {
     pub(super) rcode: Option<String>,
     pub(super) status: QueryRecordStatus,
     pub(super) matcher_tag: Option<String>,
+}
+
+impl QueryRecordFilter {
+    pub(super) fn is_empty(&self) -> bool {
+        self.qname.is_none()
+            && self.qtype.is_none()
+            && self.client_ip.is_none()
+            && self.rcode.is_none()
+            && self.status == QueryRecordStatus::All
+            && self.matcher_tag.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

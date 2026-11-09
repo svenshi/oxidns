@@ -49,6 +49,7 @@ pub(super) fn create_schema(conn: &mut Connection, tables: &TableNames) -> Resul
                 "query_recorder unsupported schema revision: {revision:?}"
             )));
         }
+        ensure_minute_stats(&tx, tables)?;
         tx.commit()?;
         return Ok(());
     }
@@ -113,6 +114,53 @@ pub(super) fn create_schema(conn: &mut Connection, tables: &TableNames) -> Resul
         records = tables.records, traces = tables.traces, trace_steps = tables.trace_steps,
         question_sets = tables.question_sets, question_items = tables.question_items, meta = tables.meta,
     ))?;
+    ensure_minute_stats(&tx, tables)?;
     tx.commit()?;
+    Ok(())
+}
+
+fn ensure_minute_stats(tx: &rusqlite::Transaction<'_>, tables: &TableNames) -> Result<()> {
+    tx.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS {minute_stats} (
+            minute_ms INTEGER PRIMARY KEY,
+            total INTEGER NOT NULL,
+            blocked INTEGER NOT NULL,
+            elapsed_sum INTEGER NOT NULL,
+            sample_count INTEGER NOT NULL
+        );",
+        minute_stats = tables.minute_stats,
+    ))?;
+
+    let count: i64 = tx
+        .query_row(
+            &format!("SELECT COUNT(*) FROM {}", tables.minute_stats),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if count == 0 {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let since_ms = now_ms.saturating_sub(8 * 24 * 60 * 60 * 1000);
+        let _ = tx.execute(
+            &format!(
+                "INSERT OR IGNORE INTO {minute_stats} (minute_ms, total, blocked, elapsed_sum, sample_count)
+                 SELECT
+                     (created_at_ms / 60000) * 60000 AS minute_ms,
+                     COUNT(*) AS total,
+                     SUM(CASE WHEN error IS NOT NULL OR UPPER(COALESCE(rcode, '')) IN ('NXDOMAIN', 'REFUSED', 'NON-EXISTENT DOMAIN') THEN 1 ELSE 0 END) AS blocked,
+                     SUM(elapsed_ms) AS elapsed_sum,
+                     COUNT(*) AS sample_count
+                 FROM {records}
+                 WHERE created_at_ms >= ?1
+                 GROUP BY minute_ms",
+                minute_stats = tables.minute_stats,
+                records = tables.records,
+            ),
+            [since_ms],
+        );
+    }
     Ok(())
 }
