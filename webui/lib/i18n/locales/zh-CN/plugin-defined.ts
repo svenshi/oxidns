@@ -526,6 +526,49 @@ export const zhCNPluginDefined = {
         },
       },
     },
+    load_balance: {
+      name: "Load Balance",
+      description: "在多条执行链之间轮询、随机或按权重随机分配请求",
+      fields: {
+        strategy: {
+          label: "选择策略",
+          description: "每次仅执行一个分支；轮询从第一项开始，重载后重置。",
+          options: {
+            round_robin: "轮询",
+            random: "随机",
+            weighted_random: "加权随机",
+          },
+        },
+        executors: {
+          label: "候选执行器",
+          description:
+            "配置非空且不重复的执行器列表；需要包裹下游的插件应放入完整 sequence。",
+        },
+        "executors[]": {
+          label: "分支",
+        },
+        "executors[].exec": {
+          label: "执行器",
+          description: "引用不带 $ 的 executor tag，不支持快捷表达式。",
+        },
+        "executors[].weight": {
+          label: "权重",
+          description: "正整数，默认 1；仅加权随机使用。",
+        },
+      },
+      metrics: {
+        labels: {
+          load_balance_selected_total: "分支选择",
+          load_balance_error_total: "分支错误",
+        },
+        help: {
+          load_balance_selected_total:
+            "按执行器统计的选择次数，包括随后取消的调用。",
+          load_balance_error_total:
+            "选中分支返回执行错误的次数；无响应的正常返回不计为错误。",
+        },
+      },
+    },
     fallback: {
       name: "Fallback",
       description: "主路径失败或过慢时切换到备用执行器",

@@ -226,6 +226,11 @@ mod tests {
         assert!(info.supported_plugins.matchers.contains(&"qname".into()));
         assert!(
             info.supported_plugins
+                .executors
+                .contains(&"load_balance".into())
+        );
+        assert!(
+            info.supported_plugins
                 .matchers
                 .contains(&"has_cname".into())
         );

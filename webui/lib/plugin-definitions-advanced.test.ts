@@ -188,7 +188,7 @@ function collectRequiredAdvancedPaths(
 
 describe("plugin advanced field classification", () => {
   it("covers the complete plugin registry with the reviewed field paths", () => {
-    expect(pluginKindDefinitions).toHaveLength(66);
+    expect(pluginKindDefinitions).toHaveLength(67);
 
     const actual = Object.fromEntries(
       pluginKindDefinitions

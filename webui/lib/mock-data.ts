@@ -259,6 +259,7 @@ export const pluginKinds: Record<string, string[]> = {
     "forward",
     "cache",
     "fallback",
+    "load_balance",
     "hosts",
     "arbitrary",
     "redirect",

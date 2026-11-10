@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useAppStore } from "@/lib/store";
 import type { ConfigField, ConfigFieldChild } from "@/lib/plugin-definitions";
+import { getVisiblePluginConfigFields } from "@/lib/plugin-config-visibility";
 import type { PluginInstance, PluginType } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { WEBUI } from "@/lib/i18n";
@@ -618,8 +619,9 @@ export function PluginConfigFieldsEditor({
   readOnly = false,
 }: PluginConfigFieldsEditorProps) {
   const { t } = useI18n();
-  const regularFields = fields.filter((field) => !field.advanced);
-  const advancedFields = fields.filter((field) => field.advanced);
+  const visibleFields = getVisiblePluginConfigFields(fields, values);
+  const regularFields = visibleFields.filter((field) => !field.advanced);
+  const advancedFields = visibleFields.filter((field) => field.advanced);
   const hasConfiguredAdvancedValue = hasConfiguredAdvancedFields(
     advancedFields,
     configuredValues,
@@ -631,7 +633,7 @@ export function PluginConfigFieldsEditor({
     onChange(omitConfigFieldValues(values, [key]));
   };
 
-  if (fields.length === 0) {
+  if (visibleFields.length === 0) {
     return (
       <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
         {t(WEBUI.plugins.noConfigFields)}

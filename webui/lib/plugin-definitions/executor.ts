@@ -444,6 +444,73 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
     },
   },
   {
+    kind: "load_balance",
+    type: "executor",
+    name: "Load Balance",
+    description: "在多条执行链之间轮询、随机或按权重随机分配请求",
+    icon: "GitBranch",
+    configSchema: [
+      {
+        key: "strategy",
+        label: "选择策略",
+        description: "每次仅执行一个分支；轮询从第一项开始，重载后重置。",
+        type: "select",
+        default: "round_robin",
+        options: [
+          { label: "轮询", value: "round_robin" },
+          { label: "随机", value: "random" },
+          { label: "加权随机", value: "weighted_random" },
+        ],
+      },
+      {
+        key: "executors",
+        label: "候选执行器",
+        description:
+          "配置非空且不重复的执行器列表；需要包裹下游的插件应放入完整 sequence。",
+        type: "array",
+        required: true,
+        item: {
+          type: "object",
+          label: "分支",
+          summaryFields: ["exec", "weight"],
+          fields: [
+            {
+              ...executorRef(
+                "exec",
+                "执行器",
+                true,
+                undefined,
+                "引用不带 $ 的 executor tag，不支持快捷表达式。",
+              ),
+              referencePrefix: "",
+            },
+            {
+              key: "weight",
+              label: "权重",
+              description: "正整数，默认 1；仅加权随机使用。",
+              type: "number",
+              default: 1,
+              visibleWhen: { field: "strategy", equals: "weighted_random" },
+            },
+          ],
+        },
+      },
+    ],
+    metrics: {
+      metricLabels: {
+        load_balance_selected_total: "分支选择",
+        load_balance_error_total: "分支错误",
+      },
+      metricHelp: {
+        load_balance_selected_total:
+          "按执行器统计的选择次数，包括随后取消的调用。",
+        load_balance_error_total:
+          "选中分支返回执行错误的次数；无响应的正常返回不计为错误。",
+      },
+      cardPriority: ["load_balance_selected_total", "load_balance_error_total"],
+    } satisfies PluginMetricsDef,
+  },
+  {
     kind: "fallback",
     type: "executor",
     name: "Fallback",
@@ -1217,6 +1284,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "success_only",
+        visibleWhen: { field: "phase", equals: "after" },
         description: "仅响应为 NOERROR 时学习；只在 after 阶段生效。",
         label: "仅成功响应",
         type: "switch",
@@ -1224,6 +1292,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "answer_required",
+        visibleWhen: { field: "phase", equals: "after" },
         description: "仅响应包含 answer 时学习；只在 after 阶段生效。",
         label: "需要 Answer",
         type: "switch",
@@ -1264,6 +1333,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "timeout",
+        visibleWhen: { field: "async", equals: false },
         description: "async 关闭时等待 provider 写入完成的最长时间。",
         label: "同步超时",
         type: "duration",
@@ -1598,6 +1668,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "queue_size",
+        visibleWhen: { field: "async", equals: true },
         description: "异步模式下后台发送队列的容量。",
         label: "异步队列大小",
         type: "number",
@@ -1989,6 +2060,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "wait_timeout",
+        visibleWhen: { field: "async", equals: false },
         label: "同步等待时间",
         type: "text",
         default: "8s",
@@ -2226,6 +2298,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "wait_timeout",
+        visibleWhen: { field: "async", equals: false },
         description: "仅 async=false 时生效；超时后任务继续在后台执行。",
         label: "同步等待时间",
         type: "text",
@@ -2365,6 +2438,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "bundle",
+        visibleWhen: { field: "asset", equals: "auto" },
         description:
           "asset 为 auto 时使用的编译版本；auto 会跟随当前二进制的编译版本。",
         label: "编译版本",
@@ -2403,6 +2477,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "webui_dir",
+        visibleWhen: { field: "skip_webui", equals: false },
         description: "升级时安装 WebUI 静态资源的目录。",
         label: "WebUI 目录",
         type: "text",

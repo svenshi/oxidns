@@ -21,7 +21,7 @@ OxiDNS 是一个使用 Rust 构建、面向软路由、OpenWrt、Homelab 和高�
 
 ## 为什么选择 OxiDNS
 
-- **策略可编排**：`sequence` 将 matcher、executor 和 provider 组合成可复用的条件分支、跳转和回退链。
+- **策略可编排**：`sequence` 将 matcher、executor 和 provider 组合成可复用的条件分支、跳转和回退链，`load_balance` 支持执行链轮询、随机和加权随机。
 - **决策可解释**：查询记录、执行路径、结构化日志和指标可以回答一次查询匹配了什么、执行了什么、为何选择当前结果。
 - **接入与出口统一**：同一策略可服务 UDP、TCP、DoT、DoQ 和 DoH，并统一管理上游解析、连接复用、并发裁决与代理出口。
 - **DNS 驱动网络行为**：解析结果可以直接联动 Linux `ipset` / `nftset`、RouterOS 地址列表与静态路由、HTTP webhook 和外部脚本。
@@ -85,7 +85,7 @@ plugins:
 | 类别 | 能力 |
 | --- | --- |
 | 协议接入 | UDP、TCP、DoT、DoQ、DoH（HTTP/1.1、HTTP/2、HTTP/3） |
-| 策略编排 | `sequence`、条件匹配、执行器组合、跳转与回退链 |
+| 策略编排 | `sequence`、条件匹配、执行器组合、跳转、回退链与 `load_balance` |
 | 上游与出口 | 多协议上游、并发响应裁决、连接复用、bootstrap、SOCKS5、统一 `network.outbound` |
 | 响应处理 | TTL 感知缓存与负缓存、ECS 与 ECS 客户端地址映射、本地记录、重定向、响应构造、双栈与 IP 优选 |
 | 规则数据 | 域名与 IP 集、GeoIP、GeoSite、AdGuard 规则、动态域名学习 |

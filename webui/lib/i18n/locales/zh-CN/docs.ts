@@ -118,6 +118,16 @@ export const zhCNDocs = {
     ecs_in_key:
       "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：控制 ECS scope 是否参与缓存键计算。",
   },
+  load_balance: {
+    strategy:
+      "可选：round_robin（默认）、random、weighted_random。每次仅选择一条执行链；失败原样传播，故障切换可组合 fallback。轮询状态在重载后重置。",
+    executors:
+      "必填的非空对象数组，目标不能重复。exec 引用不带 $ 的 executor tag；weight 为正整数 u32，默认 1，仅加权随机使用。子链 Next / Return 后继续调用方，Stop 向外传播。",
+    "executors[].exec":
+      "必填，不带 $ 的 executor tag，不解析快捷表达式。子调用不接收外层 continuation；ecs_handler、cache 等应放入包含其下游的完整 sequence。",
+    "executors[].weight":
+      "正整数 u32，默认 1；仅 weighted_random 使用。例如 3:1 表示选择概率为 3/4、1/4。比例统计进入插件的调用，包括分支内缓存命中；客户端缓存不参与。",
+  },
   fallback: {
     primary: "- 类型：`string`；必填：是；默认值：无\n- 作用：指定主执行器。",
     secondary:

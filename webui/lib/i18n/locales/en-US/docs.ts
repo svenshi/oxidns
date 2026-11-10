@@ -121,6 +121,16 @@ export const enUSDocs = {
     ecs_in_key:
       "- Type: `boolean`; required: no; default value: `false`\n- Function: Control whether the ECS scope is included in cache key calculation.",
   },
+  load_balance: {
+    strategy:
+      "Options: round_robin (default), random, weighted_random. Selects one branch per call. Errors propagate unchanged; compose fallback for failover. Round-robin state resets on reload.",
+    executors:
+      "Required non-empty array of objects with distinct targets. exec is a plain executor tag without $; weight is a positive u32 integer, default 1, used only by weighted_random. Next / Return resume the caller; Stop propagates.",
+    "executors[].exec":
+      "Required plain executor tag without $. Quick setup is not supported. The subcall receives no outer continuation; put middleware such as ecs_handler and cache inside a complete target sequence.",
+    "executors[].weight":
+      "Positive u32 integer, default 1; used only by weighted_random. Weights 3:1 give probabilities 3/4, 1/4. Counts calls entering the plugin, including branch cache hits; client caching does not participate.",
+  },
   fallback: {
     primary:
       "- Type: `string`; Required: Yes; Default: None\n- Function: Specify the main executor.",
