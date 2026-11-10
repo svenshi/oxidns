@@ -1284,6 +1284,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "success_only",
+        visibleWhen: { field: "phase", equals: "after" },
         description: "仅响应为 NOERROR 时学习；只在 after 阶段生效。",
         label: "仅成功响应",
         type: "switch",
@@ -1291,6 +1292,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "answer_required",
+        visibleWhen: { field: "phase", equals: "after" },
         description: "仅响应包含 answer 时学习；只在 after 阶段生效。",
         label: "需要 Answer",
         type: "switch",
@@ -1331,6 +1333,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "timeout",
+        visibleWhen: { field: "async", equals: false },
         description: "async 关闭时等待 provider 写入完成的最长时间。",
         label: "同步超时",
         type: "duration",
@@ -1665,6 +1668,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "queue_size",
+        visibleWhen: { field: "async", equals: true },
         description: "异步模式下后台发送队列的容量。",
         label: "异步队列大小",
         type: "number",
@@ -2056,6 +2060,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "wait_timeout",
+        visibleWhen: { field: "async", equals: false },
         label: "同步等待时间",
         type: "text",
         default: "8s",
@@ -2293,6 +2298,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "wait_timeout",
+        visibleWhen: { field: "async", equals: false },
         description: "仅 async=false 时生效；超时后任务继续在后台执行。",
         label: "同步等待时间",
         type: "text",
@@ -2432,6 +2438,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "bundle",
+        visibleWhen: { field: "asset", equals: "auto" },
         description:
           "asset 为 auto 时使用的编译版本；auto 会跟随当前二进制的编译版本。",
         label: "编译版本",
@@ -2470,6 +2477,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "webui_dir",
+        visibleWhen: { field: "skip_webui", equals: false },
         description: "升级时安装 WebUI 静态资源的目录。",
         label: "WebUI 目录",
         type: "text",
