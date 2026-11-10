@@ -4,6 +4,17 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+
+import {
+  createPluginConfigFormValues,
+  PluginConfigFieldsEditor,
+  serializePluginConfigValues,
+} from "@/components/plugins/plugin-config-fields-editor";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { I18nProvider } from "./i18n/provider";
+import { getVisiblePluginConfigFields } from "./plugin-config-visibility";
 
 import {
   getLocalizedPluginKindDefinition,
@@ -32,6 +43,71 @@ plugins:
 `;
 
 describe("load_balance configuration", () => {
+  it("shows weights only for weighted random in editable and read-only branch views", () => {
+    const fields = getPluginKindDefinition("load_balance")!.configSchema;
+    for (const strategy of [
+      undefined,
+      "round_robin",
+      "random",
+      "weighted_random",
+    ]) {
+      const values = createPluginConfigFormValues(fields, {
+        ...(strategy === undefined ? {} : { strategy }),
+        executors: [
+          { exec: "seq_dns_a", weight: 3 },
+          { exec: "seq_dns_b", weight: 1 },
+        ],
+      });
+      for (const readOnly of [false, true]) {
+        for (const collapsed of [false, true]) {
+          const html = renderToStaticMarkup(
+            createElement(
+              I18nProvider,
+              null,
+              createElement(
+                TooltipProvider,
+                null,
+                createElement(PluginConfigFieldsEditor, {
+                  fields,
+                  plugins: [],
+                  values,
+                  onChange: () => {},
+                  readOnly,
+                  defaultArrayObjectCollapsed: collapsed,
+                }),
+              ),
+            ),
+          );
+          expect(html.includes("权重")).toBe(strategy === "weighted_random");
+          expect(html).toContain("seq_dns_a");
+        }
+      }
+    }
+  });
+
+  it("retains configured weights while switching strategies and editing a hidden-weight branch", () => {
+    const fields = getPluginKindDefinition("load_balance")!.configSchema;
+    const values = createPluginConfigFormValues(fields, {
+      strategy: "weighted_random",
+      executors: [{ exec: "seq_dns_a", weight: 3 }, { exec: "seq_dns_b" }],
+    });
+    for (const strategy of ["round_robin", "random", "weighted_random"]) {
+      values.strategy = strategy;
+      const branches = values.executors as Record<string, unknown>[];
+      branches[0] = { ...branches[0], exec: "seq_new" };
+      const visible = getVisiblePluginConfigFields(fields, values);
+      const item = visible.find((field) => field.key === "executors")!.item;
+      if (item?.type !== "object") throw new Error("expected branch object");
+      expect(item.fields.some((field) => field.key === "weight")).toBe(
+        strategy === "weighted_random",
+      );
+      expect(serializePluginConfigValues(fields, values)).toEqual({
+        strategy,
+        executors: [{ exec: "seq_new", weight: 3 }, { exec: "seq_dns_b" }],
+      });
+    }
+  });
+
   it("round-trips object targets and omitted weights through form and YAML", () => {
     const parsed = parseOxiDnsYaml(yaml);
     expect(parsed.diagnostics).toEqual([]);

@@ -490,6 +490,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
               description: "正整数，默认 1；仅加权随机使用。",
               type: "number",
               default: 1,
+              visibleWhen: { field: "strategy", equals: "weighted_random" },
             },
           ],
         },
