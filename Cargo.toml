@@ -20,9 +20,9 @@ keywords = ["dns", "rustdns", "pipeline", "flow", "dns-server"]
 categories = ["network-programming"]
 exclude = [
     ".github/**",
-    "ai/**",
     "benchmarks/**",
     "docs/**",
+    "website/**",
     "webui/**",
 ]
 

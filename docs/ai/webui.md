@@ -112,4 +112,4 @@ Paths in this guide are relative to `webui/` unless stated otherwise.
   coverage.
 - For visual WebUI changes, verify the affected route in both light and dark themes, and check narrow and desktop widths for overflow, clipped labels, and broken grid/card layouts.
 - If a Rust plugin is added, renamed, or its config shape changes, update the appropriate file in `lib/plugin-definitions/`, the matching i18n resources under `lib/i18n/locales/*/plugin-defined.ts` and `lib/i18n/locales/*/docs.ts`, and optionally `lib/plugin-definitions/docs.ts` in the same change so the console stays aligned with runtime behavior. Custom kind components under `components/plugins/kinds/` only need updating if they reference removed or renamed fields.
-- If WebUI architecture, styling tokens, plugin schema conventions, or console workflows change, update this `ai/webui.md` file.
+- If WebUI architecture, styling tokens, plugin schema conventions, or console workflows change, update this `docs/ai/webui.md` file.

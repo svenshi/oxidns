@@ -101,7 +101,7 @@ const config = {
             const sourcePath = locale === 'en'
               ? 'i18n/en/docusaurus-plugin-content-docs/current'
               : 'docs';
-            return `https://github.com/svenshi/oxidns/edit/main/docs/${sourcePath}/${docPath}`;
+            return `https://github.com/svenshi/oxidns/edit/main/website/${sourcePath}/${docPath}`;
           },
           showLastUpdateTime: false,
         },

@@ -207,8 +207,8 @@ If OxiDNS is useful to you, you can support its ongoing development and maintena
     <th align="center">Alipay</th>
   </tr>
   <tr>
-    <td align="center"><img src="docs/static/img/support/wechat-pay.jpg" alt="WeChat Pay QR code for supporting OxiDNS development" width="260" /></td>
-    <td align="center"><img src="docs/static/img/support/alipay.jpg" alt="Alipay QR code for supporting OxiDNS development" width="260" /></td>
+    <td align="center"><img src="website/static/img/support/wechat-pay.jpg" alt="WeChat Pay QR code for supporting OxiDNS development" width="260" /></td>
+    <td align="center"><img src="website/static/img/support/alipay.jpg" alt="Alipay QR code for supporting OxiDNS development" width="260" /></td>
   </tr>
 </table>
 

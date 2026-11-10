@@ -1392,11 +1392,11 @@ def publish_docs(
 ) -> None:
     validate_common_publication(result_dir, summary)
     generate_assets(result_dir, summary)
-    asset_dir = REPO_DIR / "docs/static/img/benchmarks/staged"
+    asset_dir = REPO_DIR / "website/static/img/benchmarks/staged"
     asset_dir.mkdir(parents=True, exist_ok=True)
     for source in (result_dir / "charts").glob("*.svg"):
         shutil.copy2(source, asset_dir / source.name)
-    zh_path = REPO_DIR / "docs/docs/benchmarks.md"
+    zh_path = REPO_DIR / "website/docs/benchmarks.md"
     native_zh = preserved_markdown_section(zh_path, "native-specialized")
     rendered_zh = render_zh_docs(environment, summary, args)
     if native_zh:
@@ -1466,7 +1466,7 @@ def publish_docs(
     )
     english = english.replace("Generated:", stage_note + "Generated:", 1)
     english_header = "---\ntitle: Performance Benchmark\nsidebar_position: 8\n---\n\n"
-    english_path = REPO_DIR / "docs/i18n/en/docusaurus-plugin-content-docs/current/benchmarks.md"
+    english_path = REPO_DIR / "website/i18n/en/docusaurus-plugin-content-docs/current/benchmarks.md"
     native_english = preserved_markdown_section(english_path, "native-specialized")
     if native_english:
         english = english.replace(
@@ -1475,7 +1475,7 @@ def publish_docs(
             1,
         )
     english_path.write_text(english_header + english, encoding="utf-8")
-    raw_target = REPO_DIR / "docs/static/benchmarks/staged"
+    raw_target = REPO_DIR / "website/static/benchmarks/staged"
     raw_target.mkdir(parents=True, exist_ok=True)
     shutil.copy2(result_dir / "summary.tsv", raw_target / "summary.tsv")
     shutil.copy2(result_dir / "summary.raw.json", raw_target / "summary.raw.json")
@@ -1534,7 +1534,7 @@ def publish_native_specialized(
     # Recreate charts with the current renderer so publishing an older completed
     # result cannot retain stale dimensions or legends.
     generate_assets(result_dir, summary)
-    asset_dir = REPO_DIR / "docs/static/img/benchmarks/staged"
+    asset_dir = REPO_DIR / "website/static/img/benchmarks/staged"
     asset_dir.mkdir(parents=True, exist_ok=True)
     chart_names = {
         "throughput.svg": "native-specialized-throughput.svg",
@@ -1569,7 +1569,7 @@ def publish_native_specialized(
         "[native-specialized-semantic-validation.json](/benchmarks/staged/native-specialized-semantic-validation.json)",
     )
 
-    raw_target = REPO_DIR / "docs/static/benchmarks/staged"
+    raw_target = REPO_DIR / "website/static/benchmarks/staged"
     raw_target.mkdir(parents=True, exist_ok=True)
     shutil.copy2(result_dir / "summary.tsv", raw_target / "native-specialized-summary.tsv")
     shutil.copy2(result_dir / "summary.raw.json", raw_target / "native-specialized-summary.raw.json")

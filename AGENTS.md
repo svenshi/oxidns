@@ -9,7 +9,7 @@
 ## Sources of Truth
 
 - Prefer executable project state over AI prose when facts can change: `Cargo.toml` for features and dependencies, `justfile` for local quality gates, `.github/workflows/` for CI and release behavior, `src/plugin/*/mod.rs` and registration code for compiled plugins, `src/config/` plus `config*.yaml` for configuration, and workspace `package.json` files for frontend/docs commands.
-- `AGENTS.md` and `ai/*.md` define stable intent, architecture constraints, decision criteria, and workflow rationale. They should point to project files instead of duplicating evolving inventories, versions, command bodies, or target matrices.
+- `AGENTS.md` and `docs/ai/*.md` define stable intent, architecture constraints, decision criteria, and workflow rationale. They should point to project files instead of duplicating evolving inventories, versions, command bodies, or target matrices.
 - If prose disagrees with code, configuration, tests, or workflows, use the executable source for the current fact and update the stale guidance as part of the same change when it is in scope.
 
 ## Project Structure & Module Organization
@@ -35,8 +35,10 @@
 - `tests/message_hickory_compat.rs` validates message codec compatibility behavior against Hickory.
 - `config*.yaml` files are the canonical runnable configuration profiles for their corresponding bundles.
 - `README.md` and `README_EN.md` describe the architecture and capability set; keep them aligned with behavior changes.
-- Detailed internal architecture and dependency-boundary guidance lives in `ai/architecture.md`.
-- WebUI-specific guidance lives in `ai/webui.md`; follow it for changes under `webui/`.
+- `website/` contains the Docusaurus documentation site, including user-facing manuals, translations, and static assets.
+- `docs/` contains repository-maintained project documentation; AI and agent guidance lives under `docs/ai/`.
+- Detailed internal architecture and dependency-boundary guidance lives in `docs/ai/architecture.md`.
+- WebUI-specific guidance lives in `docs/ai/webui.md`; follow it for changes under `webui/`.
 
 ## Build, Test, and Development Commands
 
@@ -64,7 +66,7 @@ rather than maintaining command variants here.
 - Use `snake_case` for functions and fields, `CamelCase` for types, and `SCREAMING_SNAKE_CASE` for constants.
 - Keep modules cohesive and place helpers close to the feature they serve.
 - Comments should be written in English.
-- For plugin registration patterns, implementation guidelines, and platform-specific guarding rules, see [ai/plugin-dev.md](ai/plugin-dev.md).
+- For plugin registration patterns, implementation guidelines, and platform-specific guarding rules, see [docs/ai/plugin-dev.md](docs/ai/plugin-dev.md).
 
 ## Performance & Architecture Principles
 
@@ -72,34 +74,34 @@ rather than maintaining command variants here.
 - Prefer work that can be done once at startup or plugin initialization over work repeated for every query.
 - Reuse connections and transport state through the existing upstream pool design instead of creating one-off connections on the fast path.
 - Respect DNS semantics when touching cache, fallback, rewrite, or synthetic-response code, especially TTL and negative-cache behavior.
-- Performance-sensitive changes must follow the hot-path and resource-safety review rules in `ai/performance.md`.
-- For plugin-specific hot-path rules and composability principles, see [ai/plugin-dev.md](ai/plugin-dev.md).
+- Performance-sensitive changes must follow the hot-path and resource-safety review rules in `docs/ai/performance.md`.
+- For plugin-specific hot-path rules and composability principles, see [docs/ai/plugin-dev.md](docs/ai/plugin-dev.md).
 
 ## Testing Guidelines
 
 - Use Rust's built-in test framework and keep focused unit tests close to logic-heavy modules.
 - Prefer ephemeral ports, bounded timeouts, and deterministic inputs for network-facing tests.
 - Select validation proportionally from the recipes in `justfile`, workspace `package.json` scripts, and affected CI workflow. Run focused checks while iterating and the applicable repository gate before handoff.
-- Use `ai/testing-strategy.md` only for selection criteria and correctness invariants, not as a command inventory.
-- For plugin-specific testing rules (integration test placement, feature gating, trigger conditions), see [ai/plugin-dev.md](ai/plugin-dev.md).
+- Use `docs/ai/testing-strategy.md` only for selection criteria and correctness invariants, not as a command inventory.
+- For plugin-specific testing rules (integration test placement, feature gating, trigger conditions), see [docs/ai/plugin-dev.md](docs/ai/plugin-dev.md).
 
 ## Configuration & Documentation
 
 - Update `README.md` and `README_EN.md` only when their user-facing capability or
   prominent-default summaries are affected; detailed config fields belong in
   the plugin reference and schema-driven surfaces.
-- Use the changed contract and its maintained representations—Rust schema, WebUI definitions, examples, API docs, and translations—to determine synchronization. `ai/change-impact-matrix.md` provides trigger criteria only.
-- When preparing a release, treat `.github/workflows/release.yml`, related workflows, Cargo manifests, and packaging scripts as the executable release contract; use `ai/release-process.md` for sequencing and review criteria.
+- Use the changed contract and its maintained representations—Rust schema, WebUI definitions, examples, API docs, and translations—to determine synchronization. `docs/ai/change-impact-matrix.md` provides trigger criteria only.
+- When preparing a release, treat `.github/workflows/release.yml`, related workflows, Cargo manifests, and packaging scripts as the executable release contract; use `docs/ai/release-process.md` for sequencing and review criteria.
 - For plugin changes, inspect the actual Rust registration/config, `webui/lib/plugin-definitions/`, locale trees, documentation trees, and `config*.yaml`; update only representations triggered by the change.
 
 ## Cargo Feature Conventions
 
-`Cargo.toml` is the authoritative feature graph and bundle definition. Category module `cfg` guards, `src/build_info.rs`, `tests/feature_gating.rs`, `justfile`, and `.github/workflows/rust-ci.yml` are the authoritative integration and validation surfaces. `ai/plugin-dev.md` explains the stable design rules behind them.
+`Cargo.toml` is the authoritative feature graph and bundle definition. Category module `cfg` guards, `src/build_info.rs`, `tests/feature_gating.rs`, `justfile`, and `.github/workflows/rust-ci.yml` are the authoritative integration and validation surfaces. `docs/ai/plugin-dev.md` explains the stable design rules behind them.
 
 ## Operations & Maintenance
 
-- Follow `ai/operations-runbook.md` for deployment preflight, health/readiness, diagnosis, reload, upgrade, and rollback procedures.
-- Follow `ai/maintenance.md` for dependency updates, toolchain changes, feature hygiene, workspace crate maintenance, and recurring documentation audits.
+- Follow `docs/ai/operations-runbook.md` for deployment preflight, health/readiness, diagnosis, reload, upgrade, and rollback procedures.
+- Follow `docs/ai/maintenance.md` for dependency updates, toolchain changes, feature hygiene, workspace crate maintenance, and recurring documentation audits.
 - Security reports and vulnerability handling follow `SECURITY.md`; do not put secrets or private DNS data into public logs or issues.
 
 ## Commit & Pull Request Guidelines

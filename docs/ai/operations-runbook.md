@@ -8,7 +8,7 @@ plus `config*.yaml`. Those project surfaces override copied examples in this
 runbook.
 
 This runbook is for maintaining a deployed OxiDNS instance. User-facing command
-and API references remain under `docs/docs/`; this document defines the order
+and API references remain under `website/docs/`; this document defines the order
 of checks, safe change procedures, and recovery expectations for maintainers.
 
 ## Know the Runtime Contract
@@ -61,7 +61,7 @@ config and working directory before investigating plugin behavior.
 
 With the management API enabled, probe the configured API base using the
 liveness, readiness, detailed health, and build-capability routes registered by
-`src/api/` and documented under `docs/docs/api/`.
+`src/api/` and documented under `website/docs/api/`.
 
 Use HTTPS and configured authentication in protected deployments. Avoid
 placing long-lived credentials directly in shared shell history.
@@ -106,7 +106,7 @@ dependency error before retrying. Do not loop reload requests.
 ### Metrics
 
 The metrics route and current metric catalog are documented in
-`docs/docs/api/metrics.mdx` and implemented by metric-source registration in
+`website/docs/api/metrics.mdx` and implemented by metric-source registration in
 Rust. Start with request/error/inflight/latency signals, then inspect the owning
 cache, upstream, policy, or side-effect subsystem. Calculate rates over time and
 compare with a known baseline. Labels must remain low cardinality; use record or
@@ -153,7 +153,7 @@ Use this order to avoid changing multiple layers at once:
   synchronous external integrations.
 - Check cache maintenance/occupancy and upstream latency before changing worker
   counts or timeouts.
-- Reproduce with the performance procedure in `ai/performance.md`.
+- Reproduce with the performance procedure in `docs/ai/performance.md`.
 
 ### Cache behavior is unexpected
 

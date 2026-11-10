@@ -81,15 +81,15 @@ The docs build checks the bilingual file tree, plugin overview versus detailed r
 
 User documentation lives in:
 
-- Chinese: `docs/docs/`
-- English: `docs/i18n/en/docusaurus-plugin-content-docs/current/`
+- Chinese: `website/docs/`
+- English: `website/i18n/en/docusaurus-plugin-content-docs/current/`
 
 Behavior, configuration, API, and plugin changes should update both languages. Use descriptive tags such as `forward_main`, `cache_main`, and `seq_main`; extract reusable pieces from complex sequences into standalone plugins.
 
 Validate locally:
 
 ```bash
-cd docs
+cd website
 npm ci
 npm run check:content
 npm run build

@@ -125,7 +125,7 @@ Select feature-off/on, bundle, and matrix checks from the current recipes in
 
 Update only maintained representations of the contract that actually changed:
 
-1. **`docs/`** — sync the relevant Chinese plugin reference page and its English counterpart under `docs/i18n/en/`. Cover behavior, config shape, dependencies, lifecycle, side effects, and examples whenever any of those change.
+1. **`website/`** — sync the relevant Chinese plugin reference page and its English counterpart under `website/i18n/en/`. Cover behavior, config shape, dependencies, lifecycle, side effects, and examples whenever any of those change.
 
 2. **`webui/lib/plugin-definitions/`** — add or update the entry in the correct category file (`executor.ts`, `matcher.ts`, `provider.ts`, or `server.ts`). The catalog, create dialog, cards, detail drawer, sequence composer, and YAML editor all auto-derive from these definitions.
 

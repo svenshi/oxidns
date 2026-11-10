@@ -3,7 +3,7 @@
 This document is the maintainer-facing architecture contract for OxiDNS. It
 explains module ownership, dependency direction, lifecycle boundaries, and the
 rules for changing the request path. User-facing architecture belongs in
-`docs/docs/architecture-and-design.md`; concise repository instructions remain
+`website/docs/architecture-and-design.md`; concise repository instructions remain
 in `AGENTS.md`.
 
 Directory ownership and dependency direction below are stable contracts. For
@@ -80,7 +80,7 @@ its public concepts remain useful without knowing which plugin calls it.
   CORS, static WebUI serving, and plugin route registration.
 - `webui/` consumes the management API and mirrors plugin configuration through
   `webui/lib/plugin-definitions/`.
-- `docs/` is user-facing documentation and must not be treated as the internal
+- `website/` is user-facing documentation and must not be treated as the internal
   architecture source of truth.
 
 ## Plugin Package Boundaries
@@ -118,7 +118,7 @@ itself create a supported downstream Rust API contract.
   explicitly documented that API as supported. Independently published
   workspace crates must define and follow their own stability policy.
 
-Detailed plugin registration and feature rules live in `ai/plugin-dev.md`.
+Detailed plugin registration and feature rules live in `docs/ai/plugin-dev.md`.
 
 ## Startup, Reload, and Shutdown
 
@@ -178,8 +178,8 @@ and locks whose critical section includes I/O or `.await`. Prepare reusable
 state during plugin initialization and keep persistence, logging, and external
 system reconciliation outside the response-critical path where semantics allow.
 
-Performance work must follow `ai/performance.md`; correctness gates still
-follow `ai/testing-strategy.md`.
+Performance work must follow `docs/ai/performance.md`; correctness gates still
+follow `docs/ai/testing-strategy.md`.
 
 ## Architecture Change Checklist
 
@@ -194,6 +194,6 @@ Before merging an architectural change, verify:
 - Hot-path impact is measured when allocations, locks, cloning, parsing, or
   dispatch change.
 - Maintained representations are identified from the changed code/schema and
-  the project surfaces listed in `ai/change-impact-matrix.md`.
+  the project surfaces listed in `docs/ai/change-impact-matrix.md`.
 - Relevant checks are selected from `justfile`, workspace package scripts, and
-  affected CI workflows using the criteria in `ai/testing-strategy.md`.
+  affected CI workflows using the criteria in `docs/ai/testing-strategy.md`.

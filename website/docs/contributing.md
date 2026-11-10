@@ -81,15 +81,15 @@ just check
 
 用户文档源文件位于：
 
-- 中文：`docs/docs/`
-- 英文：`docs/i18n/en/docusaurus-plugin-content-docs/current/`
+- 中文：`website/docs/`
+- 英文：`website/i18n/en/docusaurus-plugin-content-docs/current/`
 
 行为、配置、API 和插件说明应同步更新两种语言。示例应使用描述性 tag，例如 `forward_main`、`cache_main`、`seq_main`，复杂 sequence 应把可复用逻辑提取成独立插件。
 
 本地验证：
 
 ```bash
-cd docs
+cd website
 npm ci
 npm run check:content
 npm run build

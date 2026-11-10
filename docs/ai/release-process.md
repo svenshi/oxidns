@@ -69,8 +69,8 @@ the release workflow, so the Action remains concise.
 
 Update both release-note files:
 
-- `docs/docs/releases.md`
-- `docs/i18n/en/docusaurus-plugin-content-docs/current/releases.md`
+- `website/docs/releases.md`
+- `website/i18n/en/docusaurus-plugin-content-docs/current/releases.md`
 
 Follow the existing `ReleaseCard` format. For a new latest release:
 
@@ -288,7 +288,7 @@ commands, and any platform not manually smoke-tested.
 - For bad Docker publication, preserve version-tag immutability; publish a
   corrected patch and repair moving aliases such as `latest` only with an
   explicit incident note.
-- Deployment rollback follows `ai/operations-runbook.md`: restore the previous
+- Deployment rollback follows `docs/ai/operations-runbook.md`: restore the previous
   binary, WebUI, and config, then repeat health and DNS verification.
 
 After any release incident, record whether the prevention belongs in CI,

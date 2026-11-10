@@ -3,7 +3,7 @@
 Use this document before implementing and before handing off a change. Its
 purpose is to identify synchronized artifacts, compatibility risks, and the
 smallest credible validation set. It complements the domain-specific rules in
-`AGENTS.md`, `ai/plugin-dev.md`, and `ai/webui.md`.
+`AGENTS.md`, `docs/ai/plugin-dev.md`, and `docs/ai/webui.md`.
 
 ## General Rule
 
@@ -24,8 +24,8 @@ conditions below.
 | Plugin config field, enum, default, or validation change | Rust config parser, integration tests, maintained plugin references, WebUI schema/locales, runnable config when canonical defaults change, README when behavior is prominent | Focused unit/integration and config checks, plus applicable WebUI/docs package scripts |
 | Matcher/provider rule syntax change | Parser and error diagnostics, unit tests, `tests/plugin_integration.rs`, Chinese/English configuration docs, affected provider/plugin reference, examples | Focused parser tests plus plugin integration tests |
 | Sequence control-flow or quick-setup change | Parser, dependency analysis, runtime chain behavior, graph output, integration tests, configuration docs, WebUI sequence tooling when syntax changes | Sequence unit tests, `tests/plugin_integration.rs`, `just check` |
-| Management API route, method, payload, status, auth, or CORS change | Rust handler/router tests, `docs/docs/api.mdx` and English counterpart, WebUI API client/store/types and UI states | Focused API tests, `cargo test`, WebUI test/typecheck/lint as affected |
-| WebUI-only behavior or presentation change | Component/store/schema, translation keys and maintained locales, `ai/webui.md` if conventions change, user docs for workflow changes | Applicable scripts from `webui/package.json` and jobs from `.github/workflows/webui-ci.yml` |
+| Management API route, method, payload, status, auth, or CORS change | Rust handler/router tests, `website/docs/api.mdx` and English counterpart, WebUI API client/store/types and UI states | Focused API tests, `cargo test`, WebUI test/typecheck/lint as affected |
+| WebUI-only behavior or presentation change | Component/store/schema, translation keys and maintained locales, `docs/ai/webui.md` if conventions change, user docs for workflow changes | Applicable scripts from `webui/package.json` and jobs from `.github/workflows/webui-ci.yml` |
 | Cargo feature or bundle membership change | `Cargo.toml`, cfg guards, `src/build_info.rs`, feature-gating tests, custom-build workflow and user custom-build docs | Target feature disabled/enabled checks and the applicable feature recipes from `justfile` |
 | DNS message model, wire codec, or response classification change | `crates/proto`, `src/core`, compatibility tests, and hot-path review when request processing changes | Workspace tests, `tests/message_hickory_compat.rs`, request-path and resource-safety review |
 | Server, upstream, resolver, TLS, HTTP, or QUIC behavior change | Feature graph, transport tests, integration tests, protocol docs in both languages, config examples, release target compatibility | Focused transport tests, all-feature tests, slim bundle checks, cross-platform CI where cfg-specific |
@@ -71,9 +71,9 @@ Current facts come first from their maintained project surfaces:
   own the contracts they implement.
 - `justfile`, workspace `package.json` scripts, `.githooks/`, and
   `.github/workflows/` own exact validation and publication behavior.
-- `docs/docs/` and the English i18n tree own user-facing behavior.
+- `website/docs/` and the English i18n tree own user-facing behavior.
 
-`AGENTS.md` and the topic documents in `ai/` explain stable architecture,
+`AGENTS.md` and the topic documents in `docs/ai/` explain stable architecture,
 selection criteria, and workflow rationale. They are navigation and policy, not
 parallel inventories of the project state.
 

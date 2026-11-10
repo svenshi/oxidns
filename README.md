@@ -208,8 +208,8 @@ OxiDNS 主要由 [Sven Shi](https://github.com/svenshi) 创建和维护。
     <th align="center">支付宝</th>
   </tr>
   <tr>
-    <td align="center"><img src="docs/static/img/support/wechat-pay.jpg" alt="支持 OxiDNS 项目开发的微信支付收款码" width="260" /></td>
-    <td align="center"><img src="docs/static/img/support/alipay.jpg" alt="支持 OxiDNS 项目开发的支付宝收款码" width="260" /></td>
+    <td align="center"><img src="website/static/img/support/wechat-pay.jpg" alt="支持 OxiDNS 项目开发的微信支付收款码" width="260" /></td>
+    <td align="center"><img src="website/static/img/support/alipay.jpg" alt="支持 OxiDNS 项目开发的支付宝收款码" width="260" /></td>
   </tr>
 </table>
 

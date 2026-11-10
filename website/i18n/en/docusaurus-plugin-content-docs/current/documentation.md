@@ -8,7 +8,7 @@ title: Documentation Versions and Maintenance
 
 The default manual on oxidns.org follows the OxiDNS repository `main` branch and is labeled `current` / `Next` inside Docusaurus. It therefore describes mainline capabilities and may include fields, plugins, or behavior not yet present in your installed release.
 
-The site does not currently publish a frozen snapshot for every release. To reproduce a historical version, switch to the matching Git tag and read its `README.md`, `docs/`, `config.yaml`, and release notes.
+The site does not currently publish a frozen snapshot for every release. To reproduce a historical version, switch to the matching Git tag and read its `README.md`, `website/`, `config.yaml`, and release notes.
 
 ## Confirm deployment capabilities
 
@@ -33,6 +33,6 @@ oxidns check -c /path/to/config.yaml -d /working/directory
 | Plugin types and compiled capabilities | Rust plugin registry and Cargo features | Content checks jointly enforce the overview, category catalogs, and bilingual references |
 | CLI / API behavior | Current binary implementation | Interface changes update topic pages, examples, and migration notes together |
 | Release history | Git tags and release notes | Completed work belongs in release notes instead of accumulating in the roadmap |
-| Internal maintenance workflows | `ai/` and `AGENTS.md` | Not published as end-user manual content |
+| Internal maintenance workflows | `docs/ai/` and `AGENTS.md` | Not published as end-user manual content |
 
 Follow [Contributing](contributing.md) to report a documentation issue. Include the OxiDNS version, bundle, target platform, affected page, and a reproducible configuration excerpt, with credentials, private domains, and client data removed.

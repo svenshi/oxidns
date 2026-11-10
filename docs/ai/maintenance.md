@@ -2,7 +2,7 @@
 
 This document defines recurring repository maintenance outside feature work and
 release preparation. Release-specific versioning and publication remain in
-`ai/release-process.md`; vulnerability handling remains in `SECURITY.md`.
+`docs/ai/release-process.md`; vulnerability handling remains in `SECURITY.md`.
 
 ## Maintenance Goals
 
@@ -85,7 +85,7 @@ and build-output changes for runtime and static export impact.
 
 ### Docs dependencies
 
-Use the package manager and scripts declared by `docs/package.json` and its
+Use the package manager and scripts declared by `website/package.json` and its
 lockfile. Match CI coverage in `.github/workflows/docs-ci.yml`; use the
 lockfile-preserving install mode selected there when validating reproducibility.
 
@@ -130,7 +130,7 @@ Support crates are published automatically by the release Action before the
 root crate. Update versions, affected dependency declarations, and the lockfile
 during development. Keep publication and duplicate-upload checks in the
 publication script called by the release workflow. Follow
-`ai/release-process.md` for dependency order and registry-error handling.
+`docs/ai/release-process.md` for dependency order and registry-error handling.
 
 ## Code Health
 
@@ -148,7 +148,7 @@ Recurring cleanup should look for:
 - Stale examples and mismatched Chinese/English documentation.
 
 Structural cleanup must preserve behavior unless the PR explicitly declares a
-behavior change. Use `ai/architecture.md` for placement decisions.
+behavior change. Use `docs/ai/architecture.md` for placement decisions.
 
 ## Configuration and Persistence Evolution
 
@@ -162,7 +162,7 @@ behavior change. Use `ai/architecture.md` for placement decisions.
 - Do not remove compatibility code solely because current tests generate only
   the newest format.
 
-Use `ai/change-impact-matrix.md` to synchronize WebUI schemas, examples, API
+Use `docs/ai/change-impact-matrix.md` to synchronize WebUI schemas, examples, API
 payloads, user docs, and release notes.
 
 ## Documentation Maintenance
@@ -170,7 +170,7 @@ payloads, user docs, and release notes.
 Quarterly or before a significant release, check:
 
 - `AGENTS.md` matches the actual top-level and package structure.
-- Every file listed in `ai/README.md` exists and remains authoritative.
+- Every file listed in `docs/ai/README.md` exists and remains authoritative.
 - Plugin types, config fields, metrics, and examples match between Rust,
   Chinese docs, English docs, WebUI definitions, and locales.
 - Commands match the current Clap subcommand structure.
@@ -199,7 +199,7 @@ Quarterly or before a significant release, check:
 - Review bundle contents and release target matrix.
 - Re-run relevant performance baselines for hot-path changes.
 - Validate upgrade and rollback documentation.
-- Follow the complete `ai/release-process.md` workflow.
+- Follow the complete `docs/ai/release-process.md` workflow.
 
 ## Maintenance Handoff
 

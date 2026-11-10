@@ -8,8 +8,8 @@ import {fileURLToPath} from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
 const sourceDir = join(repoRoot, 'scripts');
-const staticDir = join(repoRoot, 'docs', 'static');
-const targetDir = join(repoRoot, 'docs', 'static', 'scripts');
+const staticDir = join(repoRoot, 'website', 'static');
+const targetDir = join(repoRoot, 'website', 'static', 'scripts');
 const installerFiles = [
   'install.sh',
   'install.ps1',

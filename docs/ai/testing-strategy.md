@@ -89,7 +89,7 @@ Whether and when CI runs this recipe is defined by
 | RouterOS/ipset/nftset | Pure manager/parser tests with mocks | Linux CI with required system packages; integration tests |
 | Service/upgrade/path handling | CLI parsing and path/archive unit tests | Platform CI or explicit platform limitation report |
 | WebUI | Focused frontend test and type-check scripts from `webui/package.json` | Additional package scripts and `.github/workflows/webui-ci.yml` jobs according to scope |
-| Docs site | Link/content review | Build/check scripts from `docs/package.json` and `.github/workflows/docs-ci.yml` |
+| Docs site | Link/content review | Build/check scripts from `website/package.json` and `.github/workflows/docs-ci.yml` |
 | Cargo dependency/features | Targeted compile with feature off/on | `just check-matrix` and CI |
 
 ## Feature and Platform Coverage
