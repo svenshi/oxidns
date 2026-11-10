@@ -72,7 +72,7 @@ fs2 = "0.4"
 hex = "0.4"
 sha2 = "0.11.0"
 wincode = { version = "0.6", features = ["derive"] }
-oxidns-proto = { version = "0.1.6", path = "crates/proto" }
+oxidns-proto = { version = "0.1.7", path = "crates/proto" }
 oxidns-macros = { version = "0.1.0", path = "crates/macros" }
 hotpath = "0.30.1"
 
