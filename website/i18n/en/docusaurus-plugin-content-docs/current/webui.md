@@ -27,6 +27,15 @@ Debian packages install the service with `-c /etc/oxidns/config.yaml -d /var/lib
 
 Manual WebUI builds are only needed when building from source, developing the WebUI, or publishing static files separately through nginx or caddy.
 
+## Community WebUIs
+
+Alongside the built-in WebUI, we recommend exploring these independently maintained community interfaces based on the OxiDNS management API:
+
+- [YoPilot](https://github.com/yyhoworks/YoPilot): A Chinese-language management frontend by yyhoworks, featuring DNS topology visualization, plugin configuration, and two visual styles.
+- [OxiDNS Dashboard](https://github.com/Luke-Lab666/oxidns-dashboard): A lightweight management panel by Luke-Lab666, built as a single HTML file with multiple themes, query logs, and configuration management.
+
+Thanks to the community developers for their contributions! See each project for deployment instructions and supported OxiDNS versions.
+
 ## Build The WebUI Manually
 
 The WebUI lives in the repository's `webui/` directory. Production builds are exported to `webui/out`:

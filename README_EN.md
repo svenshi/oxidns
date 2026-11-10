@@ -119,6 +119,17 @@ Inspect response details, match results, and the actual execution path from quer
 
 ---
 
+## Community WebUIs
+
+Alongside the built-in WebUI, we recommend exploring these independently maintained community interfaces:
+
+- [YoPilot](https://github.com/yyhoworks/YoPilot): A Chinese-language management frontend by yyhoworks, featuring DNS topology visualization, plugin configuration, and two visual styles.
+- [OxiDNS Dashboard](https://github.com/Luke-Lab666/oxidns-dashboard): A lightweight management panel by Luke-Lab666, built as a single HTML file with multiple themes, query logs, and configuration management.
+
+Thanks to the community developers for their contributions! See each project for deployment instructions and supported OxiDNS versions.
+
+---
+
 ## Quick Start
 
 Install the latest release with one command. By default this installs and starts OxiDNS as a system service:

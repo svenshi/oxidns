@@ -120,6 +120,17 @@ plugins:
 
 ---
 
+## 社区 WebUI
+
+除了内置 WebUI，也推荐体验社区开发者独立维护的管理界面：
+
+- [YoPilot](https://github.com/yyhoworks/YoPilot)：由 yyhoworks 开发的中文管理前端，提供解析拓扑、插件配置和双皮肤界面。
+- [OxiDNS Dashboard](https://github.com/Luke-Lab666/oxidns-dashboard)：由 Luke-Lab666 开发的轻量管理面板，构建为单个 HTML 文件，支持多种主题、查询日志和配置管理。
+
+感谢社区开发者的贡献！部署方法和适配版本请参阅各项目说明。
+
+---
+
 ## 快速开始
 
 一条命令安装最新 release，并默认注册和启动为系统服务：

@@ -27,6 +27,15 @@ Debian 包默认服务使用 `-c /etc/oxidns/config.yaml -d /var/lib/oxidns`。�
 
 只有从源码构建、二次开发 WebUI，或需要自行发布静态文件到 nginx/caddy 时，才需要手动构建 WebUI。
 
+## 社区 WebUI
+
+除了内置 WebUI，也推荐体验社区开发者独立维护、基于 OxiDNS 管理 API 的界面：
+
+- [YoPilot](https://github.com/yyhoworks/YoPilot)：由 yyhoworks 开发的中文管理前端，提供解析拓扑、插件配置和双皮肤界面。
+- [OxiDNS Dashboard](https://github.com/Luke-Lab666/oxidns-dashboard)：由 Luke-Lab666 开发的轻量管理面板，构建为单个 HTML 文件，支持多种主题、查询日志和配置管理。
+
+感谢社区开发者的贡献！部署方法和适配版本请参阅各项目说明。
+
 ## 手动构建 WebUI
 
 WebUI 位于仓库的 `webui/` 目录。生产构建输出为静态目录 `webui/out`：
