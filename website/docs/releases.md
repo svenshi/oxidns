@@ -7,10 +7,40 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 
 # 版本更新
 
+## 2026-11
+
+<div className="release-stack">
+   <ReleaseCard version="v1.7.0" badge="Minor Release" date="2026-11-10" defaultOpen>
+       **版本定位**
+
+       - v1.7.0 扩展策略编排、域名学习与缓存管理，改进查询分析和管理 API，并修复 DNS 协议处理、持久化回滚及 RouterOS 联动。
+       - **升级前必读**：查询记录的 `/stats/*` 聚合接口必须提供 `since_ms`、`until_ms`，区间最多 24 小时；`fallback.threshold: 0` 现在立即启动备用分支，不再等同于 500 毫秒。
+
+       **主要变更**
+
+       - `feat(load_balance/has_cname)`：新增执行器分支负载均衡，支持轮询、随机和加权随机；新增检测响应 answer 区 CNAME 的 matcher。两者均可用于 minimal bundle。
+       - `feat(hosts/learn_domain)`：`hosts.format: standard` 支持标准 hosts 文件及地址合并，默认仍为 `oxidns`；`learn_domain.rule_kind: registrable_domain` 使用内置公共后缀表学习可注册域及其子域，默认仍为 `full`。
+       - `feat(query_recorder/webui)`：查询分析增加统一时间条、自适应趋势桶、统计截断信息及记录下钻；支持精确域名、客户端 IP 与特殊响应分类筛选。聚合统计最多使用所选区间内最近 10,000 条记录。
+       - `feat(cache)`：缓存条目支持按 answer IP 过滤、按选中条目或过滤条件批量删除；初始化等待缓存恢复，启动或 reload 失败时保留历史 dump，读取失败时保护原文件。
+       - `feat(routeros)`：`ros_route` 增加可选 `scope`、`target_scope`；修复地址列表的地址表示、重复插入恢复与清理，保留非本插件拥有的条目。
+       - `fix(server/transport)`：不支持的 opcode 返回 NOTIMP，EDNS 版本不支持时返回 BADVERS；提前丢弃非查询 UDP 数据报，拒绝超大 TCP 帧，改进 TCP keepalive 及 DoQ/DoH3 请求任务的停机等待。
+       - `fix(api)`：限制管理 API 请求体大小，改进 Basic Auth 凭据比较；配置保存串行执行版本检查并原子写入，保留 Unix 权限、属主、属组和符号链接。
+       - `fix(platform/parser)`：支持 OpenWrt `/etc/TZ` 时区；同步 zoneparser 的转义、多行文本、嵌套限制及 `$GENERATE` 未知记录类型修复；改进 Windows ZIP 解压错误处理。
+       - `docs/build`：Docker 镜像新增 ARMv7；文档源码迁至 `website/`，补充社区 WebUI 推荐及插件可用性说明；更新依赖和请求路径基准工具。`oxidns-proto` 与 `oxidns-macros` 改为 `MIT OR Apache-2.0` 双许可证，主项目仍为 GPL-3.0-or-later。
+
+       **配置与升级说明**
+
+       - 根 crate 为 `1.7.0`，tag 为 `v1.7.0`；`oxidns-proto` 为 `0.1.7`、`oxidns-macros` 为 `0.1.1`、`oxidns-zoneparser` 为 `0.1.3`，`oxidns-ripset` 保持 `0.1.3`。
+       - v1.6.1 YAML 配置可继续使用；新增字段均为可选。若原配置显式使用 `fallback.threshold: 0` 且希望保留旧延迟，请改为 `500`；省略该字段仍默认 500 毫秒。
+       - 自定义统计客户端需要补齐时间区间参数；管理 API 请求体上限为 4 MiB，大型配置提交或缓存导入需核对大小。建议同步更新随包 WebUI。
+       - 从 v1.6.1 升级无需迁移查询历史或重新安装 Windows 服务；更早版本仍须遵循 v1.6.0 的迁移说明。升级前备份配置和持久化数据，并运行 `oxidns check -c <配置文件>`。
+   </ReleaseCard>
+</div>
+
 ## 2026-10
 
 <div className="release-stack">
-   <ReleaseCard version="v1.6.1" badge="Patch Release" date="2026-10-08" defaultOpen>
+   <ReleaseCard version="v1.6.1" badge="Patch Release" date="2026-10-08">
        **版本定位**
 
        - v1.6.1 聚焦上游连接的资源释放与 IPv6 地址解析，修复连接关闭后后台任务仍持有资源的问题，并改进连接池诊断日志。

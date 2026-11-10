@@ -7,10 +7,40 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 
 # Release Notes
 
+## 2026-11
+
+<div className="release-stack">
+   <ReleaseCard version="v1.7.0" badge="Minor Release" date="2026-11-10" defaultOpen>
+       **Release Scope**
+
+       - v1.7.0 expands policy composition, domain learning, and cache management; improves query analysis and the management API; and fixes DNS protocol handling, persistence rollback, and RouterOS integrations.
+       - **Read before upgrading**: query-recorder `/stats/*` aggregation endpoints now require `since_ms` and `until_ms`, with a maximum span of 24 hours. `fallback.threshold: 0` now starts the secondary branch immediately instead of waiting 500 milliseconds.
+
+       **Changes**
+
+       - `feat(load_balance/has_cname)`: add executor branch balancing with round-robin, random, and weighted-random strategies, plus a matcher for CNAME records in the response answer section. Both are available in the minimal bundle.
+       - `feat(hosts/learn_domain)`: support standard hosts files and address merging with `hosts.format: standard`, while keeping `oxidns` as the default. Add `learn_domain.rule_kind: registrable_domain` using an embedded public suffix list; the default remains `full`.
+       - `feat(query_recorder/webui)`: add a shared timeline, adaptive trend buckets, truncation metadata, and record drilldowns. Support exact domain/client-IP and special response-bucket filters. Aggregations use at most the latest 10,000 records in the selected interval.
+       - `feat(cache)`: filter entries by answer IP and delete selected entries or all filter matches. Await cache restoration during initialization, preserve historical dumps after failed startup/reload, and protect files after read failures.
+       - `feat(routeros)`: add optional `ros_route.scope` and `target_scope`; fix address-list address representations, duplicate-insert recovery, and cleanup while preserving entries owned by others.
+       - `fix(server/transport)`: return NOTIMP for unsupported opcodes and BADVERS for unsupported EDNS versions. Drop unsolicited UDP responses before spawning work, reject oversized TCP frames, improve TCP keepalive, and track DoQ/DoH3 request tasks during shutdown.
+       - `fix(api)`: bound management request bodies and improve Basic Auth credential comparison. Serialize configuration version checks and atomic saves while preserving Unix permissions, ownership, and symbolic links.
+       - `fix(platform/parser)`: support OpenWrt `/etc/TZ`; sync zoneparser fixes for escapes, multiline text, nesting limits, and unknown record types in `$GENERATE`; improve Windows ZIP extraction errors.
+       - `docs/build`: add ARMv7 Docker images, move documentation sources to `website/`, document community WebUIs and plugin availability, and update dependencies and request-path benchmarks. Dual-license `oxidns-proto` and `oxidns-macros` under `MIT OR Apache-2.0`; the main project remains GPL-3.0-or-later.
+
+       **Compatibility and Upgrade Notes**
+
+       - The root crate is `1.7.0`; use tag `v1.7.0`. Support crates are `oxidns-proto 0.1.7`, `oxidns-macros 0.1.1`, and `oxidns-zoneparser 0.1.3`; `oxidns-ripset` remains `0.1.3`.
+       - v1.6.1 YAML configurations remain usable, and new fields are optional. Change an explicit `fallback.threshold: 0` to `500` to retain the previous delay; omitting the field still defaults to 500 milliseconds.
+       - Custom statistics clients must supply the time interval. Management request bodies are limited to 4 MiB; check large configuration submissions and cache imports. Update the bundled WebUI together with the binary.
+       - Upgrading from v1.6.1 requires no query-history migration or Windows service reinstallation. Earlier versions still require the v1.6.0 migration steps. Back up configuration and persisted data, then run `oxidns check -c <config-file>` before upgrading.
+   </ReleaseCard>
+</div>
+
 ## 2026-10
 
 <div className="release-stack">
-   <ReleaseCard version="v1.6.1" badge="Patch Release" date="2026-10-08" defaultOpen>
+   <ReleaseCard version="v1.6.1" badge="Patch Release" date="2026-10-08">
        **Release Scope**
 
        - v1.6.1 focuses on upstream connection cleanup and IPv6 address parsing, fixing resources retained by background tasks after connection closure and improving connection-pool diagnostics.
