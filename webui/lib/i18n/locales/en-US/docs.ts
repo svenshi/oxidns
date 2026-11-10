@@ -430,6 +430,10 @@ export const enUSDocs = {
       "- Type: `string`; Conditionally required; Default: none\n- Purpose: RouterOS gateway expression used by IPv6 dynamic host routes and persistent IPv6 routes.\n- Constraint: Configure at least one of `gateway4` or `gateway6`. Without this field, IPv6 DNS addresses and IPv6 `persistent` entries are ignored.",
     distance:
       "- Type: `u8`; Required: no; Default: `100`\n- Purpose: RouterOS route distance applied to every managed route.",
+    scope:
+      "- Type: `u8` (1–255); Required: no; Default: none\n- Purpose: Sets scope on IPv4/IPv6 dynamic and persistent routes, controlling their use in other routes' nexthop resolution.\n- When omitted or removed, existing routes retain their current value and new routes use the RouterOS default.",
+    target_scope:
+      "- Type: `u8` (0–255); Required: no; Default: none\n- Purpose: Writes RouterOS `target-scope`, limiting route scopes used to resolve the gateway for recursive routing.\n- When omitted or removed, existing routes retain their current value and new routes use the RouterOS default.",
     comment_prefix:
       "- Type: `string`; Required: no; Default: `oxi`\n- Purpose: Combines with the plugin `tag` to form the ownership namespace stored in RouterOS comments for startup recovery, reconciliation, and safe cleanup.\n- Constraint: Neither this value nor the plugin `tag` may contain `;` or `=`. Do not manually alter ownership comments on managed routes.",
     persistent:

@@ -98,6 +98,8 @@ const EXPECTED_ADVANCED_FIELDS: Record<string, string[]> = {
     "wait_timeout",
     "queue_capacity",
     "distance",
+    "scope",
+    "target_scope",
     "comment_prefix",
     "persistent",
     "min_ttl",

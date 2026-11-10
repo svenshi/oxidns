@@ -743,6 +743,9 @@ args:
     gateway6: "fe80::2%ether1"
     # 受管路由属性
     distance: 100
+    # 可选递归路由属性；按实际路由链设置
+    # scope: 30
+    # target_scope: 11
     comment_prefix: "oxi"
     # 动态路由 TTL 裁剪范围
     min_ttl: 60
@@ -852,6 +855,18 @@ args:
 
 - 类型：`u8`；必填：否；默认值：`100`
 - 作用：指定插件写入所有受管路由的 RouterOS route distance。
+
+#### `scope`
+
+- 类型：`u8`（1–255）；必填：否；默认值：无
+- 作用：控制当前路由能否用于其他路由的下一跳解析。
+- 适用于 IPv4/IPv6 动态与常驻路由。省略或移除配置时不管理该属性：已有路由保留当前值，新建路由使用 RouterOS 默认值。
+
+#### `target_scope`
+
+- 类型：`u8`（0–255）；必填：否；默认值：无
+- 作用：对应 RouterOS `target-scope`，限制解析 gateway 时可使用的路由 scope，用于递归路由。
+- 适用于 IPv4/IPv6 动态与常驻路由。省略或移除配置时不管理该属性：已有路由保留当前值，新建路由使用 RouterOS 默认值。
 
 #### `comment_prefix`
 

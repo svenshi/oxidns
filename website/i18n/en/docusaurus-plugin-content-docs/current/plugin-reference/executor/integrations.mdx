@@ -725,6 +725,9 @@ This plugin is a side-effect-only continuation executor: it does not modify DNS 
     gateway6: "fe80::2%ether1"
     # Managed route attributes
     distance: 100
+    # Optional recursive-routing properties; choose values for your route chain
+    # scope: 30
+    # target_scope: 11
     comment_prefix: "oxi"
     # Dynamic-route TTL clamp
     min_ttl: 60
@@ -834,6 +837,18 @@ args:
 
 - Type: `u8`; Required: no; Default: `100`
 - Purpose: RouterOS route distance applied to all managed routes.
+
+#### `scope`
+
+- Type: `u8` (1–255); Required: no; Default: none
+- Purpose: Controls whether this route can be used to resolve other routes’ nexthops.
+- Applies to both IPv4/IPv6 dynamic and persistent routes. When omitted or removed, existing routes retain their current value and new routes use the RouterOS default.
+
+#### `target_scope`
+
+- Type: `u8` (0–255); Required: no; Default: none
+- Purpose: Maps to RouterOS `target-scope`, limiting the route scopes used to resolve the gateway for recursive routing.
+- Applies to both IPv4/IPv6 dynamic and persistent routes. When omitted or removed, existing routes retain their current value and new routes use the RouterOS default.
 
 #### `comment_prefix`
 

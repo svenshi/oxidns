@@ -722,6 +722,8 @@ plugins:
       receive_timeout: 1
       routing_table: "via_proxy"
       gateway4: "192.0.2.1@main"
+      scope: 30
+      target_scope: 11
       fixed_ttl: 0
       cleanup_on_shutdown: false
 "#;

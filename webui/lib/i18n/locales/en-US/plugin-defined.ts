@@ -1781,6 +1781,8 @@ export const enUSPluginDefined = {
         gateway4: { label: "IPv4 gateway", example: "192.168.88.2@main" },
         gateway6: { label: "IPv6 gateway", example: "fe80::2%ether1" },
         distance: { label: "Route distance" },
+        scope: { label: "Route scope" },
+        target_scope: { label: "Nexthop target scope" },
         comment_prefix: { label: "Comment prefix" },
         persistent: {
           label: "Persistent routes",

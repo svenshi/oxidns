@@ -2101,6 +2101,18 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         advanced: true,
       },
       {
+        key: "scope",
+        label: "路由 Scope",
+        type: "number",
+        advanced: true,
+      },
+      {
+        key: "target_scope",
+        label: "下一跳 Target Scope",
+        type: "number",
+        advanced: true,
+      },
+      {
         key: "comment_prefix",
         label: "注释前缀",
         type: "text",
