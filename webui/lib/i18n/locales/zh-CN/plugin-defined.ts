@@ -1618,6 +1618,8 @@ export const zhCNPluginDefined = {
         gateway4: { label: "IPv4 网关", example: "192.168.88.2@main" },
         gateway6: { label: "IPv6 网关", example: "fe80::2%ether1" },
         distance: { label: "路由距离" },
+        scope: { label: "路由 Scope" },
+        target_scope: { label: "下一跳 Target Scope" },
         comment_prefix: { label: "注释前缀" },
         persistent: {
           label: "常驻路由",

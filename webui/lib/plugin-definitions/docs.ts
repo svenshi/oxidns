@@ -408,6 +408,10 @@ export const pluginFieldDocs = {
       "- 类型：`string`；条件必填；默认值：无\n- 作用：指定 IPv6 动态主机路由和 IPv6 常驻路由使用的 gateway 表达式。\n- 约束：`gateway4` 与 `gateway6` 至少配置一个；未配置本项时会忽略 IPv6 DNS 地址和 IPv6 `persistent` 项。",
     distance:
       "- 类型：`u8`；必填：否；默认值：`100`\n- 作用：指定插件写入所有受管路由的 RouterOS route distance。",
+    scope:
+      "- 类型：`u8`（1–255）；必填：否；默认值：无\n- 作用：指定受管路由的 scope，控制该路由能否用于其他路由的下一跳解析。适用于 IPv4/IPv6 动态与常驻路由。\n- 省略或移除配置时不管理该属性：已有路由保留当前值，新建路由使用 RouterOS 默认值。",
+    target_scope:
+      "- 类型：`u8`（0–255）；必填：否；默认值：无\n- 作用：写入 RouterOS `target-scope`，限制解析 gateway 时可使用的路由 scope，用于递归路由。\n- 省略或移除配置时不管理该属性：已有路由保留当前值，新建路由使用 RouterOS 默认值。",
     comment_prefix:
       "- 类型：`string`；必填：否；默认值：`oxi`\n- 作用：与插件 `tag` 共同构成 RouterOS comment 中的 ownership namespace，用于启动恢复、对账和安全清理。\n- 约束：该值和插件 `tag` 都不能包含 `;` 或 `=`；不要手工修改受管路由的 ownership comment。",
     persistent:

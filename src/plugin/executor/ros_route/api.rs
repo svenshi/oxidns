@@ -13,6 +13,7 @@ use std::net::IpAddr;
 
 use ahash::AHashSet;
 use async_trait::async_trait;
+use mikrotik_rs::proto::command::Cmd;
 use mikrotik_rs::{Command, CommandBuilder, QueryOperator};
 use tracing::warn;
 
@@ -29,10 +30,13 @@ const ROUTE_DST_FIELD: &str = "dst-address";
 const ROUTE_TABLE_FIELD: &str = "routing-table";
 const ROUTE_GATEWAY_FIELD: &str = "gateway";
 const ROUTE_DISTANCE_FIELD: &str = "distance";
+const ROUTE_SCOPE_FIELD: &str = "scope";
+const ROUTE_TARGET_SCOPE_FIELD: &str = "target-scope";
 const ROUTE_COMMENT_FIELD: &str = "comment";
 const ROUTE_DISABLED_FIELD: &str = "disabled";
 const CONNECTION_DST_FIELD: &str = "dst-address";
-const ROUTE_PROPLIST: &str = ".id,dst-address,routing-table,gateway,distance,comment,disabled";
+const ROUTE_PROPLIST: &str =
+    ".id,dst-address,routing-table,gateway,distance,scope,target-scope,comment,disabled";
 const MUTATION_PIPELINE_SIZE: usize = 16;
 
 const COMMAND_IP_ROUTE_PRINT: &str = "/ip/route/print";
@@ -69,10 +73,54 @@ pub(super) struct RouterRoute {
     pub(super) gateway: Option<String>,
     /// Optional route distance from RouterOS.
     pub(super) distance: Option<u8>,
+    pub(super) scope: Option<u8>,
+    pub(super) target_scope: Option<u8>,
     /// Optional comment field from RouterOS.
     pub(super) comment: Option<String>,
     /// Whether RouterOS currently excludes this route from forwarding.
     pub(super) disabled: bool,
+}
+
+/// Desired numeric route properties. Omitted scopes are neither written nor
+/// compared.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RouteProperties {
+    pub(super) distance: u8,
+    pub(super) scope: Option<u8>,
+    pub(super) target_scope: Option<u8>,
+}
+
+impl RouteProperties {
+    pub(super) fn matches(self, route: &RouterRoute) -> bool {
+        route.distance == Some(self.distance)
+            && self.scope.is_none_or(|value| route.scope == Some(value))
+            && self
+                .target_scope
+                .is_none_or(|value| route.target_scope == Some(value))
+    }
+
+    fn apply_scopes(self, mut command: CommandBuilder<Cmd>) -> CommandBuilder<Cmd> {
+        if let Some(scope) = self.scope {
+            command = command.attribute(ROUTE_SCOPE_FIELD, Some(&scope.to_string()));
+        }
+        if let Some(scope) = self.target_scope {
+            command = command.attribute(ROUTE_TARGET_SCOPE_FIELD, Some(&scope.to_string()));
+        }
+        command
+    }
+}
+
+fn parse_optional_scope(reply: &RouterReply, field: &str, action: &str) -> Result<Option<u8>> {
+    reply
+        .get(field)
+        .map(|raw| {
+            raw.parse::<u8>().map_err(|error| {
+                DnsError::plugin(format!(
+                    "ros_route {action} response has invalid '{field}' value '{raw}': {error}"
+                ))
+            })
+        })
+        .transpose()
 }
 
 #[async_trait]
@@ -105,7 +153,7 @@ pub(super) trait MikrotikApi: Debug + Send + Sync {
         &self,
         key: &RouteKey,
         gateway: &str,
-        distance: u8,
+        properties: RouteProperties,
         comment: &str,
         comment_prefix: &str,
         plugin_tag: &str,
@@ -344,18 +392,18 @@ impl MikrotikRsClient {
         &self,
         expected: &RouterRoute,
         gateway: &str,
-        distance: u8,
+        properties: RouteProperties,
         comment: &str,
     ) -> Result<bool> {
-        let distance_str = distance.to_string();
+        let distance_str = properties.distance.to_string();
         let set = CommandBuilder::new()
             .command(route_command(expected.family, RouteOp::Set))
             .attribute(ROUTER_ID_FIELD, Some(expected.id.as_str()))
             .attribute(ROUTE_GATEWAY_FIELD, Some(gateway))
             .attribute(ROUTE_DISTANCE_FIELD, Some(distance_str.as_str()))
             .attribute(ROUTE_COMMENT_FIELD, Some(comment))
-            .attribute(ROUTE_DISABLED_FIELD, Some("no"))
-            .build();
+            .attribute(ROUTE_DISABLED_FIELD, Some("no"));
+        let set = properties.apply_scopes(set).build();
         let _ = self.send_rows("set host route", set).await?;
         Ok(true)
     }
@@ -493,6 +541,8 @@ fn parse_router_route_from_reply(
             })
         })
         .transpose()?;
+    let scope = parse_optional_scope(reply, ROUTE_SCOPE_FIELD, action)?;
+    let target_scope = parse_optional_scope(reply, ROUTE_TARGET_SCOPE_FIELD, action)?;
     let comment = reply.get(ROUTE_COMMENT_FIELD).map(str::to_string);
     let disabled = reply
         .get(ROUTE_DISABLED_FIELD)
@@ -507,6 +557,8 @@ fn parse_router_route_from_reply(
         routing_table,
         gateway,
         distance,
+        scope,
+        target_scope,
         comment,
         disabled,
     })
@@ -645,7 +697,7 @@ impl MikrotikApi for MikrotikRsClient {
         &self,
         key: &RouteKey,
         gateway: &str,
-        distance: u8,
+        properties: RouteProperties,
         comment: &str,
         comment_prefix: &str,
         plugin_tag: &str,
@@ -669,12 +721,12 @@ impl MikrotikApi for MikrotikRsClient {
             .await?;
         if let Some(existing) = inspection.owned {
             let gateway_changed = existing.gateway.as_deref() != Some(gateway);
-            let distance_changed = existing.distance != Some(distance);
+            let properties_changed = !properties.matches(&existing);
             let comment_changed = existing.comment.as_deref() != Some(comment);
             let disabled_changed = existing.disabled;
-            if (gateway_changed || distance_changed || comment_changed || disabled_changed)
+            if (gateway_changed || properties_changed || comment_changed || disabled_changed)
                 && !self
-                    .set_route(&existing, gateway, distance, comment)
+                    .set_route(&existing, gateway, properties, comment)
                     .await?
             {
                 return Err(DnsError::plugin("ros_route route changed before update"));
@@ -682,15 +734,15 @@ impl MikrotikApi for MikrotikRsClient {
             return Ok(existing.id);
         }
 
-        let distance_str = distance.to_string();
+        let distance_str = properties.distance.to_string();
         let add = CommandBuilder::new()
             .command(route_command(key.family(), RouteOp::Add))
             .attribute(ROUTE_DST_FIELD, Some(&key.dst_address()))
             .attribute(ROUTE_TABLE_FIELD, Some(&key.table))
             .attribute(ROUTE_GATEWAY_FIELD, Some(gateway))
             .attribute(ROUTE_DISTANCE_FIELD, Some(distance_str.as_str()))
-            .attribute(ROUTE_COMMENT_FIELD, Some(comment))
-            .build();
+            .attribute(ROUTE_COMMENT_FIELD, Some(comment));
+        let add = properties.apply_scopes(add).build();
         let _ = self.send_rows("add host route", add).await?;
 
         let created = if let Some(route) = self
@@ -758,8 +810,84 @@ mod tests {
             routing_table: "policy".to_string(),
             gateway: Some("192.0.2.1".to_string()),
             distance: Some(100),
+            scope: None,
+            target_scope: None,
             comment: comment.map(str::to_string),
             disabled: false,
+        }
+    }
+
+    #[test]
+    fn scope_commands_and_comparisons_manage_only_explicit_properties() {
+        let mut route = route("*scope", None);
+        route.scope = Some(30);
+        route.target_scope = Some(10);
+        for (scope, target_scope, matches) in [
+            (None, None, true),
+            (Some(30), None, true),
+            (None, Some(10), true),
+            (Some(20), None, false),
+            (None, Some(11), false),
+            (Some(30), Some(11), false),
+        ] {
+            let properties = RouteProperties {
+                distance: 100,
+                scope,
+                target_scope,
+            };
+            assert_eq!(properties.matches(&route), matches);
+            for family in [RouteFamily::Ipv4, RouteFamily::Ipv6] {
+                for op in [RouteOp::Add, RouteOp::Set] {
+                    let command = properties
+                        .apply_scopes(CommandBuilder::new().command(route_command(family, op)))
+                        .build();
+                    let wire = String::from_utf8_lossy(command.data());
+                    assert_eq!(wire.contains("=scope="), scope.is_some());
+                    assert_eq!(wire.contains("=target-scope="), target_scope.is_some());
+                    if let Some(value) = scope {
+                        assert!(wire.contains(&format!("=scope={value}")));
+                    }
+                    if let Some(value) = target_scope {
+                        assert!(wire.contains(&format!("=target-scope={value}")));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scope_reply_parsing_accepts_missing_values_and_rejects_invalid_values() {
+        for family in [RouteFamily::Ipv4, RouteFamily::Ipv6] {
+            let mut reply = RouterReply {
+                attributes: HashMap::from([
+                    (ROUTER_ID_FIELD.to_string(), Some("*scope".to_string())),
+                    (
+                        ROUTE_DST_FIELD.to_string(),
+                        Some("203.0.113.20/32".to_string()),
+                    ),
+                ]),
+            };
+            let route = parse_router_route_from_reply("test", family, &reply).unwrap();
+            assert_eq!((route.scope, route.target_scope), (None, None));
+            for field in [ROUTE_SCOPE_FIELD, ROUTE_TARGET_SCOPE_FIELD] {
+                reply
+                    .attributes
+                    .insert(field.to_string(), Some("11".to_string()));
+                let route = parse_router_route_from_reply("test", family, &reply).unwrap();
+                assert_eq!(
+                    if field == ROUTE_SCOPE_FIELD {
+                        route.scope
+                    } else {
+                        route.target_scope
+                    },
+                    Some(11)
+                );
+                reply
+                    .attributes
+                    .insert(field.to_string(), Some("256".to_string()));
+                assert!(parse_router_route_from_reply("test", family, &reply).is_err());
+                reply.attributes.remove(field);
+            }
         }
     }
 
