@@ -345,10 +345,16 @@ For A/AAAA and other non-CNAME queries, cache admission requires the requested t
 - Type: `string`; Required: no
 - Purpose: Persistence dump file path.
 
+- Startup and reload await dump restoration and capacity pruning before exposing this cache to DNS requests or API operations. This prevents old entries from overwriting new answers or refilling a flushed cache. Periodic saving starts only after successful application startup; failed candidates never overwrite the original dump.
+- The dump must be a regular file. Filesystem metadata/read waiting has a five-second budget per file, excluding CPU decoding and restoration. Normal shutdown has no background loader to wait for.
+- A missing file starts an empty cache and may be created after activation. If an existing file cannot be read, exceeds the file I/O waiting budget, is zero bytes, or has an incompatible format, DNS service continues using the in-memory cache. A warning is logged and automatic writes to that file remain disabled for this instance.
+- Repair or move the problematic file, then reload or restart to restore persistence. API imports do not lift the current instance's file protection.
+
 #### `dump_interval`
 
 - Type: `duration`; Required: no; Default: `600s`
 - Purpose: Periodic dump interval.
+- Notes: If periodic task registration fails, OxiDNS logs a warning and continues serving DNS. Normal shutdown still attempts to save a successfully loaded cache.
 
 #### `short_circuit`
 

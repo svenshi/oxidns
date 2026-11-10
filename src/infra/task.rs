@@ -1146,7 +1146,7 @@ where
     global_task_center().spawn_fixed(name, interval, options, task)
 }
 
-#[cfg(all(test, feature = "api", feature = "plugin-cron"))]
+#[cfg(test)]
 pub(crate) fn spawn_fixed_isolated<F, Fut>(
     name: impl Into<String>,
     interval: Duration,

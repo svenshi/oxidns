@@ -6759,3 +6759,47 @@ plugins:
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn test_cache_persistence_survives_standalone_reinitialization() -> Result<()> {
+    let dir = TempDir::new()?;
+    let dump = dir.path().join("standalone.dump");
+    let yaml = format!(
+        "plugins:\n  - tag: persistence_cache\n    type: cache\n    args:\n      dump_file: '{}'\n",
+        yaml_path(&dump)
+    );
+    let config = parse_config(&yaml)?;
+    let runtime = plugin::init(config.clone()).await?;
+    let cache = runtime
+        .get_plugin("persistence_cache")
+        .unwrap()
+        .to_executor();
+    let mut context = make_context(runtime.clone(), "persist.example.");
+    let mut response = context.request().clone();
+    response.add_answer(oxidns::proto::Record::from_rdata(
+        Name::from_ascii("persist.example.").unwrap(),
+        3600,
+        oxidns::proto::RData::A(oxidns::proto::rdata::A(Ipv4Addr::LOCALHOST)),
+    ));
+    context.set_response(response);
+    cache.execute(&mut context).await?;
+    plugin::destroy_runtime().await;
+    assert!(dump.is_file());
+    let runtime = plugin::init(config).await?;
+    // Initialization must restore the snapshot before queries or management
+    // operations can observe the new cache; no warm-up polling is necessary.
+    let mut restored = make_context(runtime.clone(), "persist.example.");
+    runtime
+        .get_plugin("persistence_cache")
+        .unwrap()
+        .to_executor()
+        .execute(&mut restored)
+        .await?;
+    let hit = restored.response().is_some();
+    plugin::destroy_runtime().await;
+    assert!(
+        hit,
+        "initialization must complete restoration before activation"
+    );
+    Ok(())
+}
