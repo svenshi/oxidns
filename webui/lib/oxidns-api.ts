@@ -687,18 +687,44 @@ export async function fetchCronJobStatuses(
 
 export async function fetchCacheEntries(
   tag: string,
-  options: { limit?: number; cursor?: string; qname?: string } = {},
+  options: {
+    limit?: number;
+    cursor?: string;
+    qname?: string;
+    answer_ip?: string;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<CacheEntriesResponse> {
   const params = new URLSearchParams();
   if (options.limit) params.set("limit", String(options.limit));
   if (options.cursor) params.set("cursor", options.cursor);
   if (options.qname) params.set("qname", options.qname);
+  if (options.answer_ip) params.set("answer_ip", options.answer_ip);
   const suffix = params.toString() ? `?${params.toString()}` : "";
   const response = await fetch(
     apiUrl(`/plugins/${encodeURIComponent(tag)}/entries${suffix}`),
-    { method: "GET", headers: apiHeaders() },
+    { method: "GET", headers: apiHeaders(), signal: options.signal },
   );
   return readJsonResponse<CacheEntriesResponse>(response);
+}
+
+export type CacheEntriesDeleteSelection =
+  | { ids: string[]; filter?: never }
+  | { filter: { qname?: string; answer_ip?: string }; ids?: never };
+
+export async function deleteCacheEntries(
+  tag: string,
+  selection: CacheEntriesDeleteSelection,
+): Promise<{ ok: boolean; deleted_entries: number }> {
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/entries/delete`),
+    {
+      method: "POST",
+      headers: { ...apiHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify(selection),
+    },
+  );
+  return readJsonResponse(response);
 }
 
 export async function deleteCacheEntry(tag: string, id: string): Promise<void> {

@@ -409,7 +409,9 @@ For A/AAAA and other non-CNAME queries, cache admission requires the requested t
 ### Plugin API
 
 - `GET /plugins/<cache_tag>/entries`
-  - Reads cache entries with pagination. Supports `limit`, `cursor`, and `qname`; `qname` is a case-insensitive substring filter over the cache-key domain.
+  - Reads cache entries with pagination. Supports `limit`, `cursor`, `qname`, and `answer_ip`; `qname` is a case-insensitive substring filter over the cache-key domain. `answer_ip` exactly matches a complete IPv4/IPv6 address in Answer A/AAAA records; both filters are combined with AND.
+- `POST /plugins/<cache_tag>/entries/delete`
+  - Deletes selected entries or all filtered results after full request validation and returns the actual deletion count. The WebUI supports exact answer-IP filtering and bulk selection.
 - `GET /plugins/<cache_tag>/flush`
 - `GET /plugins/<cache_tag>/dump`
 - `POST /plugins/<cache_tag>/load_dump`

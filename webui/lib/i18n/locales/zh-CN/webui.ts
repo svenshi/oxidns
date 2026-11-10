@@ -500,6 +500,20 @@ export const zhCNWebui = {
     responseRecordsTooltip: "Answer / Authority / Additional",
   },
   cache: {
+    answerIpLabel: "应答 IP（精确匹配）",
+    selectedCount: "已选 {count} 项",
+    allMatchingCount: "全部匹配结果，预计 {count} 项",
+    selectAllMatching: "选择全部匹配结果",
+    clearSelection: "取消选择",
+    deleteSelected: "批量删除",
+    deletedResult: "已删除 {count} 项缓存",
+    selectLoaded: "全选已加载条目",
+    selectEntry: "选择 {domain} 的 {recordType} 缓存",
+    deleteSelectedDesc:
+      '将删除插件 "{tag}" 中勾选的 {count} 项缓存。QNAME 包含：{qname}；应答 IP：{ip}。此操作无法撤销。',
+    deleteMatchingDesc:
+      '将删除插件 "{tag}" 中全部匹配缓存（预计 {count} 项），包含未加载条目。QNAME 包含：{qname}；应答 IP：{ip}。实际数量以执行时为准，此操作无法撤销。',
+
     cardDescription: "查看缓存项，按需清空、导出或导入缓存数据。",
     capacityLabel: "容量",
     negCacheLabel: "负缓存",
