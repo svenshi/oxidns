@@ -951,6 +951,7 @@ Controls EDNS Client Subnet forwarding or injection.
 ### Behavior
 
 - Can preserve, synthesize, or normalize ECS before forwarding.
+- When ECS was not forwarded from the client, ECS is stripped from both the response and the request once the downstream chain finishes.
 - Interacts with cache correctness if ECS is also part of the cache key.
 
 ### Typical Uses
