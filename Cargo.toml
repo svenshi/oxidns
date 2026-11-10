@@ -161,7 +161,7 @@ default = ["full"]
 # --- Bundles ---------------------------------------------------------------
 
 # Minimal core DNS forwarder: UDP + TCP listeners, UDP + TCP upstream,
-# sequence / forward / cache / fallback / hosts / redirect / dual_selector /
+# sequence / forward / cache / fallback / load_balance / hosts / redirect / dual_selector /
 # ecs_handler / ttl / drop_resp / black_hole / debug_print / reload, all matchers,
 # and the `domain_set` + `ip_set` providers.
 # Nothing else is compiled. No hyper / rustls / quinn / h2 / h3 / zoneparser.

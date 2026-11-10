@@ -56,6 +56,7 @@ pub mod ip_selector;
 pub mod ipset;
 #[cfg(feature = "plugin-dynamic-domain")]
 pub mod learn_domain;
+pub mod load_balance;
 #[cfg(feature = "metrics")]
 pub mod metrics_collector;
 #[cfg(feature = "plugin-ipset")]

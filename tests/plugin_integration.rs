@@ -6497,3 +6497,265 @@ plugins:
         .map_err(|_| DnsError::runtime("DoQ test cleanup timed out"))?;
     outcome
 }
+
+#[test]
+fn test_load_balance_dependency_validation() -> Result<()> {
+    for (targets, other, expected) in [
+        ("[{exec: missing}]", "", "missing plugin"),
+        (
+            "[{exec: target}]",
+            "  - tag: target\n    type: _true\n",
+            "expects executor",
+        ),
+        ("[{exec: balance_main}]", "", "references itself"),
+        (
+            "[{exec: child}]",
+            "  - tag: child\n    type: sequence\n    args: [{exec: '$balance_main'}]\n",
+            "Circular dependency",
+        ),
+    ] {
+        let config = parse_config(&format!(
+            "plugins:\n  - tag: balance_main\n    type: load_balance\n    args:\n      executors: {targets}\n{other}"
+        ))?;
+        let error = plugin::analyze_configuration(&config)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{error}");
+        if expected != "Circular dependency" {
+            assert!(error.contains("args.executors[0].exec"), "{error}");
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_load_balance_invalid_fields_fail_startup() -> Result<()> {
+    for args in [
+        "{}",
+        "{executors: []}",
+        "{executors: [{exec: ''}]}",
+        "{executors: [{exec: '   '}]}",
+        "{executors: [{exec: target, weight: 0}]}",
+        "{executors: [{exec: target, weight: -1}]}",
+        "{executors: [{exec: target, weight: 1.5}]}",
+        "{executors: [{exec: target, weight: 4294967296}]}",
+        "{executors: [{exec: target}, {exec: target}]}",
+        "{strategy: invalid, executors: [{exec: target}]}",
+    ] {
+        let config = parse_config(&format!(
+            "plugins:\n  - tag: balance_main\n    type: load_balance\n    args: {args}\n  - tag: target\n    type: sequence\n    args: [{{exec: 'mark 1'}}]\n"
+        ))?;
+        match plugin::init(config).await {
+            Ok(runtime) => {
+                runtime.destroy().await;
+                panic!("invalid config accepted: {args}");
+            }
+            Err(error) => assert!(error.to_string().contains("load_balance"), "{error}"),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_load_balance_nested_sequence_control_flow_and_reload_reset() -> Result<()> {
+    let yaml = r#"
+plugins:
+  - tag: seq_main
+    type: sequence
+    args:
+      - exec: mark 1
+      - exec: $balance_main
+      - exec: mark 99
+  - tag: balance_main
+    type: load_balance
+    args:
+      executors: [{exec: seq_next}, {exec: seq_return}, {exec: seq_stop}]
+  - tag: seq_next
+    type: sequence
+    args: [{exec: 'mark 11'}]
+  - tag: seq_return
+    type: sequence
+    args: [{exec: 'mark 22'}, {exec: return}, {exec: 'mark 77'}]
+  - tag: seq_stop
+    type: sequence
+    args: [{exec: 'mark 33'}, {exec: accept}, {exec: 'mark 77'}]
+"#;
+    for _ in 0..2 {
+        let runtime = plugin::init(parse_config(yaml)?).await?;
+        let outcome = async {
+            let main = runtime.get_plugin("seq_main").unwrap().to_executor();
+            assert_eq!(
+                runtime.get_plugin("balance_main").unwrap().plugin_name,
+                "load_balance"
+            );
+            for (mark, stop) in [(11, false), (22, false), (33, true), (11, false)] {
+                let mut context = make_context(runtime.clone(), "balance.test.");
+                let step = main.execute(&mut context).await?;
+                assert_eq!(step, if stop { ExecStep::Stop } else { ExecStep::Next });
+                assert!(context.marks().contains(&1));
+                assert!(context.marks().contains(&mark));
+                assert_eq!(context.marks().contains(&99), !stop);
+                assert!(!context.marks().contains(&77));
+                assert!(context.response().is_none());
+            }
+            Ok::<_, DnsError>(())
+        }
+        .await;
+        runtime.destroy().await;
+        outcome?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_load_balance_ecs_cache_isolation_and_fallback() -> Result<()> {
+    use oxidns::proto::{ClientSubnet, Edns, EdnsCode, EdnsOption, Record};
+
+    // Test independent branch caches and a shared ECS-keyed cache.
+    for shared_cache in [false, true] {
+        let upstream = UdpSocket::bind("127.0.0.1:0").await?;
+        let address = upstream.local_addr()?;
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let responder = tokio::spawn(async move {
+            let mut observed = Vec::new();
+            let mut buffer = [0u8; 4096];
+            loop {
+                tokio::select! {
+                    _ = &mut shutdown_rx => return Ok::<_, DnsError>(observed),
+                    received = upstream.recv_from(&mut buffer) => {
+                        let (length, peer) = received?;
+                        let request = Message::from_bytes(&buffer[..length])?;
+                        let subnet = match request.edns().as_ref().and_then(|edns| edns.option(EdnsCode::Subnet)) {
+                            Some(EdnsOption::Subnet(subnet)) => subnet.clone(),
+                            _ => return Err(DnsError::runtime("missing branch ECS")),
+                        };
+                        observed.push(subnet.addr());
+                        let mut response = request.response(Rcode::NoError);
+                        response.add_answer(Record::from_rdata(
+                            request.first_question().unwrap().name().clone(),
+                            60,
+                            oxidns::proto::RData::A(oxidns::proto::A(match subnet.addr() {
+                                IpAddr::V4(ip) => ip,
+                                _ => return Err(DnsError::runtime("expected IPv4 ECS")),
+                            })),
+                        ));
+                        let mut edns = Edns::new();
+                        edns.insert(EdnsOption::Subnet(subnet));
+                        response.set_edns(edns);
+                        upstream.send_to(&response.to_bytes()?, peer).await?;
+                    }
+                }
+            }
+        });
+        let mut yaml = format!(
+            r#"
+plugins:
+  - tag: seq_main
+    type: sequence
+    args:
+      - exec: $ecs_clear
+      - exec: $balance_main
+  - tag: ecs_clear
+    type: ecs_handler
+    args: {{forward: false, send: false}}
+  - tag: balance_main
+    type: load_balance
+    args:
+      executors: [{{exec: seq_first}}, {{exec: seq_second}}, {{exec: seq_third}}]
+  - tag: forward_main
+    type: forward
+    args:
+      upstreams: [{{addr: 'udp://{address}'}}]
+  - tag: cache_shared
+    type: cache
+    args: {{size: 16, ecs_in_key: true, short_circuit: true}}
+  - tag: fallback_main
+    type: fallback
+    args: {{primary: balance_error, secondary: seq_backup, threshold: 1000}}
+  - tag: balance_error
+    type: load_balance
+    args:
+      executors: [{{exec: forward_broken}}]
+  - tag: forward_broken
+    type: forward
+    args:
+      upstreams: [{{addr: 'udp://127.0.0.1:0', timeout: 0}}]
+  - tag: seq_backup
+    type: sequence
+    args: [{{exec: 'black_hole 192.0.2.99'}}]
+"#
+        );
+        for (name, ip) in [
+            ("first", "192.0.2.1"),
+            ("second", "198.51.100.1"),
+            ("third", "203.0.113.1"),
+        ] {
+            let cache = if shared_cache {
+                "cache_shared".to_string()
+            } else {
+                format!("cache_{name}")
+            };
+            yaml.push_str(&format!(
+                r#"
+  - tag: ecs_{name}
+    type: ecs_handler
+    args: {{preset: '{ip}', mask4: 24}}
+  - tag: cache_{name}
+    type: cache
+    args: {{size: 16, short_circuit: true}}
+  - tag: seq_{name}
+    type: sequence
+    args:
+      - exec: $ecs_{name}
+      - exec: ${cache}
+      - exec: $forward_main
+"#
+            ));
+        }
+        let outcome = async {
+            let runtime = plugin::init(parse_config(&yaml)?).await?;
+            let outcome = async {
+                let main = runtime.get_plugin("seq_main").unwrap().to_executor();
+                for index in 0..9 {
+                    let mut context = make_context(runtime.clone(), "balance-cache.test.");
+                    context.request.set_id(index as u16);
+                    let mut edns = Edns::new();
+                    edns.insert(EdnsOption::Subnet(ClientSubnet::new("10.0.0.1".parse().unwrap(), 24, 0)));
+                    context.request.set_edns(edns);
+                    timeout(Duration::from_secs(2), main.execute(&mut context))
+                        .await.map_err(|_| DnsError::runtime("balanced query timed out"))??;
+                    let response = context.response().expect("branch must answer");
+                    assert_eq!(response.id(), index as u16);
+                    let expected: Ipv4Addr = ["192.0.2.0", "198.51.100.0", "203.0.113.0"][index % 3].parse().unwrap();
+                    assert_eq!(response.answers()[0].data(), &oxidns::proto::RData::A(oxidns::proto::A(expected)));
+                    assert!(!response.edns().as_ref().is_some_and(|edns| edns.option(EdnsCode::Subnet).is_some()));
+                }
+                let fallback = runtime.get_plugin("fallback_main").unwrap().to_executor();
+                let mut context = make_context(runtime.clone(), "fallback-balance.test.");
+                timeout(Duration::from_secs(2), fallback.execute(&mut context))
+                    .await.map_err(|_| DnsError::runtime("balanced fallback timed out"))??;
+                assert!(context.response().is_some());
+                let metrics = oxidns::infra::observability::metrics::render_prometheus_metrics();
+                for name in ["first", "second", "third"] {
+                    assert!(metrics.contains(&format!("load_balance_selected_total{{plugin_tag=\"balance_main\",executor=\"seq_{name}\"}} 3")));
+                }
+                assert!(metrics.contains("load_balance_error_total{plugin_tag=\"balance_error\",executor=\"forward_broken\"} 1"));
+                Ok::<_, DnsError>(())
+            }.await;
+            runtime.destroy().await;
+            assert!(!oxidns::infra::observability::metrics::render_prometheus_metrics().contains("plugin_tag=\"balance_main\""));
+            outcome
+        }.await;
+        let _ = shutdown_tx.send(());
+        let observed = timeout(Duration::from_secs(2), responder)
+            .await
+            .map_err(|_| DnsError::runtime("upstream shutdown timed out"))?
+            .map_err(|error| DnsError::runtime(error.to_string()))??;
+        outcome?;
+        assert_eq!(
+            observed,
+            ["192.0.2.0", "198.51.100.0", "203.0.113.0"].map(|ip| ip.parse::<IpAddr>().unwrap())
+        );
+    }
+    Ok(())
+}

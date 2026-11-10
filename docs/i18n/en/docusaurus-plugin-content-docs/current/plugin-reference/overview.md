@@ -54,6 +54,7 @@ See [Executor Plugins](executor.mdx) for full field reference. Grouped as: polic
 | --- | --- | --- |
 | [`sequence`](executor/control-flow.mdx#sequence) | Orchestrates matchers and executors into a pipeline. The most common entry executor. | <PluginAvailability from="minimal" compact /> |
 | [`fallback`](executor/control-flow.mdx#fallback) | Runs a primary executor first and falls back to a secondary executor when the primary is too slow or fails. | <PluginAvailability from="minimal" compact /> |
+| [`load_balance`](executor/control-flow.mdx#load_balance) | Distribute requests across executors using round-robin, random, or weighted-random selection. | <PluginAvailability from="minimal" compact /> |
 
 </div>
 

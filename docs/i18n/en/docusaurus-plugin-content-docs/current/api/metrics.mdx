@@ -42,6 +42,8 @@ Current exported metrics include:
 * `fallback_primary_total`
 * `fallback_primary_error_total`
 * `fallback_secondary_total`
+* `load_balance_selected_total`
+* `load_balance_error_total`
 * `blackhole_block_total`
 * `hosts_hit_total`
 * `hosts_miss_total`
@@ -118,3 +120,5 @@ Current exported metrics include:
 * `cron_executor_error_total`
 
 These metrics use low-cardinality plugin-level labels such as `plugin_tag`, `name`, `kind`, `reason`, `result`, and `protocol`. `server_*` additionally carries a `protocol` label (`udp`/`tcp`/`dot`/`quic`/`doh`). `forward_upstream_*` carries an `upstream` label whose value is the upstream tag (or its resolved address when no tag is configured); since the upstream set is fixed at startup and bounded, this stays a low-cardinality dimension. High-cardinality values such as qname or client IP are intentionally excluded from the generic metrics layer; use `query_recorder` when per-query detail is needed.
+
+`load_balance_*` uses `plugin_tag` and `executor` labels. `selected_total` counts selections (including subsequently cancelled calls); `error_total` counts only returned execution errors. Normal completion without a response and DNS RCODEs are not execution errors.

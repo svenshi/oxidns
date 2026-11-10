@@ -444,6 +444,72 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
     },
   },
   {
+    kind: "load_balance",
+    type: "executor",
+    name: "Load Balance",
+    description: "在多条执行链之间轮询、随机或按权重随机分配请求",
+    icon: "GitBranch",
+    configSchema: [
+      {
+        key: "strategy",
+        label: "选择策略",
+        description: "每次仅执行一个分支；轮询从第一项开始，重载后重置。",
+        type: "select",
+        default: "round_robin",
+        options: [
+          { label: "轮询", value: "round_robin" },
+          { label: "随机", value: "random" },
+          { label: "加权随机", value: "weighted_random" },
+        ],
+      },
+      {
+        key: "executors",
+        label: "候选执行器",
+        description:
+          "配置非空且不重复的执行器列表；需要包裹下游的插件应放入完整 sequence。",
+        type: "array",
+        required: true,
+        item: {
+          type: "object",
+          label: "分支",
+          summaryFields: ["exec", "weight"],
+          fields: [
+            {
+              ...executorRef(
+                "exec",
+                "执行器",
+                true,
+                undefined,
+                "引用不带 $ 的 executor tag，不支持快捷表达式。",
+              ),
+              referencePrefix: "",
+            },
+            {
+              key: "weight",
+              label: "权重",
+              description: "正整数，默认 1；仅加权随机使用。",
+              type: "number",
+              default: 1,
+            },
+          ],
+        },
+      },
+    ],
+    metrics: {
+      metricLabels: {
+        load_balance_selected_total: "分支选择",
+        load_balance_error_total: "分支错误",
+      },
+      metricHelp: {
+        load_balance_selected_total:
+          "按执行器统计的选择次数，包括随后取消的调用。",
+        load_balance_error_total:
+          "选中分支返回执行错误的次数；无响应的正常返回不计为错误。",
+      },
+      cardPriority: ["load_balance_selected_total", "load_balance_error_total"],
+    } satisfies PluginMetricsDef,
+  },
+  {
     kind: "fallback",
     type: "executor",
     name: "Fallback",

@@ -20,7 +20,7 @@ Inspired by [mosdns](https://github.com/IrineSistiana/mosdns), OxiDNS goes beyon
 
 ## Why OxiDNS
 
-- **Composable policy**: `sequence` combines matchers, executors, and providers into reusable branches, jumps, and fallback chains.
+- **Composable policy**: `sequence` combines matchers, executors, and providers into reusable branches, jumps, and fallback chains; `load_balance` adds round-robin, random, and weighted-random branch selection.
 - **Explainable decisions**: Query records, execution paths, structured logs, and metrics show what matched, what ran, and why a result was selected.
 - **Unified ingress and egress**: One policy serves UDP, TCP, DoT, DoQ, and DoH while upstream resolution, connection reuse, concurrent selection, and proxy egress stay centrally managed.
 - **DNS-driven networking**: Resolution results can update Linux `ipset` / `nftset`, RouterOS address lists and static routes, HTTP webhooks, and external scripts.
@@ -84,7 +84,7 @@ See [Configuration](https://oxidns.org/en/configuration) and [Common Scenarios](
 | Category | Capabilities |
 | --- | --- |
 | Protocol ingress | UDP, TCP, DoT, DoQ, DoH over HTTP/1.1, HTTP/2, and HTTP/3 |
-| Policy orchestration | `sequence`, conditional matching, executor composition, jumps, and fallback chains |
+| Policy orchestration | `sequence`, conditional matching, executor composition, jumps, fallback chains, and `load_balance` |
 | Upstreams and egress | Multi-protocol upstreams, concurrent response selection, connection reuse, bootstrap, SOCKS5, unified `network.outbound` |
 | Response processing | TTL-aware positive and negative caching, ECS and ECS-derived client IPs, local records, redirects, response construction, dual-stack and IP selection |
 | Rule data | Domain and IP sets, GeoIP, GeoSite, AdGuard rules, dynamic domain learning |

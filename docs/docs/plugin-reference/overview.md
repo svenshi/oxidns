@@ -54,6 +54,7 @@ server -> sequence
 | --- | --- | --- |
 | [`sequence`](executor/control-flow.mdx#sequence) | 把多个 matcher 和 executor 编排成一条流水线，是最常用的入口执行器。 | <PluginAvailability from="minimal" compact /> |
 | [`fallback`](executor/control-flow.mdx#fallback) | 在主路径失败或过慢时，切换到备用路径。 | <PluginAvailability from="minimal" compact /> |
+| [`load_balance`](executor/control-flow.mdx#load_balance) | 在多个 executor 之间轮询、随机或按权重随机分配请求。 | <PluginAvailability from="minimal" compact /> |
 
 </div>
 

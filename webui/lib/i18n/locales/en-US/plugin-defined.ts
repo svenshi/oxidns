@@ -588,6 +588,53 @@ export const enUSPluginDefined = {
         },
       },
     },
+    load_balance: {
+      name: "Load Balance",
+      description:
+        "Distribute requests across executor branches using round-robin, random, or weighted-random selection",
+      fields: {
+        strategy: {
+          label: "Selection strategy",
+          description:
+            "Execute one branch per call. Round-robin starts at the first item and resets on reload.",
+          options: {
+            round_robin: "Round-robin",
+            random: "Random",
+            weighted_random: "Weighted random",
+          },
+        },
+        executors: {
+          label: "Candidate executors",
+          description:
+            "A non-empty list of distinct executors. Place middleware inside a complete target sequence.",
+        },
+        "executors[]": {
+          label: "Branch",
+        },
+        "executors[].exec": {
+          label: "Executor",
+          description:
+            "A plain executor tag without $. Quick-setup expressions are not supported.",
+        },
+        "executors[].weight": {
+          label: "Weight",
+          description:
+            "A positive integer, default 1. Used only by weighted random.",
+        },
+      },
+      metrics: {
+        labels: {
+          load_balance_selected_total: "Branch selections",
+          load_balance_error_total: "Branch errors",
+        },
+        help: {
+          load_balance_selected_total:
+            "Selections per executor, including subsequently cancelled calls.",
+          load_balance_error_total:
+            "Selected branch calls returning an execution error. Normal returns without a response are not errors.",
+        },
+      },
+    },
     fallback: {
       name: "Fallback",
       description:

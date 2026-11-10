@@ -42,6 +42,8 @@ title: Prometheus 指标
 * `fallback_primary_total`
 * `fallback_primary_error_total`
 * `fallback_secondary_total`
+* `load_balance_selected_total`
+* `load_balance_error_total`
 * `blackhole_block_total`
 * `hosts_hit_total`
 * `hosts_miss_total`
@@ -118,3 +120,5 @@ title: Prometheus 指标
 * `cron_executor_error_total`
 
 这些指标带有低基数插件级标签，例如 `plugin_tag`、`name`、`kind`、`reason`、`result`、`protocol`。`server_*` 额外带有 `protocol`（`udp`/`tcp`/`dot`/`quic`/`doh`）标签。`forward_upstream_*` 带有 `upstream` 标签，其取值为上游 tag（未配置时为解析后的地址）；由于上游集合在启动时固定且数量有限，属于低基数维度。域名、客户端 IP 等高基数字段不会进入通用指标层；需要逐条查询明细时请使用 `query_recorder`。
+
+`load_balance_*` 带有 `plugin_tag`、`executor` 标签。`selected_total` 记录选择（包括随后取消的调用），`error_total` 仅记录分支返回的执行错误；无 response 的正常完成和 DNS RCODE 不构成执行错误。
