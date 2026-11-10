@@ -386,6 +386,7 @@ impl IpPrefixMatcher {
     }
 
     #[inline(always)]
+    #[hotpath::measure]
     pub fn contains_ip(&self, ip: IpAddr) -> bool {
         match ip {
             IpAddr::V4(ip) => self.contains_v4_u32(u32::from(ip)),

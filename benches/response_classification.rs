@@ -4,7 +4,7 @@
 use std::hint::black_box;
 use std::net::Ipv4Addr;
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use hotpath::criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use oxidns::core::response::classify_response;
 use oxidns::proto::rdata::{A, CNAME, SOA};
 use oxidns::proto::{DNSClass, Message, Name, Question, RData, Rcode, Record, RecordType};
@@ -113,4 +113,5 @@ fn bench_response_classification(c: &mut Criterion) {
 }
 
 criterion_group!(response_classification, bench_response_classification);
-criterion_main!(response_classification);
+// The library's #[hotpath::main] already installs the counting allocator.
+criterion_main!(allocator = none; response_classification);

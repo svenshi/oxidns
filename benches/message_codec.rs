@@ -421,4 +421,5 @@ fn bench_message_encode_decode(c: &mut Criterion) {
 }
 
 criterion_group!(message_codec, bench_message_encode_decode);
+// The library's #[hotpath::main] already installs the counting allocator.
 criterion_main!(allocator = none; message_codec);

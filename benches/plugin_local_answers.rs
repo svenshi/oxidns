@@ -5,7 +5,7 @@ use std::hint::black_box;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use hotpath::criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use oxidns::config::types::{
     ApiConfig, Config, LogConfig, NetworkConfig, PluginConfig, RuntimeConfig,
 };
@@ -295,7 +295,7 @@ fn bench_arbitrary(c: &mut Criterion) {
             RecordType::CNAME,
         ),
         (
-            "any",
+            "any_miss",
             vec![
                 "multi.bench.test. 60 IN A 192.0.2.10",
                 "multi.bench.test. 60 IN AAAA 2001:db8::10",
@@ -317,6 +317,11 @@ fn bench_arbitrary(c: &mut Criterion) {
         .expect("arbitrary args should parse");
         let (executor, registry) = load_executor(&rt, plugin_config("bench", "arbitrary", args));
 
+        let mut probe = make_context(registry.clone(), qname, qtype);
+        rt.block_on(executor.execute_with_next(&mut probe, None))
+            .expect("arbitrary probe should succeed");
+        // Arbitrary records are indexed by exact QTYPE; ANY is a miss.
+        assert_eq!(probe.response().is_some(), qtype != RecordType::ANY);
         group.bench_function(BenchmarkId::new("execute", label), |b| {
             b.iter(|| {
                 let mut ctx = make_context(registry.clone(), qname, qtype);
@@ -324,7 +329,7 @@ fn bench_arbitrary(c: &mut Criterion) {
                     .block_on(executor.execute_with_next(&mut ctx, None))
                     .expect("arbitrary execute should succeed");
                 black_box(step);
-                black_box(ctx.response().expect("response should be present"));
+                black_box(ctx.response());
             })
         });
     }
@@ -381,4 +386,5 @@ criterion_group!(
     bench_arbitrary,
     bench_redirect
 );
-criterion_main!(plugin_local_answers);
+// The library's #[hotpath::main] already installs the counting allocator.
+criterion_main!(allocator = none; plugin_local_answers);
