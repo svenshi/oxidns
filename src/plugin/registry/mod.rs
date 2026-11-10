@@ -628,6 +628,22 @@ impl PluginRegistry {
             .count()
     }
 
+    /// Send readiness in dependency order after the caller completes startup.
+    ///
+    /// Installing a runtime as current is insufficient: application assembly
+    /// can still fail while registering routes or starting the API listener.
+    /// Call this only on the successful startup path, never during rollback.
+    fn notify_ready(&self) {
+        // Snapshot the order and clone plugin handles so callbacks run without
+        // holding the lifecycle-order mutex or a plugin-map entry guard.
+        let order = lock_mutex(&self.init_order).clone();
+        for tag in order {
+            if let Some(plugin) = self.get_plugin(&tag) {
+                plugin.as_plugin().on_ready();
+            }
+        }
+    }
+
     /// Destroy all initialized plugins in reverse init order
     pub async fn destroy(&self) {
         let order = lock_mutex(&self.init_order).clone();

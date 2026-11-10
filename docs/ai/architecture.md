@@ -141,10 +141,29 @@ Shutdown reverses ownership:
    `destroy` implementation.
 4. Clear the application controller and runtime handles.
 
-Reload builds a replacement runtime before making it current. Changes to
-runtime swapping must preserve the last usable runtime until replacement
-initialization succeeds, reject overlapping reload requests, and clean up
-partially initialized resources.
+Reload stops the old runtime before assembling a replacement. If assembly
+fails, it rebuilds the previous configuration. Reject overlapping reload
+requests and clean up partially initialized resources.
+
+Application and standalone startup use one managed lifecycle operation. A
+startup session owns the candidate until application setup succeeds or cleanup
+finishes. Dropping the observer does not cancel that operation. Publication and
+`on_ready` run under the same lifecycle lock as startup and shutdown, so an
+unactivated candidate is never exposed as the current runtime and cannot be
+activated after destruction. API preparation, startup, and failure cleanup stay
+in the application layer; the plugin manager does not depend on API types.
+Readiness hooks must be fast, idempotent, infallible, and free of panics.
+
+Cache initialization awaits dump restoration and pruning before exposing the
+cache to DNS requests or API mutation. File-system metadata/read waiting has a
+bounded budget, and special files are rejected before opening. Timeouts and
+read/decode failures preserve the original dump and disable this instance's
+automatic writes while DNS startup continues. CPU decoding is cooperative, and
+a timed-out Tokio file operation may still finish its underlying OS read; it
+cannot later publish cache entries. There is no background loader to drain on
+shutdown. Only activated caches with a valid initial dump state can register
+periodic saving or perform a final dump; failed candidates never overwrite the
+previous runtime's dump.
 
 ## State and Concurrency Rules
 

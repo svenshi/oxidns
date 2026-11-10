@@ -39,7 +39,6 @@ use crate::infra::clock::AppClock;
 use crate::infra::control::{AppController, ControlCommand};
 use crate::infra::error::{DnsError, Result};
 use crate::infra::observability::logging;
-use crate::infra::task;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartConfig {
@@ -322,7 +321,6 @@ async fn run_async_main(options: StartConfig, config: Config) -> Result<Shutdown
         "Destroying plugins for shutdown"
     );
     bootstrap::stop(&assembly).await;
-    task::stop_all().await;
     info!(
         signal = shutdown_signal.as_str(),
         "Graceful shutdown complete"
@@ -392,7 +390,6 @@ async fn handle_reload_command(
     );
 
     bootstrap::stop(assembly).await;
-    task::stop_all().await;
 
     match bootstrap::assemble(&candidate_config, Some(controller.clone())).await {
         Ok(new_assembly) => {
@@ -439,4 +436,56 @@ fn load_config_from_path(path: &std::path::Path) -> Result<Config> {
     })?;
     crate::plugin::validate_configuration(&config)?;
     Ok(config)
+}
+
+#[cfg(all(test, feature = "api"))]
+mod cache_reload_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn failed_reload_restores_historical_cache() {
+        let _guard = crate::api::global_api_test_guard().await;
+        let _outbound_guard = crate::infra::network::outbound::TestGlobalGuard::clean();
+        crate::infra::clock::AppClock::start();
+        let dir = tempfile::tempdir().unwrap();
+        let dump = dir.path().join("cache.dump");
+        std::fs::write(
+            &dump,
+            crate::plugin::executor::cache::persistence_test_dump(),
+        )
+        .unwrap();
+        let yaml = format!(
+            "plugins:\n  - tag: reload_cache\n    type: cache\n    args:\n      ecs_in_key: true\n      dump_file: '{}'\n",
+            dump.display()
+        );
+        let mut config: Config = serde_yaml_ng::from_str(&yaml).unwrap();
+        let path = dir.path().join("config.yaml");
+        let (controller, _rx) = AppController::new(path.clone());
+        let mut assembly = bootstrap::assemble(&config, Some(controller.clone()))
+            .await
+            .unwrap();
+        let bad = yaml.replace("ecs_in_key: true", "ecs_in_key: false\n      size: 1")
+            + "  - tag: zz_invalid\n    type: forward\n    args:\n      upstreams: [{addr: 'invalid://bad'}]\n";
+        std::fs::write(&path, bad).unwrap();
+        handle_reload_command(&mut assembly, &mut config, controller.clone())
+            .await
+            .unwrap();
+        bootstrap::stop(&assembly).await;
+        // Restoring the old config must retain all four ECS variants.
+        let restored = std::fs::read(&dump).unwrap();
+        assert_eq!(u64::from_le_bytes(restored[..8].try_into().unwrap()), 4);
+        // A successful reload still commits persistence normally.
+        std::fs::write(&path, yaml).unwrap();
+        assembly = bootstrap::assemble(&config, Some(controller.clone()))
+            .await
+            .unwrap();
+        handle_reload_command(&mut assembly, &mut config, controller)
+            .await
+            .unwrap();
+        bootstrap::stop(&assembly).await;
+        assert_eq!(
+            u64::from_le_bytes(std::fs::read(&dump).unwrap()[..8].try_into().unwrap()),
+            4
+        );
+    }
 }
