@@ -519,6 +519,20 @@ export const enUSWebui = {
     responseRecordsTooltip: "Answer / Authority / Additional",
   },
   cache: {
+    answerIpLabel: "Answer IP (exact match)",
+    selectedCount: "{count} selected",
+    allMatchingCount: "All matches, approximately {count} entries",
+    selectAllMatching: "Select all matches",
+    clearSelection: "Clear selection",
+    deleteSelected: "Delete selected",
+    deletedResult: "Deleted {count} cache entries",
+    selectLoaded: "Select all loaded entries",
+    selectEntry: "Select {domain} {recordType} cache entry",
+    deleteSelectedDesc:
+      'Delete {count} selected cache entries from plugin "{tag}"? QNAME contains: {qname}; answer IP: {ip}. This cannot be undone.',
+    deleteMatchingDesc:
+      'Delete all matching cache entries from plugin "{tag}" (approximately {count}), including unloaded entries? QNAME contains: {qname}; answer IP: {ip}. The actual count is determined at execution. This cannot be undone.',
+
     cardDescription:
       "View cache entries. Flush, export, or import cache data as needed.",
     capacityLabel: "Capacity",

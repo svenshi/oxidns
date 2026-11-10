@@ -28,6 +28,15 @@ title: 插件扩展 API
 * `limit`：每页数量，默认 `100`，最大 `500`。
 * `cursor`：分页游标。
 * `qname`：按缓存键中的查询域名做大小写不敏感的包含筛选。
+* `answer_ip`：完整 IPv4/IPv6 地址，精确匹配 Answer 区段的 A/AAAA（包括 CNAME 链末端）。与 `qname` 取交集，在分页前筛选；包括保留中的 stale 条目，排除过期条目。非法地址返回 `400 invalid_query`。
+
+#### `POST /api/plugins/<cache_tag>/entries/delete`
+
+批量删除当前插件缓存。JSON 请求二选一：`{"ids":["缓存项 ID"]}` 或 `{"filter":{"qname":"example.com","answer_ip":"192.0.2.1"}}`。筛选字段可任选一个，但至少有一个有效非空条件；全部匹配删除包含尚未加载的结果。ID 保留 QTYPE/QCLASS、DO/CD 和 ECS 区分。
+
+请求在删除前完整验证；非法 ID/IP、空选择或混用模式返回 `400 invalid_delete_request`。重复 ID 去重，不存在的条目跳过。成功返回 `{"ok":true,"deleted_entries":实际删除数量}`。筛选删除跳过扫描后被替换的条目；缓存动态变化会影响实际数量，后续查询或已启动的刷新仍可回填。
+
+WebUI 支持勾选、全选已加载条目以及显式选择全部筛选结果；删除前确认范围和条件。
 
 #### `GET /api/plugins/<cache_tag>/flush`
 

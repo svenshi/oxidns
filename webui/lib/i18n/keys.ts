@@ -566,6 +566,18 @@ export const WEBUI = {
     responseRecordsTooltip: "webui.dnsRecord.responseRecordsTooltip",
   },
   cache: {
+    answerIpLabel: "webui.cache.answerIpLabel",
+    selectedCount: "webui.cache.selectedCount",
+    allMatchingCount: "webui.cache.allMatchingCount",
+    selectAllMatching: "webui.cache.selectAllMatching",
+    clearSelection: "webui.cache.clearSelection",
+    deleteSelected: "webui.cache.deleteSelected",
+    deletedResult: "webui.cache.deletedResult",
+    selectLoaded: "webui.cache.selectLoaded",
+    selectEntry: "webui.cache.selectEntry",
+    deleteSelectedDesc: "webui.cache.deleteSelectedDesc",
+    deleteMatchingDesc: "webui.cache.deleteMatchingDesc",
+
     cardDescription: "webui.cache.cardDescription",
     capacityLabel: "webui.cache.capacityLabel",
     negCacheLabel: "webui.cache.negCacheLabel",

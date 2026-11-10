@@ -32,6 +32,17 @@ Query parameters:
 * `cursor`: Pagination cursor.
 * `qname`: Case-insensitive substring filter for the query domain in the cache key.
 
+
+* `answer_ip`: A complete IPv4/IPv6 address, matched exactly against Answer A/AAAA records (including CNAME terminal addresses). Combined with `qname` using AND, before pagination; retained stale entries are included, expired entries excluded. Invalid addresses return `400 invalid_query`.
+
+#### `POST /api/plugins/<cache_tag>/entries/delete`
+
+Bulk-delete entries from the current plugin. Supply either `{"ids":["entry ID"]}` or `{"filter":{"qname":"example.com","answer_ip":"192.0.2.1"}}`. Either filter field may be omitted, but at least one effective non-empty condition is required. Filtered deletion includes unloaded results. IDs preserve QTYPE/QCLASS, DO/CD and ECS distinctions.
+
+The entire request is validated before deletion. Invalid IDs/IPs, empty selections or mixed modes return `400 invalid_delete_request`. Duplicate IDs are deduplicated and missing entries skipped. Success returns `{"ok":true,"deleted_entries":actual_count}`. Filtered deletion skips entries replaced after scanning. Concurrent cache changes affect the actual count; subsequent queries or ongoing refreshes can repopulate entries.
+
+The WebUI supports individual selection, selecting loaded entries, and explicitly selecting all filtered results, with scope and filter confirmation before deletion.
+
 #### `GET /api/plugins/<cache_tag>/flush`
 
 Clears the cache.
