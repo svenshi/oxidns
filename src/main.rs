@@ -15,5 +15,5 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    cli::run()
+    cli::run_from_args()
 }

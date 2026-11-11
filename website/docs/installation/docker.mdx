@@ -1,0 +1,131 @@
+---
+title: Docker 部署
+---
+
+import Admonition from '@theme/Admonition';
+
+官方镜像发布到：
+
+- Docker Hub：`svenshi/oxidns`
+- GitHub Container Registry：`ghcr.io/svenshi/oxidns`
+
+当前发布平台为 `linux/amd64`、`linux/arm64` 和 `linux/arm/v7`。生产环境建议固定明确版本标签，避免重新拉取 `latest` 时发生意外升级。
+
+## 准备配置
+
+先创建部署目录，再从准备使用的镜像导出匹配版本的默认配置：
+
+```bash
+mkdir -p oxidns
+cd oxidns
+
+docker pull svenshi/oxidns:latest
+docker run --rm \
+  --entrypoint /bin/cat \
+  svenshi/oxidns:latest \
+  /etc/oxidns/config.yaml > config.yaml
+
+test -s config.yaml
+```
+
+这一步只用于首次创建配置。升级或重启已有部署时，应保留现有 `config.yaml`，不要用镜像默认配置覆盖它。
+
+<Admonition type="warning" title="先创建普通文件">
+
+绑定挂载的源文件不存在时，Docker 可能创建同名目录，随后无法把它挂载到 `/etc/oxidns/config.yaml`。启动容器前确认 `config.yaml` 是普通文件。
+
+</Admonition>
+
+## 使用 docker run
+
+```bash
+docker run -d \
+  --name oxidns \
+  --restart unless-stopped \
+  -p 53:53/udp \
+  -p 53:53/tcp \
+  -p 9199:9199/tcp \
+  -v "$(pwd)/config.yaml:/etc/oxidns/config.yaml:ro" \
+  svenshi/oxidns:latest
+```
+
+镜像默认命令等价于：
+
+```bash
+oxidns start -c /etc/oxidns/config.yaml -d /etc/oxidns
+```
+
+默认暴露 `53/udp`、`53/tcp` 和 `9199/tcp`。
+
+<Admonition type="warning" title="保护管理接口">
+
+示例把 9199 暴露到所有宿主机接口，而默认配置可能没有认证。只需本机访问时改为 `127.0.0.1:9199:9199/tcp`；允许其它设备访问前，应启用 API 认证并结合防火墙限制来源。
+
+</Admonition>
+
+如果宿主机 53 端口被 systemd-resolved、dnsmasq 或其它 DNS 服务占用，可临时映射到 5353：
+
+```bash
+-p 5353:53/udp -p 5353:53/tcp
+```
+
+容器侧仍监听 53，测试时使用 `dig @127.0.0.1 -p 5353 example.com`。
+
+## 验证容器
+
+```bash
+docker ps --filter name=oxidns
+docker logs --tail 50 oxidns
+curl -fsS http://127.0.0.1:9199/api/readyz
+dig @127.0.0.1 example.com
+dig @127.0.0.1 example.com +tcp
+```
+
+WebUI 地址为 `http://服务器IP:9199/`。启用 Basic Auth 后，在 WebUI 设置中填写相同凭据。
+
+## Docker Compose
+
+先准备 `config.yaml`，再创建 `compose.yaml`：
+
+```yaml
+services:
+  oxidns:
+    image: svenshi/oxidns:latest
+    container_name: oxidns
+    restart: unless-stopped
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+      - "9199:9199/tcp"
+    volumes:
+      - ./config.yaml:/etc/oxidns/config.yaml:ro
+```
+
+启动和检查：
+
+```bash
+docker compose up -d
+docker compose logs -f oxidns
+```
+
+## 更新镜像
+
+固定版本部署应先修改 image tag，再执行：
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+更新前备份配置和挂载的持久化数据；更新后检查版本、bundle、readiness 和 DNS。容器内自升级通常不如由镜像编排层替换容器清晰，因此优先使用镜像版本管理，而不是在临时容器文件系统内运行二进制升级。
+
+## 常见问题
+
+- **容器立即退出**：查看 `docker logs`，确认挂载源是文件、YAML 有效且容器端口与配置一致。
+- **端口绑定失败**：检查宿主机 53/9199 占用，或使用明确的宿主机 IP/替代端口。
+- **API 正常但 DNS 失败**：分别检查 UDP/TCP 映射、server listener 和上游连通性。
+- **修改配置没有生效**：配置以只读文件挂载，修改宿主机文件后需要通过 API reload 或重启容器。
+- **真实客户端地址丢失**：普通 UDP/TCP 端口映射通常能保留来源；经过额外代理/NAT 时按实际网络链路排查。
+
+完整诊断顺序见[运维与故障排查](../operations.md)，公网暴露前阅读[安全加固](../security.md)。
+

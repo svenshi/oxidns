@@ -1,0 +1,64 @@
+---
+title: Matcher Plugins
+sidebar_position: 4
+---
+
+Matcher plugins return `true` or `false`. They are mainly used by `sequence.matches`.
+
+## Runtime Modes
+
+Matchers declared in `plugins:` with stable tags can be inspected and switched among three modes for the current runtime:
+
+| Mode | `$matcher` | `!$matcher` |
+| --- | --- | --- |
+| `normal` | Use the matcher result | Negate the matcher result |
+| `always_false` | Miss | Match |
+| `always_true` | Match | Miss |
+
+Both fixed modes skip the internal predicate and fix its base Boolean value, but every reference still applies its own outer negation. The WebUI requires confirmation for both fixed actions; restoring `normal` does not require confirmation.
+
+The runtime mode is shared by matcher tag, while reference semantics remain local to each reference. If the same tag appears as `$matcher` and `!$matcher` in one or more sequences, both references share the fixed base value but their final results remain opposites. Child references in `any_match` follow the same rule; control the `any_match` tag itself when the entire composition must be fixed.
+
+This state is not written to the configuration, and a full reload or process restart restores `normal`. Quick-setup matchers do not have stable public tags and therefore do not expose runtime modes; extract the expression into a standalone matcher when control is required. See the [Plugin Extension APIs](../api/plugins.mdx#matcher) for endpoint details.
+
+## Matcher Expression Rules
+
+Inside `sequence`, quick-setup matcher expressions are usually the clearest form to start with:
+
+```yaml
+- matches:
+    - "client_ip $lan_ip_set"
+    - "qtype A,28"
+  exec: "$forward_main"
+```
+
+Other quick-setup matchers can be combined in the same way:
+
+```yaml
+- matches:
+    - "qname domain:example.com"
+    - "qclass IN,3"
+  exec: "$forward_main"
+```
+
+Negation:
+
+```yaml
+- matches: "!has_resp"
+  exec: "$forward_main"
+```
+
+---
+
+## Category map
+
+| Group | Plugins |
+| --- | --- |
+| [Request Matchers](matcher/request.mdx) | [`qname`](matcher/request.mdx#qname), [`question`](matcher/request.mdx#question), [`qtype`](matcher/request.mdx#qtype), [`qclass`](matcher/request.mdx#qclass), [`client_ip`](matcher/request.mdx#client_ip), [`ptr_ip`](matcher/request.mdx#ptr_ip) |
+| [Response Matchers](matcher/response.mdx) | [`resp_ip`](matcher/response.mdx#resp_ip), [`cname`](matcher/response.mdx#cname), [`rcode`](matcher/response.mdx#rcode), [`has_cname`](matcher/response.mdx#has_cname), [`has_resp`](matcher/response.mdx#has_resp), [`has_wanted_ans`](matcher/response.mdx#has_wanted_ans) |
+| [Context and Policy](matcher/context.mdx) | [`mark`](matcher/context.mdx#mark), [`env`](matcher/context.mdx#env), [`time`](matcher/context.mdx#time), [`random`](matcher/context.mdx#random), [`rate_limiter`](matcher/context.mdx#rate_limiter) |
+| [Composition and Constants](matcher/composition.mdx) | [`any_match`](matcher/composition.mdx#any_match), [`string_exp`](matcher/composition.mdx#string_exp), [`_true`](matcher/composition.mdx#_true), [`_false`](matcher/composition.mdx#_false) |
+
+<span id="any_match"></span><span id="qname"></span><span id="question"></span><span id="qtype"></span><span id="qclass"></span><span id="client_ip"></span><span id="resp_ip"></span><span id="ptr_ip"></span><span id="cname"></span><span id="rcode"></span><span id="has_cname"></span><span id="has_resp"></span><span id="has_wanted_ans"></span><span id="mark"></span><span id="env"></span><span id="time"></span><span id="random"></span><span id="rate_limiter"></span><span id="string_exp"></span><span id="_true"></span><span id="_false"></span>
+
+Legacy plugin anchors remain on this directory page; field references now live in the responsibility groups above.

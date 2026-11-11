@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { Cog, Database, Filter, Server } from "lucide-react";
 import type React from "react";
 import type { PluginType } from "@/lib/types";

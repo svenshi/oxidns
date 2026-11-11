@@ -7,14 +7,14 @@ on:
       - main
       - "release/*"
     paths:
-      - "docs/**"
+      - "website/**"
       - ".github/workflows/docs-ci.yml"
   pull_request:
     branches:
       - main
       - "release/*"
     paths:
-      - "docs/**"
+      - "website/**"
       - ".github/workflows/docs-ci.yml"
 
 permissions:
@@ -36,14 +36,14 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.npm
-          key: ${{ runner.os }}-node20-npm-docs-${{ hashFiles('docs/package-lock.json') }}
+          key: ${{ runner.os }}-node20-npm-docs-${{ hashFiles('website/package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-node20-npm-docs-
 
       - name: Install docs dependencies
-        working-directory: docs
+        working-directory: website
         run: npm ci
 
       - name: Build docs site
-        working-directory: docs
+        working-directory: website
         run: npm run build

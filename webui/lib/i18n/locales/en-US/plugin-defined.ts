@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { zhCNPluginDefined } from "../zh-CN/plugin-defined";
 import type { LocaleResourceShape } from "../../types";
 
@@ -319,6 +324,38 @@ export const enUSPluginDefined = {
         },
       },
     },
+    edns_filter: {
+      name: "EDNS Filter",
+      description:
+        "Filter request EDNS options within the remaining chain, optionally restoring the entire request on exit.",
+      fields: {
+        policy: {
+          label: "Base policy",
+          description:
+            "Preserve all, strip all, or keep only IANA-registered option codes.",
+          options: {
+            preserve: "Preserve all",
+            strip: "Strip all",
+            strip_unknown: "Keep registered only",
+          },
+        },
+        allowlist: {
+          label: "Allowed option codes",
+          description:
+            "Integer array (0–65535). Empty adds no restriction; otherwise keep only listed codes that survive the base policy.",
+        },
+        denylist: {
+          label: "Denied option codes",
+          description:
+            "Integer array (0–65535), applied last with precedence over the allowlist.",
+        },
+        restore_request: {
+          label: "Restore request on exit",
+          description:
+            "Restore the entire entry request, including downstream edits, by default. Disable to retain changes. Response and other context state are not rolled back.",
+        },
+      },
+    },
     forward: {
       name: "Forward",
       description: "Initiate a query to one or more upstream DNS",
@@ -583,6 +620,53 @@ export const enUSPluginDefined = {
         },
       },
     },
+    load_balance: {
+      name: "Load Balance",
+      description:
+        "Distribute requests across executor branches using round-robin, random, or weighted-random selection",
+      fields: {
+        strategy: {
+          label: "Selection strategy",
+          description:
+            "Execute one branch per call. Round-robin starts at the first item and resets on reload.",
+          options: {
+            round_robin: "Round-robin",
+            random: "Random",
+            weighted_random: "Weighted random",
+          },
+        },
+        executors: {
+          label: "Candidate executors",
+          description:
+            "A non-empty list of distinct executors. Place middleware inside a complete target sequence.",
+        },
+        "executors[]": {
+          label: "Branch",
+        },
+        "executors[].exec": {
+          label: "Executor",
+          description:
+            "A plain executor tag without $. Quick-setup expressions are not supported.",
+        },
+        "executors[].weight": {
+          label: "Weight",
+          description:
+            "A positive integer, default 1. Used only by weighted random.",
+        },
+      },
+      metrics: {
+        labels: {
+          load_balance_selected_total: "Branch selections",
+          load_balance_error_total: "Branch errors",
+        },
+        help: {
+          load_balance_selected_total:
+            "Selections per executor, including subsequently cancelled calls.",
+          load_balance_error_total:
+            "Selected branch calls returning an execution error. Normal returns without a response are not errors.",
+        },
+      },
+    },
     fallback: {
       name: "Fallback",
       description:
@@ -599,7 +683,7 @@ export const enUSPluginDefined = {
         threshold: {
           label: "Takeover threshold (ms)",
           description:
-            "Define the primary path timeout or delay determination threshold.",
+            "Sets the standby delay; 0 allows immediate execution and takeover.",
         },
         always_standby: {
           label: "Alternate path on standby in parallel",
@@ -637,9 +721,19 @@ export const enUSPluginDefined = {
       description:
         "Directly return static A/AAAA according to domain name rules",
       fields: {
+        format: {
+          label: "Rule format",
+          description:
+            "Choose the rule format for entries and files; defaults to oxidns when omitted.",
+          options: {
+            oxidns: "OxiDNS (domain first)",
+            standard: "Standard hosts (IP first)",
+          },
+        },
         entries: {
           label: "Inline hosts rules",
-          description: "Define inline hosts rules.",
+          description:
+            "The format field selects the syntax; standard uses IP hostname [aliases…].",
           example:
             "router.local 192.168.1.1\nfull:gateway.local 192.168.1.2\ndomain:svc.local 10.0.0.10\nkeyword:nas 192.168.1.20\nregexp:^api[0-9]+\\.corp\\.local$ 10.10.0.5",
         },
@@ -649,7 +743,8 @@ export const enUSPluginDefined = {
         },
         files: {
           label: "hosts file",
-          description: "Specify a list of external hosts rule files.",
+          description:
+            "Load external hosts rule files using the selected format.",
           example: "/etc/oxidns/hosts.txt",
         },
         "files[]": {
@@ -814,22 +909,22 @@ export const enUSPluginDefined = {
     },
     ecs_handler: {
       name: "ECS Handler",
-      description:
-        "Handles retention, injection, and fallback cleanup of the EDNS Client Subnet",
+      description: "Controls upstream ECS sources and response ECS retention",
       fields: {
         forward: {
           label: "Keep client ECS",
           description:
-            "Controls whether existing ECSs in client requests are retained.",
+            "Preserve existing ECS; otherwise remove it and select preset or send for IN queries.",
         },
         send: {
-          label: "Send ECS when missing",
+          label: "Generate ECS from client",
           description:
-            "Controls whether ECS is automatically replenished based on the source address when a request is missing ECS.",
+            "Generate ECS for IN queries from the client address when existing ECS is not retained and no preset is set.",
         },
         preset: {
-          label: "Default ECS address",
-          description: "Specify a fixed ECS source address.",
+          label: "Preset ECS address",
+          description:
+            "Use a fixed source when existing ECS is not retained; takes priority over send and does not require it.",
           example: "203.0.113.10",
         },
         mask4: {
@@ -842,7 +937,7 @@ export const enUSPluginDefined = {
         },
       },
       quickSetup: {
-        paramPlaceholder: "203.0.113.10/24",
+        paramPlaceholder: "203.0.113.10",
       },
     },
     forward_edns0opt: {
@@ -1197,12 +1292,13 @@ export const enUSPluginDefined = {
             "Only learned when the response contains answer; only takes effect in the after stage.",
         },
         rule_kind: {
-          label: "Rule type",
+          label: "Learning Strategy",
           description:
-            "Controls the type of rules written to dynamic_domain_set.",
+            "Learn only the request name, the request name and its subdomains, or its registrable domain and subdomains.",
           options: {
-            full: "Full",
-            domain: "Domain",
+            full: "Exact Name",
+            domain: "Name and Subdomains",
+            registrable_domain: "Registrable Domain and Subdomains",
           },
         },
         async: {
@@ -1717,6 +1813,8 @@ export const enUSPluginDefined = {
         gateway4: { label: "IPv4 gateway", example: "192.168.88.2@main" },
         gateway6: { label: "IPv6 gateway", example: "fe80::2%ether1" },
         distance: { label: "Route distance" },
+        scope: { label: "Route scope" },
+        target_scope: { label: "Nexthop target scope" },
         comment_prefix: { label: "Comment prefix" },
         persistent: {
           label: "Persistent routes",
@@ -2469,6 +2567,12 @@ export const enUSPluginDefined = {
       quickSetup: {
         paramPlaceholder: "SERVFAIL,NXDOMAIN or 2,3",
       },
+    },
+    has_cname: {
+      name: "Has CNAME",
+      description:
+        "Match when the response Answer section contains a CNAME record",
+      fields: {},
     },
     has_resp: {
       name: "Has Response",

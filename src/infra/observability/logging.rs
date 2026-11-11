@@ -6,7 +6,8 @@
 use std::path::Path;
 use std::{fmt as std_fmt, fs};
 
-use jiff::Zoned;
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 use tracing::{Event, Subscriber, info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
@@ -21,12 +22,14 @@ use tracing_subscriber::{EnvFilter, Registry};
 use crate::config::types::{LogConfig, LogRotation};
 use crate::infra::clock::AppClock;
 use crate::infra::observability::log_buffer::{LogBuffer, LogLayer, install_global_log_buffer};
+use crate::infra::system::try_system_timezone;
 
 /// Initialize the logging system with console and optional file output.
 ///
 /// The returned guard is present only when file output uses the background
 /// writer and must remain alive until shutdown so pending records are flushed.
 pub(crate) fn start_logging(log: LogConfig) -> Option<WorkerGuard> {
+    let timezone = try_system_timezone().unwrap_or(TimeZone::UTC);
     let (file_writer, guard) = if let Some(ref file_path) = log.file {
         let file_appender = build_file_appender(file_path, &log.rotation)
             .unwrap_or_else(|err| panic!("failed to initialize log file appender: {err}"));
@@ -37,12 +40,16 @@ pub(crate) fn start_logging(log: LogConfig) -> Option<WorkerGuard> {
     };
 
     let console_layer = tracing_fmt::layer()
-        .event_format(OxiDnsLogFormatter)
+        .event_format(OxiDnsLogFormatter {
+            timezone: timezone.clone(),
+        })
         .with_writer(std::io::stdout);
     let file_layer = file_writer.map(|writer| {
         tracing_fmt::layer()
             .with_ansi(false)
-            .event_format(OxiDnsLogFormatter)
+            .event_format(OxiDnsLogFormatter {
+                timezone: timezone.clone(),
+            })
             .with_writer(writer)
     });
 
@@ -53,7 +60,7 @@ pub(crate) fn start_logging(log: LogConfig) -> Option<WorkerGuard> {
 
     let log_buffer = LogBuffer::new();
     install_global_log_buffer(log_buffer.clone());
-    let log_layer = LogLayer::new(log_buffer);
+    let log_layer = LogLayer::new(log_buffer, timezone);
 
     let subscriber = Registry::default()
         .with(filter)
@@ -136,7 +143,9 @@ fn build_official_appender(
 }
 
 /// Custom log formatter for OxiDNS.
-pub struct OxiDnsLogFormatter;
+pub struct OxiDnsLogFormatter {
+    timezone: TimeZone,
+}
 
 impl<S, N> FormatEvent<S, N> for OxiDnsLogFormatter
 where
@@ -153,7 +162,7 @@ where
         let elapsed_ms = AppClock::elapsed_millis();
         let elapsed_secs = elapsed_ms / 1000;
         let elapsed_sub_ms = elapsed_ms % 1000;
-        let zoned = Zoned::now();
+        let zoned = Timestamp::now().to_zoned(self.timezone.clone());
         write!(
             &mut writer,
             "{} T+{}.{:03} {} {}",
@@ -186,5 +195,70 @@ where
         write!(writer, ":")?;
         ctx.field_format().format_fields(writer.by_ref(), event)?;
         writeln!(writer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct TestWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for TestWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn console_file_and_buffer_logs_use_the_resolved_timezone() {
+        AppClock::start();
+        let timezone = TimeZone::posix("CST-8").unwrap();
+        let console = TestWriter::default();
+        let file = TestWriter::default();
+        let console_writer = console.clone();
+        let file_writer = file.clone();
+        let buffer = LogBuffer::new();
+        let subscriber = Registry::default()
+            .with(LogLayer::new(buffer.clone(), timezone.clone()))
+            .with(
+                tracing_fmt::layer()
+                    .with_ansi(false)
+                    .event_format(OxiDnsLogFormatter {
+                        timezone: timezone.clone(),
+                    })
+                    .with_writer(move || console_writer.clone()),
+            )
+            .with(
+                tracing_fmt::layer()
+                    .with_ansi(false)
+                    .event_format(OxiDnsLogFormatter { timezone })
+                    .with_writer(move || file_writer.clone()),
+            );
+
+        tracing::subscriber::with_default(subscriber, || info!("timezone regression test"));
+
+        let entries = buffer.recent_filtered(1, None);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].timestamp.ends_with("+08:00"));
+        let buffered_timestamp: Timestamp = entries[0].timestamp.parse().unwrap();
+        for output in [console, file] {
+            let bytes = output.0.lock().unwrap();
+            let text = std::str::from_utf8(&bytes).unwrap();
+            let timestamp = text.split_whitespace().next().unwrap();
+            assert!(timestamp.ends_with("+08:00"), "{text}");
+            let timestamp: Timestamp = timestamp.parse().unwrap();
+            assert!((timestamp.as_second() - buffered_timestamp.as_second()).abs() <= 1);
+            assert!(text.contains("timezone regression test"));
+        }
     }
 }

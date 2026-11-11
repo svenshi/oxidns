@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: 2026 Sven Shi
+-- SPDX-License-Identifier: GPL-3.0-or-later
+
 CREATE TABLE IF NOT EXISTS records (
             id INTEGER PRIMARY KEY,
             created_at_ms INTEGER NOT NULL,

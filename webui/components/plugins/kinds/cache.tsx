@@ -1,6 +1,11 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useReducer } from "react";
 import {
   DatabaseZap,
   Download,
@@ -14,6 +19,13 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  CacheEntriesRequests,
+  cacheSelectionReducer,
+  mergeCacheEntries,
+} from "@/lib/cache-entries";
+import { Checkbox } from "@/components/ui/checkbox";
+import { useToast } from "@/components/ui/toast";
 import { Input } from "@/components/ui/input";
 import {
   Popover,
@@ -42,6 +54,7 @@ import {
 } from "@/components/ui/table";
 import {
   deleteCacheEntry,
+  deleteCacheEntries,
   fetchCacheDump,
   fetchCacheEntries,
   flushCache,
@@ -123,7 +136,7 @@ function CacheEntriesPanel({ tag }: { tag: string }) {
   if (appliedStatus === "not-applied") {
     return <PluginNotAppliedPlaceholder />;
   }
-  return <CacheEntriesPanelInner tag={tag} />;
+  return <CacheEntriesPanelInner key={tag} tag={tag} />;
 }
 
 function CacheEntriesPanelInner({ tag }: { tag: string }) {
@@ -132,13 +145,31 @@ function CacheEntriesPanelInner({ tag }: { tag: string }) {
   const [nextCursor, setNextCursor] = useState<string | undefined>();
   const [total, setTotal] = useState(0);
   const [selected, setSelected] = useState<CacheEntryRow | null>(null);
+  const { toast } = useToast();
+  const [ipInput, setIpInput] = useState("");
+  const [appliedIp, setAppliedIp] = useState("");
+  const [selection, dispatchSelection] = useReducer(cacheSelectionReducer, {
+    ids: new Set<string>(),
+    allMatching: false,
+  });
+  const { ids: checkedIds, allMatching } = selection;
+  const [deleting, setDeleting] = useState(false);
+  const [deleteResult, setDeleteResult] = useState<number | null>(null);
+  const requestRef = useRef(new CacheEntriesRequests());
+  const clearSelection = () => {
+    dispatchSelection({ type: "clear" });
+  };
   const [qnameInput, setQnameInput] = useState("");
   const [appliedQname, setAppliedQname] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(
-    async (cursor?: string, qname = "") => {
+    async (cursor?: string, qname = "", answerIp = "") => {
+      const controller = requestRef.current.start();
+      if (!cursor) {
+        dispatchSelection({ type: "clear" });
+      }
       setLoading(true);
       setError(null);
       try {
@@ -146,34 +177,45 @@ function CacheEntriesPanelInner({ tag }: { tag: string }) {
           limit: 100,
           cursor,
           qname: qname || undefined,
+          answer_ip: answerIp || undefined,
+          signal: controller.signal,
         });
+        if (controller.signal.aborted) return;
+        setAppliedQname(qname);
+        setAppliedIp(answerIp);
         setEntries((current) =>
-          cursor ? [...current, ...response.entries] : response.entries,
+          cursor
+            ? mergeCacheEntries(current, response.entries)
+            : response.entries,
         );
         setNextCursor(response.next_cursor);
         setTotal(response.total_entries);
       } catch (err) {
+        if (controller.signal.aborted) return;
         setError(
           err instanceof Error ? err.message : t(WEBUI.cache.readEntriesFailed),
         );
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     },
     [tag, t],
   );
 
   useEffect(() => {
+    const requests = requestRef.current;
     const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      requests.cancel();
+    };
   }, [load]);
 
   const handleDelete = async (entry: CacheEntryRow) => {
     setError(null);
     try {
       await deleteCacheEntry(tag, entry.id);
-      setEntries((current) => current.filter((item) => item.id !== entry.id));
-      setTotal((current) => Math.max(0, current - 1));
+      await load(undefined, appliedQname, appliedIp);
       if (selected?.id === entry.id) {
         setSelected(null);
       }
@@ -190,6 +232,7 @@ function CacheEntriesPanelInner({ tag }: { tag: string }) {
       await flushCache(tag);
       setEntries([]);
       setTotal(0);
+      clearSelection();
       setNextCursor(undefined);
       setSelected(null);
     } catch (err) {
@@ -199,15 +242,45 @@ function CacheEntriesPanelInner({ tag }: { tag: string }) {
 
   const applyQnameFilter = () => {
     const nextQname = qnameInput.trim();
-    setAppliedQname(nextQname);
-    void load(undefined, nextQname);
+    void load(undefined, nextQname, ipInput.trim());
   };
 
   const clearQnameFilter = () => {
     setQnameInput("");
-    setAppliedQname("");
-    void load(undefined, "");
+    setIpInput("");
+    void load(undefined, "", "");
   };
+
+  const handleBulkDelete = async () => {
+    if (deleting) return;
+    setDeleting(true);
+    setDeleteResult(null);
+    try {
+      const result = await deleteCacheEntries(
+        tag,
+        allMatching
+          ? {
+              filter: {
+                qname: appliedQname || undefined,
+                answer_ip: appliedIp || undefined,
+              },
+            }
+          : { ids: [...checkedIds] },
+      );
+      setDeleteResult(result.deleted_entries);
+      setSelected(null);
+      await load(undefined, appliedQname, appliedIp);
+    } catch (err) {
+      toast({
+        variant: "error",
+        title:
+          err instanceof Error ? err.message : t(WEBUI.cache.deleteEntryFailed),
+      });
+    } finally {
+      setDeleting(false);
+    }
+  };
+  const selectionCount = allMatching ? total : checkedIds.size;
 
   return (
     <div className="space-y-4">
@@ -219,7 +292,7 @@ function CacheEntriesPanelInner({ tag }: { tag: string }) {
             </CardTitle>
             <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
               <span className="rounded-full border bg-muted/30 px-2 py-0.5">
-                {appliedQname
+                {appliedQname || appliedIp
                   ? t(WEBUI.cache.matchCount, { total })
                   : t(WEBUI.cache.totalCount, { total })}
               </span>
@@ -240,15 +313,19 @@ function CacheEntriesPanelInner({ tag }: { tag: string }) {
             <Button
               variant="outline"
               size="sm"
-              disabled={loading}
-              onClick={() => load(undefined, appliedQname)}
+              disabled={loading || deleting}
+              onClick={() => load(undefined, appliedQname, appliedIp)}
             >
               <RefreshCw className="h-4 w-4" />
               {t(WEBUI.common.refresh)}
             </Button>
             <AlertDialog>
               <AlertDialogTrigger asChild>
-                <Button variant="outline" size="sm" disabled={loading}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={loading || deleting}
+                >
                   <Trash2 className="h-4 w-4" />
                   {t(WEBUI.common.clear)}
                 </Button>
@@ -281,6 +358,11 @@ function CacheEntriesPanelInner({ tag }: { tag: string }) {
           </div>
         </CardHeader>
         <CardContent className="p-4 pt-0">
+          {deleteResult !== null && (
+            <p role="status" className="mb-3 text-sm">
+              {t(WEBUI.cache.deletedResult, { count: deleteResult })}
+            </p>
+          )}
           {error && (
             <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {error}
@@ -296,10 +378,21 @@ function CacheEntriesPanelInner({ tag }: { tag: string }) {
             <label className="grid min-w-0 flex-1 gap-1 text-xs text-muted-foreground">
               {t(WEBUI.cache.qnameFilterLabel)}
               <Input
+                disabled={deleting}
                 value={qnameInput}
                 onChange={(event) => setQnameInput(event.target.value)}
                 placeholder="example.com"
                 className="h-8 font-mono text-sm"
+              />
+            </label>
+            <label className="grid min-w-0 flex-1 gap-1 text-xs text-muted-foreground">
+              {t(WEBUI.cache.answerIpLabel)}
+              <Input
+                value={ipInput}
+                onChange={(event) => setIpInput(event.target.value)}
+                placeholder="192.0.2.1 / 2001:db8::1"
+                className="h-8 font-mono text-sm"
+                disabled={deleting}
               />
             </label>
             <div className="flex gap-2">
@@ -307,17 +400,17 @@ function CacheEntriesPanelInner({ tag }: { tag: string }) {
                 type="submit"
                 variant="outline"
                 size="sm"
-                disabled={loading}
+                disabled={loading || deleting}
               >
                 <Search className="h-4 w-4" />
                 {t(WEBUI.cache.filterButton)}
               </Button>
-              {appliedQname && (
+              {(appliedQname || appliedIp) && (
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
-                  disabled={loading}
+                  disabled={loading || deleting}
                   onClick={clearQnameFilter}
                 >
                   <X className="h-4 w-4" />
@@ -326,10 +419,106 @@ function CacheEntriesPanelInner({ tag }: { tag: string }) {
               )}
             </div>
           </form>
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground">
+              {t(
+                allMatching
+                  ? WEBUI.cache.allMatchingCount
+                  : WEBUI.cache.selectedCount,
+                { count: selectionCount },
+              )}
+            </span>
+            {(appliedQname || appliedIp) && !allMatching && total > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={loading || deleting}
+                onClick={() => dispatchSelection({ type: "allMatching" })}
+              >
+                {t(WEBUI.cache.selectAllMatching)}
+              </Button>
+            )}
+            {selectionCount > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={deleting}
+                onClick={clearSelection}
+              >
+                {t(WEBUI.cache.clearSelection)}
+              </Button>
+            )}
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={!selectionCount || loading || deleting}
+                >
+                  {t(WEBUI.cache.deleteSelected)}
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>
+                    {t(WEBUI.cache.deleteSelected)}
+                  </AlertDialogTitle>
+                  <AlertDialogDescription>
+                    {t(
+                      allMatching
+                        ? WEBUI.cache.deleteMatchingDesc
+                        : WEBUI.cache.deleteSelectedDesc,
+                      {
+                        tag,
+                        count: selectionCount,
+                        qname: appliedQname || "*",
+                        ip: appliedIp || "*",
+                      },
+                    )}
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>
+                    {t(WEBUI.common.cancel)}
+                  </AlertDialogCancel>
+                  <AlertDialogAction
+                    variant="destructive"
+                    onClick={() => void handleBulkDelete()}
+                  >
+                    {t(WEBUI.common.delete)}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
           <div className="overflow-hidden rounded-md border">
             <Table className="min-w-[820px]">
               <TableHeader>
                 <TableRow className="bg-muted/30 hover:bg-muted/30">
+                  <TableHead className="w-10">
+                    <Checkbox
+                      aria-label={t(WEBUI.cache.selectLoaded)}
+                      disabled={
+                        loading || deleting || allMatching || !entries.length
+                      }
+                      checked={
+                        allMatching ||
+                        (entries.length > 0 &&
+                          entries.every((entry) => checkedIds.has(entry.id)))
+                          ? true
+                          : checkedIds.size
+                            ? "indeterminate"
+                            : false
+                      }
+                      onCheckedChange={(checked) =>
+                        dispatchSelection({
+                          type: "loaded",
+                          ids: entries.map((entry) => entry.id),
+                          checked: checked === true,
+                        })
+                      }
+                    />
+                  </TableHead>
                   <TableHead>{t(WEBUI.cache.cacheKey)}</TableHead>
                   <TableHead>{t(WEBUI.cache.statusHeader)}</TableHead>
                   <TableHead>
@@ -388,6 +577,26 @@ function CacheEntriesPanelInner({ tag }: { tag: string }) {
                     className="cursor-pointer"
                     onClick={() => setSelected(entry)}
                   >
+                    <TableCell
+                      onClick={(event) => event.stopPropagation()}
+                      onPointerDown={(event) => event.stopPropagation()}
+                    >
+                      <Checkbox
+                        aria-label={t(WEBUI.cache.selectEntry, {
+                          domain: entry.domain,
+                          recordType: entry.record_type,
+                        })}
+                        checked={allMatching || checkedIds.has(entry.id)}
+                        disabled={loading || deleting || allMatching}
+                        onCheckedChange={(checked) =>
+                          dispatchSelection({
+                            type: "toggle",
+                            id: entry.id,
+                            checked: checked === true,
+                          })
+                        }
+                      />
+                    </TableCell>
                     <TableCell className="max-w-[24rem]">
                       <div className="flex min-w-0 items-center gap-2">
                         <span
@@ -459,6 +668,7 @@ function CacheEntriesPanelInner({ tag }: { tag: string }) {
                             variant="ghost"
                             size="icon-sm"
                             onClick={(event) => event.stopPropagation()}
+                            disabled={loading || deleting}
                             aria-label={t(WEBUI.cache.deleteEntryAria)}
                           >
                             <Trash2 className="h-4 w-4" />
@@ -501,7 +711,7 @@ function CacheEntriesPanelInner({ tag }: { tag: string }) {
                 {!entries.length && (
                   <TableRow>
                     <TableCell
-                      colSpan={7}
+                      colSpan={8}
                       className="h-24 text-center text-muted-foreground"
                     >
                       {loading
@@ -518,8 +728,8 @@ function CacheEntriesPanelInner({ tag }: { tag: string }) {
               variant="outline"
               size="sm"
               className="mt-3"
-              disabled={loading}
-              onClick={() => load(nextCursor, appliedQname)}
+              disabled={loading || deleting}
+              onClick={() => load(nextCursor, appliedQname, appliedIp)}
             >
               {t(WEBUI.common.loadMore)}
             </Button>

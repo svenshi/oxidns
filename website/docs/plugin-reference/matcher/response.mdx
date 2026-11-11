@@ -1,0 +1,253 @@
+---
+title: 响应匹配器
+---
+
+import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
+
+这些 matcher 检查响应地址、CNAME、RCODE，以及是否已有期望类型的 answer。
+
+## `resp_ip`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+匹配响应 answers 中的 A/AAAA IP。
+
+### 配置示例
+
+```yaml
+- tag: matched_resp_ip
+  type: resp_ip
+  args:
+    - "100.64.0.0/10"
+    - "$special_targets"
+```
+
+### 配置项
+
+`resp_ip` 的 `args` 采用规则列表形式。
+
+- 类型：`array`；必填：是；默认值：无
+- 作用：定义应答地址匹配条件。
+- 支持元素：
+  - 单个 IP
+  - CIDR
+  - `ip_set` 引用
+- 运行影响：
+  - 只检查 response answer 区中的 A/AAAA 地址。
+  - 任一答案地址命中即返回 `true`。
+
+### quick setup
+
+```yaml
+- matches: "resp_ip 10.0.0.0/8"
+```
+
+### 典型用途
+
+- 根据上游返回地址继续做二次处置。
+- 配合 `ipset` / `nftset` 前做更细粒度筛选。
+
+---
+
+## `cname`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+匹配响应中的 CNAME 目标域名。
+
+### 配置示例
+
+```yaml
+- tag: cname_target
+  type: cname
+  args:
+    - "full:alias.example.com"
+    - "domain:example.com"
+    - "keyword:cdn"
+    - "regexp:^edge[0-9]+\\.example\\.net$"
+    - "$core_domains"
+    - "&/etc/oxidns/cnames.txt"
+```
+
+### 配置项
+
+`cname` 的 `args` 采用规则列表形式。
+
+- 类型：`array`；必填：是；默认值：无
+- 作用：定义 CNAME 目标名称匹配条件。
+- 支持元素：
+  - 域名表达式（支持 `full:`、`domain:`、`keyword:`、`regexp:`，无前缀时按 `domain:` 处理）
+  - 具备域名匹配能力的 provider 引用，例如 `domain_set`、`geosite`
+  - 文件引用
+- 运行影响：
+  - 只检查响应中的 CNAME 目标。
+  - 任一 CNAME 目标命中时返回 `true`。
+
+### quick setup
+
+```yaml
+- matches: "cname keyword:cdn"
+```
+
+### 典型用途
+
+- 根据 CNAME 指向做后续策略。
+
+---
+
+## `rcode`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+匹配当前响应的 rcode。
+
+### 配置示例
+
+以下示例混用文本与数字，两种格式等价且可以同时使用。
+
+```yaml
+- tag: failure_rcodes
+  type: rcode
+  args:
+    - "SERVFAIL"
+    - "3"
+```
+
+### 配置项
+
+`rcode` 的 `args` 为 rcode 列表。
+
+- 类型：`array`；必填：是；默认值：无
+- 作用：定义可命中的响应码集合。
+- 同时支持枚举文本和十进制数值，大小写不敏感；同一个列表中可以混用两种格式。
+- 常见映射与含义见 [DNS 编码速查表](../../dns-codes.md#rcode-响应码)。
+- 未知或未来扩展响应码可继续使用数值形式匹配。
+- 运行影响：
+  - 仅当上下文中已有响应且 rcode 命中配置集合时返回 `true`。
+
+### quick setup
+
+```yaml
+- matches: "rcode SERVFAIL,3"
+```
+
+### 典型用途
+
+- 根据失败类型做二次处置。
+
+---
+
+## `has_cname`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+判断当前响应的 Answer 区是否包含 CNAME 记录，不限制请求 qtype 或响应 RCODE。
+
+- 只要 Answer 中存在一条 CNAME 就返回 `true`，也支持 CNAME 链及 CNAME 与 A/AAAA 混合应答。
+- 无响应、空 Answer 或仅 Authority/Additional 含 CNAME 时返回 `false`。
+- 只检查当前响应，不修改记录，不发起额外查询，也不依赖其它插件。
+- 如需匹配 CNAME 目标域名，请使用 [`cname`](#cname)。
+
+### 配置示例
+
+```yaml
+- tag: response_has_cname
+  type: has_cname
+```
+
+在 `sequence` 中通过 `matches: "$response_has_cname"` 引用，也可以使用 `matches: "!$response_has_cname"` 取反。
+
+### 配置项
+
+无独立配置字段，无需 `args`；初始化和销毁不分配额外运行时资源。
+
+### quick setup
+
+不接受参数。建议在上游解析或本地应答之后判断：
+
+```yaml
+- exec: "$forward_main"
+- matches: "has_cname"
+  exec: "mark 100"
+- matches: "!has_cname"
+  exec: "mark 200"
+```
+
+`!has_cname` 在无响应时也会命中；若只处理已有响应且不含 CNAME 的情况，可组合 `has_resp` 和 `!has_cname`。
+
+### 典型用途
+
+- 按响应是否含 CNAME 分支执行后续策略，无需预先配置目标域名规则。
+
+---
+
+## `has_resp`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+只要上下文中已有响应就命中。
+
+### 配置示例
+
+```yaml
+- tag: has_resp_flag
+  type: has_resp
+```
+
+### 配置项
+
+无独立配置字段。
+
+### quick setup
+
+```yaml
+- matches: "has_resp"
+```
+
+### 典型用途
+
+- 在 `cache`、`hosts`、`arbitrary` 后面判断是否已有结果。
+
+---
+
+## `has_wanted_ans`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+判断响应 answers 中是否包含与请求 qtype 对应的记录。
+
+### 配置示例
+
+```yaml
+- tag: has_wanted_answer
+  type: has_wanted_ans
+```
+
+### 配置项
+
+无独立配置字段。
+
+### quick setup
+
+```yaml
+- matches: "has_wanted_ans"
+```
+
+### 典型用途
+
+- 判断是否真正拿到了所需类型答案，而不仅仅是有个响应包。
+
+---

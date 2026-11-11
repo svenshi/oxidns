@@ -1,30 +1,100 @@
+# OxiDNS v1.7.0 (Fork with Liquid Glass UI & Minute Stats Engine)
+
+## 🚀 发布概览
+
+本版本基于官方 **OxiDNS v1.7.0** 上游最新源码同步合并，同时保留并升级了定制功能：
+- **微秒级后台分钟归总引擎**（7×24h 毫秒级秒开 24h & 1h 完整走势，彻底解决 1w 封顶断层问题）；
+- **全屏流体玻璃定制登录界面**（带亮暗模式自适应、密码眼睛显隐切换，彻底消除浏览器原生 Basic Auth 弹窗）；
+- **Liquid Glass 现代美学监控大屏**（流光环形进度条、智能万位换算、平滑响应式卡片）。
+
+---
+
+# OxiDNS v1.7.0
+
+## 🚀 发布概览
+
+- v1.7.0 是功能版本，扩展策略编排、EDNS 过滤、域名学习、缓存管理和查询分析，并修复 ECS 来源选择、持久化回滚、DNS 协议处理与 RouterOS 联动。
+
+## ✨ 主要亮点
+
+- 新增 `load_balance` 执行器，支持轮询、随机和加权随机；新增 `has_cname` matcher，两者均可用于 minimal bundle。
+- 新增 minimal 可用的 `edns_filter` 执行器，支持 `preserve`、`strip`、`strip_unknown` 策略及 option code 白名单/黑名单；默认在后续执行链退出或取消时恢复整个请求。补齐 EDNS 注册代码识别，未实现 payload 解析的选项仍保留原始数据，查询记录同步显示名称。
+- 修复 `ecs_handler` 删除客户端 ECS 后未继续应用 `preset`/`send` 的问题；非 IN 查询也遵循删除策略，但不生成 ECS。
+- `hosts.format: standard` 支持标准 hosts 文件与地址合并；`learn_domain.rule_kind: registrable_domain` 使用内置公共后缀表学习可注册域及其子域。
+- WebUI 查询分析增加统一时间条、自适应趋势桶、统计截断提示和记录下钻，支持精确域名、客户端 IP 与特殊响应分类筛选；补充 EDNS 过滤配置入口并修复 YAML 嵌套字段补全。
+- 缓存支持按 answer IP 过滤和批量删除；启动时等待恢复，失败的启动/reload 不再覆盖历史 dump，读取失败时保护原文件。
+- RouterOS 路由增加可选 `scope`、`target_scope`，修复地址列表重复插入恢复、地址表示及清理。
+- 修正 NOTIMP/BADVERS 响应、超大 TCP 帧、TCP keepalive 和 DoQ/DoH3 停机任务等待；支持 OpenWrt `/etc/TZ`，同步 zoneparser 修复。
+- 管理 API 限制请求体大小、改进 Basic Auth 凭据比较；配置原子保存保留 Unix 权限、属主、属组及符号链接。
+- Docker 新增 ARMv7 镜像；文档源码迁至 `website/`，补充社区 WebUI 推荐。`oxidns-proto` 与 `oxidns-macros` 改为 MIT/Apache-2.0 双许可证，主项目许可证不变。
+
+## ⚠️ 升级说明
+
+- **统计 API 调用变更**：`query_recorder` 的 `/stats/*` 必须提供 `since_ms`、`until_ms`，开始时间早于结束时间，跨度最多 24 小时；旧的不带时间调用会返回 HTTP 400。统计最多使用区间内最近 10,000 条记录；列表、详情与 SSE 接口保持原有时间参数语义。
+- **回退行为变更**：显式 `fallback.threshold: 0` 现在立即启动备用分支；如需保留旧延迟，改为 `500`。省略字段仍默认 500 毫秒。
+- **ECS 行为修复**：IN 查询依次采用保留的客户端 ECS、`preset`、`send` 对应的客户端地址；`forward: false` 删除原 ECS 后仍可补发。非法 quick-setup IP 现在会导致配置加载失败；旧 `IP/mask` 写法仍忽略 mask，使用 IPv4 `/24`、IPv6 `/48`，自定义前缀请用完整配置。
+- 除上述行为修复和校验收紧外，现有 v1.6.1 YAML 配置可继续使用，新增字段均为可选。`edns_filter` 需要显式加入执行链，默认 `policy: preserve`、`restore_request: true`，白名单和黑名单默认留空。管理 API 请求体上限为 4 MiB，大型配置提交或缓存导入需核对大小；建议同步更新随包 WebUI。
+- 从 v1.6.1 升级无需迁移查询历史或重新安装 Windows 服务；更早版本仍须遵循 v1.6.0 的迁移说明。升级前备份配置和持久化数据，并运行 `oxidns check -c <配置文件>`。
+- 根 crate 为 `1.7.0`，tag 为 `v1.7.0`；辅助 crate 为 `oxidns-proto 0.1.7`、`oxidns-macros 0.1.1`、`oxidns-zoneparser 0.1.3`，`oxidns-ripset` 保持 `0.1.3`。
+
+## 📦 下载与校验
+
+- 根据平台和 bundle 选择对应 archive，并使用 GitHub Release asset 的 SHA256 digest 校验下载文件。
+
+## ✅ 验证
+
+- `just check`
+- `just check-matrix`
+- EDNS 补充验证：`cargo test --locked -p oxidns-proto`、`cargo test --locked --no-default-features --features minimal edns_filter`。
+- WebUI：`pnpm typecheck`、`pnpm lint`、`pnpm test`、`pnpm build`
+- 双语文档：`npm run build`
+- Telegram 发布消息：`python3 -m unittest discover -s .github/scripts -p '*_test.py'`，渲染后无需截断。
+- full/minimal：`oxidns --version`、`oxidns build-info` 与对应的 `oxidns check -c config.yaml` / `oxidns check -c config.minimal.yaml`。
+- crates.io workspace dry-run：`cargo publish --locked --dry-run --allow-dirty --workspace`；实际发布由 Action 先发布辅助 crate，再验证和发布根包。
+
+---
+
 # OxiDNS v1.6.18
 
 ## 🚀 发布概览
 
-OxiDNS v1.6.18 带来核心级的 **7×24h 后台分钟聚合引擎** 与 **DNS 流量监控大屏毫秒级秒开优化**。彻底解决了此前由于浏览器关闭导致的走势图断流空白与单点巨刺问题，以及底层 SQLite 扫描 10,000 条硬上限导致的走势截断问题。
-
----
+OxiDNS v1.6.18 后端（Rust 核心服务） 落地一套微秒级的后台分钟归总引擎；前端换用流体玻璃定制登录界面。
 
 ## ✨ 实际更新内容 (Changelog)
 
-### ⚙️ 后端核心架构升级：7×24h 分钟级预汇总引擎 (query_recorder)
-- **常驻静默归总，零开销预计算**：
-  - 在 `query_recorder` 中新增专属轻量聚合表 `minute_stats`，DNS 请求在后台被处理落盘的同时自动按分钟聚合 `(时间戳, 请求量, 阻断数, 延迟和, 采样量)`。
-  - 无论前端浏览器是否处于打开状态，后端服务都在 7×24 小时默默维护连续的分钟流水。
-- **24h 走势图彻底告别卡顿与 10,000 条断崖**：
-  - 24 小时仅有 1,440 条精简预汇总数据，`/stats/timeseries` 耗时从过去的数秒级直降至 **<0.2 毫秒**。
-  - 彻底破解了过去扫描明细时触发的 10,000 条采样截断限制，最近 1h 与 24h 走势图均可完美、真实、连续地展现完整历史波形。
-- **历史数据无缝平滑回填**：
-  - 首次升级启动时，自动从现有 `records` 表中提取过去 8 天的数据平滑填充到 `minute_stats`，老节点升级后无需等待即可立即展示连续波形。
-- **生命周期自动化联动管理**：
-  - 自动清理与手动清空功能已与 `minute_stats` 深度绑定，历史过期数据自动修剪，磁盘占用可忽略不计（全天不到 100KB）。
+### 后台常驻静默记录（零开销）：
 
-### 🎨 前端 WebUI 体验升级
-- **秒级秒开（<10ms）极速呈现**：
-  - 趋势图直接对接后端预汇总接口，切换【最近 1h】与【最近 24h】均为 0ms 瞬间渲染，彻底移除浏览器端脆弱的本地推算逻辑。
-- **数据导出功能保留**：
-  - 控制台右上角支持一键导出当前走势与指标数据为 JSON 文件，便于随时本地存档与复核。
+- **OxiDNS 7×24 小时在后台处理 DNS 请求时，每分钟自动归卷一条统计记录： [时间戳, 本分钟请求总数, 拦截数, 平均延迟]。
+写入一个微型的 minute_stats 表。
+
+- **1 小时走势图也直接读取后台这 60 条连续分钟数据，无论当前 QPS 是几百还是几千，走势图都不会再因为 10,000 条上限而前半小时显示为 0。
+
+- **历史数据自动平滑继承：在启动升级时，后台自动把数据库里已有的历史记录按分钟一次性回填好，升级后立即就能看到平滑的过去 24 小时曲线。
+
+
+### 🎨 界面与体验改造要点
+
+- **彻底消除浏览器原生弹窗：
+
+后端拦截优化（src/api/server.rs）：当检测到请求来自 WebUI / Fetch（携带 X-Requested-With、Sec-Fetch-Mode 或 application/json）且未鉴权时，返回 401 Unauthorized 时抑制 WWW-Authenticate: Basic ... 响应头。浏览器不再强行弹出系统的 Basic Auth 弹窗，而是交由前端接管。
+前端双重保障（webui/lib/auth-store.ts & webui/lib/oxidns-api.ts）：请求探测时配置 credentials: "omit" 并携带 X-No-Browser-Auth 标头，杜绝任何浏览器拦截。
+
+- **流体玻璃定制登录界面（webui/components/auth/login-view.tsx）：
+
+  - 卡片头部排版：严格还原参考图布局，左侧为圆角微光 OxiDNS 图标徽章（亮色/暗色自适应），右侧为大标题“登录”与副标题“登录 OxiDNS 仪表盘”。
+  - 表单输入框：
+  - 用户名：圆角玻璃输入框，高对比度文字与占位提示。
+  - 密码与眼睛切换图标：右侧内置眼睛切换按钮（[Eye / EyeOff]），点击即可快速在密码掩码与明文之间无缝切换。
+  - 登录操作按钮：全宽翡翠绿微光渐变按钮（bg-emerald-500 + 光晕动效），点击时展示旋转加载动画与“登录中…”。
+  - 记住登录状态与高级设置：
+  - 勾选“记住登录状态”后凭据持久化，下次打开自动秒连；
+  - 提供“高级设置”可折叠面板，支持自定义后端 API 地址（默认 /api）；
+  - 提供底部“离线编辑配置”快速通道。
+  - 右上角浮动工具条：支持在登录页自由切换流体动态壁纸、明暗主题（浅色/暗色/跟随系统）与中英文界面语言。
+
+- **路由鉴权守卫（webui/app/(console)/layout.tsx）：
+
+  - 当后端开启认证且未登录时，全屏展示专注的居中登录视图，不再展示侧边栏等未授权骨架，登录成功后平滑进入管理控制台。
 
 
 

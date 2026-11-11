@@ -1,0 +1,267 @@
+---
+title: Request Matchers
+---
+
+import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
+
+These matchers inspect query names, questions, types, classes, client addresses, or addresses encoded in PTR queries.
+
+## `qname`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Matches the query name in the request.
+
+### Example Configuration
+
+```yaml
+- tag: match_domain
+  type: qname
+  args:
+    # Exact match
+    - "full:login.example.com"
+    # Suffix match
+    - "domain:example.com"
+    # Keyword match
+    - "keyword:cdn"
+    # Regex match
+    - "regexp:^api[0-9]+\\.example\\.net$"
+    # Reuse an existing domain-capable provider
+    - "$core_domains"
+    # Load rules from file
+    - "&/etc/oxidns/domains.txt"
+```
+
+### Configuration Details
+
+`args` is a rule list.
+
+- Type: `array`; Required: yes; Default: none
+- Supported items:
+  - domain expressions, supporting `full:`, `domain:`, `keyword:`, `regexp:`,
+    and bare domains without a prefix as `domain:` rules
+  - provider references with domain match capability, such as `domain_set` or `geosite`
+  - file references
+- Runtime impact:
+  - Returns `true` when any question name matches any configured rule.
+
+### quick setup
+
+```yaml
+- matches: "qname domain:example.com"
+```
+
+### Typical Uses
+
+- Route by suffix, keyword, or regex.
+
+---
+
+## `question`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Matches request questions using provider implementations of `contains_question`.
+
+The matcher scans every question in the current request. It returns `true` as
+soon as any question is matched by any referenced provider.
+
+### Example Configuration
+
+```yaml
+- tag: match_ad
+  type: question
+  args:
+    - "$ad_rules"
+    - "$shared_domains"
+```
+
+### Configuration Details
+
+- `args`
+  - Type: `array[string]`; Required: yes; Default: none
+  - Purpose: References providers that implement `contains_question` using `"$provider_tag"` entries.
+
+### quick setup
+
+```yaml
+- matches: "question $ad_rules"
+```
+
+### Behavior
+
+- Scans all questions in the request.
+- Returns `true` when any question is matched by any referenced provider.
+- quick setup supports the same `"$provider_tag"` entries.
+
+### Typical Uses
+
+- Let providers such as `adguard_rule`, `domain_set`, or `geosite` participate directly in
+  question-level matching.
+- Branch in `sequence`, then hand off to `black_hole`, `reject`, or another
+  executor.
+
+---
+
+## `qtype`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Matches request qtypes.
+
+### Example Configuration
+
+This example mixes text and numeric forms. Both formats are equivalent and can be used together.
+
+```yaml
+- tag: only_a_aaaa
+  type: qtype
+  args:
+    - "A"
+    - "28"
+```
+
+### Configuration Details
+
+- Type: `array`; Required: yes; Default: none
+- Supports both enum text and decimal numeric codes; text matching is case-insensitive, and both formats can be mixed in the same list.
+- Common mappings and meanings are listed in the [DNS Code Reference](../../dns-codes.md#qtype-query-types).
+- Unknown or future qtypes can still be matched with numeric codes.
+- Runtime impact:
+  - Returns `true` if any question type matches the configured set.
+
+### quick setup
+
+```yaml
+- matches: "qtype A,28"
+```
+
+### Typical Uses
+
+- Split A, AAAA, PTR, TXT, and other query classes of traffic.
+
+---
+
+## `qclass`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Matches request qclasses.
+
+### Example Configuration
+
+This example mixes text and numeric forms. Both formats are equivalent and can be used together.
+
+```yaml
+- tag: in_or_ch
+  type: qclass
+  args:
+    - "IN"
+    - "3"
+```
+
+### Configuration Details
+
+- Type: `array`; Required: yes; Default: none
+- Supports both enum text and decimal numeric codes; text matching is case-insensitive, and both formats can be mixed in the same list.
+- Common mappings and meanings are listed in the [DNS Code Reference](../../dns-codes.md#qclass-query-classes).
+- Unknown or future qclasses can still be matched with numeric codes.
+- Runtime impact:
+  - Returns `true` if any question class matches the configured set.
+
+### quick setup
+
+```yaml
+- matches: "qclass IN,3"
+```
+
+### Typical Uses
+
+- Restrict handling to `IN` queries.
+
+---
+
+## `client_ip`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Matches the client source IP.
+
+### Example Configuration
+
+```yaml
+- tag: lan_clients
+  type: client_ip
+  args:
+    # Inline CIDR
+    - "192.168.0.0/16"
+    # Reference an IP-capable provider
+    - "$lan_ip_set"
+```
+
+### Configuration Details
+
+- Type: `array`; Required: yes; Default: none
+- Supported items:
+  - single IPs
+  - CIDRs
+  - provider references with IP match capability, such as `ip_set` or `geoip`
+- Runtime impact:
+  - Returns `true` when the client source address matches any rule.
+
+### quick setup
+
+```yaml
+- matches: "client_ip 192.168.1.0/24"
+```
+
+### Typical Uses
+
+- Split policies by source subnet.
+
+---
+
+## `ptr_ip`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Matches the IP encoded in a PTR query name.
+
+### Example Configuration
+
+Similar to `client_ip` and `resp_ip`, it supports IP rules and IP-capable providers such as `ip_set` and `geoip`.
+
+### Configuration Details
+
+- Type: `array`; Required: yes; Default: none
+- Supported items:
+  - single IPs
+  - CIDRs
+  - provider references with IP match capability, such as `ip_set` or `geoip`
+- Runtime impact:
+  - Extracts the reverse-mapped IP from the PTR name and matches it against the configured rules.
+
+### quick setup
+
+```yaml
+- matches: "ptr_ip 192.168.0.0/16"
+```
+
+### Typical Uses
+
+- Separate handling for reverse-lookups of specific address spaces.
+
+---

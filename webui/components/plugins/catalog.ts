@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import type { PluginType } from "@/lib/types";
 import type { PluginKindDefinition } from "@/lib/plugin-definitions";
 import { createElement, type SVGProps } from "react";
@@ -18,6 +23,7 @@ import {
   File,
   FileQuestion,
   FileText,
+  Filter,
   Gauge,
   GitBranch,
   Globe,
@@ -58,6 +64,7 @@ export const pluginKindIconMap = {
   Globe,
   FileQuestion,
   FileText,
+  Filter,
   File,
   BarChart3,
   Regex,

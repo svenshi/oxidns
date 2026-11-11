@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { zhCNDocs } from "../zh-CN/docs";
 import type { LocaleResourceShape } from "../../types";
 
@@ -48,6 +53,16 @@ export const enUSDocs = {
       "- Type: `string` or `array`\n- Required: No\n- Default: None\n- Function: Define the matching conditions of the current rule.\n- Supported forms:\n  - a single matcher string\n  - A list of multiple matchers\n- Operational impact:\n  - There is a logical AND relationship between multiple conditions.\n  - When not configured, it means there is no pre-matching condition.",
     "args[].exec":
       "- Type: `string`; Required: No; Default: None\n- Function: Define the action to be performed after the rule is hit.\n- Support content:\n  - Plugin reference\n  - Shortcut expressions\n  - Built-in control flow, for example `accept`, `reject SERVFAIL`, `reject NOERROR`, `reject 3`, `jump <tag>`\n- Note: the RCODE argument for `reject` accepts case-insensitive English names and decimal numbers.\n- Operational impact:\n  - Directly determines the execution behavior of the current rule.",
+  },
+  edns_filter: {
+    policy:
+      "- Type: `string`; required: no; default: `preserve`\n- `preserve`: keep all; `strip`: remove all; `strip_unknown`: keep IANA-registered codes only\n- Uses the IANA catalog maintained in EdnsCode independently of payload parsers; reserved, unassigned, and local/experimental codes are excluded\n- Registry updates ship with releases without build-time or runtime network access; code 65001 has no special business meaning",
+    allowlist:
+      "- Type: `array`; required: no; default: `[]`\n- Each item is a u16 integer (0–65535); sorted and deduplicated at initialization\n- Nonempty restricts allowed codes; cannot restore options removed by policy\n- Apply policy → allowlist → denylist in order",
+    denylist:
+      "- Type: `array`; required: no; default: `[]`\n- Each item is a u16 integer (0–65535); sorted and deduplicated at initialization\n- Applied last with precedence over allowlist; for example `[65001]`",
+    restore_request:
+      "- Type: `boolean`; required: no; default: `true`\n- Restore the entire entry request on normal return, error, early termination, or cancellation, including downstream edits even if no option was removed\n- Disable to retain request changes; response, marks, and extensions are not rolled back\n- next covers the remaining sequence; use a child sequence to limit scope\n- Without a continuation, restoring execution leaves the request unchanged; non-restoring execution retains filtering",
   },
   forward: {
     concurrent:
@@ -116,23 +131,35 @@ export const enUSDocs = {
     ecs_in_key:
       "- Type: `boolean`; required: no; default value: `false`\n- Function: Control whether the ECS scope is included in cache key calculation.",
   },
+  load_balance: {
+    strategy:
+      "Options: round_robin (default), random, weighted_random. Selects one branch per call. Errors propagate unchanged; compose fallback for failover. Round-robin state resets on reload.",
+    executors:
+      "Required non-empty array of objects with distinct targets. exec is a plain executor tag without $; weight is a positive u32 integer, default 1, used only by weighted_random. Next / Return resume the caller; Stop propagates.",
+    "executors[].exec":
+      "Required plain executor tag without $. Quick setup is not supported. The subcall receives no outer continuation; put middleware such as ecs_handler and cache inside a complete target sequence.",
+    "executors[].weight":
+      "Positive u32 integer, default 1; used only by weighted_random. Weights 3:1 give probabilities 3/4, 1/4. Counts calls entering the plugin, including branch cache hits; client caching does not participate.",
+  },
   fallback: {
     primary:
       "- Type: `string`; Required: Yes; Default: None\n- Function: Specify the main executor.",
     secondary:
       "- Type: `string`; Required: Yes; Default: None\n- Function: Specify the secondary executor.",
     threshold:
-      "- Type: `integer`; required: no; default value: `0`\n- Unit: milliseconds\n- Function: Define the main path timeout or delay determination threshold.",
+      "- Type: `integer`; required: no; default value: `500`\n- Unit: milliseconds\n- Function: Sets the standby delay; 0 allows immediate execution and takeover.",
     always_standby:
       "- Type: `boolean`; required: no; default value: `false`\n- Function: Control whether the backup path is on standby at the same time as the main path.",
     short_circuit:
       "- Type: `boolean`; required: no; default value: `false`\n- Function: Control whether to stop the subsequent executor chain immediately after the primary/backup path selects the final response.",
   },
   hosts: {
+    format:
+      "- Type: `string`; Required: No; Default: `oxidns`\n- Purpose: Select the rule format for both entries and files.\n- `oxidns`: `<domain_rule> <IP> [IP…]`, preserving matcher prefixes and last-write-wins behavior.\n- `standard`: `<IP> <hostname> [aliases…]`, using exact names without interpreting matcher prefixes; names ignore case and trailing dots, and addresses for each name are merged and deduplicated in load order.\n- Unknown formats are rejected; formats are never switched automatically.\n- During startup loading, a rule that fails the configured format but matches the other format produces an error with its source location, current format, and suggested format value. Alternatively, convert the rule to the configured format.",
     entries:
-      "- Type: `array`; Required: No; Default: empty array\n- Function: Define inline hosts rules.\n- Rule format:\n  - `<Domain Name Rules> <ip1> <ip2> ...`\n- `<Domain Name Rules>` supports:\n  - `full:`\n  - `domain:`\n  - `keyword:`\n  - `regexp:`\n  - Unprefixed domain name (processed by `full:` exact match)",
+      "- Type: `array`; Required: No; Default: empty array\n- Purpose: Define inline hosts rules using the selected format.\n- `oxidns`: `<domain_rule> <IP> [IP…]`, supporting full:, domain:, keyword:, and regexp:; unprefixed names are exact matches and repeated patterns use last-write-wins.\n- `standard`: `<IP> <hostname> [aliases…]`, merging and deduplicating addresses for each name in first-seen order per family; supports blank lines, spaces/tabs, and # full-line or trailing comments.",
     files:
-      "- Type: `array`; Required: No; Default: empty array\n- Function: Specify the external hosts rule file list.",
+      "- Type: `array`; Required: No; Default: empty array\n- Purpose: Load external hosts rule files using the selected format.\n- Load order: entries first, then each file in files order, line by line. standard merges addresses across all sources; oxidns uses last-write-wins.",
     short_circuit:
       "- Type: `bool`; required: no; default value: `false`\n- Function: After hitting and generating a local response, whether to immediately stop the subsequent executor chain.",
   },
@@ -171,10 +198,10 @@ export const enUSDocs = {
   },
   ecs_handler: {
     forward:
-      "- Type: `boolean`; required: no; default value: `false`\n- Function: Control whether to retain the existing ECS in the client request.",
-    send: "- Type: `boolean`; required: no; default value: `false`\n- Function: Control whether to automatically replenish the ECS based on the source address when the request lacks ECS.",
+      "- Type: `boolean`; required: no; default value: `false`\n- Function: Preserve existing ECS; otherwise remove it first, then select preset or send for IN queries.",
+    send: "- Type: `boolean`; required: no; default value: `false`\n- Function: Generate ECS for IN queries from the current client address when existing ECS is not retained and no preset is set.",
     preset:
-      "- Type: `string`; Required: No; Default: None\n- Function: Specify a fixed ECS source address.",
+      "- Type: `string`; Required: No; Default: None\n- Function: Use a fixed source when existing ECS is not retained. Takes priority over send and also applies when send: false.",
     mask4:
       "- Type: `integer`; required: no; default value: `24`\n- Function: Specify the IPv4 ECS prefix length.",
     mask6:
@@ -269,7 +296,7 @@ export const enUSDocs = {
     answer_required:
       "- Type: `boolean`; required: no; default value: `true`\n- Function: Only learn when the response contains answer records.\n- Conditions of use: Only `phase: after` takes effect.",
     rule_kind:
-      "- Type: `string`; Required: No; Default: `full`\n- Optional values:\n  - `full`: Write `full:example.com` exact rules.\n  - `domain`: Write `domain:example.com` suffix rule.\n- Operational impact: The default precise rule can avoid accidentally expanding the matching range; when changed to `domain`, the entire subdomain will be hit.",
+      "- Type: `string`; Required: No; Default: `full`\n- Function: Select the learned rule generation strategy. For a request for `security.snssdk.com`:\n  - `full`: Generate `full:security.snssdk.com`, matching only that name.\n  - `domain`: Generate `domain:security.snssdk.com`, matching that name and its subdomains.\n  - `registrable_domain`: Generate `domain:snssdk.com`, matching the registrable domain and all its subdomains.\n- Boundaries: The registrable-domain strategy uses an embedded ICANN + PRIVATE Public Suffix List, recognizing `example.co.uk` and preserving tenant boundaries such as `foo.github.io`. No network access is needed; the list updates with the binary.\n- Skips: The registrable-domain strategy skips the DNS root, public suffixes themselves, unknown suffixes, single-label names, reverse lookup names, and escaped DNS names. Skips do not trigger `error_mode`.\n- Usage: Explicitly enable whole-domain learning when one routing policy should cover the registrable domain. Rules persist and do not automatically expire with DNS answer TTLs.",
     async:
       "- Type: `boolean`; required: no; default value: `true`\n- Function: Control whether to continue execution only after joining the queue.\n- Operational impact:\n  - `true`: writes are queued asynchronously, with zero wait on the request path.\n  - `false`: synchronously wait for provider writing to complete on the current request path, limited by `timeout`.",
     error_mode:
@@ -413,6 +440,10 @@ export const enUSDocs = {
       "- Type: `string`; Conditionally required; Default: none\n- Purpose: RouterOS gateway expression used by IPv6 dynamic host routes and persistent IPv6 routes.\n- Constraint: Configure at least one of `gateway4` or `gateway6`. Without this field, IPv6 DNS addresses and IPv6 `persistent` entries are ignored.",
     distance:
       "- Type: `u8`; Required: no; Default: `100`\n- Purpose: RouterOS route distance applied to every managed route.",
+    scope:
+      "- Type: `u8` (1–255); Required: no; Default: none\n- Purpose: Sets scope on IPv4/IPv6 dynamic and persistent routes, controlling their use in other routes' nexthop resolution.\n- When omitted or removed, existing routes retain their current value and new routes use the RouterOS default.",
+    target_scope:
+      "- Type: `u8` (0–255); Required: no; Default: none\n- Purpose: Writes RouterOS `target-scope`, limiting route scopes used to resolve the gateway for recursive routing.\n- When omitted or removed, existing routes retain their current value and new routes use the RouterOS default.",
     comment_prefix:
       "- Type: `string`; Required: no; Default: `oxi`\n- Purpose: Combines with the plugin `tag` to form the ownership namespace stored in RouterOS comments for startup recovery, reconciliation, and safe cleanup.\n- Constraint: Neither this value nor the plugin `tag` may contain `;` or `=`. Do not manually alter ownership comments on managed routes.",
     persistent:
@@ -577,6 +608,9 @@ export const enUSDocs = {
   },
   rcode: {
     args: "`args` of `rcode` is a list of rcodes.\n\n- Type: `array`; Required: Yes; Default: None\n- Function: Define the set of response codes that can be hit.\n- Supports both enum literals and decimal values, such as `NOERROR` / `SERVFAIL` / `NXDOMAIN` or `0` / `2` / `3`; both formats can be mixed in the same list.\n- Unknown or future extended response codes can continue to be matched using numeric values.\n- Operational impact:\n  - Return `true` only if there is already a response in the context and rcode hits the configuration collection.",
+  },
+  has_cname: {
+    args: "No independent configuration fields; quick setup accepts no parameters. Checks only for CNAME records in the current response's Answer section, regardless of request qtype or response RCODE. Returns `false` for a missing response, an empty Answer section, or CNAME records only in Authority/Additional. Use after upstream resolution or local response creation; use `cname` to match target domain names.",
   },
   has_resp: {
     args: "No independent configuration fields.",

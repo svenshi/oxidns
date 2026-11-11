@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 export const zhCNDocs = {
   udp_server: {
     entry:
@@ -45,6 +50,16 @@ export const zhCNDocs = {
       "- 类型：`string` 或 `array`\n- 必填：否\n- 默认值：无\n- 作用：定义当前规则的匹配条件。\n- 支持形式：\n  - 单个 matcher 字符串\n  - 多个 matcher 组成的列表\n- 运行影响：\n  - 多个条件之间为逻辑与关系。\n  - 未配置时表示无前置匹配条件。",
     "args[].exec":
       "- 类型：`string`；必填：否；默认值：无\n- 作用：定义规则命中后要执行的动作。\n- 支持内容：\n  - 插件引用\n  - 快捷表达式\n  - 内建控制流，例如 `accept`、`reject SERVFAIL`、`reject NOERROR`、`reject 3`、`jump <tag>`\n- 说明：`reject` 的 RCODE 参数支持大小写不敏感的英文名称和十进制数字。\n- 运行影响：\n  - 直接决定当前规则的执行行为。",
+  },
+  edns_filter: {
+    policy:
+      "- 类型：`string`；必填：否；默认值：`preserve`\n- `preserve`：保留全部，`strip`：删除全部，`strip_unknown`：仅保留 IANA 已注册 Code\n- 按 EdnsCode 中维护的 IANA 编号判断，不要求负载解析器；Reserved、Unassigned 和本地/实验性 Code 被删除\n- 注册表随版本更新，构建和运行不联网读取；不赋予 65001 特殊业务含义",
+    allowlist:
+      "- 类型：`array`；必填：否；默认值：`[]`\n- 每项是 0–65535 的 u16 整数；初始化时排序去重\n- 非空时限制允许的 Code，不能恢复 policy 删除的选项\n- 按 policy → allowlist → denylist 依次过滤",
+    denylist:
+      "- 类型：`array`；必填：否；默认值：`[]`\n- 每项是 0–65535 的 u16 整数；初始化时排序去重\n- 最后删除指定 Code，优先于 allowlist；例如 `[65001]`",
+    restore_request:
+      "- 类型：`boolean`；必填：否；默认值：`true`\n- 开启时在正常退出、错误、提前结束或取消时恢复进入插件的整份请求，包括下游修改，即使没有删除 Option\n- 关闭时保留请求修改；响应、marks 和扩展属性均不回滚\n- next 包含当前 sequence 的剩余链路；使用子 sequence 限定过滤范围\n- 无 continuation 时，开启恢复最终请求不变；关闭时保留过滤结果",
   },
   forward: {
     concurrent:
@@ -113,22 +128,34 @@ export const zhCNDocs = {
     ecs_in_key:
       "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：控制 ECS scope 是否参与缓存键计算。",
   },
+  load_balance: {
+    strategy:
+      "可选：round_robin（默认）、random、weighted_random。每次仅选择一条执行链；失败原样传播，故障切换可组合 fallback。轮询状态在重载后重置。",
+    executors:
+      "必填的非空对象数组，目标不能重复。exec 引用不带 $ 的 executor tag；weight 为正整数 u32，默认 1，仅加权随机使用。子链 Next / Return 后继续调用方，Stop 向外传播。",
+    "executors[].exec":
+      "必填，不带 $ 的 executor tag，不解析快捷表达式。子调用不接收外层 continuation；ecs_handler、cache 等应放入包含其下游的完整 sequence。",
+    "executors[].weight":
+      "正整数 u32，默认 1；仅 weighted_random 使用。例如 3:1 表示选择概率为 3/4、1/4。比例统计进入插件的调用，包括分支内缓存命中；客户端缓存不参与。",
+  },
   fallback: {
     primary: "- 类型：`string`；必填：是；默认值：无\n- 作用：指定主执行器。",
     secondary:
       "- 类型：`string`；必填：是；默认值：无\n- 作用：指定备用执行器。",
     threshold:
-      "- 类型：`integer`；必填：否；默认值：`0`\n- 单位：毫秒\n- 作用：定义主路径超时或延迟判定阈值。",
+      "- 类型：`integer`；必填：否；默认值：`500`\n- 单位：毫秒\n- 作用：定义备用路径的等待阈值；0 表示无需等待即可执行和接管。",
     always_standby:
       "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：控制备用路径是否与主路径同时待命。",
     short_circuit:
       "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：控制在主/备路径选出最终响应后，是否立即停止后续 executor 链。",
   },
   hosts: {
+    format:
+      "- 类型：`string`；必填：否；默认值：`oxidns`\n- 作用：统一选择 entries 和 files 的规则格式。\n- `oxidns`：`<域名规则> <IP> [IP…]`，保留现有匹配前缀与后写覆盖行为。\n- `standard`：`<IP> <主机名> [别名…]`，主机名均精确匹配，不解释匹配前缀；忽略大小写和尾点，同名主机的地址按加载顺序合并去重。\n- 未知格式报错，不自动切换格式。\n- 启动加载时，若规则不符合当前格式但符合另一种格式，错误会提示来源位置、当前格式和建议的 format 值；也可将规则转换为当前格式。",
     entries:
-      "- 类型：`array`；必填：否；默认值：空数组\n- 作用：定义内联 hosts 规则。\n- 规则格式：\n  - `<域名规则> <ip1> <ip2> ...`\n- `<域名规则>` 支持：\n  - `full:`\n  - `domain:`\n  - `keyword:`\n  - `regexp:`\n  - 无前缀域名（按 `full:` 精确匹配处理）",
+      "- 类型：`array`；必填：否；默认值：空数组\n- 作用：定义内联 hosts 规则，格式由 format 决定。\n- `oxidns`：`<域名规则> <IP> [IP…]`，支持 full:、domain:、keyword:、regexp:；无前缀时精确匹配，同一 pattern 后写覆盖。\n- `standard`：`<IP> <主机名> [别名…]`，同名主机合并去重地址，各地址家族保留首次出现顺序；支持空行、空格/Tab 分隔及 # 整行或行尾注释。",
     files:
-      "- 类型：`array`；必填：否；默认值：空数组\n- 作用：指定外部 hosts 规则文件列表。",
+      "- 类型：`array`；必填：否；默认值：空数组\n- 作用：按 format 指定的格式加载外部 hosts 规则文件。\n- 加载顺序：entries 先，再按 files 顺序逐文件逐行加载。standard 跨所有来源合并地址；oxidns 后写覆盖。",
     short_circuit:
       "- 类型：`bool`；必填：否；默认值：`false`\n- 作用：命中并生成本地应答后，是否立即停止后续 executor 链。",
   },
@@ -167,10 +194,10 @@ export const zhCNDocs = {
   },
   ecs_handler: {
     forward:
-      "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：控制是否保留客户端请求中已有的 ECS。",
-    send: "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：控制在请求缺少 ECS 时，是否根据来源地址自动补充 ECS。",
+      "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：控制是否保留已有 ECS；为 false 时先删除，IN 查询再按 preset、send 选择替代来源。",
+    send: "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：未保留已有 ECS 且未配置 preset 时，根据当前客户端地址为 IN 查询生成 ECS。",
     preset:
-      "- 类型：`string`；必填：否；默认值：无\n- 作用：指定固定的 ECS 来源地址。",
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：未保留已有 ECS 时使用的固定来源地址；优先于 send，即使 send: false 也生效。",
     mask4:
       "- 类型：`integer`；必填：否；默认值：`24`\n- 作用：指定 IPv4 ECS 前缀长度。",
     mask6:
@@ -265,7 +292,7 @@ export const zhCNDocs = {
     answer_required:
       "- 类型：`boolean`；必填：否；默认值：`true`\n- 作用：仅响应包含 answer 记录时学习。\n- 使用条件：仅 `phase: after` 生效。",
     rule_kind:
-      "- 类型：`string`；必填：否；默认值：`full`\n- 可选值：\n  - `full`：写入 `full:example.com` 精确规则。\n  - `domain`：写入 `domain:example.com` 后缀规则。\n- 运行影响：默认精确规则可避免意外扩大匹配范围；改为 `domain` 时整棵子域都会命中。",
+      "- 类型：`string`；必填：否；默认值：`full`\n- 作用：选择学习时生成规则的方式。以请求 `security.snssdk.com` 为例：\n  - `full`：生成 `full:security.snssdk.com`，仅匹配该名称。\n  - `domain`：生成 `domain:security.snssdk.com`，匹配该名称及其子域。\n  - `registrable_domain`：生成 `domain:snssdk.com`，匹配可注册域及其所有子域。\n- 边界：可注册域策略使用内置 ICANN + PRIVATE 公共后缀表，识别 `example.co.uk` 并保留 `foo.github.io` 的租户边界；无需联网，列表随二进制更新。\n- 跳过：可注册域策略跳过根域、公共后缀本身、未知后缀、单标签名称、反向解析名称及含转义标签的名称；跳过不触发 `error_mode`。\n- 使用条件：整域学习应显式启用，适用于希望同一可注册域采用一致策略的场景。规则会持久保存，不随 DNS 答案 TTL 自动过期。",
     async:
       "- 类型：`boolean`；必填：否；默认值：`true`\n- 作用：控制是否只入队后继续执行。\n- 运行影响：\n  - `true`：写入异步入队，请求路径零等待。\n  - `false`：在当前请求路径同步等待 provider 写入完成，受 `timeout` 限制。",
     error_mode:
@@ -409,6 +436,10 @@ export const zhCNDocs = {
       "- 类型：`string`；条件必填；默认值：无\n- 作用：指定 IPv6 动态主机路由和 IPv6 常驻路由使用的 gateway 表达式。\n- 约束：`gateway4` 与 `gateway6` 至少配置一个；未配置本项时会忽略 IPv6 DNS 地址和 IPv6 `persistent` 项。",
     distance:
       "- 类型：`u8`；必填：否；默认值：`100`\n- 作用：指定插件写入所有受管路由的 RouterOS route distance。",
+    scope:
+      "- 类型：`u8`（1–255）；必填：否；默认值：无\n- 作用：指定受管路由的 scope，控制该路由能否用于其他路由的下一跳解析。适用于 IPv4/IPv6 动态与常驻路由。\n- 省略或移除配置时不管理该属性：已有路由保留当前值，新建路由使用 RouterOS 默认值。",
+    target_scope:
+      "- 类型：`u8`（0–255）；必填：否；默认值：无\n- 作用：写入 RouterOS `target-scope`，限制解析 gateway 时可使用的路由 scope，用于递归路由。\n- 省略或移除配置时不管理该属性：已有路由保留当前值，新建路由使用 RouterOS 默认值。",
     comment_prefix:
       "- 类型：`string`；必填：否；默认值：`oxi`\n- 作用：与插件 `tag` 共同构成 RouterOS comment 中的 ownership namespace，用于启动恢复、对账和安全清理。\n- 约束：该值和插件 `tag` 都不能包含 `;` 或 `=`；不要手工修改受管路由的 ownership comment。",
     persistent:
@@ -572,6 +603,9 @@ export const zhCNDocs = {
   },
   rcode: {
     args: "`rcode` 的 `args` 为 rcode 列表。\n\n- 类型：`array`；必填：是；默认值：无\n- 作用：定义可命中的响应码集合。\n- 同时支持枚举文本和十进制数值，例如 `NOERROR` / `SERVFAIL` / `NXDOMAIN` 或 `0` / `2` / `3`；同一个列表中可以混用两种格式。\n- 未知或未来扩展响应码可继续使用数值形式匹配。\n- 运行影响：\n  - 仅当上下文中已有响应且 rcode 命中配置集合时返回 `true`。",
+  },
+  has_cname: {
+    args: "无独立配置字段，quick setup 不接受参数。仅检查当前响应 Answer 区是否存在 CNAME，不限制请求 qtype 或响应 RCODE；无响应、空 Answer 或仅 Authority/Additional 含 CNAME 时返回 `false`。建议在上游解析或本地应答之后使用；如需匹配 CNAME 目标域名，请使用 `cname`。",
   },
   has_resp: {
     args: "无独立配置字段。",

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! RouterOS address-list keys and ownership metadata.
 
 use std::net::IpAddr;
@@ -75,11 +78,17 @@ impl AddressListKey {
         format!("{}/{}", self.address, self.prefix)
     }
 
+    /// Address text in the form RouterOS stores and matches for this family.
+    ///
+    /// RouterOS keeps IPv4 host entries without a mask and rewrites an
+    /// explicit `/32` to the bare address, while IPv6 host entries are kept in
+    /// `/128` form and an explicit bare address is rewritten to `/128`.
+    /// Lookups use string equality against the stored property, so addressing
+    /// RouterOS in any other form makes a row invisible to its own writer.
     pub(super) fn router_value(&self) -> String {
-        if self.prefix == self.family.host_prefix() {
-            self.address.to_string()
-        } else {
-            self.normalized_value()
+        match self.family {
+            AddressListFamily::Ipv4 if self.prefix == HOST_PREFIX_V4 => self.address.to_string(),
+            _ => self.normalized_value(),
         }
     }
 }
@@ -168,4 +177,34 @@ pub(super) fn parse_router_address(family: AddressListFamily, raw: &str) -> Opti
     }
     let ip = value.parse::<IpAddr>().ok()?;
     (AddressListFamily::from_ip(ip) == family).then(|| (ip, family.host_prefix()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    use super::*;
+
+    #[test]
+    fn router_values_use_the_form_routeros_stores_per_family() {
+        let v4_host = AddressListKey::new(
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+            "policy".to_string(),
+        );
+        assert_eq!(v4_host.router_value(), "192.0.2.10");
+
+        let v6_host = AddressListKey::new(
+            IpAddr::V6("2001:db8::1".parse::<Ipv6Addr>().expect("ipv6")),
+            "policy6".to_string(),
+        );
+        assert_eq!(v6_host.router_value(), "2001:db8::1/128");
+
+        let v4_network = AddressListKey::new_with_prefix(
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 129)),
+            24,
+            "policy".to_string(),
+        )
+        .expect("network");
+        assert_eq!(v4_network.router_value(), "192.0.2.0/24");
+    }
 }

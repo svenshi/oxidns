@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { describe, expect, it } from "vitest";
 
 import { matcherPluginDefinitions } from "@/lib/plugin-definitions/matcher";
@@ -521,6 +526,33 @@ describe("optional object config fields", () => {
   });
 });
 
+describe("hosts format config", () => {
+  const schema = pluginKindDefinitions.find(
+    (definition) => definition.kind === "hosts",
+  )!.configSchema;
+
+  it("keeps the inherited format out of generated config", () => {
+    const values = createDefaultPluginConfigValues(schema);
+    expect(serializePluginConfigValues(schema, values)).not.toHaveProperty(
+      "format",
+    );
+  });
+
+  it("preserves an explicitly selected format when editing entries", () => {
+    for (const format of ["oxidns", "standard"]) {
+      const entries =
+        format === "standard"
+          ? ["192.0.2.1 example.test"]
+          : ["example.test 192.0.2.1"];
+      const values = createPluginConfigFormValues(schema, { format, entries });
+      expect(serializePluginConfigValues(schema, values)).toMatchObject({
+        format,
+        entries,
+      });
+    }
+  });
+});
+
 describe("optional reference config fields", () => {
   it("omits a cleared dual selector probe executor", () => {
     for (const definition of preferDefinitions) {
@@ -657,5 +689,43 @@ describe("time matcher localization", () => {
       { label: "Saturday", value: 6, aliases: ["sat"] },
       { label: "Sunday", value: 7, aliases: ["sun"] },
     ]);
+  });
+});
+
+describe("EDNS filter configuration", () => {
+  const definition = executorPluginDefinitions.find(
+    (item) => item.kind === "edns_filter",
+  )!;
+  const schema = definition.configSchema;
+
+  it("does not serialize inherited defaults and keeps all controls visible", () => {
+    const values = createPluginConfigFormValues(schema, {});
+    expect(serializePluginConfigValues(schema, values)).toEqual({});
+    expect(schema.every((field) => !field.advanced)).toBe(true);
+    expect(
+      schema.find((field) => field.key === "restore_request")!.default,
+    ).toBe(true);
+    expect(schema.find((field) => field.key === "policy")!.default).toBe(
+      "preserve",
+    );
+    expect(definition.quickSetup).toBeUndefined();
+  });
+
+  it("roundtrips numeric lists and explicit false while switching policies", () => {
+    const config = {
+      policy: "strip_unknown",
+      allowlist: [8, 10, 65001],
+      denylist: [10],
+      restore_request: false,
+    };
+    const values = createPluginConfigFormValues(schema, config);
+    expect(serializePluginConfigValues(schema, values)).toEqual(config);
+    for (const policy of ["strip", "preserve"]) {
+      values.policy = policy;
+      expect(serializePluginConfigValues(schema, values)).toEqual({
+        ...config,
+        policy,
+      });
+    }
   });
 });

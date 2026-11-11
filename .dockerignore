@@ -3,6 +3,7 @@
 .idea
 target
 docs
+website
 webui
 benchmarks
 *.log

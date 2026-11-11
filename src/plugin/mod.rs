@@ -349,6 +349,24 @@ pub trait Plugin: Debug + Send + Sync + 'static {
         self.init(&init_context).await
     }
 
+    /// Notify a configured plugin that its owning runtime started successfully.
+    ///
+    /// `init` prepares resources, but later plugins or application listeners
+    /// may still fail. This hook is sent only after those startup steps
+    /// succeed; failed candidates go directly to `destroy` without receiving
+    /// it.
+    ///
+    /// Keep this hook fast, infallible, idempotent, and free of panics.
+    /// Validate required resources in `init`; enable optional background
+    /// maintenance here when it must wait for startup success, handling
+    /// registration errors locally. Background initialization may still be
+    /// running, so each plugin must separately guard work that depends on its
+    /// completion. This hook is not part of DNS request dispatch.
+    ///
+    /// The registry notifies configured entries only. Composite owners must
+    /// forward the hook to runtime-only children if those children require it.
+    fn on_ready(&self) {}
+
     /// Clean up plugin resources (called during shutdown)
     async fn destroy(&self) -> Result<()> {
         Ok(())

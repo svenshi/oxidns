@@ -1,0 +1,951 @@
+---
+title: 外部与系统集成
+---
+
+import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
+
+这些执行器把 DNS 上下文投影到 HTTP、脚本、Linux 集合或 RouterOS。副作用失败策略应与主解析路径隔离。
+
+## `http_request`
+
+<PluginAvailability from="standard" />
+
+### 作用
+
+向外部 `http/https` 服务发送回调请求。它既可以在当前 DNS 链路进入下游 executor 之前触发，也可以在下游执行完成后触发，适合 webhook、审计、告警和外部联动。
+
+### 配置示例
+
+```yaml
+- tag: webhook_notify_after
+  type: http_request
+  args:
+    method: POST
+    url: "https://hooks.example.com/dns"
+    phase: after
+    async: true
+    timeout: 5s
+    headers:
+      X-Client-IP: "${client_ip}"
+      X-Qname: "${qname}"
+    query_params:
+      source: "oxidns"
+      qname: "${qname}"
+    json:
+      qname: "${qname}"
+      client_ip: "${client_ip}"
+      rcode: "${rcode_name}"
+      resp_ip: "${resp_ip}"
+```
+
+### 配置项
+
+#### `args.method`
+
+- 类型：`string`；必填：是
+- 作用：指定 HTTP 方法，例如 `GET`、`POST`、`PUT`、`PATCH`、`DELETE`。
+
+#### `args.url`
+
+- 类型：`string`；必填：是
+- 作用：目标 URL。
+- 说明：支持 `${key}` 占位符插值；渲染后的 URL 只允许使用 `http` 或 `https`。
+
+#### `args.phase`
+
+- 类型：`string`；必填：否；默认值：`after`
+- 可选值：`before`、`after`
+- 作用：控制请求在下游 executor 之前发送，还是在下游执行完成后发送。
+
+#### `args.async`
+
+- 类型：`boolean`；必填：否；默认值：`true`
+- 作用：控制使用异步后台队列发送，还是在当前请求路径同步等待 HTTP 完成。
+
+#### `args.timeout`
+
+- 类型：`string`；必填：否；默认值：`5s`
+- 作用：限制单次 HTTP 调用的总超时时间。
+- 支持单位：`ms`、`s`、`m`、`h`、`d`
+
+#### `args.error_mode`
+
+- 类型：`string`；必填：否；默认值：`continue`
+- 可选值：
+  - `continue`：失败仅记录日志，然后继续后续链路
+  - `stop`：失败后返回 `Stop`
+  - `fail`：失败后直接返回 executor 错误
+
+#### `args.headers`
+
+- 类型：`map<string,string>`；必填：否；默认值：空
+- 作用：附加 HTTP 请求头。
+- 说明：header value 支持 `${key}` 占位符插值。
+
+#### `args.query_params`
+
+- 类型：`map<string,string>`；必填：否；默认值：空
+- 作用：把额外参数追加到 URL query 上。
+- 说明：value 支持 `${key}` 占位符插值；会与 URL 自带 query 一起发送。
+
+#### `args.body`
+
+- 类型：`string`；必填：否
+- 作用：原始字符串请求体。
+- 说明：支持 `${key}` 占位符插值；可选配 `args.content_type`。
+
+#### `args.json`
+
+- 类型：`object | array`；必填：否
+- 作用：以 JSON 方式发送请求体。
+- 说明：会自动设置 `Content-Type: application/json`；其中所有字符串叶子节点支持 `${key}` 占位符插值，非字符串值原样保留。
+
+#### `args.form`
+
+- 类型：`map<string,string>`；必填：否
+- 作用：以 `application/x-www-form-urlencoded` 方式发送表单。
+- 说明：value 支持 `${key}` 占位符插值；会自动设置对应的 `Content-Type`。
+
+#### `args.content_type`
+
+- 类型：`string`；必填：否
+- 作用：为原始 `args.body` 指定 `Content-Type`。
+- 说明：只能和 `args.body` 搭配，不能与 `args.json` 或 `args.form` 同时使用。
+
+#### `args.outbound`
+
+- 类型：`string`；必填：否
+- 作用：引用 `network.outbound.profiles` 中的出站配置，统一控制该 HTTP 请求使用的解析器和代理。
+- 说明：未配置时使用 `network.outbound.default`；若也配置了 `args.socks5`，`socks5` 只覆盖代理设置，resolver 仍来自 outbound profile。
+
+#### `args.socks5`
+
+- 类型：`string`；必填：否
+- 作用：指定 SOCKS5 代理。
+- 说明：格式与 `upstream[].socks5` 一致，支持 `host:port`、`username:password@host:port` 和带中括号的 IPv6。
+
+#### `args.insecure_skip_verify`
+
+- 类型：`boolean`；必填：否；默认值：`false`
+- 作用：是否跳过 HTTPS 证书校验。
+
+#### `args.max_redirects`
+
+- 类型：`integer`；必填：否；默认值：`5`
+- 作用：限制最多跟随多少次重定向。
+
+#### `args.queue_size`
+
+- 类型：`integer`；必填：否；默认值：`256`
+- 作用：异步模式下后台发送队列的容量。
+
+### 可注入占位符
+
+- 与 `script` 插件相同：`qname`、`qtype`、`qtype_name`、`qclass`、`qclass_name`
+- 来源相关：`client_ip`、`client_port`、`server_name`、`url_path`
+- 运行态相关：`marks`、`has_resp`
+- 响应相关：`rcode`、`rcode_name`、`resp_ip`
+- cron 元数据：`cron_plugin_tag`、`cron_job_name`、`cron_trigger_kind`（`schedule`、`interval` 或 `manual`）、`cron_scheduled_at_unix_ms`
+
+### 行为说明
+
+- `phase: before` 时，会先发 HTTP 请求，再进入下游 executor。
+- `phase: after` 时，会先执行下游 executor，再根据当前上下文发送 HTTP 请求。
+- `async: true` 使用有界后台队列；入队失败会按 `error_mode` 处理。
+- `async: false` 会在当前请求路径内等待 HTTP 请求完成。
+- 只有最终返回 `2xx` 才视为成功；`3xx` 会在 `max_redirects` 范围内继续跟随。
+- 插件会读取并丢弃 HTTP 响应体，以便连接复用，但不会把响应内容写回 `DnsContext`。
+- 如果请求头里已经显式设置 `Content-Type`，插件不会再覆盖它。
+
+<Admonition type="note" title="注意事项">
+
+- `args.body`、`args.json`、`args.form` 三者互斥。
+- 这是副作用执行器，v1 不支持根据 HTTP 返回结果改写 DNS 请求、响应、marks 或 attrs。
+- v1 不支持 multipart 上传，也不支持 quick setup 语法。
+- 同时需要 `before` 和 `after` 两种时机时，请配置两个独立的 `http_request` 插件实例。
+
+</Admonition>
+
+---
+
+## `script`
+
+<PluginAvailability from="standard" />
+
+### 作用
+
+执行一个显式声明的外部命令，并把当前 `DnsContext` 中的一部分稳定字段注入为参数或环境变量。
+
+### 配置示例
+
+```yaml
+- tag: script_notify
+  type: script
+  args:
+    command: "bash"
+    args:
+      - "/etc/oxidns/notify.sh"
+      - "${qname}"
+      - "${client_ip}"
+    env:
+      FDNS_QNAME: "${qname}"
+      FDNS_CLIENT_IP: "${client_ip}"
+      FDNS_MARKS: "${marks}"
+    timeout: "5s"
+    error_mode: continue
+    max_output_bytes: 4096
+```
+
+### 配置项
+
+#### `args.command`
+
+- 类型：`string`；必填：是
+- 作用：要执行的命令路径或命令名。
+- 说明：该字段不支持模板替换，避免命令本身在运行期漂移。
+
+#### `args.args`
+
+- 类型：`array<string>`；必填：否；默认值：空
+- 作用：传给命令的参数数组。
+- 说明：每一项支持 `${key}` 占位符插值。
+
+#### `args.env`
+
+- 类型：`map<string,string>`；必填：否；默认值：空
+- 作用：追加到子进程环境变量中的键值对。
+- 说明：value 支持 `${key}` 占位符插值；不会清空父进程已有环境变量。
+
+#### `args.cwd`
+
+- 类型：`string`；必填：否；默认值：无
+- 作用：指定脚本运行时的工作目录。
+
+#### `args.timeout`
+
+- 类型：`string`；必填：否；默认值：`5s`
+- 作用：限制单次脚本执行时长。
+- 支持单位：`ms`、`s`、`m`、`h`、`d`
+
+#### `args.error_mode`
+
+- 类型：`string`；必填：否；默认值：`continue`
+- 可选值：
+  - `continue`：失败或超时仅记录日志，然后返回 `Next`
+  - `stop`：失败或超时后返回 `Stop`
+  - `fail`：失败或超时直接返回错误
+
+#### `args.max_output_bytes`
+
+- 类型：`usize`；必填：否；默认值：`4096`
+- 作用：限制 stdout / stderr 的捕获长度，超过部分只做截断标记。
+
+### 可注入占位符
+
+- 请求相关：`qname`、`qtype`、`qtype_name`、`qclass`、`qclass_name`
+- 来源相关：`client_ip`、`client_port`、`server_name`、`url_path`
+- 运行态相关：`marks`、`has_resp`
+- 响应相关：`rcode`、`rcode_name`、`resp_ip`
+- cron 元数据：`cron_plugin_tag`、`cron_job_name`、`cron_trigger_kind`（`schedule`、`interval` 或 `manual`）、`cron_scheduled_at_unix_ms`
+
+### 行为说明
+
+- 插件本身不改 DNS 请求和响应。
+- 只执行显式配置的命令，不隐式包裹 `sh -c`、`cmd /c` 这类 shell。
+- 参数和环境变量在每次执行时基于当前 `DnsContext` 渲染。
+- 超时后会终止子进程，并按 `error_mode` 决定后续控制流。
+
+<Admonition type="note" title="注意事项">
+
+- v1 不支持 quick setup 语法。
+- `command` 不能为空。
+- `${key}` 中只允许使用文档列出的稳定内建字段；未知占位符会在初始化时报错。
+- 这是副作用执行器，不支持通过 stdout 回写 `attrs`、`marks` 或直接生成 DNS 响应。
+
+</Admonition>
+
+---
+
+## `ipset`
+
+<PluginAvailability from="full" />
+
+### 作用
+
+把响应中的 IP 写入 Linux `ipset`。底层通过内置 Rust netlink 后端完成，不依赖运行时 `ipset` 命令。
+
+### 配置示例
+
+```yaml
+- tag: ipset_main
+  type: ipset
+  args:
+    # A 记录写入的 ipset
+    set_name4: "oxidns_v4"
+    # AAAA 记录写入的 ipset
+    set_name6: "oxidns_v6"
+    # IPv4 写入前先聚合成 /24
+    mask4: 24
+    # IPv6 写入前先聚合成 /64
+    mask6: 64
+```
+
+### 配置项
+
+#### `set_name4`
+
+- 类型：`string`；必填：否；默认值：无
+- 作用：指定写入 IPv4 地址的 ipset 名称。
+
+#### `set_name6`
+
+- 类型：`string`；必填：否；默认值：无
+- 作用：指定写入 IPv6 地址的 ipset 名称。
+
+#### `mask4`
+
+- 类型：`integer`；必填：否；默认值：`24`
+- 作用：指定 IPv4 地址写入 ipset 时使用的前缀长度。
+
+#### `mask6`
+
+- 类型：`integer`；必填：否；默认值：`32`
+- 作用：指定 IPv6 地址写入 ipset 时使用的前缀长度。
+
+### quick setup
+
+```yaml
+- exec: "ipset oxidns_v4,inet,24 oxidns_v6,inet6,64"
+```
+
+格式：
+
+```text
+<set_name>,<family>,<mask>
+```
+
+其中 `family` 为 `inet` 或 `inet6`。
+
+### 行为说明
+
+- 从 answer 中提取唯一 A/AAAA 地址。
+- 根据地址族写入相应 set。
+- 通过非阻塞队列投递到后台 writer。
+
+### 典型用途
+
+- 基于 DNS 结果驱动后续流量策略。
+- DNS 到防火墙名单的联动。
+
+<Admonition type="note" title="注意事项">
+
+- Linux 以外平台会退化为 no-op。
+- 队列满时会丢 side effect，不阻塞 DNS 主路径。
+
+</Admonition>
+
+---
+
+## `nftset`
+
+<PluginAvailability from="full" />
+
+### 作用
+
+把响应 IP 写入 Linux `nftables set`。底层通过内置 Rust netlink 后端完成，不依赖运行时 `nft` 命令。
+
+### 配置示例
+
+结构化写法：
+
+```yaml
+- tag: nftset_main
+  type: nftset
+  args:
+    ipv4:
+      # IPv4 使用 ip family
+      table_family: "ip"
+      table_name: "mangle"
+      set_name: "dns_v4"
+      mask: 24
+    ipv6:
+      # IPv6 使用 ip6 family
+      table_family: "ip6"
+      table_name: "mangle"
+      set_name: "dns_v6"
+      mask: 64
+```
+
+兼容写法：
+
+```yaml
+- tag: nftset_legacy
+  type: nftset
+  args:
+    # 兼容字段，适合从旧配置迁移
+    table_family4: "ip"
+    table_name4: "mangle"
+    set_name4: "dns_v4"
+    mask4: 24
+    table_family6: "ip6"
+    table_name6: "mangle"
+    set_name6: "dns_v6"
+    mask6: 64
+```
+
+### 配置项
+
+#### `ipv4`
+
+- 类型：`object`；必填：否；默认值：无
+- 作用：定义 IPv4 目标 nftables set。
+- 子字段：
+  - `table_family`
+  - `table_name`
+  - `set_name`
+  - `mask`
+
+#### `ipv6`
+
+- 类型：`object`；必填：否；默认值：无
+- 作用：定义 IPv6 目标 nftables set。
+- 子字段：
+  - `table_family`
+  - `table_name`
+  - `set_name`
+  - `mask`
+
+#### `table_family4` / `table_family6`
+
+- 类型：`string`；必填：否；默认值：无
+- 作用：兼容写法下分别定义 IPv4 / IPv6 的 nftables 表 family。
+
+#### `table_name4` / `table_name6`
+
+- 类型：`string`；必填：否；默认值：无
+- 作用：兼容写法下分别定义 IPv4 / IPv6 的 nftables 表名。
+
+#### `set_name4` / `set_name6`
+
+- 类型：`string`；必填：否；默认值：无
+- 作用：兼容写法下分别定义 IPv4 / IPv6 的 set 名称。
+
+#### `mask4` / `mask6`
+
+- 类型：`integer`；必填：否；默认值：`mask4` 为 `24`，`mask6` 为 `48`
+- 作用：兼容写法下分别定义 IPv4 / IPv6 前缀长度。
+
+### quick setup
+
+```yaml
+- exec: "nftset ip,mangle,dns_v4,ipv4_addr,24 ip6,mangle,dns_v6,ipv6_addr,64"
+```
+
+格式：
+
+```text
+<family>,<table>,<set>,<type>,<mask>
+```
+
+### 行为说明
+
+- 提取 A/AAAA 地址。
+- 根据前缀写入 nftables 区间元素。
+- 同样走后台 writer，保持主路径非阻塞。
+
+### 典型用途
+
+- 与 `nftables` 集合联动的分类、路由或防火墙策略。
+
+<Admonition type="note" title="注意事项">
+
+- Linux 以外平台退化为 no-op。
+
+</Admonition>
+
+---
+
+## `ros_address_list`
+
+<PluginAvailability from="full" />
+
+### 作用
+
+把应答 IP 同步到 RouterOS address-list，支持动态项、常驻项、启动时文件加载和关闭时清理。RouterOS 的 firewall、mangle 或 routing rule 可以消费该地址集合。
+
+### 配置示例
+
+```yaml
+- tag: ros_address_list_main
+  type: ros_address_list
+  args:
+    # RouterOS API 地址
+    address: "172.16.1.1:8728"
+    # API 用户名
+    username: "api-user"
+    # API 密码
+    password: "secret"
+    # 默认使用明文 API（通常 8728）；配置 tls 后才启用 API-SSL（通常 8729）
+    # RouterOS API 连接超时，单位秒
+    connect_timeout: 5
+    # RouterOS API 发送命令超时，单位秒
+    send_timeout: 5
+    # RouterOS API 接收响应超时，单位秒；仅在存量慢查询场景按需调大
+    receive_timeout: 30
+    # 异步提交，避免阻塞 DNS 主路径
+    async: true
+    # async=false 时最多等待这么久；超时后任务继续在后台执行
+    wait_timeout: 8s
+    # 入口队列和重试积压各自允许的不同 IP 数量
+    queue_capacity: 16384
+    # A 记录写入的 address-list
+    address_list4: "oxidns_ipv4"
+    # AAAA 记录写入的 address-list
+    address_list6: "oxidns_ipv6"
+    # 用于标记 OxiDNS 管理条目的注释前缀
+    comment_prefix: "oxi"
+    # 动态项 TTL 下限
+    min_ttl: 60
+    # 动态项 TTL 上限
+    max_ttl: 3600
+    # 强制把动态项 TTL 固定为 300 秒；填 0 表示不设置 timeout
+    fixed_ttl: 300
+    # 正常关闭或应用 reload 时清理自己维护的条目
+    cleanup_on_shutdown: true
+    persistent:
+      ips:
+        # 常驻单 IP
+        - "1.1.1.1"
+        # 常驻 IPv4 网段
+        - "100.64.1.0/24"
+        # 常驻 IPv6 网段
+        - "2001:db8::/64"
+      files:
+        # 从文件加载更多常驻项
+        - "/etc/oxidns/persistent_ips.txt"
+```
+
+启用 API-SSL 时，将端口改为实际的 TLS 端口（通常为 `8729`），并显式添加 `tls`：
+
+```yaml
+args:
+  address: "router.example:8729"
+  tls:
+    # 可选；覆盖从 address 推断出的证书服务器名称
+    server_name: "router.example"
+    # 可选；自签名证书或私有 CA 的 PEM 文件
+    ca: "/etc/oxidns/routeros-ca.pem"
+    # 可选，默认 false；设为 true 时跳过证书验证，且不能同时配置 ca
+    insecure: false
+```
+
+### 配置项
+
+#### `address`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：指定 RouterOS API 服务地址，通常写为 `host:port`。插件启动后将使用该地址建立管理连接，并在运行期间维持与设备的同步关系。
+- 配置建议：使用 RouterOS API 明文端口时通常为 `8728`，如部署了加密 API，应按实际端口填写。
+
+#### `username`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：指定 RouterOS API 登录用户名。该账户需要具备读取和维护目标 `address-list` 的权限。
+- 配置建议：建议为本插件单独创建专用账号，以便隔离权限范围和审计记录。
+
+#### `password`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：指定 RouterOS API 登录密码。插件初始化、重连和后台同步均依赖该凭据。
+- 注意事项：应避免在公开仓库或共享示例中直接暴露真实口令。
+
+#### `tls`
+
+- 类型：`object`；必填：否；默认值：无（明文 API）
+- 作用：启用 RouterOS API-SSL。
+- `tls.server_name`：可选字符串；覆盖从 `address` 推断出的证书服务器名称。
+- `tls.ca`：可选字符串；指定自签名证书或私有 CA 的 PEM 文件路径。
+- `tls.insecure`：可选布尔值，默认 `false`；设为 `true` 时跳过证书验证，且不能同时配置 `tls.ca`。
+- 安全建议：明文 API 通常使用 `8728`，API-SSL 通常使用 `8729`；端口仍以 RouterOS 实际配置为准。
+
+#### `connect_timeout`
+
+- 类型：`u64`；必填：否；默认值：`5`
+- 作用：指定建立 RouterOS API 连接时的等待上限，单位为秒。
+- 注意事项：必须大于 `0`。网络链路较慢或 RouterOS 管理面偶发繁忙时，可按需调大。
+
+#### `send_timeout`
+
+- 类型：`u64`；必填：否；默认值：`5`
+- 作用：指定发送单个 RouterOS API 命令时的等待上限，单位为秒。
+- 注意事项：必须大于 `0`。通常保持默认即可。
+
+#### `receive_timeout`
+
+- 类型：`u64`；必填：否；默认值：`5`
+- 作用：指定等待下一段 RouterOS API 响应数据的上限，单位为秒。
+- 配置建议：建议为 OxiDNS 使用专用且规模可控的 `address-list`，不建议接入已有的大型共享列表。只有在存量环境无法避免慢列表查询或 RouterOS 管理面响应较慢时，才考虑将该值调大，例如 `30` 或 `60`。
+
+#### `async`
+
+- 类型：`bool`；必填：否；默认值：`true`
+- 作用：控制地址写入行为是否采用异步方式。启用后，DNS 应答路径只负责投递任务，由后台管理器完成与 RouterOS 的交互。
+- 影响：异步模式有助于降低请求路径阻塞风险；关闭后会改为同步提交，更适合需要立即确认提交结果的场景。
+
+#### `wait_timeout`
+
+- 类型：`duration`；必填：否；默认值：`8s`
+- 作用：仅在 `async: false` 时限制 DNS 请求等待 manager 完成一次写入尝试的时间。
+- 超时行为：DNS 响应保持不变，已入队任务及其后台重试不会被取消。该配置与 RouterOS API 的 `receive_timeout` 无关。
+
+#### `queue_capacity`
+
+- 类型：`usize`；必填：否；默认值：`16384`
+- 作用：限制入口去重队列和重试积压中不同 IP 的数量；两个阶段分别使用该上限。
+- 满载行为：同一 IP 仍会合并；新的不同 IP 会被丢弃并记录指标，不影响 DNS 响应。必须大于 `0`。
+
+#### `address_list4`
+
+- 类型：`string`；必填：否；默认值：无
+- 作用：指定 IPv4 地址写入的目标 `address-list` 名称。插件从 DNS 应答中提取到 A 记录后，将写入该列表。
+- 配置建议：如果策略仅处理 IPv4，应至少配置本项。
+
+#### `address_list6`
+
+- 类型：`string`；必填：否；默认值：无
+- 作用：指定 IPv6 地址写入的目标 `address-list` 名称。插件从 DNS 应答中提取到 AAAA 记录后，将写入该列表。
+- 配置建议：如果策略需要覆盖 IPv6，应同时配置本项，并在 RouterOS 侧建立对应的匹配与路由规则。
+
+#### `comment_prefix`
+
+- 类型：`string`；必填：否；默认值：`oxi`
+- 作用：指定插件写入 RouterOS 条目时使用的注释前缀。该前缀用于区分 OxiDNS 创建的动态项和常驻项，便于后续刷新、重载与清理。
+- 注意事项：该值及插件 `tag` 不应包含 `;` 或 `=`，以避免影响内部标记格式。
+
+#### `persistent`
+
+- 类型：`object`；必填：否；默认值：无
+- 作用：定义需要长期保留的静态地址集合。该部分不依赖 DNS 应答触发，可在插件启动后直接同步到 RouterOS，并由后台 reconcile 保持一致性。
+- 子字段：
+  - `ips`
+  - `files`
+
+#### `persistent.ips`
+
+- 类型：`array<string>`；必填：否；默认值：空
+- 作用：以内联方式声明常驻 IP 或 CIDR 网段。适用于数量较少且变更频率不高的固定策略对象。
+- 支持格式：单个 IPv4、单个 IPv6、IPv4 CIDR、IPv6 CIDR。
+
+#### `persistent.files`
+
+- 类型：`array<string>`；必填：否；默认值：空
+- 作用：从外部文件加载常驻地址集合。适用于需要由其他系统生成、集中维护或批量管理的地址列表。
+- 行为说明：这些文件只在插件初始化时读取一次。文件变更后如需生效，需要 reload 插件或应用。
+
+#### `min_ttl`
+
+- 类型：`u64`；必填：否；默认值：`60`
+- 作用：定义动态地址项允许使用的最小 TTL。当 DNS 应答中的 TTL 过小或为零时，插件会提升到该值后再写入 RouterOS。
+- 适用场景：用于避免高频刷新造成的管理面抖动。
+
+#### `max_ttl`
+
+- 类型：`u64`；必填：否；默认值：`3600`
+- 作用：定义动态地址项允许使用的最大 TTL。当 DNS 应答中的 TTL 过大时，插件会截断到该上限。
+- 适用场景：用于限制策略项在网络设备中的滞留时间，降低地址陈旧风险。
+
+#### `fixed_ttl`
+
+- 类型：`u64`；必填：否；默认值：无
+- 作用：为所有动态写入项指定固定 TTL。配置本项后，插件不再使用 DNS 记录中的原始 TTL，也不再受 `min_ttl` 与 `max_ttl` 的区间裁剪影响。若设为 `0`，则动态项不会设置 RouterOS `timeout`。
+- 适用场景：适合需要统一刷新周期、便于运维预估和策略收敛的场景。
+
+#### `cleanup_on_shutdown`
+
+- 类型：`bool`；必填：否；默认值：`true`
+- 作用：控制插件在正常关闭和应用级 reload 时是否清理由其管理的条目。启用后会删除自身写入并可识别归属的 RouterOS 地址项，全部清理共用 30 秒预算；超时后进程继续关闭并报告错误。
+- 影响：关闭该选项后，已写入条目会继续保留在 RouterOS 中，适合要求策略状态跨进程重启或 reload 保留的场景。生产重启或滚动发布需要策略连续性时建议设为 `false`。
+
+### 行为说明
+
+- 插件本身不改 DNS 响应。
+- 启动阶段不会等待 RouterOS address-list 扫描完成；持久项恢复会交给后台 manager 执行，失败后退避重试，不阻塞 DNS 服务启动或动态观察写入。
+- 正向阶段只透传。
+- 回程阶段：
+  - 仅在 A/AAAA 查询的 `NOERROR` 响应中，提取 Answer 区全部已启用地址族的 A/AAAA；不重建 CNAME 链。
+  - 去重并保留最大 TTL。
+  - 根据异步或同步模式投递给后台 manager。
+- manager 负责：
+  - 动态项刷新
+  - 持久项一致性维护
+  - 关闭清理
+- 启动时始终执行一次持久项恢复，即使当前没有 `persistent`，也会清理旧配置遗留的本插件持久项。恢复失败时持续退避重试至成功。
+- 仅在配置了 `persistent` 时每 180 秒对账一次；对账使用初始化时已加载的内存集合，不重新读取文件。
+- 动态项是 DNS 观察结果，不是期望状态，不参与启动或周期全表对账。用户手工删除、修改动态项后插件不主动纠偏；只有后续 DNS 再次观察到同一 IP 并触发写入时才可能覆盖该变化。
+- 有限 TTL 动态项在有效 TTL 的 75% 处允许由后续 DNS 观察再次刷新；插件不会为动态项启动独立刷新定时器，`fixed_ttl: 0` 的永久项也不会自动刷新。
+- 同一列表内同一 IP 的多次观察保留最晚的有效到期时间；刷新时按该合并租约的剩余时间设置 RouterOS `timeout`，后续较短的 TTL 不会提前结束仍有效的租约。
+- 更新或删除地址项前会按内部 ID 和 list 重新查询，再核对规范化 address key 和完整 ownership comment，避免存储地址文本差异导致复核漏掉已有条目；RouterOS `timeout` 只是租约数据，不属于删除授权条件。RouterOS 最终仍只支持按内部 ID 删除，不提供原子 compare-and-delete。
+- RouterOS 在列表已存在同一地址时会拒绝新增，插件把该拒绝视为幂等结果而不是写入错误：重新扫描目标列表，条目归属本插件时按常规归属流程更新，否则该 key 交给已有条目。
+
+### 典型用途
+
+- DNS 驱动路由地址集维护。
+- DNS 驱动动态策略名单。
+- 通过 RouterOS address-list 把域名解析结果外溢到网络设备策略层。
+
+<Admonition type="note" title="注意事项">
+
+- 至少需要 `address_list4` 或 `address_list6` 之一。
+- 建议使用 OxiDNS 专用 `address-list`，避免接入大型共享列表，以降低 RouterOS 管理面扫描成本。
+- `comment_prefix` 与插件 `tag` 不能包含 `;` 或 `=`。
+- 同步模式不会改变 DNS 应答本身，即使 RouterOS 写入失败也会保留 DNS 结果。
+- `fixed_ttl: 0` 的动态项不会自然过期，也没有记录数量上限；用户需要评估 RouterOS 容量并负责显式清理。
+- 应用级 reload 对该插件采用直接 shutdown/restart 语义：旧实例先完整 shutdown，新实例随后才初始化并启动；旧实例待处理观测不移交。`cleanup_on_shutdown: true` 时会清理旧实例拥有的条目，重建期间可能出现策略空窗；如需在 reload 期间保留 RouterOS 条目，请设为 `false`。不同进程不能同时使用相同的插件 tag、注释前缀和目标列表；滚动发布时应使用不同 ownership namespace，或确保旧实例停止写入。
+
+</Admonition>
+
+## `ros_route`
+
+<PluginAvailability from="full" />
+
+### 作用
+
+把成功 DNS 应答中的 A/AAAA 地址同步为 RouterOS 指定路由表中的静态主机路由。IPv4 地址写为 `/32`，IPv6 地址写为 `/128`，并使用对应地址族的网关和统一的 route distance。
+
+该插件是只产生外部副作用的 continuation executor，不修改 DNS 请求、响应或控制流。应把它放在能够产生最终应答的 executor 之前，使其在回程阶段观察完整响应。
+
+### 配置示例
+
+```yaml
+- tag: ros_route_policy
+  type: ros_route
+  args:
+    # RouterOS API 地址
+    address: "192.168.88.1:8728"
+    # API 用户名和密码
+    username: "api-user"
+    password: "secret"
+    # API 连接、发送和接收超时，单位秒
+    connect_timeout: 5
+    send_timeout: 5
+    receive_timeout: 5
+    # 异步提交，避免阻塞 DNS 主路径
+    async: true
+    # async=false 时等待 manager 完成一次写入尝试的上限
+    wait_timeout: 8s
+    # 入口去重队列和重试积压各自允许的不同路由数量
+    queue_capacity: 16384
+    # RouterOS 侧必须已经存在该路由表及配套 routing rule
+    routing_table: "via_proxy"
+    # 至少配置一个地址族的网关
+    gateway4: "192.168.88.2@main"
+    gateway6: "fe80::2%ether1"
+    # 受管路由属性
+    distance: 100
+    # 可选递归路由属性；按实际路由链设置
+    # scope: 30
+    # target_scope: 11
+    comment_prefix: "oxi"
+    # 动态路由 TTL 裁剪范围
+    min_ttl: 60
+    max_ttl: 3600
+    # 删除到期动态主机路由前检查 RouterOS connection tracking
+    conntrack_guard: false
+    # 正常关闭或应用 reload 时清理本实例拥有的路由
+    cleanup_on_shutdown: true
+    # 与 DNS 观察无关、需要持续存在的静态路由
+    persistent:
+      ips:
+        - "198.51.100.0/24"
+        - "2001:db8:100::/64"
+      files:
+        - "/etc/oxidns/persistent_routes.txt"
+```
+
+启用 API-SSL 时，将端口改为实际的 TLS 端口（通常为 `8729`），并显式添加 `tls`：
+
+```yaml
+args:
+  address: "router.example:8729"
+  tls:
+    # 可选；覆盖从 address 推断出的证书服务器名称
+    server_name: "router.example"
+    # 可选；自签名证书或私有 CA 的 PEM 文件
+    ca: "/etc/oxidns/routeros-ca.pem"
+    # 可选，默认 false；设为 true 时跳过证书验证，且不能同时配置 ca
+    insecure: false
+```
+
+### 配置项
+
+#### `address`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：指定 RouterOS API 服务地址，通常写为 `host:port`。明文 API 通常使用 `8728`，API-SSL 通常使用 `8729`，实际端口以设备配置为准。
+
+#### `username`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：指定 RouterOS API 登录用户名。账户需要具备读取和维护目标路由表的权限；启用 `conntrack_guard` 时还需要读取 connection tracking。
+
+#### `password`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：指定 RouterOS API 登录密码。避免在公开仓库或共享配置中暴露真实口令。
+
+#### `tls`
+
+- 类型：`object`；必填：否；默认值：无（明文 API）
+- 作用：启用 RouterOS API-SSL。
+- `tls.server_name`：可选字符串；覆盖从 `address` 推断出的证书服务器名称。
+- `tls.ca`：可选字符串；指定自签名证书或私有 CA 的 PEM 文件。
+- `tls.insecure`：可选布尔值，默认 `false`；设为 `true` 时跳过证书验证，且不能同时配置 `tls.ca`。
+
+#### `connect_timeout`
+
+- 类型：`u64`；必填：否；默认值：`5`
+- 单位：秒
+- 作用：限制建立 RouterOS API 连接的等待时间。必须大于 `0`。
+
+#### `send_timeout`
+
+- 类型：`u64`；必填：否；默认值：`5`
+- 单位：秒
+- 作用：限制发送单个 RouterOS API 命令的等待时间。必须大于 `0`。
+
+#### `receive_timeout`
+
+- 类型：`u64`；必填：否；默认值：`5`
+- 单位：秒
+- 作用：限制等待下一段 RouterOS API 响应数据的时间。必须大于 `0`；管理面响应较慢时可按需调大。
+
+#### `async`
+
+- 类型：`bool`；必填：否；默认值：`true`
+- 作用：启用后，DNS 回程阶段只把地址观察投递给后台 manager，不等待 RouterOS 写入结果。关闭后会等待一次 manager 处理结果，但任何 RouterOS 错误都不会修改 DNS 响应。
+
+#### `wait_timeout`
+
+- 类型：`duration`；必填：否；默认值：`8s`
+- 作用：仅在 `async: false` 时限制 DNS 请求等待 manager 的时间。超时后 DNS 响应照常返回，已经入队的任务和后台重试不会被取消。必须大于 `0`。
+
+#### `queue_capacity`
+
+- 类型：`usize`；必填：否；默认值：`16384`
+- 作用：分别限制入口去重队列和重试积压中不同路由 key 的数量。相同 key 的观察会合并；队列满时新的 key 会被丢弃并记录指标，不影响 DNS 响应。必须大于 `0`。
+
+#### `routing_table`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：指定受管路由写入的 RouterOS routing table。插件不会创建路由表、routing rule 或默认路由，这些对象必须提前在 RouterOS 中配置。
+
+#### `gateway4`
+
+- 类型：`string`；必填：条件必填；默认值：无
+- 作用：指定 IPv4 动态主机路由和 IPv4 常驻路由使用的 RouterOS gateway 表达式。未配置时忽略 IPv4 DNS 地址和 IPv4 `persistent` 项。
+
+#### `gateway6`
+
+- 类型：`string`；必填：条件必填；默认值：无
+- 作用：指定 IPv6 动态主机路由和 IPv6 常驻路由使用的 RouterOS gateway 表达式。未配置时忽略 IPv6 DNS 地址和 IPv6 `persistent` 项。
+- 约束：`gateway4` 和 `gateway6` 至少配置一个。
+
+#### `distance`
+
+- 类型：`u8`；必填：否；默认值：`100`
+- 作用：指定插件写入所有受管路由的 RouterOS route distance。
+
+#### `scope`
+
+- 类型：`u8`（1–255）；必填：否；默认值：无
+- 作用：控制当前路由能否用于其他路由的下一跳解析。
+- 适用于 IPv4/IPv6 动态与常驻路由。省略或移除配置时不管理该属性：已有路由保留当前值，新建路由使用 RouterOS 默认值。
+
+#### `target_scope`
+
+- 类型：`u8`（0–255）；必填：否；默认值：无
+- 作用：对应 RouterOS `target-scope`，限制解析 gateway 时可使用的路由 scope，用于递归路由。
+- 适用于 IPv4/IPv6 动态与常驻路由。省略或移除配置时不管理该属性：已有路由保留当前值，新建路由使用 RouterOS 默认值。
+
+#### `comment_prefix`
+
+- 类型：`string`；必填：否；默认值：`oxi`
+- 作用：与插件 `tag` 共同构成 RouterOS comment 中的 ownership namespace，用于启动恢复、对账和安全清理。
+- 约束：`comment_prefix` 和插件 `tag` 都不能包含 `;` 或 `=`；不要手工修改受管路由的 ownership comment。
+
+#### `persistent`
+
+- 类型：`object`；必填：否；默认值：无
+- 作用：定义与 DNS 观察无关、应当持续存在的静态 IP/CIDR 路由。启动时会同步一次；配置非空时每 180 秒对账一次。
+
+#### `persistent.ips`
+
+- 类型：`array<string>`；必填：否；默认值：空
+- 作用：以内联方式声明常驻 IPv4/IPv6 地址或 CIDR。单 IP 会规范化为 `/32` 或 `/128`，CIDR 会规范化到网络地址。
+- 忽略规则：对应地址族没有配置 gateway 的条目以及 `/0` 默认路由会被忽略并记录警告。
+
+#### `persistent.files`
+
+- 类型：`array<string>`；必填：否；默认值：空
+- 作用：从文本文件加载常驻路由；每行写一个 IP/CIDR，支持使用 `#` 注释。
+- 加载时机：文件只在插件初始化或 reload 时读取，周期对账使用已加载的内存集合。文件内容变化后需要 reload 才会生效。
+
+#### `min_ttl`
+
+- 类型：`u32`；必填：否；默认值：`60`
+- 单位：秒
+- 作用：动态主机路由租约的最小 TTL。DNS TTL 小于该值时提升到该值。
+
+#### `max_ttl`
+
+- 类型：`u32`；必填：否；默认值：`3600`
+- 单位：秒
+- 作用：动态主机路由租约的最大 TTL。DNS TTL 大于该值时截断到该值。
+- 约束：`min_ttl` 不能大于 `max_ttl`。
+
+#### `fixed_ttl`
+
+- 类型：`u32`；必填：否；默认值：无
+- 单位：秒
+- 作用：覆盖所有动态主机路由的 DNS TTL；配置后不再使用 `min_ttl`/`max_ttl` 裁剪结果。设为 `0` 表示动态路由不按时间过期。
+
+#### `cleanup_on_shutdown`
+
+- 类型：`bool`；必填：否；默认值：`true`
+- 作用：控制正常关闭和应用级 reload 时是否删除当前 ownership namespace 下的动态与常驻路由。整个关闭与清理流程共用 30 秒预算。
+- 配置建议：若重启或 reload 期间不能接受策略空窗，应设为 `false`，让下次启动从 RouterOS comment 恢复路由状态。
+
+#### `conntrack_guard`
+
+- 类型：`bool`；必填：否；默认值：`false`
+- 作用：删除到期动态 `/32`、`/128` 主机路由前查询 RouterOS connection tracking。目标 IP 仍有连接时，延后 30 秒再检查。
+- 边界：查询失败时保留路由；常驻路由的配置删除、关闭清理和 CIDR 路由不受该保护。
+
+### 行为说明
+
+- 插件正向阶段只透传；回程阶段仅处理首个问题为 A/AAAA 且 RCODE 为 `NOERROR` 的上下文。响应包含问题区时，其首个问题还必须与请求一致。
+- 从 Answer 区提取已启用地址族的全部 A/AAAA 记录，不重建 CNAME 链。重复 IP 保留最大 TTL，每个地址独立形成动态主机路由租约。
+- 后续响应没有再次出现某个 IP，或者返回 NODATA/NXDOMAIN，不会立即撤销已有路由；有限租约在到期 sweep 时清理。
+- RouterOS 不可达不会阻止 DNS 服务启动。manager 会在后台重连和重试，DNS 响应始终保持不变。
+- 启动时执行一次恢复：`persistent` 路由收敛到当前配置，未过期动态租约从 RouterOS comment 恢复，过期动态路由进入清理流程。启动扫描失败会退避重试。
+- 周期对账只维护 `persistent` 期望状态。动态路由属于 DNS 观察结果，用户手工修改后不会被周期性强制恢复；只有再次观察到同一 IP 时才会更新。
+- 有限动态租约在 TTL 已消耗 75%，或距离上次成功写入达到 5 分钟时允许再次写回，取较早者；插件不会主动发起 DNS 刷新。
+
+### 典型用途
+
+- 把特定域名解析出的地址导入 RouterOS 策略路由表。
+- 为代理、VPN 或专线出口维护按目标 IP 的动态主机路由。
+- 通过 `persistent` 同时维护少量与 DNS 无关的固定网段。
+
+<Admonition type="note" title="注意事项">
+
+- `ros_route` 没有 quick setup，必须使用完整插件配置。
+- 插件只维护静态路由，不创建 RouterOS routing table、routing rule 或默认路由。错误的 gateway 或 routing table 通常会在第一次真实写入时暴露。
+- 动态租约没有数量上限，`fixed_ttl: 0` 的路由也不会自然过期；使用前应评估 RouterOS 路由表和 OxiDNS 内存容量。
+- 不同 OxiDNS 实例不能并发管理相同的 `comment_prefix`、插件 `tag` 和 `routing_table` 组合。滚动发布时应使用不同 ownership namespace，或确保旧实例已经停止写入。
+- 应用级 reload 会先关闭旧实例再启动新实例，旧实例的待处理观察不会移交。`cleanup_on_shutdown: true` 可能在重建期间产生策略空窗；需要连续性时请设为 `false`。
+
+</Admonition>
+
+---

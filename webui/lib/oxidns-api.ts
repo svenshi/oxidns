@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 "use client";
 
 import { useAuthStore } from "./auth-store";
@@ -368,9 +373,12 @@ export interface QueryRecordFilters {
   sinceMs?: number;
   untilMs?: number;
   qname?: string;
+  qnameExact?: string;
   qtype?: string;
   clientIp?: string;
+  clientIpExact?: string;
   rcode?: string;
+  rcodeBucket?: "_ERROR" | "_NO_RESPONSE" | "_UNKNOWN";
   status?: QueryRecordStatusFilter;
   matcherTag?: string;
 }
@@ -391,7 +399,14 @@ export interface QueryRecorderPluginStatsRow {
   query_share: number;
 }
 
-export interface QueryRecorderPluginStatsResponse {
+export interface QueryRecorderSampleMetadata {
+  sample_limit: number;
+  sample_truncated: boolean;
+  sample_since_ms: number | null;
+  sample_until_ms: number | null;
+}
+
+export interface QueryRecorderPluginStatsResponse extends QueryRecorderSampleMetadata {
   ok: boolean;
   query_total: number;
   stats: QueryRecorderPluginStatsRow[];
@@ -403,7 +418,7 @@ export interface QueryRecorderTopRow {
   share: number;
 }
 
-export interface QueryRecorderTopResponse {
+export interface QueryRecorderTopResponse extends QueryRecorderSampleMetadata {
   ok: boolean;
   sample_size: number;
   rows: QueryRecorderTopRow[];
@@ -415,7 +430,7 @@ export interface QueryRecorderDistributionRow {
   share: number;
 }
 
-export interface QueryRecorderDistributionResponse {
+export interface QueryRecorderDistributionResponse extends QueryRecorderSampleMetadata {
   ok: boolean;
   sample_size: number;
   rows: QueryRecorderDistributionRow[];
@@ -433,7 +448,7 @@ export interface QueryRecorderLatencySlowRow {
   max_ms: number;
 }
 
-export interface QueryRecorderLatencySummary {
+export interface QueryRecorderLatencySummary extends QueryRecorderSampleMetadata {
   ok: boolean;
   sample_size: number;
   avg_ms: number;
@@ -445,18 +460,20 @@ export interface QueryRecorderLatencySummary {
   slow_top: QueryRecorderLatencySlowRow[];
 }
 
-export type QueryRecorderTimeseriesBucket = "minute" | "hour";
+export type QueryRecorderTimeseriesBucket = "auto" | "minute" | "hour";
 
 export interface QueryRecorderTimeseriesPoint {
   bucket_ms: number;
   total: number;
   error_count: number;
   no_response_count: number;
+  servfail_count: number;
+  partial: boolean;
   avg_ms: number;
   p95_ms: number;
 }
 
-export interface QueryRecorderTimeseriesResponse {
+export interface QueryRecorderTimeseriesResponse extends QueryRecorderSampleMetadata {
   ok: boolean;
   sample_size: number;
   bucket_ms: number;
@@ -670,18 +687,44 @@ export async function fetchCronJobStatuses(
 
 export async function fetchCacheEntries(
   tag: string,
-  options: { limit?: number; cursor?: string; qname?: string } = {},
+  options: {
+    limit?: number;
+    cursor?: string;
+    qname?: string;
+    answer_ip?: string;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<CacheEntriesResponse> {
   const params = new URLSearchParams();
   if (options.limit) params.set("limit", String(options.limit));
   if (options.cursor) params.set("cursor", options.cursor);
   if (options.qname) params.set("qname", options.qname);
+  if (options.answer_ip) params.set("answer_ip", options.answer_ip);
   const suffix = params.toString() ? `?${params.toString()}` : "";
   const response = await fetch(
     apiUrl(`/plugins/${encodeURIComponent(tag)}/entries${suffix}`),
-    { method: "GET", headers: apiHeaders() },
+    { method: "GET", headers: apiHeaders(), signal: options.signal },
   );
   return readJsonResponse<CacheEntriesResponse>(response);
+}
+
+export type CacheEntriesDeleteSelection =
+  | { ids: string[]; filter?: never }
+  | { filter: { qname?: string; answer_ip?: string }; ids?: never };
+
+export async function deleteCacheEntries(
+  tag: string,
+  selection: CacheEntriesDeleteSelection,
+): Promise<{ ok: boolean; deleted_entries: number }> {
+  const response = await fetch(
+    apiUrl(`/plugins/${encodeURIComponent(tag)}/entries/delete`),
+    {
+      method: "POST",
+      headers: { ...apiHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify(selection),
+    },
+  );
+  return readJsonResponse(response);
 }
 
 export async function deleteCacheEntry(tag: string, id: string): Promise<void> {
@@ -1171,9 +1214,13 @@ function appendQueryRecordFilters(
     params.set("until_ms", String(options.untilMs));
   }
   if (options.qname) params.set("qname", options.qname);
+  if (options.qnameExact) params.set("qname_exact", options.qnameExact);
   if (options.qtype) params.set("qtype", options.qtype);
   if (options.clientIp) params.set("client_ip", options.clientIp);
+  if (options.clientIpExact)
+    params.set("client_ip_exact", options.clientIpExact);
   if (options.rcode) params.set("rcode", options.rcode);
+  if (options.rcodeBucket) params.set("rcode_bucket", options.rcodeBucket);
   if (options.status && options.status !== "all") {
     params.set("status", options.status);
   }

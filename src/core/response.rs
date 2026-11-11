@@ -59,6 +59,7 @@ impl ResponseDisposition {
 /// responses are NODATA.  Normal request processing always supplies a
 /// question.
 #[inline]
+#[hotpath::measure]
 pub fn classify_response(response: &Message, question: Option<&Question>) -> ResponseDisposition {
     if let Some(question) = question
         && response.first_question().is_some_and(|response_question| {

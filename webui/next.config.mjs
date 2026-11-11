@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 const isDev = process.env.NODE_ENV === 'development';
 
 /** @type {import('next').NextConfig} */

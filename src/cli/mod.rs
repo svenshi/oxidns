@@ -358,9 +358,9 @@ pub fn parse_cli() -> Cli {
 }
 
 /// Parse command-line options and execute the requested command.
-pub fn run() -> Result<()> {
+pub fn run_from_args() -> Result<()> {
     match parse_cli().command {
-        Command::Start(start) => crate::app::run(crate::app::StartConfig {
+        Command::Start(start) => crate::app::run_foreground(crate::app::StartConfig {
             config: start.config,
             working_dir: start.working_dir,
             log_level: start.log_level,

@@ -495,6 +495,7 @@ impl DomainRuleMatcher {
     /// The evaluation order is intentionally biased toward the cheapest checks:
     /// exact match, suffix trie, substring automaton, then regex set.
     #[inline]
+    #[hotpath::measure]
     pub fn is_match_name(&self, name: &Name) -> bool {
         let domain = name.normalized();
         if self.full.as_ref().is_some_and(|m| m.is_match(domain)) {

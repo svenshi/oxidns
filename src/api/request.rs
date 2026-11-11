@@ -7,6 +7,14 @@ use bytes::Bytes;
 use http::{Request, StatusCode, Uri};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
+use tracing::warn;
+
+/// Upper bound for collected management API request bodies.
+///
+/// Runs before authentication, so it must not buffer untrusted data without a
+/// cap. Generous compared to the DNS-plane DoH limit because `PUT /api/config`
+/// carries the full YAML configuration.
+const MAX_API_BODY: usize = 4 * 1024 * 1024;
 
 pub(crate) fn strip_api_prefix(path: &str) -> Option<String> {
     if path == "/api" {
@@ -38,6 +46,15 @@ pub(super) async fn read_hyper_request(
     while let Some(frame_result) = body.frame().await {
         let frame = frame_result.map_err(|_| StatusCode::BAD_REQUEST)?;
         if let Ok(data) = frame.into_data() {
+            if collected.len() + data.len() > MAX_API_BODY {
+                warn!(
+                    path = parts.uri.path(),
+                    collected = collected.len(),
+                    chunk = data.len(),
+                    "API request body exceeds limit"
+                );
+                return Err(StatusCode::PAYLOAD_TOO_LARGE);
+            }
             collected.extend_from_slice(&data);
         }
     }

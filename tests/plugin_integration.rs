@@ -131,6 +131,238 @@ plugins:
     Ok(())
 }
 
+#[tokio::test]
+async fn test_ecs_handler_upstream_policy_and_request_lifecycle() -> Result<()> {
+    use std::panic::AssertUnwindSafe;
+
+    use futures::FutureExt;
+    use oxidns::proto::{ClientSubnet, EdnsCode, EdnsLocal, EdnsOption};
+
+    let upstream = UdpSocket::bind("127.0.0.1:0").await?;
+    let address = upstream.local_addr()?;
+    let yaml = format!(
+        r#"
+plugins:
+  - tag: forward_main
+    type: forward
+    args:
+      upstreams: [{{addr: 'udp://{address}'}}]
+  - tag: ecs_preset
+    type: ecs_handler
+    args: {{forward: false, preset: '203.0.113.10', send: true}}
+  - tag: ecs_send
+    type: ecs_handler
+    args: {{forward: false, send: true}}
+  - tag: ecs_forward
+    type: ecs_handler
+    args: {{forward: true, preset: '203.0.113.10', send: true}}
+  - tag: ecs_strip
+    type: ecs_handler
+  - tag: seq_preset
+    type: sequence
+    args: [{{exec: $ecs_preset}}, {{exec: $forward_main}}]
+  - tag: seq_send
+    type: sequence
+    args: [{{exec: $ecs_send}}, {{exec: $forward_main}}]
+  - tag: seq_forward
+    type: sequence
+    args: [{{exec: $ecs_forward}}, {{exec: $forward_main}}]
+  - tag: seq_strip
+    type: sequence
+    args: [{{exec: $ecs_strip}}, {{exec: $forward_main}}]
+  - tag: seq_quick
+    type: sequence
+    args: [{{exec: 'ecs_handler 203.0.113.10/16'}}, {{exec: $forward_main}}]
+"#
+    );
+    let runtime = plugin::init(parse_config(&yaml)?).await?;
+    let outcome = AssertUnwindSafe(async {
+        for (tag, class, peer, has_client_ecs, expected) in [
+            (
+                "seq_preset",
+                DNSClass::IN,
+                "192.0.2.42",
+                false,
+                Some(("203.0.113.0", 24)),
+            ),
+            (
+                "seq_preset",
+                DNSClass::IN,
+                "192.0.2.42",
+                true,
+                Some(("203.0.113.0", 24)),
+            ),
+            (
+                "seq_send",
+                DNSClass::IN,
+                "192.0.2.42",
+                false,
+                Some(("192.0.2.0", 24)),
+            ),
+            (
+                "seq_send",
+                DNSClass::IN,
+                "192.0.2.42",
+                true,
+                Some(("192.0.2.0", 24)),
+            ),
+            (
+                "seq_send",
+                DNSClass::IN,
+                "2001:db8:1::42",
+                true,
+                Some(("2001:db8:1::", 48)),
+            ),
+            (
+                "seq_forward",
+                DNSClass::IN,
+                "192.0.2.42",
+                true,
+                Some(("198.51.100.0", 24)),
+            ),
+            (
+                "seq_forward",
+                DNSClass::IN,
+                "192.0.2.42",
+                false,
+                Some(("203.0.113.0", 24)),
+            ),
+            ("seq_strip", DNSClass::IN, "192.0.2.42", true, None),
+            ("seq_strip", DNSClass::CH, "192.0.2.42", true, None),
+            ("seq_preset", DNSClass::CH, "192.0.2.42", true, None),
+            ("seq_preset", DNSClass::CH, "192.0.2.42", false, None),
+            ("seq_send", DNSClass::CH, "192.0.2.42", true, None),
+            (
+                "seq_forward",
+                DNSClass::CH,
+                "192.0.2.42",
+                true,
+                Some(("198.51.100.0", 24)),
+            ),
+            ("seq_forward", DNSClass::CH, "192.0.2.42", false, None),
+            (
+                "seq_quick",
+                DNSClass::IN,
+                "192.0.2.42",
+                true,
+                Some(("203.0.113.0", 24)),
+            ),
+        ] {
+            let sequence = runtime.get_plugin(tag).unwrap().to_executor();
+            let mut request = Message::new();
+            request.set_id(424);
+            request.add_question(Question::new(
+                Name::from_ascii("ecs-policy.test.")?,
+                RecordType::A,
+                class,
+            ));
+            let opt = request.ensure_edns_mut();
+            opt.set_dnssec_ok(true);
+            opt.set_udp_payload_size(4096);
+            let other = EdnsOption::Local(EdnsLocal::new(65001, vec![1, 2, 3]));
+            opt.insert(other.clone());
+            if has_client_ecs {
+                opt.insert(EdnsOption::Subnet(ClientSubnet::new(
+                    "198.51.100.9".parse().unwrap(),
+                    24,
+                    0,
+                )));
+            }
+            let mut context =
+                DnsContext::new(SocketAddr::new(peer.parse().unwrap(), 5353), request);
+            let mock_upstream = async {
+                let mut buf = [0; 4096];
+                let (len, remote) = upstream.recv_from(&mut buf).await?;
+                let request = Message::from_bytes(&buf[..len])?;
+                let mut response = request.response(Rcode::NoError);
+                response
+                    .ensure_edns_mut()
+                    .insert(EdnsOption::Subnet(ClientSubnet::new(
+                        "198.51.100.0".parse().unwrap(),
+                        24,
+                        0,
+                    )));
+                upstream.send_to(&response.to_bytes()?, remote).await?;
+                Ok::<_, DnsError>(request)
+            };
+            let (step, captured) = timeout(Duration::from_secs(3), async {
+                tokio::join!(sequence.execute(&mut context), mock_upstream)
+            })
+            .await
+            .map_err(|_| DnsError::runtime("ECS policy query timed out"))?;
+            assert_eq!(step?, ExecStep::Next);
+            let captured = captured?;
+            assert_eq!(context.request.id(), 424);
+            assert_eq!(context.response().unwrap().id(), 424);
+            assert_eq!(captured.first_qclass(), Some(class));
+            let opt = captured.edns().as_ref().unwrap();
+            let actual = opt.option(EdnsCode::Subnet);
+            let expected_ecs = expected.map(|(ip, prefix)| {
+                EdnsOption::Subnet(ClientSubnet::new(ip.parse().unwrap(), prefix, 0))
+            });
+            assert_eq!(
+                actual,
+                expected_ecs.as_ref(),
+                "tag={tag}, class={class:?}, client_ecs={has_client_ecs}"
+            );
+            assert!(opt.flags().dnssec_ok);
+            assert_eq!(opt.udp_payload_size(), 4096);
+            assert_eq!(opt.option(EdnsCode::Unknown(65001)), Some(&other));
+            assert_eq!(
+                context
+                    .request
+                    .edns()
+                    .as_ref()
+                    .unwrap()
+                    .option(EdnsCode::Subnet)
+                    .is_some(),
+                expected.is_some(),
+                "prepared request ECS must remain available after the chain returns"
+            );
+            let response_has_ecs = context
+                .response()
+                .unwrap()
+                .edns()
+                .as_ref()
+                .is_some_and(|edns| edns.option(EdnsCode::Subnet).is_some());
+            assert_eq!(
+                response_has_ecs,
+                tag == "seq_forward" && class == DNSClass::IN && has_client_ecs
+            );
+        }
+        Ok(())
+    })
+    .catch_unwind()
+    .await;
+    runtime.destroy().await;
+    outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+#[tokio::test]
+async fn test_ecs_handler_invalid_quick_setup_fails_sequence_init() -> Result<()> {
+    for param in ["not-an-ip", "203.0.113.999/24", "2001:db8::gg"] {
+        let yaml = format!(
+            r#"
+plugins:
+  - tag: seq_main
+    type: sequence
+    args: [{{exec: 'ecs_handler {param}'}}]
+"#
+        );
+        match plugin::init(parse_config(&yaml)?).await {
+            Ok(runtime) => {
+                runtime.destroy().await;
+                panic!("invalid ECS preset must fail sequence initialization: {param}");
+            }
+            Err(error) => assert!(
+                error.to_string().contains("invalid ecs_handler preset"),
+                "{error}"
+            ),
+        }
+    }
+    Ok(())
+}
+
 fn test_rule_path(relative_name: &str) -> String {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -722,6 +954,8 @@ plugins:
       receive_timeout: 1
       routing_table: "via_proxy"
       gateway4: "192.0.2.1@main"
+      scope: 30
+      target_scope: 11
       fixed_ttl: 0
       cleanup_on_shutdown: false
 "#;
@@ -1363,6 +1597,86 @@ plugins:
     );
 
     registry.destroy().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_has_cname_config_and_sequence_expressions() -> Result<()> {
+    use oxidns::proto::rdata::CNAME;
+    use oxidns::proto::{RData, Record};
+
+    let config = parse_config(
+        r#"
+plugins:
+  - tag: response_has_cname
+    type: has_cname
+  - tag: seq
+    type: sequence
+    args:
+      - matches: $response_has_cname
+        exec: mark 1
+      - matches: has_cname
+        exec: mark 2
+      - matches: "!$response_has_cname"
+        exec: mark 3
+      - matches: "!has_cname"
+        exec: mark 4
+"#,
+    )?;
+    let registry = plugin::init(config).await?;
+    let matcher = registry
+        .get_plugin("response_has_cname")
+        .expect("has_cname matcher should be registered");
+    assert_eq!(matcher.plugin_type, PluginType::Matcher);
+    assert_eq!(matcher.plugin_name, "has_cname");
+    let sequence = registry
+        .get_plugin("seq")
+        .expect("sequence should exist")
+        .to_executor();
+
+    for has_cname in [false, true] {
+        let mut context = make_context(registry.clone(), "example.com.");
+        if has_cname {
+            let mut response = Message::new();
+            response.add_answer(Record::from_rdata(
+                Name::from_ascii("example.com.")?,
+                60,
+                RData::CNAME(CNAME(Name::from_ascii("target.example.com.")?)),
+            ));
+            context.set_response(response);
+        }
+
+        assert_eq!(matcher.to_matcher().is_match(&mut context), has_cname);
+        assert_eq!(sequence.execute(&mut context).await?, ExecStep::Next);
+        assert_eq!(context.marks().contains(&1), has_cname);
+        assert_eq!(context.marks().contains(&2), has_cname);
+        assert_eq!(context.marks().contains(&3), !has_cname);
+        assert_eq!(context.marks().contains(&4), !has_cname);
+    }
+
+    registry.destroy().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_has_cname_sequence_rejects_parameters() -> Result<()> {
+    let config = parse_config(
+        r#"
+plugins:
+  - tag: seq
+    type: sequence
+    args:
+      - matches: has_cname unexpected
+        exec: accept
+"#,
+    )?;
+    let err = plugin::init(config)
+        .await
+        .expect_err("has_cname quick setup should reject parameters");
+    assert!(
+        err.to_string()
+            .contains("has_cname does not accept parameters")
+    );
     Ok(())
 }
 
@@ -2551,6 +2865,152 @@ plugins:
 }
 
 #[tokio::test]
+async fn test_hosts_startup_reports_format_mismatch() -> Result<()> {
+    let tmp_dir = TempDir::new()?;
+    let hosts_file = tmp_dir.path().join("hosts.txt");
+    let file_path = yaml_path(&hosts_file);
+    for (format, rule, suggested) in [
+        ("", "192.0.2.1 example.test alias.test", "standard"),
+        ("format: oxidns", "2001:db8::1 example.test", "standard"),
+        ("format: standard", "example.test 192.0.2.1", "oxidns"),
+    ] {
+        for from_file in [false, true] {
+            let source = if from_file {
+                std::fs::write(&hosts_file, format!("# comment\n{rule}\n"))?;
+                format!("files:\n        - \"{file_path}\"")
+            } else {
+                format!("entries:\n        - \"{rule}\"")
+            };
+            let config = parse_config(&format!(
+                r#"
+log:
+  level: error
+plugins:
+  - tag: local_hosts
+    type: hosts
+    args:
+      {format}
+      {source}
+"#
+            ))?;
+            let error = match plugin::init(config).await {
+                Ok(registry) => {
+                    registry.destroy().await;
+                    panic!("mismatched hosts format should fail startup");
+                }
+                Err(error) => error.to_string(),
+            };
+            assert!(error.contains("format mismatch"), "{error}");
+            assert!(
+                error.contains(&format!("set format: {suggested}")),
+                "{error}"
+            );
+            if from_file {
+                assert!(error.contains("hosts.txt"), "{error}");
+                assert!(error.contains("line 2"), "{error}");
+            } else {
+                assert!(error.contains("args.entries[0]"), "{error}");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_udp_server_hosts_standard_format_merges_addresses_and_passes_other_qtypes()
+-> Result<()> {
+    let tmp_dir = TempDir::new()?;
+    let hosts_file = tmp_dir.path().join("hosts.txt");
+    std::fs::write(
+        &hosts_file,
+        "# standard hosts\n192.0.2.11 EXAMPLE.test. alias.test # aliases\n\
+         192.0.2.10 example.test\n2001:db8::10 example.test alias.test\n\
+         2001:db8::11 example.test alias.test\n",
+    )?;
+    let file_path = yaml_path(&hosts_file);
+    let mut registry_and_addr = None;
+    for _ in 0..16 {
+        let listen = reserve_local_udp_addr()?;
+        let yaml = format!(
+            r#"
+log:
+  level: info
+plugins:
+  - tag: hosts
+    type: hosts
+    args:
+      format: standard
+      entries:
+        - "192.0.2.10 example.test alias.test"
+      files:
+        - "{file_path}"
+      short_circuit: true
+  - tag: seq
+    type: sequence
+    args:
+      - exec: $hosts
+      - exec: "reject 2"
+  - tag: udp
+    type: udp_server
+    args:
+      entry: seq
+      listen: "{listen}"
+"#
+        );
+        match plugin::init(parse_config(&yaml)?).await {
+            Ok(registry) => {
+                registry_and_addr = Some((registry, listen));
+                break;
+            }
+            Err(err) if err.to_string().contains("Failed to bind UDP socket") => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    let (registry, listen) =
+        registry_and_addr.expect("UDP server should bind to a local port within retry budget");
+    let responses: Result<Vec<Message>> = async {
+        let mut responses = Vec::new();
+        for (name, qtype) in [
+            ("example.test.", RecordType::A),
+            ("example.test.", RecordType::AAAA),
+            ("alias.test.", RecordType::A),
+            ("alias.test.", RecordType::AAAA),
+            ("example.test.", RecordType::HTTPS),
+            ("example.test.", RecordType::SVCB),
+            ("example.test.", RecordType::TXT),
+            ("www.example.test.", RecordType::A),
+        ] {
+            responses.push(exchange_udp_query_with_qtype(listen, name, qtype).await?);
+        }
+        Ok(responses)
+    }
+    .await;
+    registry.destroy().await;
+    let responses = responses?;
+    for (index, response) in responses.iter().enumerate() {
+        if index < 4 {
+            assert_eq!(response.rcode(), Rcode::NoError);
+            let expected = if index % 2 == 0 {
+                vec!["192.0.2.10", "192.0.2.11"]
+            } else {
+                vec!["2001:db8::10", "2001:db8::11"]
+            };
+            assert_eq!(
+                response.answer_ips(),
+                expected
+                    .into_iter()
+                    .map(|ip| ip.parse::<IpAddr>().unwrap())
+                    .collect::<Vec<_>>()
+            );
+            assert!(response.answers().iter().all(|rr| rr.ttl() == 10));
+        } else {
+            assert_eq!(response.rcode(), Rcode::ServFail);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_udp_server_hosts_file_rules_override_inline_entries() -> Result<()> {
     let tmp_dir = TempDir::new().expect("temp dir should be created");
     let hosts_file = tmp_dir.path().join("hosts.txt");
@@ -3170,6 +3630,103 @@ plugins:
     );
 
     registry.destroy().await;
+    Ok(())
+}
+
+#[cfg(feature = "plugin-dynamic-domain")]
+#[tokio::test]
+async fn test_learn_domain_registrable_rules_match_siblings_and_survive_restart() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let learned_file = temp_dir.path().join("learned-domains.txt");
+    let yaml = format!(
+        r#"
+plugins:
+  - tag: learned_domains
+    type: dynamic_domain_set
+    args:
+      path: "{}"
+      batch_size: 1
+  - tag: learn_main
+    type: learn_domain
+    args:
+      provider: learned_domains
+      rule_kind: registrable_domain
+      async: false
+      error_mode: fail
+  - tag: learn_seq
+    type: sequence
+    args:
+      - exec: "$learn_main"
+  - tag: combined_domains
+    type: domain_set
+    args:
+      sets: [learned_domains]
+  - tag: match_direct
+    type: qname
+    args: ["$learned_domains"]
+  - tag: match_combined
+    type: qname
+    args: ["$combined_domains"]
+"#,
+        yaml_path(&learned_file)
+    );
+    let registry = plugin::init(parse_config(&yaml)?).await?;
+    let executor = registry.get_plugin("learn_seq").unwrap().to_executor();
+    let matcher = registry.get_plugin("match_direct").unwrap().to_matcher();
+    assert!(!matcher.is_match(&mut make_context(registry.clone(), "aweme.snssdk.com.")));
+
+    for qname in [
+        "Security.SNSSDK.COM.",
+        "aweme.snssdk.com.",
+        "api.example.co.uk.",
+        "api.foo.github.io.",
+        "co.uk.",
+        "github.io.",
+        "printer.local.",
+    ] {
+        let mut ctx = make_context(registry.clone(), qname);
+        let mut response = ctx.request().response(Rcode::NoError);
+        response.answers_mut().push(Record::from_rdata(
+            Name::from_ascii(qname)?,
+            60,
+            RData::A(A(Ipv4Addr::new(192, 0, 2, 9))),
+        ));
+        ctx.set_response(response);
+        let original_request = ctx.request().clone();
+        let original_response = ctx.response().unwrap().clone();
+        assert!(matches!(executor.execute(&mut ctx).await?, ExecStep::Next));
+        assert_eq!(ctx.request(), &original_request);
+        assert_eq!(ctx.response(), Some(&original_response));
+    }
+    assert_eq!(
+        fs::read_to_string(&learned_file)?,
+        "domain:snssdk.com\ndomain:example.co.uk\ndomain:foo.github.io\n"
+    );
+    for tag in ["match_direct", "match_combined"] {
+        let matcher = registry.get_plugin(tag).unwrap().to_matcher();
+        for (qname, expected) in [
+            ("snssdk.com.", true),
+            ("frontier.snssdk.com.", true),
+            ("www.example.co.uk.", true),
+            ("bar.foo.github.io.", true),
+            ("bar.github.io.", false),
+            ("other.co.uk.", false),
+            ("notsnssdk.com.", false),
+        ] {
+            assert_eq!(
+                matcher.is_match(&mut make_context(registry.clone(), qname)),
+                expected,
+                "{tag}: {qname}"
+            );
+        }
+    }
+    registry.destroy().await;
+
+    let restarted = plugin::init(parse_config(&yaml)?).await?;
+    let matcher = restarted.get_plugin("match_combined").unwrap().to_matcher();
+    assert!(matcher.is_match(&mut make_context(restarted.clone(), "frontier.snssdk.com.")));
+    assert!(!matcher.is_match(&mut make_context(restarted.clone(), "bar.github.io.")));
+    restarted.destroy().await;
     Ok(())
 }
 
@@ -5956,4 +6513,697 @@ plugins:
         .await
         .map_err(|_| DnsError::runtime("TCP test cleanup timed out"))?;
     outcome
+}
+
+#[tokio::test]
+async fn test_server_unknown_opcode_returns_notimp_over_udp_and_tcp() -> Result<()> {
+    use oxidns::infra::network::transport::tcp::{TcpTransportReader, TcpTransportWriter};
+    use oxidns::proto::{MessageType, Opcode};
+
+    let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let listen = reservation.local_addr()?;
+    let config = parse_config(&format!(
+        r#"
+plugins:
+  - tag: ingress_sink
+    type: black_hole
+  - tag: ingress_udp
+    type: udp_server
+    args:
+      entry: ingress_sink
+      listen: "{listen}"
+  - tag: ingress_tcp
+    type: tcp_server
+    args:
+      entry: ingress_sink
+      listen: "{listen}"
+"#
+    ))?;
+    drop(reservation);
+    let runtime = plugin::init(config).await?;
+    let outcome = async {
+        let client = UdpSocket::bind("127.0.0.1:0").await?;
+        let mut unsolicited = Message::new();
+        unsolicited.set_id(400);
+        unsolicited.set_message_type(MessageType::Response);
+        client.send_to(&unsolicited.to_bytes()?, listen).await?;
+
+        // RFC 8906's unknown-opcode probe is a header-only query.
+        let mut query = Message::new();
+        query.set_id(401);
+        query.set_opcode(Opcode::Unknown(15));
+        client.send_to(&query.to_bytes()?, listen).await?;
+        let mut buf = [0; 2048];
+        let (len, _) = timeout(Duration::from_secs(2), client.recv_from(&mut buf))
+            .await
+            .map_err(|_| DnsError::runtime("unknown UDP opcode did not receive a response"))??;
+        let response = Message::from_bytes(&buf[..len])?;
+        assert_eq!(
+            response.id(),
+            query.id(),
+            "unsolicited responses must be dropped"
+        );
+        assert_eq!(response.rcode(), Rcode::NotImp);
+        assert_eq!(response.opcode(), query.opcode());
+        assert!(response.questions().is_empty());
+
+        let stream = tokio::net::TcpStream::connect(listen).await?;
+        let (reader, writer) = stream.into_split();
+        let mut reader = TcpTransportReader::new(reader);
+        let mut writer = TcpTransportWriter::new(writer);
+        writer.write_message(&query).await?;
+        let response = timeout(Duration::from_secs(2), reader.read_message())
+            .await
+            .map_err(|_| DnsError::runtime("unknown TCP opcode did not receive a response"))??;
+        assert_eq!(response.id(), query.id());
+        assert_eq!(response.rcode(), Rcode::NotImp);
+        assert_eq!(response.opcode(), query.opcode());
+        Ok::<(), DnsError>(())
+    }
+    .await;
+    timeout(Duration::from_secs(3), runtime.destroy())
+        .await
+        .map_err(|_| DnsError::runtime("ingress test cleanup timed out"))?;
+    outcome
+}
+
+#[cfg(feature = "server-doq")]
+#[tokio::test]
+async fn test_doq_shutdown_closes_partial_stream_and_drains_accepted_request() -> Result<()> {
+    let upstream = UdpSocket::bind("127.0.0.1:0").await?;
+    let upstream_addr = upstream.local_addr()?;
+    let reservation = UdpSocket::bind("127.0.0.1:0").await?;
+    let listen = reservation.local_addr()?;
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/server-tls");
+    let config = parse_config(&format!(
+        r#"
+plugins:
+  - tag: doq_drain_cache
+    type: cache
+    args:
+      short_circuit: true
+  - tag: doq_drain_forward
+    type: forward
+    args:
+      upstreams:
+        - addr: "udp://{upstream_addr}"
+          timeout: 5s
+  - tag: doq_drain_sequence
+    type: sequence
+    args:
+      - exec: $doq_drain_cache
+      - exec: $doq_drain_forward
+  - tag: doq_drain_server
+    type: quic_server
+    args:
+      entry: doq_drain_sequence
+      listen: "{listen}"
+      cert: {}
+      key: {}
+"#,
+        serde_json::to_string(&fixtures.join("cert.pem"))?,
+        serde_json::to_string(&fixtures.join("key.pem"))?
+    ))?;
+    drop(reservation);
+    let runtime = plugin::init(config).await?;
+    let outcome = async {
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in
+            rustls_pemfile::certs(&mut include_bytes!("fixtures/server-tls/cert.pem").as_slice())
+        {
+            roots
+                .add(cert?)
+                .map_err(|error| DnsError::runtime(error.to_string()))?;
+        }
+        let mut tls = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        tls.alpn_protocols = vec![b"doq".to_vec()];
+        let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls)
+            .map_err(|error| DnsError::runtime(error.to_string()))?;
+        let mut client_config = quinn::ClientConfig::new(Arc::new(crypto));
+        let mut transport = quinn::TransportConfig::default();
+        transport.keep_alive_interval(Some(Duration::from_millis(100)));
+        client_config.transport_config(Arc::new(transport));
+        let mut client = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap())?;
+        client.set_default_client_config(client_config);
+        let connection = timeout(Duration::from_secs(2), client.connect(listen, "localhost")?)
+            .await
+            .map_err(|_| DnsError::runtime("DoQ handshake timed out"))?
+            .map_err(|error| DnsError::runtime(error.to_string()))?;
+
+        // Keep a stream blocked on an incomplete length prefix while another
+        // stream reaches the executor. Shutdown must close only the transport
+        // waits, preserving the accepted request's cache side effect.
+        let (mut partial_send, mut partial_recv) = connection
+            .open_bi()
+            .await
+            .map_err(|error| DnsError::runtime(error.to_string()))?;
+        partial_send
+            .write_all(&[0])
+            .await
+            .map_err(|error| DnsError::runtime(error.to_string()))?;
+        let query = make_context(runtime.clone(), "doq-drain.test.")
+            .request()
+            .clone();
+        let (mut send, _recv) = connection
+            .open_bi()
+            .await
+            .map_err(|error| DnsError::runtime(error.to_string()))?;
+        let body = query.to_bytes()?;
+        send.write_all(&(body.len() as u16).to_be_bytes())
+            .await
+            .map_err(|error| DnsError::runtime(error.to_string()))?;
+        send.write_all(&body)
+            .await
+            .map_err(|error| DnsError::runtime(error.to_string()))?;
+        send.finish()
+            .map_err(|error| DnsError::runtime(error.to_string()))?;
+        let mut buf = [0; 4096];
+        let (len, peer) = timeout(Duration::from_secs(2), upstream.recv_from(&mut buf))
+            .await
+            .map_err(|_| DnsError::runtime("DoQ request did not reach upstream"))??;
+        let pending = Message::from_bytes(&buf[..len])?;
+        let server = runtime.get_plugin("doq_drain_server").unwrap();
+        let shutdown = server.as_plugin().destroy();
+        tokio::pin!(shutdown);
+        assert!(futures::poll!(&mut shutdown).is_pending());
+        timeout(Duration::from_secs(2), connection.closed())
+            .await
+            .map_err(|_| DnsError::runtime("DoQ shutdown retained a partial stream"))?;
+        assert!(
+            futures::poll!(&mut shutdown).is_pending(),
+            "accepted executor work must drain"
+        );
+        assert!(
+            timeout(Duration::from_secs(2), partial_recv.read(&mut [0; 1]))
+                .await
+                .map_err(|_| DnsError::runtime("partial DoQ stream did not close"))?
+                .is_err()
+        );
+
+        let mut response = pending.response(Rcode::NoError);
+        response.add_answer(oxidns::proto::Record::from_rdata(
+            pending.first_question().unwrap().name().clone(),
+            60,
+            oxidns::proto::RData::A(oxidns::proto::rdata::A(Ipv4Addr::new(192, 0, 2, 35))),
+        ));
+        upstream.send_to(&response.to_bytes()?, peer).await?;
+        timeout(Duration::from_secs(2), &mut shutdown)
+            .await
+            .map_err(|_| DnsError::runtime("DoQ shutdown did not drain accepted request"))??;
+        let cache = runtime.get_plugin("doq_drain_cache").unwrap().to_executor();
+        let mut cached = make_context(runtime.clone(), "doq-drain.test.");
+        cache.execute(&mut cached).await?;
+        assert_eq!(
+            cached
+                .response()
+                .expect("accepted request must populate cache")
+                .answers()
+                .len(),
+            1
+        );
+        Ok::<(), DnsError>(())
+    }
+    .await;
+    timeout(Duration::from_secs(8), runtime.destroy())
+        .await
+        .map_err(|_| DnsError::runtime("DoQ test cleanup timed out"))?;
+    outcome
+}
+
+#[test]
+fn test_load_balance_dependency_validation() -> Result<()> {
+    for (targets, other, expected) in [
+        ("[{exec: missing}]", "", "missing plugin"),
+        (
+            "[{exec: target}]",
+            "  - tag: target\n    type: _true\n",
+            "expects executor",
+        ),
+        ("[{exec: balance_main}]", "", "references itself"),
+        (
+            "[{exec: child}]",
+            "  - tag: child\n    type: sequence\n    args: [{exec: '$balance_main'}]\n",
+            "Circular dependency",
+        ),
+    ] {
+        let config = parse_config(&format!(
+            "plugins:\n  - tag: balance_main\n    type: load_balance\n    args:\n      executors: {targets}\n{other}"
+        ))?;
+        let error = plugin::analyze_configuration(&config)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{error}");
+        if expected != "Circular dependency" {
+            assert!(error.contains("args.executors[0].exec"), "{error}");
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_load_balance_invalid_fields_fail_startup() -> Result<()> {
+    for args in [
+        "{}",
+        "{executors: []}",
+        "{executors: [{exec: ''}]}",
+        "{executors: [{exec: '   '}]}",
+        "{executors: [{exec: target, weight: 0}]}",
+        "{executors: [{exec: target, weight: -1}]}",
+        "{executors: [{exec: target, weight: 1.5}]}",
+        "{executors: [{exec: target, weight: 4294967296}]}",
+        "{executors: [{exec: target}, {exec: target}]}",
+        "{strategy: invalid, executors: [{exec: target}]}",
+    ] {
+        let config = parse_config(&format!(
+            "plugins:\n  - tag: balance_main\n    type: load_balance\n    args: {args}\n  - tag: target\n    type: sequence\n    args: [{{exec: 'mark 1'}}]\n"
+        ))?;
+        match plugin::init(config).await {
+            Ok(runtime) => {
+                runtime.destroy().await;
+                panic!("invalid config accepted: {args}");
+            }
+            Err(error) => assert!(error.to_string().contains("load_balance"), "{error}"),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_load_balance_nested_sequence_control_flow_and_reload_reset() -> Result<()> {
+    let yaml = r#"
+plugins:
+  - tag: seq_main
+    type: sequence
+    args:
+      - exec: mark 1
+      - exec: $balance_main
+      - exec: mark 99
+  - tag: balance_main
+    type: load_balance
+    args:
+      executors: [{exec: seq_next}, {exec: seq_return}, {exec: seq_stop}]
+  - tag: seq_next
+    type: sequence
+    args: [{exec: 'mark 11'}]
+  - tag: seq_return
+    type: sequence
+    args: [{exec: 'mark 22'}, {exec: return}, {exec: 'mark 77'}]
+  - tag: seq_stop
+    type: sequence
+    args: [{exec: 'mark 33'}, {exec: accept}, {exec: 'mark 77'}]
+"#;
+    for _ in 0..2 {
+        let runtime = plugin::init(parse_config(yaml)?).await?;
+        let outcome = async {
+            let main = runtime.get_plugin("seq_main").unwrap().to_executor();
+            assert_eq!(
+                runtime.get_plugin("balance_main").unwrap().plugin_name,
+                "load_balance"
+            );
+            for (mark, stop) in [(11, false), (22, false), (33, true), (11, false)] {
+                let mut context = make_context(runtime.clone(), "balance.test.");
+                let step = main.execute(&mut context).await?;
+                assert_eq!(step, if stop { ExecStep::Stop } else { ExecStep::Next });
+                assert!(context.marks().contains(&1));
+                assert!(context.marks().contains(&mark));
+                assert_eq!(context.marks().contains(&99), !stop);
+                assert!(!context.marks().contains(&77));
+                assert!(context.response().is_none());
+            }
+            Ok::<_, DnsError>(())
+        }
+        .await;
+        runtime.destroy().await;
+        outcome?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_load_balance_ecs_cache_isolation_and_fallback() -> Result<()> {
+    use oxidns::proto::{ClientSubnet, Edns, EdnsCode, EdnsOption, Record};
+
+    // Test independent branch caches and a shared ECS-keyed cache.
+    for shared_cache in [false, true] {
+        let upstream = UdpSocket::bind("127.0.0.1:0").await?;
+        let address = upstream.local_addr()?;
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let responder = tokio::spawn(async move {
+            let mut observed = Vec::new();
+            let mut buffer = [0u8; 4096];
+            loop {
+                tokio::select! {
+                    _ = &mut shutdown_rx => return Ok::<_, DnsError>(observed),
+                    received = upstream.recv_from(&mut buffer) => {
+                        let (length, peer) = received?;
+                        let request = Message::from_bytes(&buffer[..length])?;
+                        let subnet = match request.edns().as_ref().and_then(|edns| edns.option(EdnsCode::Subnet)) {
+                            Some(EdnsOption::Subnet(subnet)) => subnet.clone(),
+                            _ => return Err(DnsError::runtime("missing branch ECS")),
+                        };
+                        observed.push(subnet.addr());
+                        let mut response = request.response(Rcode::NoError);
+                        response.add_answer(Record::from_rdata(
+                            request.first_question().unwrap().name().clone(),
+                            60,
+                            oxidns::proto::RData::A(oxidns::proto::A(match subnet.addr() {
+                                IpAddr::V4(ip) => ip,
+                                _ => return Err(DnsError::runtime("expected IPv4 ECS")),
+                            })),
+                        ));
+                        let mut edns = Edns::new();
+                        edns.insert(EdnsOption::Subnet(subnet));
+                        response.set_edns(edns);
+                        upstream.send_to(&response.to_bytes()?, peer).await?;
+                    }
+                }
+            }
+        });
+        let mut yaml = format!(
+            r#"
+plugins:
+  - tag: seq_main
+    type: sequence
+    args:
+      - exec: $ecs_clear
+      - exec: $balance_main
+  - tag: ecs_clear
+    type: ecs_handler
+    args: {{forward: false, send: false}}
+  - tag: balance_main
+    type: load_balance
+    args:
+      executors: [{{exec: seq_first}}, {{exec: seq_second}}, {{exec: seq_third}}]
+  - tag: forward_main
+    type: forward
+    args:
+      upstreams: [{{addr: 'udp://{address}'}}]
+  - tag: cache_shared
+    type: cache
+    args: {{size: 16, ecs_in_key: true, short_circuit: true}}
+  - tag: fallback_main
+    type: fallback
+    args: {{primary: balance_error, secondary: seq_backup, threshold: 1000}}
+  - tag: balance_error
+    type: load_balance
+    args:
+      executors: [{{exec: forward_broken}}]
+  - tag: forward_broken
+    type: forward
+    args:
+      upstreams: [{{addr: 'udp://127.0.0.1:0', timeout: 0}}]
+  - tag: seq_backup
+    type: sequence
+    args: [{{exec: 'black_hole 192.0.2.99'}}]
+"#
+        );
+        for (name, ip) in [
+            ("first", "192.0.2.1"),
+            ("second", "198.51.100.1"),
+            ("third", "203.0.113.1"),
+        ] {
+            let cache = if shared_cache {
+                "cache_shared".to_string()
+            } else {
+                format!("cache_{name}")
+            };
+            yaml.push_str(&format!(
+                r#"
+  - tag: ecs_{name}
+    type: ecs_handler
+    args: {{preset: '{ip}', mask4: 24}}
+  - tag: cache_{name}
+    type: cache
+    args: {{size: 16, short_circuit: true}}
+  - tag: seq_{name}
+    type: sequence
+    args:
+      - exec: $ecs_{name}
+      - exec: ${cache}
+      - exec: $forward_main
+"#
+            ));
+        }
+        let outcome = async {
+            let runtime = plugin::init(parse_config(&yaml)?).await?;
+            let outcome = async {
+                let main = runtime.get_plugin("seq_main").unwrap().to_executor();
+                for index in 0..9 {
+                    let mut context = make_context(runtime.clone(), "balance-cache.test.");
+                    context.request.set_id(index as u16);
+                    let mut edns = Edns::new();
+                    edns.insert(EdnsOption::Subnet(ClientSubnet::new("10.0.0.1".parse().unwrap(), 24, 0)));
+                    context.request.set_edns(edns);
+                    timeout(Duration::from_secs(2), main.execute(&mut context))
+                        .await.map_err(|_| DnsError::runtime("balanced query timed out"))??;
+                    let response = context.response().expect("branch must answer");
+                    assert_eq!(response.id(), index as u16);
+                    let expected: Ipv4Addr = ["192.0.2.0", "198.51.100.0", "203.0.113.0"][index % 3].parse().unwrap();
+                    assert_eq!(response.answers()[0].data(), &oxidns::proto::RData::A(oxidns::proto::A(expected)));
+                    assert!(!response.edns().as_ref().is_some_and(|edns| edns.option(EdnsCode::Subnet).is_some()));
+                }
+                let fallback = runtime.get_plugin("fallback_main").unwrap().to_executor();
+                let mut context = make_context(runtime.clone(), "fallback-balance.test.");
+                timeout(Duration::from_secs(2), fallback.execute(&mut context))
+                    .await.map_err(|_| DnsError::runtime("balanced fallback timed out"))??;
+                assert!(context.response().is_some());
+                let metrics = oxidns::infra::observability::metrics::render_prometheus_metrics();
+                for name in ["first", "second", "third"] {
+                    assert!(metrics.contains(&format!("load_balance_selected_total{{plugin_tag=\"balance_main\",executor=\"seq_{name}\"}} 3")));
+                }
+                assert!(metrics.contains("load_balance_error_total{plugin_tag=\"balance_error\",executor=\"forward_broken\"} 1"));
+                Ok::<_, DnsError>(())
+            }.await;
+            runtime.destroy().await;
+            assert!(!oxidns::infra::observability::metrics::render_prometheus_metrics().contains("plugin_tag=\"balance_main\""));
+            outcome
+        }.await;
+        let _ = shutdown_tx.send(());
+        let observed = timeout(Duration::from_secs(2), responder)
+            .await
+            .map_err(|_| DnsError::runtime("upstream shutdown timed out"))?
+            .map_err(|error| DnsError::runtime(error.to_string()))??;
+        outcome?;
+        assert_eq!(
+            observed,
+            ["192.0.2.0", "198.51.100.0", "203.0.113.0"].map(|ip| ip.parse::<IpAddr>().unwrap())
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_cache_persistence_survives_standalone_reinitialization() -> Result<()> {
+    let dir = TempDir::new()?;
+    let dump = dir.path().join("standalone.dump");
+    let yaml = format!(
+        "plugins:\n  - tag: persistence_cache\n    type: cache\n    args:\n      dump_file: '{}'\n",
+        yaml_path(&dump)
+    );
+    let config = parse_config(&yaml)?;
+    let runtime = plugin::init(config.clone()).await?;
+    let cache = runtime
+        .get_plugin("persistence_cache")
+        .unwrap()
+        .to_executor();
+    let mut context = make_context(runtime.clone(), "persist.example.");
+    let mut response = context.request().clone();
+    response.add_answer(oxidns::proto::Record::from_rdata(
+        Name::from_ascii("persist.example.").unwrap(),
+        3600,
+        oxidns::proto::RData::A(oxidns::proto::rdata::A(Ipv4Addr::LOCALHOST)),
+    ));
+    context.set_response(response);
+    cache.execute(&mut context).await?;
+    plugin::destroy_runtime().await;
+    assert!(dump.is_file());
+    let runtime = plugin::init(config).await?;
+    // Initialization must restore the snapshot before queries or management
+    // operations can observe the new cache; no warm-up polling is necessary.
+    let mut restored = make_context(runtime.clone(), "persist.example.");
+    runtime
+        .get_plugin("persistence_cache")
+        .unwrap()
+        .to_executor()
+        .execute(&mut restored)
+        .await?;
+    let hit = restored.response().is_some();
+    plugin::destroy_runtime().await;
+    assert!(
+        hit,
+        "initialization must complete restoration before activation"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_edns_filter_upstream_scopes_and_composition() -> Result<()> {
+    use oxidns::proto::{ClientSubnet, EdnsCookie, EdnsLocal, EdnsOption};
+
+    // Empty answers make concurrent selection wait for every active upstream.
+    for (options, quick, compose, expected) in [
+        ("", false, false, vec![8, 10, 20, 65001]),
+        ("denylist: [65001]", false, false, vec![8, 10, 20]),
+        ("policy: strip", false, false, vec![]),
+        ("policy: strip_unknown", false, false, vec![8, 10, 20]),
+        ("allowlist: [8, 10], denylist: [10]", false, false, vec![8]),
+        ("policy: strip, allowlist: [8]", false, false, vec![]),
+        ("", true, false, vec![8, 10, 20, 65001]),
+        ("policy: strip", false, true, vec![]),
+    ] {
+        for (upstream_count, restore_request) in [(1, true), (2, true), (1, false), (2, false)] {
+            let mut sockets = Vec::new();
+            let mut addresses = Vec::new();
+            for _ in 0..upstream_count {
+                let socket = UdpSocket::bind("127.0.0.1:0").await?;
+                addresses.push(format!("udp://{}", socket.local_addr()?));
+                sockets.push(socket);
+            }
+            let mut yaml = "plugins:\n".to_owned();
+            let forward_exec = if quick {
+                format!("forward {}", addresses.join(" "))
+            } else {
+                let upstreams = addresses
+                    .iter()
+                    .map(|addr| format!("{{addr: '{addr}', timeout: 1s}}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                yaml.push_str(&format!("  - tag: forward_edns_main\n    type: forward\n    args:\n      concurrent: {upstream_count}\n      response_selection: prefer_positive\n      upstreams: [{upstreams}]\n"));
+                "$forward_edns_main".to_owned()
+            };
+            yaml.push_str("  - tag: filter_main\n    type: edns_filter\n");
+            if !options.is_empty() || !restore_request {
+                let separator = if options.is_empty() { "" } else { ", " };
+                yaml.push_str(&format!(
+                    "    args: {{{options}{separator}restore_request: {restore_request}}}\n"
+                ));
+            }
+            yaml.push_str(&format!("  - tag: upstream_scope\n    type: sequence\n    args:\n      - exec: $filter_main\n      - exec: '{forward_exec}'\n"));
+            yaml.push_str("  - tag: seq_edns_main\n    type: sequence\n    args:\n");
+            if compose {
+                yaml.push_str(
+                    "      - exec: $ecs_edns_main\n      - exec: 'forward_edns0opt 65001'\n",
+                );
+            }
+            yaml.push_str("      - exec: jump upstream_scope\n      - exec: mark 7\n");
+            if compose {
+                yaml.push_str("  - tag: ecs_edns_main\n    type: ecs_handler\n    args: {preset: '192.0.2.42', mask4: 24}\n");
+            }
+            let runtime = plugin::init(parse_config(&yaml)?).await?;
+            let mut responders = Vec::new();
+            for socket in sockets {
+                responders.push(tokio::spawn(async move {
+                    timeout(Duration::from_secs(2), async {
+                        let mut buffer = [0u8; 4096];
+                        let (length, peer) = socket.recv_from(&mut buffer).await?;
+                        let request = Message::from_bytes(&buffer[..length])?;
+                        let mut response = request.response(Rcode::NoError);
+                        response
+                            .ensure_edns_mut()
+                            .insert(EdnsOption::Local(EdnsLocal::new(65002, vec![9])));
+                        socket.send_to(&response.to_bytes()?, peer).await?;
+                        Ok::<_, DnsError>(request)
+                    })
+                    .await
+                    .map_err(|_| DnsError::runtime("EDNS mock upstream timed out"))?
+                }));
+            }
+            let mut context = make_context(runtime.clone(), "edns-filter.test.");
+            context.request.set_id(4242);
+            let edns = context.request.ensure_edns_mut();
+            edns.set_udp_payload_size(4096);
+            edns.set_dnssec_ok(true);
+            edns.flags_mut().z = 3;
+            if !compose {
+                edns.insert(EdnsOption::Subnet(ClientSubnet::new(
+                    "192.0.2.0".parse().unwrap(),
+                    24,
+                    0,
+                )));
+            }
+            edns.insert(EdnsOption::Cookie(EdnsCookie::new(vec![1; 8])));
+            edns.insert(EdnsOption::Local(EdnsLocal::new(20, vec![1, 2, 3])));
+            edns.insert(EdnsOption::Local(EdnsLocal::new(65001, vec![4, 5, 6])));
+            let mut original = context.request.clone();
+            if compose {
+                original
+                    .ensure_edns_mut()
+                    .insert(EdnsOption::Subnet(ClientSubnet::new(
+                        "192.0.2.42".parse().unwrap(),
+                        24,
+                        0,
+                    )));
+            }
+            let sequence = runtime.get_plugin("seq_edns_main").unwrap().to_executor();
+            let outcome = timeout(Duration::from_secs(3), sequence.execute(&mut context)).await;
+            let mut observed = Vec::new();
+            for mut responder in responders {
+                let result = timeout(Duration::from_secs(3), &mut responder).await;
+                if result.is_err() {
+                    responder.abort();
+                    let _ = responder.await;
+                }
+                observed.push(result);
+            }
+            timeout(Duration::from_secs(3), runtime.destroy())
+                .await
+                .map_err(|_| DnsError::runtime("EDNS runtime cleanup timed out"))?;
+            outcome.map_err(|_| DnsError::runtime("EDNS forwarding timed out"))??;
+            assert!(
+                context.marks().contains(&7),
+                "outer sequence should resume after the scope"
+            );
+            let mut expected_request = original.clone();
+            if !restore_request {
+                expected_request
+                    .edns_mut()
+                    .as_mut()
+                    .unwrap()
+                    .retain_options(|option| expected.contains(&option.code()));
+            }
+            assert_eq!(context.request, expected_request);
+            let response_codes = context
+                .response()
+                .unwrap()
+                .edns()
+                .as_ref()
+                .unwrap()
+                .options()
+                .iter()
+                .map(EdnsOption::code)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                response_codes,
+                if compose {
+                    vec![65002, 65001]
+                } else {
+                    vec![65002]
+                }
+            );
+            for captured in observed {
+                let captured = captured
+                    .map_err(|_| DnsError::runtime("EDNS mock join timed out"))?
+                    .map_err(|error| DnsError::runtime(error.to_string()))??;
+                assert_eq!(captured.questions(), original.questions());
+                let edns = captured.edns().as_ref().unwrap();
+                assert_eq!(
+                    edns.options()
+                        .iter()
+                        .map(EdnsOption::code)
+                        .collect::<Vec<_>>(),
+                    expected,
+                    "options={options}, quick={quick}, upstreams={upstream_count}"
+                );
+                assert_eq!(edns.udp_payload_size(), 4096);
+                assert!(edns.flags().dnssec_ok);
+                assert_eq!(edns.flags().z, 3);
+                for option in edns.options() {
+                    assert!(original.edns().as_ref().unwrap().options().contains(option));
+                }
+            }
+        }
+    }
+    Ok(())
 }

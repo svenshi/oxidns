@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -93,6 +98,8 @@ const EXPECTED_ADVANCED_FIELDS: Record<string, string[]> = {
     "wait_timeout",
     "queue_capacity",
     "distance",
+    "scope",
+    "target_scope",
     "comment_prefix",
     "persistent",
     "min_ttl",
@@ -183,7 +190,7 @@ function collectRequiredAdvancedPaths(
 
 describe("plugin advanced field classification", () => {
   it("covers the complete plugin registry with the reviewed field paths", () => {
-    expect(pluginKindDefinitions).toHaveLength(65);
+    expect(pluginKindDefinitions).toHaveLength(68);
 
     const actual = Object.fromEntries(
       pluginKindDefinitions

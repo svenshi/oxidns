@@ -1,0 +1,501 @@
+---
+title: Observability and Debugging
+---
+
+import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
+
+These executors record queries, export metrics, or support debugging and tests. Evaluate hot-path cost and data retention.
+
+## `learn_domain`
+
+<PluginAvailability from="standard" />
+
+### Purpose
+
+Observes qnames in the DNS pipeline and writes request names or their registrable domains into a target `dynamic_domain_set`. It is a side-effect executor and never modifies the DNS request or response.
+
+### Example Configuration
+
+```yaml
+- tag: learned_allow
+  type: dynamic_domain_set
+  args:
+    path: "/etc/oxidns/learned-allow.txt"
+
+- tag: learn_allow
+  type: learn_domain
+  args:
+    provider: learned_allow
+    phase: after
+    questions: first
+    qtypes: ["A", "AAAA"]
+    success_only: true
+    answer_required: true
+    rule_kind: full
+    async: true
+    error_mode: continue
+    timeout: 1s
+```
+
+### Configuration Details
+
+#### `provider`
+
+- Type: `string`; Required: yes
+- Purpose: Target `dynamic_domain_set` provider tag.
+- Constraint: must reference `dynamic_domain_set`, not a regular `domain_set`.
+
+#### `phase`
+
+- Type: `string`; Required: no; Default: `after`
+- Values: `before`, `after`
+- Purpose:
+  - `before`: learn from the request questions before downstream executors run.
+  - `after`: run downstream first, then decide whether to learn based on the response.
+
+#### `questions`
+
+- Type: `string`; Required: no; Default: `first`
+- Values: `first`, `all`
+- Purpose: Learns only the first question or all questions.
+
+#### `qtypes`
+
+- Type: `array`; Required: no; Default: `["A", "AAAA"]`
+- Purpose: DNS query types eligible for learning.
+
+#### `success_only`
+
+- Type: `bool`; Required: no; Default: `true`
+- Purpose: Only applies to `phase: after`; requires `NOERROR`.
+
+#### `answer_required`
+
+- Type: `bool`; Required: no; Default: `true`
+- Purpose: Only applies to `phase: after`; requires at least one answer record.
+
+#### `rule_kind`
+
+- Type: `string`; Required: no; Default: `full`
+- Purpose: Select the learned rule generation strategy.
+- Values:
+  - `full`: Generate an exact rule for the complete request name, matching only that name.
+  - `domain`: Generate a suffix rule for the complete request name, matching that name and its subdomains.
+  - `registrable_domain`: Extract the registrable domain (eTLD+1) using the Public Suffix List, then generate a suffix rule matching that domain and all its subdomains. For example, `security.snssdk.com` generates `domain:snssdk.com`, and `api.example.co.uk` generates `domain:example.co.uk`.
+- Boundaries: The registrable-domain strategy uses an embedded ICANN + PRIVATE Public Suffix List, so `api.foo.github.io` generates `domain:foo.github.io` without covering other tenants. No network access is needed; the list updates with the dependency and binary.
+- Skips: The `registrable_domain` strategy skips the DNS root, public suffixes themselves (such as `co.uk` and `github.io`), unknown suffixes, single-label names, `in-addr.arpa` / `ip6.arpa` reverse lookup names, and escaped DNS names. Skips are normal results and do not trigger `error_mode`.
+
+#### `async`
+
+- Type: `bool`; Required: no; Default: `true`
+- Purpose: Enqueues learned rules and continues immediately. When `false`, waits for provider persistence.
+
+#### `error_mode`
+
+- Type: `string`; Required: no; Default: `continue`
+- Values: `continue`, `stop`, `fail`
+- Purpose: Controls execution behavior if learning fails.
+
+#### `timeout`
+
+- Type: `duration`; Required: no; Default: `1s`
+- Purpose: Limits provider write waiting time when `async: false`.
+
+### Behavior
+
+- Learned domains are normalized to lowercase with trailing dots removed.
+- The default output is `full:example.com` to avoid broad accidental matches.
+- With the default `phase: after`, only successful `A` / `AAAA` responses with answers are learned.
+- `phase: before` does not inspect response conditions.
+- Learning only extracts names from request questions, never CNAME targets.
+- Omitting `rule_kind` defaults to `full`; existing `full` and `domain` configurations remain compatible. Changing strategies does not convert or delete rules already stored in the file.
+
+### Learn All Subdomains of a Site
+
+Call the following executor from a response-IP routing branch to learn `security.snssdk.com` as `domain:snssdk.com`. Later queries for `aweme.snssdk.com`, `frontier.snssdk.com`, and other subdomains can then match the same dynamic set.
+
+```yaml
+- tag: learned_cn
+  type: dynamic_domain_set
+  args:
+    path: "/etc/oxidns/learned-cn.txt"
+
+- tag: learn_domain_cn
+  type: learn_domain
+  args:
+    provider: learned_cn
+    rule_kind: registrable_domain
+```
+
+For a request for `security.snssdk.com`, the three strategies generate:
+
+| `rule_kind` | Stored Rule | Matching Range |
+|---|---|---|
+| `full` (default) | `full:security.snssdk.com` | Only the request name |
+| `domain` | `domain:security.snssdk.com` | The request name and its subdomains |
+| `registrable_domain` | `domain:snssdk.com` | The registrable domain and all its subdomains |
+
+Whole-domain learning requires explicit opt-in. It applies a learned result from one subdomain to others under the same registrable domain. Use it when those names should share one routing policy; different services may need different policies, and the Public Suffix List does not determine routing classification. Rules persist and do not automatically expire with DNS answer TTLs. Use the dynamic set management API to remove or clear them.
+
+### Typical Uses
+
+- Add successfully resolved domains to a dynamic allow list.
+- Persist domains seen on a policy branch into a local file for later `qname $learned_allow` or parent `domain_set` matching.
+
+---
+
+## `query_summary`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Records concise query summaries.
+
+### Example Configuration
+
+```yaml
+- tag: summary_main
+  type: query_summary
+  args:
+    # Extra title so multiple summary points are easy to distinguish
+    msg: "main pipeline"
+```
+
+### Configuration Details
+
+#### `msg`
+
+- Type: `string`; Required: no
+- Purpose: Extra summary label.
+
+### quick setup
+
+```yaml
+- exec: "query_summary main"
+```
+
+### Behavior
+
+- Emits compact logs or summaries for operator visibility.
+
+### Typical Uses
+
+- Light observability on the main path
+- Distinguish different branches
+
+---
+
+## `query_recorder`
+
+<PluginAvailability from="standard" />
+
+### Purpose
+
+Records DNS queries, responses, and execution paths to help troubleshoot resolution issues and analyze plugin matches, with historical statistics and live query logs.
+
+Repeated content is shared and larger responses are compressed losslessly, with no extra configuration. Space savings depend on the workload; low repetition can increase storage use.
+
+<Admonition type="note" title="Upgrading to v2">
+
+Upgrades automatically use the new storage while keeping configuration and existing APIs compatible. **History starts afresh; old history is no longer displayed.** Old data is not automatically deleted and continues to occupy space. Neither “clear history” nor retention cleanup removes it.
+
+To reclaim space manually, resolve the actual `path` first (relative paths use the runtime working directory), stop OxiDNS, and back up the database. If the SQLite file belongs only to the target recorder, delete the database and its matching `-wal` and `-shm` files, then restart the service; this also discards that recorder's v1 and v2 history. If multiple recorders share the file, do not delete it. After backing up, identify and remove only the intended recorder's old v1 tables to preserve the other recorders' history.
+
+</Admonition>
+
+### Example Configuration
+
+```yaml
+- tag: query_recorder_main
+  type: query_recorder
+  args:
+    # SQLite path for this recorder. Multiple recorders may share one file.
+    path: "./data/query-recorder-main.sqlite"
+    # Hot-path enqueue buffer size
+    queue_size: 8192
+    # Batch size per SQLite flush
+    batch_size: 256
+    # Background flush interval in milliseconds
+    flush_interval_ms: 200
+    # Number of recent records kept in memory for SSE tail replay
+    memory_tail: 1024
+    # Retention window in days; minimum 1
+    retention_days: 7
+    # Cleanup interval in hours; minimum 1
+    cleanup_interval_hours: 1
+    # Maximum concurrent SQLite readers; minimum 1
+    reader_concurrency: 2
+```
+
+### Configuration Details
+
+#### `path`
+
+- Type: `string`; Required: yes
+- Purpose: SQLite path for this recorder.
+
+#### `queue_size`
+
+- Type: `integer`; Required: no; Default: `8192`
+- Purpose: Bounded queue size between the request path and the writer thread.
+
+#### `batch_size`
+
+- Type: `integer`; Required: no; Default: `256`
+- Purpose: Number of records flushed per SQLite batch.
+
+#### `flush_interval_ms`
+
+- Type: `integer`; Required: no; Default: `200`
+- Purpose: Maximum batch flush interval in milliseconds.
+
+#### `memory_tail`
+
+- Type: `integer`; Required: no; Default: `1024`
+- Purpose: Size of the in-memory tail used by `stream?tail=n`.
+
+#### `retention_days`
+
+- Type: `integer`; Required: no; Default: `7`; Minimum: `1`
+- Purpose: Record retention window. Expired rows are deleted by the cleanup task.
+
+#### `cleanup_interval_hours`
+
+- Type: `integer`; Required: no; Default: `1`; Minimum: `1`
+- Purpose: Cleanup task cadence.
+
+#### `reader_concurrency`
+
+- Type: `integer`; Required: no; Default: `2`; Minimum: `1`
+- Purpose: Limits concurrent SQLite readers used by WebUI / API history and stats queries, so read bursts on large recorder databases do not occupy too many blocking threads or too much memory.
+
+### Behavior
+
+- Set `retention_days` to control how long records are kept; expired records are cleaned up every `cleanup_interval_hours`. Small deletions may not immediately shrink the file, but the freed space can be reused for new records.
+- Multiple recorders can share a database file. History is isolated by tag, so clearing one recorder preserves the others.
+- `client_ip` is the source address OxiDNS sees. Local forwarding may make it appear as `127.0.0.1` instead of the actual device address.
+- The first space reclamation on an older database may require temporary disk space and briefly pause history queries and record writes. DNS resolution continues.
+
+### Data Shape
+
+<details>
+<summary>API response field examples</summary>
+
+- `questions_json` is always a question array, for example:
+
+```json
+[
+  { "name": "www.example.com.", "qtype": "A", "qclass": "IN" }
+]
+```
+
+- `answers_json`, `authorities_json`, `additionals_json`, and `signature_json` are RR arrays, for example:
+
+```json
+[
+  {
+    "name": "www.example.com.",
+    "class": "IN",
+    "ttl": 300,
+    "rr_type": "A",
+    "payload_kind": "A",
+    "payload_text": "192.0.2.1",
+    "payload": { "ip": "192.0.2.1" }
+  }
+]
+```
+
+- `req_edns_json` and `resp_edns_json` are EDNS objects or `NULL`.
+
+</details>
+
+### API
+
+- `GET /plugins/<tag>/records`
+  - Returns record rows ordered by `created_at_ms` descending.
+  - Query parameters:
+    - `cursor=<created_at_ms>:<id>`
+    - `limit=<n>`, default `100`, max `500`
+    - `since_ms=<unix_ms>`
+    - `until_ms=<unix_ms>`
+    - `qname=<text>`, substring match against request question names
+    - `client_ip=<text>`, substring match against the client IP string
+    - `qname_exact=<name>` / `client_ip_exact=<ip>`: exact ranking drilldown filters; existing substring filters remain unchanged
+    - `rcode_bucket=_ERROR|_NO_RESPONSE|_UNKNOWN`: exact special RCODE category; actual response codes take priority, followed by execution errors, missing responses, and missing response codes
+    - `qtype=<type>` / `rcode=<rcode>` / `status=all|error|has_response|no_response`
+- `GET /plugins/<tag>/records/<id>`
+  - Returns one full record plus `steps`.
+- `DELETE /plugins/<tag>/records`
+  - Clears the current recorder’s v2 history and live replay cache, preserving old-version history and other recorders. Returns `cleared_records` with the number of deleted records.
+  - If history deletion succeeds but disk reclamation fails, the endpoint returns `query_recorder_clear_failed` with a message that history was already cleared; later maintenance can retry space reclamation.
+All `/stats/*` aggregation endpoints require `since_ms` and `until_ms` in Unix milliseconds, with the start earlier than the end and a span of at most 24 hours. Missing or invalid intervals return HTTP 400. Each statistic uses at most the latest 10,000 query records within the interval, ordered by timestamp and record ID descending. Existing calls without time bounds must add them; record-list, detail, and SSE parameter semantics are unchanged. Every aggregation response includes `sample_limit`, `sample_truncated`, `sample_since_ms`, and `sample_until_ms`. Only the 10,001st row is probed and excluded from statistics; exactly 10,000 records is not truncation. Empty sample timestamps are `null`.
+
+- `GET /plugins/<tag>/stats/plugins`
+  - Returns hit stats grouped by `matcher / executor / builtin`.
+  - Supports `since_ms`, `until_ms`, `kind=matcher|executor|builtin|all`, and the record filters.
+- `GET /plugins/<tag>/stats/top_clients` / `stats/top_qnames`
+  - Returns client IP or QNAME rankings.
+  - Supports `limit=<n>`, default `20`; the backend no longer enforces a `200` cap.
+  - Supports the same time range and filter parameters as records.
+- `GET /plugins/<tag>/stats/qtype` / `stats/rcode`
+  - Returns QTYPE or RCODE distribution.
+  - Supports the same time range and filter parameters as records.
+- `GET /plugins/<tag>/stats/latency`
+  - Returns latency summary values, histogram buckets, and slow-query rankings.
+  - Supports `slow_limit=<n>` or `limit=<n>`, default `20`; the backend no longer enforces a `200` cap.
+- `GET /plugins/<tag>/stats/timeseries`
+  - Returns query trends using automatic, minute, or hour intervals.
+  - Supports `bucket=auto|minute|hour` and `buckets=<n>` (default `60`, maximum `720`).
+- `GET /plugins/<tag>/stream`
+  - Streams newly written records over SSE.
+  - Supports `tail=<n>` to replay the in-memory tail.
+  - Clients should send `Accept: text/event-stream` and tolerate heartbeat frames, error events, empty payloads, and brief disconnects.
+
+All WebUI aggregation views share presets for the last 10 minutes, 1 hour, and 24 hours, plus an always-visible timeline; there is no All option. The default is the last hour, and Trend opens first. Drag either endpoint, move the entire window, or edit timestamps with second precision. Clicking a timestamp opens a calendar and hour/minute/second fields in the shared UI style, with keyboard adjustment and explicit confirmation. Dragging does not query; completed changes are debounced by 300 milliseconds. The scale stays fixed after release, and Fit interval changes only the scale. Date navigation preserves the local end time and elapsed duration; Back to now moves the window to the current time. Refresh in the timeline and every aggregation card keeps manual and historical intervals fixed; recent presets advance. The selected interval is shown in the timeline. Every view shows actual statistics coverage and a compact limit indicator only when truncated, avoiding duplicate time ranges for full coverage. The compact translucent green track contains the whole-window handle and vertical ruler marks with second, minute, or hour intervals adapted to the visible time range and available width. The marks align with sparse time labels below, and dragging the selection preserves the interval, and hovering shows the pointer time. A stronger green overlay continuously marks the interval between the earliest and latest sampled records from the current aggregation response, including empty buckets in between. Time outside the sample bounds remains pale, without an additional query. Matcher hit rates appear in the Matcher view within Aggregation, sharing the applied interval and statistics budget. Clicking a Matcher, client, domain, QTYPE, RCODE, or slow-query domain opens Query records with the corresponding filter and exact interval, clearing unrelated previous filters. Domain and IP drilldowns fill the existing Query records fields in Exact mode. Matcher fills an editable tag field; special response categories use removable filter labels. Returning to Aggregation preserves its interval and view. Query records keeps its own filters, pagination, and details, without a timeline. QNAME and client IP each use one input with a Contains/Exact selector, defaulting to Contains. Editing values or modes queries only after Apply; Clear restores the defaults. Exact QNAME input accepts an omitted final dot; exact IP uses the full client IP string. The Matcher field filters matching queries by exact tag, accepting current or historical tags. Apply submits changes; an empty field removes the matcher filter. Matcher hit rate is match evaluations divided by check evaluations. Query coverage is queries passing through the matcher divided by all included queries, including non-matches; coverage can overlap across matchers. Clicking a matcher shows matching queries.
+
+Trend requests `bucket=auto&buckets=120`, choosing second, minute, hour, or day intervals from the statistics coverage. Without truncation, coverage spans the request interval. With truncation, it starts at the oldest included record, with its actual coverage timestamps shown above the charts. Unknown earlier periods are not filled with zeroes. Known empty buckets show zero records and null latency, and partial buckets are identified in hover details. The two charts show records and anomalies, and latency. The heading shows the anomaly total, and red dots on the record-count line mark intervals containing anomalies, making small anomaly counts visible alongside high traffic. Latency defaults to the average; switching to P95 does not query again. The latency line connects the surrounding data points across empty buckets, whose latency values remain null. Mutually exclusive anomalies include execution errors, missing responses, and SERVFAIL; NXDOMAIN and REFUSED are not included by default. Clicking a bucket shows query records and details in its intersection with the selected interval. A partial bucket's record list may exceed its chart count.
+
+Time bounds and the record limit constrain statistics work together. Complex filters may still scan many candidate records, so response time is not guaranteed.
+
+### Typical Uses
+
+- Persistent audit and troubleshooting trails
+- `sequence` path analysis and plugin hit-rate reporting
+- Real-time query log feeds for dashboards or control planes
+
+<Admonition type="note" title="Notes">
+
+- Place the recorder close to the entry point when the full main-path trace is required.
+- If an earlier branch short-circuits before the recorder, that request will not be recorded.
+- If `next` fails and the server later emits a fallback response, the database still reflects the plugin's point of view: `error` plus an empty response.
+- If the management API is disabled, the recorder still writes SQLite data but does not expose query or SSE routes.
+- To preserve real client IPs, point clients directly at OxiDNS or configure a trusted `src_ip_header` for HTTP/DoH reverse-proxy deployments.
+
+</Admonition>
+
+---
+
+## `metrics_collector`
+
+<PluginAvailability from="standard" />
+
+### Purpose
+
+Collects Prometheus metrics for query handling.
+
+### Example Configuration
+
+```yaml
+- tag: metrics_main
+  type: metrics_collector
+  args:
+    # Collector label exported through /api/metrics
+    name: "main"
+```
+
+### Configuration Details
+
+#### `name`
+
+- Type: `string`; Required: no
+- Purpose: Metrics label namespace.
+
+### quick setup
+
+```yaml
+- exec: "metrics_collector main"
+```
+
+### Behavior
+
+- Exposes query counters, inflight counts, and latency metrics through the management API.
+
+### API
+
+- `GET /api/metrics`
+  - Prometheus text format. This is the single global endpoint, and built-in metrics from other plugins are exported through the same route.
+
+### Typical Uses
+
+- Prometheus integration
+- Observe multiple policy entry points separately
+
+---
+
+## `debug_print`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Prints a debug message.
+
+### Example Configuration
+
+```yaml
+- tag: debug_main
+  type: debug_print
+  args:
+    # Log title; defaults to "debug print" when omitted
+    msg: "before forward"
+```
+
+### Configuration Details
+
+#### `msg`
+
+- Type: `string`; Required: yes
+- Purpose: Message content.
+
+### quick setup
+
+```yaml
+- exec: "debug_print cache branch"
+```
+
+### Typical Uses
+
+- Temporary debugging
+- Reading sequence branches during development
+
+---
+
+## `sleep`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Sleeps for a bounded duration inside the chain.
+
+### Example Configuration
+
+```yaml
+- tag: sleep_100ms
+  type: sleep
+  args:
+    # Add 100 ms of async delay
+    duration: 100
+```
+
+### Configuration Details
+
+#### `duration`
+
+- Type: `duration`; Required: yes
+- Purpose: Sleep duration.
+
+### quick setup
+
+```yaml
+- exec: "sleep 100"
+```
+
+### Typical Uses
+
+- Testing
+- Timing experiments
+
+---

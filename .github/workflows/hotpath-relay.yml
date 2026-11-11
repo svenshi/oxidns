@@ -1,0 +1,56 @@
+name: Hotpath relay
+
+on:
+  workflow_run:
+    workflows: [Hotpath]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  catalog:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.catalog.outputs.matrix }}
+    steps:
+      # workflow_sha is the trusted default-branch workflow revision. Never
+      # check out the triggering pull request in this privileged workflow.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - id: catalog
+        run: |
+          matrix=$(jq -c '{include: [
+            .[] | .target as $target | .cases[] | {
+              benchmark,
+              artifact_name: ("hotpath-" + $target),
+              report_file: (.benchmark + ".json")
+            }
+          ]}' .github/hotpath-benchmarks.json)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+  relay:
+    needs: catalog
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.catalog.outputs.matrix) }}
+    concurrency:
+      group: hotpath-relay-${{ matrix.benchmark }}-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: true
+    permissions:
+      actions: read
+      id-token: write
+      pull-requests: read
+    steps:
+      - uses: hotpath-rs/hotpath-relay@v1.0.0
+        with:
+          benchmark: ${{ matrix.benchmark }}
+          artifact_name: ${{ matrix.artifact_name }}
+          report_file: ${{ matrix.report_file }}

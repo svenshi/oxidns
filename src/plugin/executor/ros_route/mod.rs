@@ -258,6 +258,8 @@ impl PluginFactory for MikrotikFactory {
                 .collect::<std::result::Result<AHashSet<_>, _>>()?,
             comment_prefix: config.comment_prefix.clone(),
             distance: config.distance,
+            scope: config.scope,
+            target_scope: config.target_scope,
             min_ttl: config.min_ttl,
             max_ttl: config.max_ttl,
             fixed_ttl: config.fixed_ttl,
@@ -345,6 +347,33 @@ gateway6: "2001:db8::1"
 
     fn context_with_nodata(qtype: RecordType) -> DnsContext {
         context_with_rcode(qtype, Rcode::NoError)
+    }
+
+    #[test]
+    fn route_scopes_are_optional_and_validate_numeric_bounds() {
+        let base = "address: 127.0.0.1:8728\nusername: api\npassword: secret\nrouting_table: policy\ngateway4: 192.0.2.1\n";
+        for (extra, scope, target_scope) in [
+            ("", None, None),
+            ("scope: 1", Some(1), None),
+            ("target_scope: 255", None, Some(255)),
+            ("scope: 30\ntarget_scope: 11", Some(30), Some(11)),
+        ] {
+            let args = serde_yaml_ng::from_str::<Value>(&format!("{base}{extra}")).unwrap();
+            let config = parse_plugin_config(Some(args), false).unwrap();
+            assert_eq!((config.scope, config.target_scope), (scope, target_scope));
+        }
+        let args = serde_yaml_ng::from_str::<Value>(&format!("{base}scope: 0")).unwrap();
+        assert!(parse_plugin_config(Some(args), false).is_err());
+        for field in ["scope", "target_scope"] {
+            for invalid in ["-1", "256", "1.5", "invalid"] {
+                let args =
+                    serde_yaml_ng::from_str::<Value>(&format!("{base}{field}: {invalid}")).unwrap();
+                assert!(
+                    parse_plugin_config(Some(args), false).is_err(),
+                    "{field}: {invalid}"
+                );
+            }
+        }
     }
 
     #[test]

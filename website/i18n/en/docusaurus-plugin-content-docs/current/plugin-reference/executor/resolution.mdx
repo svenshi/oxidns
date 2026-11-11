@@ -1,0 +1,1126 @@
+---
+title: Resolution and Request Handling
+---
+
+import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
+
+These executors provide upstream resolution, caching, local answers, request rewriting, and EDNS propagation.
+
+## `forward`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Sends DNS queries to upstreams.
+
+### Example Configuration
+
+```yaml
+- tag: forward_main
+  type: forward
+  args:
+    # Effective fan-out in multi-upstream mode
+    concurrent: 3
+    # Concurrent upstream response selection: fastest / balanced / prefer_positive / consensus
+    response_selection: balanced
+    upstreams:
+      # Simplest UDP upstream
+      - tag: "cf_udp"
+        addr: "udp://1.1.1.1:53"
+        timeout: 3s
+
+      # Domain-based DoH upstream showing bootstrap, pooling, HTTP/3,
+      # and Linux socket options
+      - tag: "doh_main"
+        addr: "https://resolver.example/dns-query"
+        bootstrap: "8.8.8.8:53"
+        bootstrap_version: 4
+        port: 443
+        idle_timeout: 30
+        min_conns: 2
+        max_conns: 256
+        timeout: 5s
+        enable_pipeline: false
+        enable_http3: true
+        so_mark: 100
+        bind_to_device: "eth0"
+
+      # DoT upstream showing dial_addr, SOCKS5, TLS verification, and pipelining
+      - tag: "dot_backup"
+        addr: "tls://dns.example:853"
+        dial_addr: "203.0.113.53"
+        socks5: "user:pass@127.0.0.1:1080"
+        idle_timeout: 60
+        min_conns: 1
+        max_conns: 128
+        insecure_skip_verify: false
+        timeout: 4s
+        enable_pipeline: true
+```
+
+### Configuration Details
+
+#### `concurrent`
+
+- Type: `integer`; Required: no; Default: `1`
+- Runtime range is clamped to `1..=32` and never exceeds the upstream count.
+- Purpose: Number of concurrent upstream fan-out requests.
+- This is the number of upstreams actually started for one request. OxiDNS does not sequentially retry unstarted upstreams after a CNAME-only response, so `concurrent: 1` retains single-attempt selection semantics.
+- Recommendation: use `2..=8` for routine racing; higher values are intended for short-term observation or explicit multi-protocol racing.
+
+#### `response_selection`
+
+- Type: `string`; Required: no; Default: `balanced`
+- Values: `fastest`, `balanced`, `prefer_positive`, `consensus`
+- Purpose: Selects the winning response when concurrent upstreams return different results.
+- Scope: applies only when `upstreams` contains more than one target. A single configured upstream uses the single-upstream forwarder and bypasses response selection. With multiple upstreams and `concurrent: 1`, each request still starts only one randomly selected upstream; selection does not query additional upstreams.
+- Except in `fastest` mode, every response is classified against the original Question as:
+  - **Complete positive**: the requested type exists at the original QNAME or its CNAME-chain terminal.
+  - **Incomplete alias**: a CNAME chain exists, but neither the final requested type nor an SOA denial is present.
+  - **Definitive negative**: `NXDOMAIN`, or NODATA that establishes the requested type is absent.
+  - **Other**: for example `SERVFAIL`, `REFUSED`, a mismatched Question, unrelated Answers, a CNAME loop, or conflicting aliases.
+- If all started upstreams finish without an early winner, the common fallback order is `complete positive > incomplete alias > definitive negative > other`; the later completion wins among equal-ranked responses. Transport errors do not participate in this ranking and fail `forward` only when no upstream produced a DNS response.
+- Modes:
+  - `fastest`: the first successfully returned DNS Message wins immediately, without query-aware classification. “Successful” means only that the upstream returned a DNS Message, so `NXDOMAIN`, `SERVFAIL`, `REFUSED`, or CNAME-only can win; transport errors cannot.
+  - `balanced`: default mode. A complete positive wins immediately. The first definitive negative starts a fixed 100ms grace window that still allows a complete positive to win. When the window expires, or all upstreams finish, the common fallback order is used. Incomplete aliases and other responses do not start the grace window by themselves.
+  - `prefer_positive`: a complete positive wins immediately. Otherwise, OxiDNS waits for every started upstream and then uses the common fallback order. Consequently, an incomplete alias outranks a single negative when no complete positive exists.
+  - `consensus`: one complete positive still wins immediately. `NXDOMAIN` and NODATA are counted separately; two negatives of the same kind can confirm and return a negative early, without requiring identical SOA data or identical wire messages. Fan-out below two falls back to `prefer_positive`. If every upstream finishes without negative consensus, the common fallback order still returns the best available response and may therefore return a single negative. This is a negative-confidence policy, not strict majority voting across all responses.
+
+#### CNAME response handling
+
+- For A/AAAA and other non-CNAME queries, a positive response requires the requested type at the original QNAME or the terminal name of its CNAME chain.
+- A CNAME-only response without the requested type or an SOA is an incomplete alias. It cannot win early or vote as a negative result, but is returned unchanged when no better response exists.
+- `CNAME + SOA` without the requested type is treated as NODATA. `NXDOMAIN` remains negative even when its answer section contains CNAME records.
+- `forward` does not perform hidden fallback or CNAME chasing. Raise `concurrent` when more upstreams must participate in the race.
+- The `fallback` executor checks only whether a branch produced a response; it does not understand response dispositions. An incomplete alias or a `SERVFAIL` Message therefore counts as a successful branch result. To make those outcomes explicitly trigger another upstream, compose a sequence with matchers such as `has_wanted_ans` or `rcode` instead of relying on hidden fallback.
+
+#### `upstreams`
+
+- Type: `array`; Required: yes; Default: none
+- Purpose: Defines one or more upstream targets.
+- Runtime impact:
+  - One upstream means normal forwarding.
+  - More than one enables racing behavior.
+
+#### `short_circuit`
+
+- Type: `boolean`; Required: no; Default: `false`
+- Purpose: Stop the executor chain after a successful upstream response.
+- Notes:
+  - When disabled, `forward` still populates `response`, but later executors can continue processing it.
+  - When enabled, any DNS Message selected as the best available result ends the remaining executor chain, including an incomplete alias, `SERVFAIL`, or `REFUSED`.
+
+#### `upstreams[].addr`
+
+- Type: `string`; Required: yes
+- Purpose: Upstream address, protocol, and target.
+- Supports:
+  - `udp://`
+  - `tcp://`
+  - `tcp+pipeline://`
+  - `tls://`
+  - `tls+pipeline://`
+  - `quic://` / `doq://`
+  - `https://` / `doh://`
+  - `h3://`
+- Notes:
+  - No scheme means UDP.
+  - DoH addresses should include the full request path.
+  - Startup and config validation do not resolve domain-based upstreams. Without `bootstrap` or `dial_addr`, the hostname is resolved through the OS resolver when the first connection is created.
+  - For domain-based upstreams, choose either `bootstrap` or `dial_addr` to avoid runtime bootstrap dependency on the local DNS setup.
+  - `bootstrap` and `dial_addr` are mutually exclusive at runtime. If both are configured, only `dial_addr` is effective and `bootstrap` is ignored.
+
+#### `upstreams[].tag`
+
+- Type: `string`; Required: no
+- Purpose: Per-upstream log label.
+
+#### `upstreams[].dial_addr`
+
+- Type: `ip`; Required: no
+- Purpose: Actual connection IP while preserving the hostname from `addr` for SNI, Host, and certificate validation.
+- Notes: Takes precedence over `bootstrap` when both are configured.
+
+#### `upstreams[].outbound`
+
+- Type: `string`; Required: no
+- Purpose: References a profile from `network.outbound.profiles` to inject resolver and proxy defaults into this upstream.
+- Default: When omitted, `network.outbound.default` is used. Without a default, the upstream keeps system resolution/direct dialing.
+- Override rules: local `dial_addr` takes precedence over resolver use; local `bootstrap` takes precedence over the outbound resolver; local `socks5` takes precedence over the profile proxy.
+- Note: Profile proxying applies only to TCP, DoT, and DoH2. UDP, DoQ, and DoH3 upstreams ignore SOCKS5 proxy settings.
+
+#### `upstreams[].port`
+
+- Type: `integer`; Required: no
+- Purpose: Override the protocol default port.
+
+#### `upstreams[].bootstrap`
+
+- Type: `string`; Required: no
+- Purpose: Bootstrap resolver for domain-based upstreams.
+- Notes: Must use an `IP:port` address. With bootstrap enabled, OxiDNS resolves the upstream hostname through that resolver and caches it according to DNS TTL. Ignored when `dial_addr` is also configured.
+
+#### `upstreams[].bootstrap_version`
+
+- Type: `integer`; Required: no
+- Allowed values: `4`, `6`
+- Purpose: Force bootstrap resolution toward IPv4 or IPv6.
+
+#### `upstreams[].socks5`
+
+- Type: `string`; Required: no
+- Purpose: SOCKS5 proxy for upstream connections.
+- Supports:
+  - `host:port`
+  - `username:password@host:port`
+- Notes: SOCKS5 applies only to TCP, DoT, and DoH2. UDP, DoQ, and DoH3 upstreams ignore this setting.
+
+#### `upstreams[].idle_timeout`
+
+- Type: `integer`; Required: no; Default: `10`
+- Unit: seconds
+- Purpose: Idle pooled connection lifetime.
+
+#### `upstreams[].max_conns`
+
+- Type: `integer`; Required: no; Default: `64`
+- Purpose: Maximum pooled connections.
+- Range: `1..4096`
+
+#### `upstreams[].min_conns`
+
+- Type: `integer`; Required: no; Default: `0`
+- Purpose: Minimum warmed connections kept by the pool.
+- Range: `0..4096`, and it must not exceed the upstream's effective `max_conns`.
+- Notes: When omitted, connections remain lazy and are not pre-created when the pool is created.
+
+#### `upstreams[].insecure_skip_verify`
+
+- Type: `boolean`; Required: no; Default: `false`
+- Purpose: Skip TLS certificate validation.
+
+#### `upstreams[].timeout`
+
+- Type: `duration`; Required: no; Default: `5s`
+- Purpose: Per-upstream query timeout.
+
+#### `upstreams[].enable_pipeline`
+
+- Type: `boolean`; Required: no; Default: `false`
+- Purpose: Enable pipelining for TCP or DoT.
+- Notes: `tcp+pipeline://` and `tls+pipeline://` force this on.
+- Recommendation: Before enabling it, run `oxidns probe upstream <addr>` against the target upstream. For TCP/DoT, the probe forces concurrent queries through one connection so you can decide whether that upstream is safe for pipeline mode and catch timeouts, connection closes, response ID confusion, or crossed questions first.
+- Verdict: If the probe reports `supported`, enabling pipeline is reasonable. If it reports `unsupported`, `unstable`, or `inconclusive`, keep pipeline disabled or retest with lower concurrency / a longer timeout.
+
+#### `upstreams[].enable_http3`
+
+- Type: `boolean`; Required: no; Default: `false`
+- Purpose: Use HTTP/3 for DoH.
+
+#### `upstreams[].so_mark`
+
+- Type: `integer`; Required: no
+- Purpose: Linux `SO_MARK`.
+
+#### `upstreams[].bind_to_device`
+
+- Type: `string`; Required: no
+- Purpose: Linux `SO_BINDTODEVICE`.
+
+### quick setup
+
+```yaml
+- exec: "forward 1.1.1.1"
+- exec: "forward 1.1.1.1 8.8.8.8"
+- exec: "forward 1.1.1.1 short_circuit=true"
+```
+
+Quick setup supports the trailing flag forms `short_circuit`, `short_circuit=true`, and `short_circuit=false`.
+Use the full plugin form for bootstrap, proxy, HTTP/3, pool settings, and other advanced options.
+
+### Behavior
+
+- Single-upstream mode queries the configured upstream directly.
+- Multi-upstream mode races queries from a randomized starting point and keeps the first successful answer.
+- With `short_circuit` enabled, a successful upstream response stops the remaining executor chain immediately.
+
+### Metrics
+
+Exported through the global `GET /api/metrics` endpoint:
+
+- `forward_query_total`
+- `forward_success_total`
+- `forward_error_total`
+- `forward_timeout_total`
+- `forward_incomplete_alias_selected_total`
+- `forward_latency_count`
+- `forward_latency_sum_ms`
+
+`forward_incomplete_alias_selected_total` only covers selection-aware concurrent modes (`balanced`, `prefer_positive`, and `consensus`). Single-upstream and `fastest` paths do not scan responses solely for this metric.
+
+Per-upstream series are also exported with an `upstream` label (the upstream tag, or its resolved address when no tag is configured):
+
+- `forward_upstream_query_total`
+- `forward_upstream_success_total`
+- `forward_upstream_error_total`
+- `forward_upstream_timeout_total`
+- `forward_upstream_latency_count`
+- `forward_upstream_latency_sum_ms`
+
+### Typical Uses
+
+- Standard forwarding
+- Multi-upstream resilience
+- Mixed-protocol upstream groups
+
+<Admonition type="note" title="Notes">
+
+- More upstreams are not automatically better. Keep upstream groups semantically clear.
+
+</Admonition>
+
+---
+
+## `cache`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Provides TTL-aware response caching with negative cache support and persistence.
+
+For A/AAAA and other non-CNAME queries, cache admission requires the requested type at the original QNAME or the terminal name of its CNAME chain, and the echoed QNAME/QTYPE/QCLASS must match the cache key. A bare CNAME response is not stored under the address-query key. `CNAME + NODATA` with an SOA is negative-cached for the minimum of the SOA negative TTL, the lowest Answer TTL (including CNAME), and the configured cap.
+
+### Example Configuration
+
+```yaml
+- tag: cache_main
+  type: cache
+  args:
+    # Maximum number of cached entries
+    size: 8192
+    # Stop the chain immediately when cache returns a response
+    short_circuit: true
+    # Serve stale responses briefly after original TTL expiry and refresh lazily
+    lazy_cache_ttl: 120
+    # Cache NXDOMAIN / NODATA responses too
+    cache_negative: true
+    # Upper bound for negative-cache TTL
+    max_negative_ttl: 300
+    # Fallback TTL when a negative response has no SOA
+    negative_ttl_without_soa: 60
+    # Upper bound for positive TTL
+    max_positive_ttl: 600
+    # Minimum positive TTL required for cache admission
+    min_positive_ttl: 4
+    # Exclude ECS from the cache key for a better hit ratio
+    ecs_in_key: false
+    # Persist cache contents to disk
+    dump_file: "./dns_cache.dump"
+    # Periodic dump interval in seconds
+    dump_interval: 600
+```
+
+### Configuration Details
+
+#### `size`
+
+- Type: `integer`; Required: no; Default: `1024`
+- Purpose: Cache capacity.
+
+#### `lazy_cache_ttl`
+
+- Type: `duration`; Required: no
+- Purpose: Enable lazy cache for successful positive responses.
+- Behavior:
+  - The original response TTL still defines the fresh-hit window.
+  - `lazy_cache_ttl` defines the stale reply TTL and keeps entries briefly available after freshness expires.
+  - Stale hits trigger an asynchronous background refresh.
+  - This setting does not shorten the original fresh TTL.
+
+#### `dump_file`
+
+- Type: `string`; Required: no
+- Purpose: Persistence dump file path.
+
+- Startup and reload await dump restoration and capacity pruning before exposing this cache to DNS requests or API operations. This prevents old entries from overwriting new answers or refilling a flushed cache. Periodic saving starts only after successful application startup; failed candidates never overwrite the original dump.
+- The dump must be a regular file. Filesystem metadata/read waiting has a five-second budget per file, excluding CPU decoding and restoration. Normal shutdown has no background loader to wait for.
+- A missing file starts an empty cache and may be created after activation. If an existing file cannot be read, exceeds the file I/O waiting budget, is zero bytes, or has an incompatible format, DNS service continues using the in-memory cache. A warning is logged and automatic writes to that file remain disabled for this instance.
+- Repair or move the problematic file, then reload or restart to restore persistence. API imports do not lift the current instance's file protection.
+
+#### `dump_interval`
+
+- Type: `duration`; Required: no; Default: `600s`
+- Purpose: Periodic dump interval.
+- Notes: If periodic task registration fails, OxiDNS logs a warning and continues serving DNS. Normal shutdown still attempts to save a successfully loaded cache.
+
+#### `short_circuit`
+
+- Type: `boolean`; Required: no; Default: `false`
+- Purpose: Stop the chain when the cache produces a response.
+- Notes:
+  - When set to `false`, later executors still run even if cache has already populated `response`.
+  - To skip later `forward` stages on cache hits, handle it explicitly in `sequence`, for example with `has_resp` or `accept`.
+
+#### `cache_negative`
+
+- Type: `boolean`; Required: no; Default: `true`
+- Purpose: Cache negative responses.
+
+#### `max_negative_ttl`
+
+- Type: `duration`; Required: no; Default: `300s`
+- Purpose: Cap negative-cache TTL.
+
+#### `negative_ttl_without_soa`
+
+- Type: `duration`; Required: no; Default: `60s`
+- Purpose: Fallback TTL for negative answers without SOA.
+
+#### `max_positive_ttl`
+
+- Type: `duration`; Required: no
+- Purpose: Cap positive-cache TTL.
+
+#### `min_positive_ttl`
+
+- Type: `duration`; Required: no
+- Purpose: Require a minimum positive TTL before writing a response to cache.
+- Notes: Positive responses whose effective cache TTL is lower than this value are not cached. The check runs after `max_positive_ttl` capping.
+
+#### `ecs_in_key`
+
+- Type: `boolean`; Required: no; Default: `false`
+- Purpose: Include ECS information in the cache key.
+
+### quick setup
+
+```yaml
+- exec: "cache"
+- exec: "cache short_circuit=true"
+```
+
+- With no arguments, quick setup uses the default cache configuration.
+- It currently supports the trailing flag forms `short_circuit`, `short_circuit=true`, and `short_circuit=false`.
+- Use the full plugin form for other advanced settings.
+
+### Behavior
+
+- Reads from cache on the forward path and writes responses on the return path.
+- Respects DNS TTL semantics instead of using a fixed timeout.
+- Can persist cache contents through dump and load operations.
+
+### Plugin API
+
+- `GET /plugins/<cache_tag>/entries`
+  - Reads cache entries with pagination. Supports `limit`, `cursor`, `qname`, and `answer_ip`; `qname` is a case-insensitive substring filter over the cache-key domain. `answer_ip` exactly matches a complete IPv4/IPv6 address in Answer A/AAAA records; both filters are combined with AND.
+- `POST /plugins/<cache_tag>/entries/delete`
+  - Deletes selected entries or all filtered results after full request validation and returns the actual deletion count. The WebUI supports exact answer-IP filtering and bulk selection.
+- `GET /plugins/<cache_tag>/flush`
+- `GET /plugins/<cache_tag>/dump`
+- `POST /plugins/<cache_tag>/load_dump`
+
+### Metrics
+
+Exported through the global `GET /api/metrics` endpoint. The cache plugin does not expose a cache-specific stats/metrics endpoint.
+
+- `cache_lookup_total`
+- `cache_hit_total{kind="fresh|stale"}`
+- `cache_miss_total`
+- `cache_expired_total`
+- `cache_insert_total`
+- `cache_skip_total{reason="truncated|no_ttl|incomplete_answer|low_positive_ttl"}`
+- `cache_lazy_refresh_total{result="started|success|failed"}`
+- `cache_entry_count`
+
+### Typical Uses
+
+- Lower upstream latency
+- Protect upstreams from repeated identical traffic
+- Preserve warm cache state across restarts
+
+<Admonition type="note" title="Notes">
+
+- Decide carefully whether ECS should be part of the cache key. It improves correctness for ECS-aware policies but reduces hit ratio.
+
+</Admonition>
+
+---
+
+## `hosts`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Returns local static answers using host-style entries.
+
+### Example Configuration
+
+```yaml
+- tag: hosts_main
+  type: hosts
+  args:
+    entries:
+      # Unprefixed rules default to full:
+      - "router.local 192.168.1.1"
+      # Exact-name rule
+      - "full:gateway.local 192.168.1.2"
+      # Suffix rule returning both IPv4 and IPv6
+      - "domain:svc.local 10.0.0.10 fd00::10"
+      # Keyword rule
+      - "keyword:nas 192.168.1.20"
+      # Regex rule
+      - "regexp:^api[0-9]+\\.corp\\.local$ 10.10.0.5"
+    files:
+      # Merge more hosts rules from files
+      - "/etc/oxidns/hosts.txt"
+    short_circuit: true
+```
+
+The example omits `format`, which is equivalent to `format: oxidns` and preserves the existing syntax and override behavior. To read standard hosts files directly:
+
+```yaml
+- tag: github_hosts
+  type: hosts
+  args:
+    format: standard
+    entries:
+      - "192.168.1.1 router.local gateway.local"
+      - "fd00::1 router.local gateway.local"
+    files:
+      # Read downloaded standard hosts files without converting column order
+      - "./hosts/github_hosts_raw.txt"
+    short_circuit: true
+```
+
+### Configuration Details
+
+#### `format`
+
+- Type: `string`; Required: no; Default: `oxidns`
+- Selects the format for both `entries` and every file in `files`. Unknown values are configuration errors; formats are never switched automatically.
+- During startup loading, a rule that fails the configured format but matches the other format aborts loading with its source location, current format, and suggested `format` value. Alternatively, convert that rule to the configured format.
+- `oxidns`: `<domain_rule> <IP> [IP…]`, preserving existing matcher prefixes and last-write-wins behavior.
+- `standard`: `<IP> <hostname> [aliases…]`, matching each name exactly without interpreting matcher prefixes; names ignore case and trailing dots.
+- `standard` supports blank lines, spaces or tabs, CRLF line endings, and `#` full-line or trailing comments, with the same syntax for inline entries and files.
+- `standard` merges and deduplicates IPv4 / IPv6 addresses for each name across all sources, preserving first-seen order per family. Invalid IPs or missing hostnames abort loading with the source location.
+
+#### `entries`
+
+- Type: `array`; Required: no; Default: empty array
+- Purpose: Defines inline hosts rules using the selected `format`.
+- `oxidns`: `<domain_rule> <IP> [IP…]`.
+- `standard`: `<IP> <hostname> [aliases…]`.
+
+#### `files`
+
+- Type: `array`; Required: no; Default: empty array
+- Purpose: Specifies external hosts rule files, all using the selected `format`.
+
+#### `short_circuit`
+
+- Type: `bool`; Required: no; Default: `false`
+- Purpose: Stops the remaining executor chain after a local answer is generated.
+
+### Behavior
+
+- Handles only `IN` class `A` / `AAAA` requests with exactly one question.
+- In `oxidns` format, unprefixed rules default to `full:`.
+- In `oxidns` format, rule-family priority is fixed as `full -> domain -> regexp -> keyword`.
+- `domain:` uses the longest matching suffix.
+- Load order is inline `entries` first, then each configured file line by line. `oxidns` uses last-write-wins for repeated patterns; `standard` merges and deduplicates addresses for each name.
+- Positive local answers return same-family addresses with a fixed TTL of `10`.
+- If the domain matches but the requested address family is missing, the plugin returns `NoError + empty answer + fake SOA` instead of passing through.
+- Non-matching queries pass through to subsequent execution.
+- By default it keeps running the remaining chain after a local response; enable `short_circuit` to stop immediately for both positive and empty local replies.
+
+### Metrics
+
+Exported through the global `GET /api/metrics` endpoint:
+
+- `hosts_hit_total`
+- `hosts_miss_total`
+
+### Typical Uses
+
+- Local service discovery
+- Small fixed overrides
+
+---
+
+## `arbitrary`
+
+<PluginAvailability from="standard" />
+
+### Purpose
+
+Injects arbitrary DNS records from zone-style rule strings.
+
+### Example Configuration
+
+```yaml
+- tag: arbitrary_main
+  type: arbitrary
+  args:
+    rules:
+      # TXT record
+      - "example.com. 60 IN TXT \"hello world\""
+      # MX record
+      - "mail.example.com. 300 IN MX 10 mx1.example.com."
+      # A / AAAA / CNAME / PTR records are also supported
+      - "www.example.com. 120 IN A 192.0.2.10"
+      - "www.example.com. 120 IN AAAA 2001:db8::10"
+      - "alias.example.com. 120 IN CNAME www.example.com."
+      - "10.2.0.192.in-addr.arpa. 300 IN PTR host.example.com."
+    files:
+      # Load more static records from files
+      - "/etc/oxidns/zone.txt"
+    short_circuit: false
+```
+
+### Configuration Details
+
+#### `rules`
+
+- Type: `array`; Required: no
+- Purpose: Inline record rules.
+- Syntax:
+  - Each list item is parsed as an independent zone snippet.
+  - Supports `$ORIGIN`, `$TTL`, `$INCLUDE`, `$GENERATE`, owner inheritance, TTL units, comments, quoted strings, and multiline `(` `)` syntax.
+  - Common record types are parsed directly, including `A`, `AAAA`, `CNAME`, `NS`, `PTR`, `DNAME`, `ANAME`, `MD`, `MF`, `MB`, `MG`, `MR`, `NSAPPTR`, `MX`, `RT`, `AFSDB`, `RP`, `MINFO`, `HINFO`, `TXT`, `SPF`, `AVC`, `RESINFO`, `SOA`, `SRV`, `NAPTR`, and `CAA`.
+  - Other record types can be loaded through RFC3597 generic syntax: `TYPE#### \# <len> <hex>`.
+  - Defaults TTL to `3600` when omitted.
+
+#### `files`
+
+- Type: `array`; Required: no
+- Purpose: External rule files.
+- Syntax: Uses the same zone parser as `rules`.
+
+#### `short_circuit`
+
+- Type: `bool`; Required: no; Default: `false`
+- Purpose: Stop the remaining executor chain after setting a synthetic response.
+- Notes: By default `arbitrary` only sets the response and lets the chain continue.
+
+### Behavior
+
+- Produces fully synthetic answers.
+- Matches exactly on `qname + qtype + qclass`.
+- When a request carries multiple questions, all matched records are accumulated into one response.
+- By default the executor only sets the response and keeps the remaining chain running.
+- When `short_circuit` is enabled it returns `Stop` after a match.
+- Quick setup syntax is intentionally not supported.
+- Useful when `hosts` is too limited.
+
+### Typical Uses
+
+- TXT test records
+- Local authority-style data
+
+<Admonition type="note" title="Notes">
+
+- Keep rule files readable. Arbitrary records become hard to audit faster than `hosts` entries.
+- This is still a static answer generator, not a full authoritative server with transfer or dynamic update support.
+- The parser is broader than the zone parser used by mosdns `arbitrary`, but matching remains an exact static lookup.
+
+</Admonition>
+
+---
+
+## `response`
+
+<PluginAvailability from="standard" />
+
+### Purpose
+
+Unconditionally builds and replaces the current DNS response. Use an outer `sequence` matcher to decide when it runs; the plugin is suited to fixed answers, SOA-backed NODATA, and responses that need explicit Answer, Authority, and Additional sections.
+
+### Example Configuration
+
+```yaml
+- tag: suppress_https
+  type: response
+  args:
+    rcode: NOERROR
+    # Invoke from a sequence rule matched on qtype HTTPS/SVCB.
+    answers: []
+    authorities:
+      - "{qname} 300 {qclass} SOA fake-ns.oxidns.fake.root. fake-mbox.oxidns.fake.root. 2021110400 1800 900 604800 300"
+    additionals: []
+    short_circuit: true
+```
+
+An answer with a related additional record:
+
+```yaml
+args:
+  rcode: NOERROR
+  answers:
+    - "{qname} 60 {qclass} CNAME target.example.com."
+  additionals:
+    - "target.example.com. 60 IN A 192.0.2.10"
+  authoritative: true
+```
+
+### Configuration Details
+
+#### `rcode`
+
+- Type: `string` or `number`; Required: no; Default: `NOERROR`
+- Accepts base DNS RCODEs `0..15` and case-insensitive mnemonic names such as `NXDOMAIN`.
+- Extended RCODEs that require EDNS are not supported.
+
+#### `answers` / `authorities` / `additionals`
+
+- Type: `array`; Required: no; Default: empty array
+- Every item must parse to exactly one zone-style RR in the form `<owner> <ttl> <class> <type> <rdata>`.
+- `{qname}` is valid only as the owner and resolves to the first request question name. `{qclass}` is valid only as the class and resolves to that question class.
+- Put SOA records in `authorities`. The SOA TTL and its RDATA minimum together determine negative-cache lifetime.
+
+#### `authoritative` / `authentic_data`
+
+- Type: `bool`; Required: no; Default: `false`
+- Control the AA and AD response flags. The server handles RA, while RD/CD and the Question section are inherited from the request.
+
+#### `short_circuit`
+
+- Type: `bool`; Required: no; Default: `true`
+- Stops the current executor chain after setting the response. Set it to `false` to continue.
+
+### Behavior
+
+- Every execution creates a fresh response from the request and replaces any existing response; records are neither qtype-filtered nor merged.
+- Records are parsed at startup. The request path only clones records and resolves placeholders.
+- A request with no Question fails only when a dynamic placeholder is used.
+- No quick setup or file loading is provided. Use `arbitrary` for static records matched by `qname + qtype + qclass`.
+
+### Typical Uses
+
+- Return SOA-backed NODATA for selected qtypes.
+- Return policy-controlled fixed A, AAAA, TXT, CNAME, or MX answers.
+- Build local test responses containing Answer, Authority, and Additional records.
+
+---
+
+## `redirect`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Rewrites matching names toward different target names or answer destinations.
+
+### Example Configuration
+
+```yaml
+- tag: redirect_main
+  type: redirect
+  args:
+    rules:
+      # Exact-name redirect
+      - "full:old.example.com new.example.net"
+      # Suffix redirect
+      - "domain:legacy.example.com modern.example.net"
+      # Keyword redirect
+      - "keyword:staging staging-gateway.example.net"
+      # Regex redirect
+      - "regexp:^api[0-9]+\\.legacy\\.example\\.com$ api-gateway.example.net"
+      # Unprefixed rules default to full:
+      - "old-static.example.com static.example.net"
+    files:
+      # Merge more redirect rules from files
+      - "/etc/oxidns/redirect.txt"
+```
+
+### Configuration Details
+
+#### `rules`
+
+- Type: `array`; Required: no; Default: empty array
+- Purpose: Defines inline redirect rules.
+- Rule format:
+  - `<domain_rule> <target_name>`
+- `<domain_rule>` supports:
+  - `full:`
+  - `domain:`
+  - `keyword:`
+  - `regexp:`
+  - bare domains without a prefix, treated as exact `full:` matches
+
+#### `files`
+
+- Type: `array`; Required: no; Default: empty array
+- Purpose: Specifies the list of external redirect rule files.
+- File format is the same as `rules`, one rule per line. Empty lines and `#`
+  comments are ignored.
+
+Rule format:
+
+```text
+full:old.example.com new.example.net
+domain:legacy.example.com modern.example.net
+keyword:staging staging-gateway.example.net
+regexp:^api[0-9]+\.legacy\.example\.com$ api-gateway.example.net
+old-static.example.com static.example.net
+```
+
+### Behavior
+
+- Only handles `IN` queries. If there is no question or no matching rule, the
+  executor passes through to the remaining chain.
+- If multiple rules match, the earliest loaded matching rule wins. Load order is
+  inline `rules` first, then `files` in declaration order and line order.
+- `redirect` does not resolve the target name by itself. Use it with a later
+  executor such as `forward` in a `sequence` so that executor can produce the
+  real response for the rewritten target name.
+- Forward phase:
+  - Rewrites the request QUESTION NAME.
+- Return phase:
+  - Restores the target name in the response question back to the original name.
+  - Prepends a `CNAME original -> target` record to the answers.
+
+Common `sequence` usage:
+
+```yaml
+- exec: "$redirect_main"
+- exec: "$forward_main"
+```
+
+### Typical Uses
+
+- Point a unified entry domain to another set of records.
+- Perform alias redirection for specific domains without changing client configuration.
+
+<Admonition type="note" title="Notes">
+
+- Put `redirect` before `forward` in the usual case. If the remaining chain does
+  not produce a response, `redirect` will not synthesize target records by
+  itself.
+- It is better suited for simple queries such as `A` / `AAAA` / `TXT`.
+- Full semantic transparency is not guaranteed for complex records and some extension scenarios.
+
+</Admonition>
+
+---
+
+## `client_ip_from_ecs`
+
+<PluginAvailability from="standard" />
+
+### Purpose
+
+Sets the current `DnsContext` client IP from the request's EDNS Client Subnet
+(ECS) address. This is intended for deployments behind dnsmasq where
+`--add-subnet=32,128` forwards the complete requester address.
+
+### Example Configuration
+
+```yaml
+- tag: ecs_client
+  type: client_ip_from_ecs
+  args:
+    # Trust only a local dnsmasq.
+    - 127.0.0.1
+    - ::1
+    # A custom forwarding subnet can also be allowed.
+    - 10.0.0.0/24
+
+- tag: main
+  type: sequence
+  args:
+    # Run before matchers, logging, or recorders that consume the client IP.
+    - exec: $ecs_client
+    - matches: client_ip 192.168.1.0/24
+      exec: $forward_main
+```
+
+It can also be used through sequence quick setup:
+
+```yaml
+- exec: "client_ip_from_ecs 127.0.0.1"
+```
+
+### Configuration Details
+
+#### `args`
+
+- Type: `array[string]`; Required: no; Default: `[127.0.0.1, ::1]`
+- Purpose: Allow-list original client IPs or CIDRs that may submit ECS.
+- Supports IPv4, IPv6, individual IPs, and CIDRs; `lan` is not supported yet.
+- Missing or empty args trust only IPv4/IPv6 loopback; invalid rules cause
+  plugin initialization to fail.
+
+### Behavior
+
+- Checks `args` against the unmodified transport peer and ignores ECS when the
+  peer is not trusted.
+- Replaces the client IP when the source is trusted, ECS exists, and its source prefix is `/32`
+  for IPv4 or `/128` for IPv6, while preserving the original connection port.
+- Makes no change when ECS is absent or its source prefix is not the full host prefix for its
+  address family.
+- Supports IPv4 and IPv6 and normalizes IPv4-mapped IPv6 addresses.
+- Does not alter or remove ECS; configure `ecs_handler` separately for ECS
+  forwarding or cleanup.
+- The change is request-local. Subsequent `client_ip` matchers, templates, and
+  the query recorder observe the new address.
+
+<Admonition type="warning" title="Trust boundary">
+
+Requesters can forge ECS. Explicitly list the dnsmasq connection address or
+network in `args`, and configure dnsmasq with `--strip-subnet` plus
+`--add-subnet=32,128` so it replaces downstream ECS. Prefixes shorter than
+`/32` or `/128` carry only a truncated network address and cannot recover the
+complete client IP.
+
+</Admonition>
+
+---
+
+## `edns_filter`
+
+<PluginAvailability from="minimal" />
+
+### Purpose and configuration
+
+Filter request EDNS options within the remaining sequence continuation. By default, restore the entire entry request on exit while keeping the response and other context state.
+The plugin does not actively filter responses, add options, or assign business meanings to private codes.
+
+```yaml
+- tag: edns_filter_main
+  type: edns_filter
+  args:
+    policy: preserve
+    allowlist: []
+    denylist: []
+    restore_request: true
+```
+
+Omitting args, using an empty object, or omitting fields inherits these defaults. Only named configuration is supported; there is no quick setup syntax.
+
+| Field | Type and default | Behavior |
+| --- | --- | --- |
+| `policy` | `string`, `preserve` | `preserve` keeps all; `strip` removes all; `strip_unknown` keeps only IANA-registered codes |
+| `allowlist` | `u16` array, `[]` | When nonempty, keep only listed codes; empty adds no restriction |
+| `denylist` | `u16` array, `[]` | Remove listed codes last, with highest priority |
+| `restore_request` | `boolean`, `true` | Restore the entire entry request on exit; disable to retain request changes |
+
+Apply **policy → allowlist → denylist** in order, only deleting options. The allowlist cannot restore options removed by policy; codes in both lists are removed.
+Entries must be integers in `0..=65535` and are sorted and deduplicated at initialization. Invalid policies, code types, ranges, or restore switches fail parsing.
+Remaining option order, payloads, and OPT metadata (UDP payload size, version, extended RCODE, DO, etc.) are preserved. Keep an existing OPT even when all options are removed; do not create EDNS when absent.
+
+`strip_unknown` uses the IANA-registered codes maintained by `EdnsCode`. Every assigned code has a named variant,
+independently of payload parser support.
+The registry snapshot ships with OxiDNS releases; builds and runtime do not fetch it over the network.
+The snapshot verified on 2026-11-10 keeps `1–3`, `5–26`, `20292`, and `26946`, excluding reserved, unassigned,
+and local/experimental codes (including `0`, `4`, `65001`, and `65535`).
+Source: [IANA EDNS Option registry](https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-11).
+
+Each fragment below belongs under `edns_filter.args`:
+
+```yaml
+# Remove all options
+policy: strip
+```
+
+```yaml
+# Keep IANA-registered options, including codes without payload parsers
+policy: strip_unknown
+```
+
+```yaml
+# Allow only ECS, COOKIE, and EDE
+policy: preserve
+allowlist: [8, 10, 15]
+```
+
+```yaml
+# Preserve other options, denying 65001 regardless of its payload meaning
+policy: preserve
+denylist: [65001]
+```
+
+```yaml
+# Only 8 survives: 10 is denied and the base policy already removed 65001
+policy: strip_unknown
+allowlist: [8, 10, 65001]
+denylist: [10]
+```
+
+### Restoration and execution scope
+
+With `restore_request: true`, normal return, errors, `Return`, `Stop`, and future cancellation all restore the request.
+Restoration replaces the complete Message, including downstream edits to ID, QNAME, Question, and EDNS, even when the filter removed no options.
+The response, marks, extensions, client metadata, and execution records are not rolled back. Nested scopes restore in reverse entry order.
+Disabling restoration retains filtering and downstream edits in the current context, though an outer restoring scope can still undo them.
+
+The `next` continuation covers the entire remaining sequence. Matchers, caches, and other executors inside that scope all observe the filtered request.
+Use a child sequence to limit filtering to upstream resolution. Placing another handler after forward in the same sequence does not make it observe an already-restored request.
+
+```yaml
+- tag: edns_filter_main
+  type: edns_filter
+  args:
+    denylist: [65001]
+    restore_request: true
+- tag: forward_main
+  type: forward
+  args:
+    upstreams: [{addr: "udp://1.1.1.1:53"}]
+- tag: upstream_scope
+  type: sequence
+  args:
+    - exec: $edns_filter_main
+    - exec: $forward_main
+- tag: seq_main
+  type: sequence
+  args:
+    - exec: mark 1
+    - exec: jump upstream_scope
+    # The child scope has restored the request; its response remains
+    - exec: mark 2
+```
+
+Set `restore_request: false` in the same configuration for lasting request filtering.
+Without a continuation, restoring execution leaves the final request unchanged; non-restoring execution retains filtering.
+Errors, Return, and Stop propagate unchanged. If forward enables short_circuit, its Stop propagates through jump and the outer sequence does not resume.
+
+### Composition with other plugins
+
+- ECS added or preserved by a preceding ecs_handler is also filtered. Place ECS processing before the filter to subject it to this policy; options re-added downstream are not automatically filtered again.
+- forward_edns0opt reads request options before running its continuation. Place it before the filter to copy pre-filter values into the response; inside the filter scope it sees only the options present at that point.
+- Cache and query recording observe the request state in their scope. Restoring the request does not undo completed cache or recording operations.
+
+## `ecs_handler`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Selects the EDNS Client Subnet (ECS) sent to upstreams and controls whether response ECS is retained.
+
+### Example Configuration
+
+```yaml
+- tag: ecs_main
+  type: ecs_handler
+  args:
+    # Strip client-supplied ECS first
+    forward: false
+    # Generate ECS from the client address when client ECS is not retained
+    send: true
+    # IPv4 ECS prefix length
+    mask4: 24
+    # IPv6 ECS prefix length
+    mask6: 48
+
+- tag: ecs_preset
+  type: ecs_handler
+  args:
+    # Preset ECS source
+    preset: "203.0.113.10"
+    # Replace client ECS with the preset; preset does not require send
+    forward: false
+    send: true
+    mask4: 24
+    mask6: 48
+```
+
+### Configuration Details
+
+#### `forward`
+
+- Type: `boolean`; Required: no
+- Purpose: Preserve existing client ECS. When false, remove it first, then select a replacement using `preset` or `send`.
+
+#### `send`
+
+- Type: `boolean`; Required: no
+- Purpose: Generate ECS from the request-local client address when client ECS is not retained and no `preset` is configured.
+
+#### `preset`
+
+- Type: `string`; Required: no
+- Purpose: Use a fixed source when client ECS is not retained. Takes priority over `send` and also applies when `send: false`.
+
+#### `mask4`
+
+- Type: `integer`; Required: no
+- Purpose: IPv4 ECS mask.
+
+#### `mask6`
+
+- Type: `integer`; Required: no
+- Purpose: IPv6 ECS mask.
+
+### quick setup
+
+```yaml
+- exec: "ecs_handler 203.0.113.10"
+```
+
+### Behavior
+
+- Quick setup accepts a preset IP; omitting it only removes existing ECS. Invalid IPs fail configuration loading. Legacy `IP/mask` syntax is accepted, but the mask is ignored in favor of IPv4 `/24` or IPv6 `/48`. Use full configuration for other prefix lengths or policies.
+- For IN queries, source priority is: existing ECS when `forward: true` → `preset` → client address when `send: true` → no ECS.
+- With `forward: false`, source selection continues after existing ECS is removed.
+- Non-IN queries never receive generated ECS. With `forward: false`, existing ECS is removed before downstream execution.
+- On successful return, response ECS is removed unless client ECS was retained for an IN query. Request ECS remains in its prepared state; the plugin does not clear or restore it on return.
+- Keep cache policy aligned with the ECS used for resolution. Removing response ECS does not change cache keys.
+
+### Typical Uses
+
+- Geo-sensitive upstream policies
+- Client-network-aware answers
+
+<Admonition type="note" title="Notes">
+
+- Keep ECS handling and cache-key policy aligned.
+
+</Admonition>
+
+---
+
+## `forward_edns0opt`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Forwards selected EDNS0 options to upstreams.
+
+### Example Configuration
+
+```yaml
+- tag: edns_forward
+  type: forward_edns0opt
+  args:
+    # Preserve only the selected EDNS0 option codes
+    codes: [10, 12]
+```
+
+### Configuration Details
+
+#### `codes`
+
+- Type: `array`; Required: yes
+- Purpose: EDNS0 option codes to preserve and forward.
+
+### quick setup
+
+```yaml
+- exec: "forward_edns0opt 10,12"
+```
+
+### Behavior
+
+- Keeps only selected EDNS0 options instead of blindly forwarding everything.
+
+### Typical Uses
+
+- Preserve specific client-side EDNS signaling needed by upstreams.
+
+---

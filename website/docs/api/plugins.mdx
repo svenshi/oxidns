@@ -1,0 +1,430 @@
+---
+title: 插件扩展 API
+---
+
+
+插件可以在统一 tag 路径下注册管理和观测接口。路由是否存在取决于当前配置和二进制编译能力。
+
+## 插件扩展 API
+
+### 统一格式
+
+```
+/api/plugins/<plugin_tag>/<route>
+```
+
+说明：
+
+* 也有少量插件会把主资源绑定到前缀路由下，例如 `query_recorder` 的 `/api/plugins/<tag>/records/<id>`。
+
+### cache
+
+#### `GET /api/plugins/<cache_tag>/entries`
+
+分页读取缓存项。
+
+查询参数：
+
+* `limit`：每页数量，默认 `100`，最大 `500`。
+* `cursor`：分页游标。
+* `qname`：按缓存键中的查询域名做大小写不敏感的包含筛选。
+* `answer_ip`：完整 IPv4/IPv6 地址，精确匹配 Answer 区段的 A/AAAA（包括 CNAME 链末端）。与 `qname` 取交集，在分页前筛选；包括保留中的 stale 条目，排除过期条目。非法地址返回 `400 invalid_query`。
+
+#### `POST /api/plugins/<cache_tag>/entries/delete`
+
+批量删除当前插件缓存。JSON 请求二选一：`{"ids":["缓存项 ID"]}` 或 `{"filter":{"qname":"example.com","answer_ip":"192.0.2.1"}}`。筛选字段可任选一个，但至少有一个有效非空条件；全部匹配删除包含尚未加载的结果。ID 保留 QTYPE/QCLASS、DO/CD 和 ECS 区分。
+
+请求在删除前完整验证；非法 ID/IP、空选择或混用模式返回 `400 invalid_delete_request`。重复 ID 去重，不存在的条目跳过。成功返回 `{"ok":true,"deleted_entries":实际删除数量}`。筛选删除跳过扫描后被替换的条目；缓存动态变化会影响实际数量，后续查询或已启动的刷新仍可回填。
+
+WebUI 支持勾选、全选已加载条目以及显式选择全部筛选结果；删除前确认范围和条件。
+
+#### `GET /api/plugins/<cache_tag>/flush`
+
+清空缓存。
+
+#### `GET /api/plugins/<cache_tag>/dump`
+
+导出缓存 dump。
+
+#### `POST /api/plugins/<cache_tag>/load_dump`
+
+导入缓存 dump。
+
+### cron
+
+#### `POST /api/plugins/<cron_tag>/jobs/<job_name>/run`
+
+立即启动一个已配置的 cron job。`job_name` 是经过 URL 编码的 `args.jobs[].name`；手动触发使用与定时触发相同的 executor 列表和重叠保护，但不会改变 `interval` 或 cron 表达式任务的原定计划。
+
+返回：
+
+* `202 Accepted`
+  * 任务已被后台接受，响应中的 `status` 为 `started`、`trigger` 为 `manual`，并包含本轮 `run_id`。`202` 不代表 executor 链已经成功结束。
+* `404 Not Found`
+  * 当前 cron runtime 中不存在该任务。
+* `409 Conflict`
+  * 同一任务已有一轮正在执行；请求返回 `cron_job_already_running`，不会排队。
+* `503 Service Unavailable`
+  * 手动触发队列已满、TaskCenter 正在停止或对应任务已经不可用。
+
+成功响应示例：
+
+```json
+{
+  "ok": true,
+  "job": "refresh_sets",
+  "status": "started",
+  "trigger": "manual",
+  "run_id": 12
+}
+```
+
+`run_id` 在单个已注册 job 的生命周期内从 `1` 递增，定时与手动运行共用同一序列；插件重新注册或进程重启后会重新计数。
+
+#### `GET /api/plugins/<cron_tag>/jobs/status`
+
+批量读取当前 cron runtime 中所有 job 的轻量状态，job 名称作为 `jobs` 对象的键：
+
+```json
+{
+  "ok": true,
+  "jobs": {
+    "refresh_sets": {
+      "current_run": {
+        "run_id": 12,
+        "trigger": "manual",
+        "status": "running",
+        "started_at_ms": 1780000000000
+      },
+      "last_manual_run": null
+    },
+    "cleanup": {
+      "current_run": null,
+      "last_manual_run": {
+        "run_id": 8,
+        "status": "completed_with_errors",
+        "executor_error_count": 2,
+        "completed_at_ms": 1780000001000
+      }
+    }
+  }
+}
+```
+
+- `current_run.trigger` 为 `manual`、`schedule` 或 `interval`，`status` 为 `pending` 或 `running`。
+- `last_manual_run.status` 为 `completed`、`completed_with_errors`、`failed` 或 `cancelled`；正常返回错误的 executor 会计入 `executor_error_count`，但不会阻止后续 executor。
+- 时间字段都是 Unix 毫秒。接口只保留当前运行和最近一次手动结果，不提供历史、日志内容、结果详情或停止能力。
+
+WebUI 会在当前配置版本已经运行时显示“手动运行”按钮，并每 2 秒批量同步真实状态。编辑配置或保存后尚未应用时按钮隐藏；重新打开详情不会重放已经结束的旧结果。
+
+### matcher
+
+配置在 `plugins:` 中、具有稳定 tag 的 matcher 都会注册以下运行时控制接口：
+
+```text
+GET  /api/plugins/<matcher_tag>/status
+POST /api/plugins/<matcher_tag>/mode
+```
+
+两个接口返回相同的状态结构：
+
+```json
+{
+  "ok": true,
+  "matcher": "match_cn",
+  "mode": "normal"
+}
+```
+
+设置模式时提交 JSON 请求体：
+
+```json
+{ "mode": "always_false" }
+```
+
+`mode` 支持 `normal`、`always_false` 和 `always_true`，重复设置同一模式是幂等操作。两个固定模式都会跳过内部 matcher，并固定 matcher 的基础布尔值；每个引用随后仍独立应用取反。因此 `always_false` 下 `$match_cn` 不命中而 `!$match_cn` 命中，`always_true` 下结果相反。缺少或不支持的模式返回 `400 invalid_matcher_runtime_mode`。
+
+模式只属于当前 runtime，不写入 YAML；应用级 reload 或进程重启后恢复为 `normal`。`sequence` 和 `any_match` 内的 quick-setup matcher 使用内部 `qs.match...` tag，不注册控制接口。如需运行时控制，应先将其提取为 `plugins:` 中的独立 matcher 并通过 `$tag` 引用。
+
+WebUI 对 `always_false` 与 `always_true` 都要求二次确认；恢复 `normal` 不需要确认。旧的 `/enable`、`/disable` 接口和 `enabled` 响应字段已经移除，API 客户端必须迁移到 `/mode`。
+
+### provider
+
+#### `POST /api/plugins/<provider_tag>/reload`
+
+作用：
+
+* 使用 provider 启动时的同一份配置，定向刷新该 provider 的内部数据快照。
+* 不会重建其它插件，也不会修改 provider tag、依赖关系或配置拓扑。
+
+返回：
+
+* `200 OK`
+  * provider 已成功 reload。
+* `400 Bad Request`
+  * provider 在 reload 过程中返回错误。
+* `404 Not Found`
+  * 对应 tag 不是当前 runtime 中已加载的 provider，因此没有注册该路由。
+* `409 Conflict`
+  * 同一个 provider 已有 reload 正在执行；新请求会立即返回 `provider_reload_busy`，不会排队。
+
+适用场景：
+
+* 规则文件下载完成后，只刷新受影响的 `domain_set`、`ip_set`、`geosite`、`geoip`、`adguard_rule` provider。
+* 需要避免应用级全量 `POST /api/reload` 对其它插件造成重建影响。
+
+注意：
+
+* 如果变更涉及 `config.yaml`、provider 依赖拓扑、插件列表或其它非 provider 结构，仍然需要使用 `POST /api/reload`。
+
+WebUI 在所有已应用的 provider 卡片和详情页中提供“重新加载数据”操作。该操作不会弹出配置变更确认；执行期间会阻止同一 provider 的重复请求，并展示成功、失败或 busy 结果。
+
+### reverse\_lookup
+
+#### `GET /api/plugins/<tag>?ip=<ip_addr>`
+
+按 IP 查询缓存中的域名。
+
+示例：
+
+```
+GET /api/plugins/reverse_lookup_main?ip=8.8.8.8
+```
+
+返回：
+
+* 命中：域名文本，通常为 fully-qualified domain name。
+* 未命中：空响应体。
+* 参数错误：`400 Bad Request`。
+
+
+### download
+
+`GET /api/plugins/<tag>/downloads` 返回正在运行的下载清单（`index`、`url`、`path`）和 `running` 状态。索引从 0 开始，对应运行中的配置。
+
+`POST /api/plugins/<tag>/download` 使用 `{"index": 0}` 下载单项，使用 `{}` 下载全部。请求等待下载完成后返回 HTTP 200，响应示例：`{"ok": true, "total": 1, "succeeded": 1, "failed": 0}`。部分或全部下载失败时 `ok` 为 `false`，`failed` 包含超时项；后续项仍按声明顺序执行。详情记录在服务端日志和现有下载指标中。
+
+输入格式错误返回 400，索引越界返回 404，已有下载运行时返回 409。手动请求与 pipeline/cron 下载共用运行锁，pipeline 执行会等待当前批次结束。接口需要同时启用 `api` 和 `plugin-download`，复用管理 API 认证。
+
+接口只允许下载已配置的目标，不能提交 URL 或输出路径。下载沿用插件现有的文件替换行为，不会触发 provider reload 或外层 sequence 的其它步骤。
+
+### query\_recorder
+
+#### `GET /api/plugins/<tag>/records`
+
+按 `created_at_ms` 倒序返回 recorder 主表中的记录列表，不包含 `steps`。
+
+查询参数：
+
+* `cursor=<created_at_ms>:<id>`
+  * 用于继续向后翻页。
+* `limit=<n>`
+  * 默认 `100`，最大 `500`。
+* `since_ms=<unix_ms>`
+  * 仅返回大于等于该时间的记录。
+* `until_ms=<unix_ms>`
+  * 仅返回小于等于该时间的记录。
+* `qname=<text>`
+  * 按请求问题名做大小写不敏感的包含匹配。
+* `client_ip=<text>`
+  * 按客户端 IP 字符串做大小写不敏感的包含匹配，可输入 IPv4/IPv6 片段。
+* `qtype=<type>`
+  * 按请求问题类型精确匹配。
+* `rcode=<rcode>`
+  * 按响应码精确匹配。
+* `status=all|error|has_response|no_response`
+  * 按记录状态过滤。
+* `matcher_tag=<tag>`
+  * 按 Matcher 标签精确筛选命中的查询，支持历史标签；留空不筛选 Matcher。
+
+`client_ip` 是 DNS 传输层看到的对端地址。若记录列表或 `/stats/top_clients` 全部显示 `127.0.0.1`，通常说明请求先经过了本机转发器，例如 systemd-resolved、dnsmasq、AdGuardHome、dae 或 clash；请检查部署链路，让客户端直接访问 OxiDNS，或在 HTTP/DoH 反向代理场景配置可信的 `src_ip_header`。
+
+返回：
+
+* `200 OK`
+  * JSON，形如：
+
+```json
+{
+  "ok": true,
+  "next_cursor": "1713510000123:42",
+  "records": [
+    {
+      "id": 42,
+      "created_at_ms": 1713510000123,
+      "elapsed_ms": 12,
+      "request_id": 1234,
+      "client_ip": "192.0.2.10",
+      "questions_json": [
+        { "name": "www.example.com.", "qtype": "A", "qclass": "IN" }
+      ],
+      "req_rd": true,
+      "req_cd": false,
+      "req_ad": false,
+      "req_opcode": "Query",
+      "req_edns_json": null,
+      "error": null,
+      "has_response": true,
+      "rcode": "NoError",
+      "resp_aa": false,
+      "resp_tc": false,
+      "resp_ra": true,
+      "resp_ad": false,
+      "resp_cd": false,
+      "answer_count": 1,
+      "authority_count": 0,
+      "additional_count": 0,
+      "answers_json": [
+        {
+          "name": "www.example.com.",
+          "class": "IN",
+          "ttl": 300,
+          "rr_type": "A",
+          "payload_kind": "A",
+          "payload_text": "192.0.2.1",
+          "payload": { "ip": "192.0.2.1" }
+        }
+      ],
+      "authorities_json": [],
+      "additionals_json": [],
+      "signature_json": [],
+      "resp_edns_json": null
+    }
+  ]
+}
+```
+
+#### `GET /api/plugins/<tag>/records/<id>`
+
+返回单条完整记录，并附带 `steps` 路径事件数组。
+
+返回：
+
+* `200 OK`
+  * JSON，包含 `record` 对象；其中 `record.record` 为主表字段，`record.steps` 为路径事件。
+* `404 Not Found`
+  * 记录不存在。
+
+#### `DELETE /api/plugins/<tag>/records`
+
+清空当前 recorder 的 v2 查询历史（包括 `steps` 路径事件）和内存回放缓存。操作会先 flush 后台写入队列；`cleared_records` 表示本次删除的 v2 查询记录数。
+
+**升级前的 v1 历史不会被清空，仍占用磁盘空间。** 其他 recorder 的数据也不受影响。如需手动清理 v1 历史，请仅删除对应的旧表，不要直接删除共用数据库。
+
+返回：
+
+* `200 OK`
+  * JSON，形如：
+
+```json
+{
+  "ok": true,
+  "cleared_records": 128
+}
+```
+
+所有 `/stats/*` 聚合接口必须提供 `since_ms` 和 `until_ms`（Unix 毫秒），开始时间须早于结束时间，跨度最多 24 小时；缺失或非法区间返回 HTTP 400。各项统计最多使用区间内按时间及记录 ID 倒序选取的最近 10,000 条查询记录。旧的不带时间调用需要补齐参数；记录列表、详情和 SSE 接口的时间参数语义保持不变。
+
+所有聚合响应均提供 `sample_limit`（10,000）、`sample_truncated`、`sample_since_ms`、`sample_until_ms`。仅额外探测一条判断截断，不参与统计；恰好 10,000 条不视为截断，无记录时入选时间为 `null`。记录和统计筛选额外支持 `qname_exact`、`client_ip_exact` 及 `rcode_bucket=_ERROR|_NO_RESPONSE|_UNKNOWN`，用于精确下钻；原有 `qname`、`client_ip` 的包含匹配语义不变。RCODE 特殊分类优先使用实际响应码，再依次判断执行错误、无响应、无响应码。
+
+#### `GET /api/plugins/<tag>/stats/plugins`
+
+按路径事件聚合插件命中情况。
+
+查询参数：
+
+* `since_ms=<unix_ms>`
+* `until_ms=<unix_ms>`
+* `kind=matcher|executor|builtin|all`
+* 同 `/records` 支持 `qname`、`client_ip`、`qtype`、`rcode`、`status` 过滤。
+
+返回字段：
+
+* `kind`
+* `tag`
+* `checked`
+* `matched`
+* `executed`
+* `query_total`
+* `query_share`
+
+#### `GET /api/plugins/<tag>/stats/top_clients`
+
+按客户端 IP 聚合查询次数。
+
+查询参数：
+
+* `limit=<n>`
+  * 返回桶数，默认 `20`。后端不再强制 `200` 上限；过大的值会增加 SQLite 排序和响应体成本。
+* 同 `/records` 支持 `since_ms`、`until_ms`、`qname`、`client_ip`、`qtype`、`rcode`、`status`、`matcher_tag` 过滤。
+
+返回字段：
+
+* `sample_size`
+* `rows[].key`
+* `rows[].count`
+* `rows[].share`
+
+#### `GET /api/plugins/<tag>/stats/top_qnames`
+
+按查询问题名聚合查询次数。查询参数和返回字段同 `/stats/top_clients`。
+
+#### `GET /api/plugins/<tag>/stats/qtype`
+
+按 QTYPE 聚合分布。支持 `/records` 的时间范围与过滤参数，返回 `sample_size` 和 `rows[].key/count/share`。
+
+#### `GET /api/plugins/<tag>/stats/rcode`
+
+按响应码或特殊状态桶聚合分布。支持 `/records` 的时间范围与过滤参数，返回 `sample_size` 和 `rows[].key/count/share`。
+
+#### `GET /api/plugins/<tag>/stats/latency`
+
+返回延迟摘要、直方图和慢查询排行。
+
+查询参数：
+
+* `slow_limit=<n>` 或 `limit=<n>`
+  * 慢查询排行返回数量，默认 `20`。后端不再强制 `200` 上限。
+* 同 `/records` 支持时间范围与过滤参数。
+
+#### `GET /api/plugins/<tag>/stats/timeseries`
+
+按时间桶聚合查询趋势。
+
+查询参数：
+
+* `bucket=auto|minute|hour`
+* `buckets=<n>`
+  * 返回桶数，默认 `60`，最大 `720`。
+* 同 `/records` 支持时间范围与过滤参数。
+
+返回字段：
+
+* `sample_size`、`sample_limit`：入选记录数及统计上限（10,000）。
+* `sample_truncated`：是否存在额外的匹配记录，仅探测第 10,001 条，恰好 10,000 条不视为截断。
+* `sample_since_ms`、`sample_until_ms`：入选记录最早／最晚时间；无记录时为 `null`。
+* `bucket_ms`：实际聚合间隔（毫秒）。
+* `points[]`：非空桶，包含 `bucket_ms`（桶起点）、`total`、`error_count`、`no_response_count`、`servfail_count`、`partial`、`avg_ms`、`p95_ms`。三种异常计数互斥。
+
+`bucket` 默认仍为 `minute`。`auto` 根据请求区间选择能容纳整个区间的最小常用粒度；记录截断时从最早入选记录开始计算。固定分钟／小时模式超过 `buckets` 时保留最近的非空桶；样本元数据描述所有入选记录。WebUI 的自动模式不丢弃覆盖范围内的桶。
+
+示例（查询指定历史区间）：
+
+```http
+GET /api/plugins/rec/stats/timeseries?since_ms=1700000000000&until_ms=1700003600000&bucket=auto&buckets=120
+```
+
+#### `GET /api/plugins/<tag>/stream`
+
+通过 SSE 推送新写入的完整记录。
+
+查询参数：
+
+* `tail=<n>`
+  * 先回放最近 `n` 条内存 tail，再持续推送新记录。
+
+说明：
+
+* `event: record` 的 `data` 为完整 `RecordDetail` JSON。
+* 会定期发送 heartbeat 注释帧以保持长连接。
+* 客户端应使用 `Accept: text/event-stream`，并能容忍 heartbeat、错误事件、空 payload 和临时断连。

@@ -353,6 +353,46 @@ fn edns_code_name(code: EdnsCode) -> String {
         EdnsCode::ServerTag => "ServerTag".to_string(),
         EdnsCode::ReportChannel => "ReportChannel".to_string(),
         EdnsCode::ZoneVersion => "ZoneVersion".to_string(),
+        EdnsCode::MqtypeQuery => "MqtypeQuery".to_string(),
+        EdnsCode::MqtypeResponse => "MqtypeResponse".to_string(),
+        EdnsCode::EdeExtraTextLanguage => "EdeExtraTextLanguage".to_string(),
+        EdnsCode::FilteringContact => "FilteringContact".to_string(),
+        EdnsCode::FilteringOrganization => "FilteringOrganization".to_string(),
+        EdnsCode::FilteringDb => "FilteringDb".to_string(),
+        EdnsCode::StructuredDnsError => "StructuredDnsError".to_string(),
+        EdnsCode::UmbrellaIdent => "UmbrellaIdent".to_string(),
+        EdnsCode::DeviceId => "DeviceId".to_string(),
+        EdnsCode::ReservedFuture => "ReservedFuture".to_string(),
         EdnsCode::Unknown(value) => format!("Unknown({value})"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::EdnsLocal;
+
+    #[test]
+    fn named_opaque_options_keep_their_code_and_payload_in_records() {
+        for (code, name) in [
+            (20, "MqtypeQuery"),
+            (21, "MqtypeResponse"),
+            (22, "EdeExtraTextLanguage"),
+            (23, "FilteringContact"),
+            (24, "FilteringOrganization"),
+            (25, "FilteringDb"),
+            (26, "StructuredDnsError"),
+            (20292, "UmbrellaIdent"),
+            (26946, "DeviceId"),
+            (65535, "ReservedFuture"),
+            (65001, "Unknown(65001)"),
+        ] {
+            let option = EdnsOption::Local(EdnsLocal::new(code, vec![0, 255, 1]));
+            let record = edns_option_json(&option);
+            assert_eq!(record.code, code);
+            assert_eq!(record.name, name);
+            assert_eq!(record.payload_kind, "Local");
+            assert_eq!(record.payload, json!({"code": code, "data_base64": "AP8B"}));
+        }
     }
 }
