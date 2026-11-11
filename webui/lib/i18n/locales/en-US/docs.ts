@@ -188,10 +188,10 @@ export const enUSDocs = {
   },
   ecs_handler: {
     forward:
-      "- Type: `boolean`; required: no; default value: `false`\n- Function: Control whether to retain the existing ECS in the client request.",
-    send: "- Type: `boolean`; required: no; default value: `false`\n- Function: Control whether to automatically replenish the ECS based on the source address when the request lacks ECS.",
+      "- Type: `boolean`; required: no; default value: `false`\n- Function: Preserve existing ECS; otherwise remove it first, then select preset or send for IN queries.",
+    send: "- Type: `boolean`; required: no; default value: `false`\n- Function: Generate ECS for IN queries from the current client address when existing ECS is not retained and no preset is set.",
     preset:
-      "- Type: `string`; Required: No; Default: None\n- Function: Specify a fixed ECS source address.",
+      "- Type: `string`; Required: No; Default: None\n- Function: Use a fixed source when existing ECS is not retained. Takes priority over send and also applies when send: false.",
     mask4:
       "- Type: `integer`; required: no; default value: `24`\n- Function: Specify the IPv4 ECS prefix length.",
     mask6:

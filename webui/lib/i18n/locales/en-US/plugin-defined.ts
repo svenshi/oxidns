@@ -877,22 +877,22 @@ export const enUSPluginDefined = {
     },
     ecs_handler: {
       name: "ECS Handler",
-      description:
-        "Handles retention, injection, and fallback cleanup of the EDNS Client Subnet",
+      description: "Controls upstream ECS sources and response ECS retention",
       fields: {
         forward: {
           label: "Keep client ECS",
           description:
-            "Controls whether existing ECSs in client requests are retained.",
+            "Preserve existing ECS; otherwise remove it and select preset or send for IN queries.",
         },
         send: {
-          label: "Send ECS when missing",
+          label: "Generate ECS from client",
           description:
-            "Controls whether ECS is automatically replenished based on the source address when a request is missing ECS.",
+            "Generate ECS for IN queries from the client address when existing ECS is not retained and no preset is set.",
         },
         preset: {
-          label: "Default ECS address",
-          description: "Specify a fixed ECS source address.",
+          label: "Preset ECS address",
+          description:
+            "Use a fixed source when existing ECS is not retained; takes priority over send and does not require it.",
           example: "203.0.113.10",
         },
         mask4: {
@@ -905,7 +905,7 @@ export const enUSPluginDefined = {
         },
       },
       quickSetup: {
-        paramPlaceholder: "203.0.113.10/24",
+        paramPlaceholder: "203.0.113.10",
       },
     },
     forward_edns0opt: {

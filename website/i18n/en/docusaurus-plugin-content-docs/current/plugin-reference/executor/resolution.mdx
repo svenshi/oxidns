@@ -886,7 +886,7 @@ complete client IP.
 
 ### Purpose
 
-Controls EDNS Client Subnet forwarding or injection.
+Selects the EDNS Client Subnet (ECS) sent to upstreams and controls whether response ECS is retained.
 
 ### Example Configuration
 
@@ -896,7 +896,7 @@ Controls EDNS Client Subnet forwarding or injection.
   args:
     # Strip client-supplied ECS first
     forward: false
-    # Add ECS when the request has none
+    # Generate ECS from the client address when client ECS is not retained
     send: true
     # IPv4 ECS prefix length
     mask4: 24
@@ -908,7 +908,7 @@ Controls EDNS Client Subnet forwarding or injection.
   args:
     # Preset ECS source
     preset: "203.0.113.10"
-    # Fixed-source mode usually keeps these switches explicit
+    # Replace client ECS with the preset; preset does not require send
     forward: false
     send: true
     mask4: 24
@@ -920,17 +920,17 @@ Controls EDNS Client Subnet forwarding or injection.
 #### `forward`
 
 - Type: `boolean`; Required: no
-- Purpose: Preserve ECS from the client side.
+- Purpose: Preserve existing client ECS. When false, remove it first, then select a replacement using `preset` or `send`.
 
 #### `send`
 
 - Type: `boolean`; Required: no
-- Purpose: Send ECS to upstreams.
+- Purpose: Generate ECS from the request-local client address when client ECS is not retained and no `preset` is configured.
 
 #### `preset`
 
 - Type: `string`; Required: no
-- Purpose: Use a preset ECS source.
+- Purpose: Use a fixed source when client ECS is not retained. Takes priority over `send` and also applies when `send: false`.
 
 #### `mask4`
 
@@ -945,13 +945,17 @@ Controls EDNS Client Subnet forwarding or injection.
 ### quick setup
 
 ```yaml
-- exec: "ecs_handler 203.0.113.10/24"
+- exec: "ecs_handler 203.0.113.10"
 ```
 
 ### Behavior
 
-- Can preserve, synthesize, or normalize ECS before forwarding.
-- Interacts with cache correctness if ECS is also part of the cache key.
+- Quick setup accepts a preset IP; omitting it only removes existing ECS. Invalid IPs fail configuration loading. Legacy `IP/mask` syntax is accepted, but the mask is ignored in favor of IPv4 `/24` or IPv6 `/48`. Use full configuration for other prefix lengths or policies.
+- For IN queries, source priority is: existing ECS when `forward: true` → `preset` → client address when `send: true` → no ECS.
+- With `forward: false`, source selection continues after existing ECS is removed.
+- Non-IN queries never receive generated ECS. With `forward: false`, existing ECS is removed before downstream execution.
+- On successful return, response ECS is removed unless client ECS was retained for an IN query. Request ECS remains in its prepared state; the plugin does not clear or restore it on return.
+- Keep cache policy aligned with the ECS used for resolution. Removing response ECS does not change cache keys.
 
 ### Typical Uses
 
