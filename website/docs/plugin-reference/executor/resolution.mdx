@@ -1042,7 +1042,7 @@ denylist: [10]
 
 ### 作用
 
-处理 EDNS Client Subnet。
+选择发往上游的 EDNS Client Subnet（ECS），并控制响应中的 ECS 是否保留。
 
 ### 配置示例
 
@@ -1052,7 +1052,7 @@ denylist: [10]
   args:
     # 客户端自带 ECS 时先移除
     forward: false
-    # 请求没有 ECS 时自动补发
+    # 未保留客户端 ECS 时，根据来源地址补发
     send: true
     # IPv4 ECS 前缀长度
     mask4: 24
@@ -1064,7 +1064,7 @@ denylist: [10]
   args:
     # 预设 ECS 地址
     preset: "203.0.113.10"
-    # 固定来源模式下也建议显式写出策略开关
+    # 不采用客户端 ECS，统一使用预设地址；preset 不依赖 send
     forward: false
     send: true
     mask4: 24
@@ -1076,17 +1076,17 @@ denylist: [10]
 #### `forward`
 
 - 类型：`boolean`；必填：否；默认值：`false`
-- 作用：控制是否保留客户端请求中已有的 ECS。
+- 作用：控制是否保留客户端请求中已有的 ECS。为 `false` 时先删除已有 ECS，再按 `preset`、`send` 选择替代来源。
 
 #### `send`
 
 - 类型：`boolean`；必填：否；默认值：`false`
-- 作用：控制在请求缺少 ECS 时，是否根据来源地址自动补充 ECS。
+- 作用：未保留客户端 ECS 且未配置 `preset` 时，根据当前请求的客户端地址生成 ECS。
 
 #### `preset`
 
 - 类型：`string`；必填：否；默认值：无
-- 作用：指定固定的 ECS 来源地址。
+- 作用：未保留客户端 ECS 时使用的固定来源地址；优先于 `send`，即使 `send: false` 也生效。
 
 #### `mask4`
 
@@ -1101,19 +1101,22 @@ denylist: [10]
 ### quick setup
 
 ```yaml
-- exec: "ecs_handler 203.0.113.10/24"
+- exec: "ecs_handler 203.0.113.10"
 ```
 
-当前 quick setup 主要用于传入 preset IP。涉及高级开关时，应使用完整配置形式。
+quick setup 接受一个 preset IP，省略参数时只删除已有 ECS。非法 IP 会导致配置加载失败。
+兼容旧的 `IP/mask` 写法，但会忽略其中的 mask，仍使用 IPv4 `/24`、IPv6 `/48`。
+自定义前缀长度或使用其他策略开关时，应使用完整配置形式。
 
 ### 行为说明
 
 - 正向阶段：
-  - 可删掉已有 ECS。
-  - 可保留已有 ECS。
-  - 可根据客户端地址或 preset 注入 ECS。
+  - 对 IN 类查询，依次选择：`forward: true` 时保留已有 ECS → 使用 `preset` → `send: true` 时根据客户端地址生成 ECS → 不携带 ECS。
+  - `forward: false` 时，删除已有 ECS 后仍会继续按上述优先级选择来源。
+  - 非 IN 类查询不生成 ECS；`forward: false` 时也会在执行后续链之前删除已有 ECS。
 - 回程阶段：
-  - 如果 ECS 不是从客户端原样转发的，会把响应里的 ECS 去掉，避免泄露内部构造信息。
+  - 仅当 IN 类查询保留了客户端已有 ECS 时，才保留响应中的 ECS；其他情况下会删除响应 ECS，避免泄露内部构造信息。
+  - 请求中的 ECS 保持正向处理后的状态，供后续流程使用；本插件不会在返回时清空或恢复请求 ECS。
 
 ### 典型用途
 
@@ -1123,6 +1126,7 @@ denylist: [10]
 <Admonition type="note" title="注意事项">
 
 - `mask4` 最大 `32`，`mask6` 最大 `128`。
+- 缓存策略应与实际参与解析的 ECS 保持一致；响应 ECS 的清理不会自动改变缓存键。
 
 </Admonition>
 

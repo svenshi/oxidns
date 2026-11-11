@@ -822,26 +822,29 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
     kind: "ecs_handler",
     type: "executor",
     name: "ECS Handler",
-    description: "处理 EDNS Client Subnet 的保留、注入和回程清理",
+    description: "控制上游请求的 ECS 来源及响应 ECS 的保留",
     icon: "Globe",
     configSchema: [
       {
         key: "forward",
-        description: "控制是否保留客户端请求中已有的 ECS。",
+        description:
+          "控制是否保留已有 ECS；关闭后先删除，IN 查询再按 preset、send 选择来源。",
         label: "保留客户端 ECS",
         type: "switch",
         default: false,
       },
       {
         key: "send",
-        description: "控制在请求缺少 ECS 时，是否根据来源地址自动补充 ECS。",
-        label: "缺失时发送 ECS",
+        description:
+          "未保留已有 ECS 且未配置 preset 时，根据客户端地址为 IN 查询生成 ECS。",
+        label: "根据来源生成 ECS",
         type: "switch",
         default: false,
       },
       {
         key: "preset",
-        description: "指定固定的 ECS 来源地址。",
+        description:
+          "未保留已有 ECS 时使用的固定来源地址；优先于 send，且不依赖 send 开启。",
         label: "预设 ECS 地址",
         type: "text",
         example: "203.0.113.10",
@@ -864,7 +867,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
     ],
     quickSetup: {
-      paramPlaceholder: "203.0.113.10/24",
+      paramPlaceholder: "203.0.113.10",
     },
   },
   {

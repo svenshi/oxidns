@@ -131,6 +131,238 @@ plugins:
     Ok(())
 }
 
+#[tokio::test]
+async fn test_ecs_handler_upstream_policy_and_request_lifecycle() -> Result<()> {
+    use std::panic::AssertUnwindSafe;
+
+    use futures::FutureExt;
+    use oxidns::proto::{ClientSubnet, EdnsCode, EdnsLocal, EdnsOption};
+
+    let upstream = UdpSocket::bind("127.0.0.1:0").await?;
+    let address = upstream.local_addr()?;
+    let yaml = format!(
+        r#"
+plugins:
+  - tag: forward_main
+    type: forward
+    args:
+      upstreams: [{{addr: 'udp://{address}'}}]
+  - tag: ecs_preset
+    type: ecs_handler
+    args: {{forward: false, preset: '203.0.113.10', send: true}}
+  - tag: ecs_send
+    type: ecs_handler
+    args: {{forward: false, send: true}}
+  - tag: ecs_forward
+    type: ecs_handler
+    args: {{forward: true, preset: '203.0.113.10', send: true}}
+  - tag: ecs_strip
+    type: ecs_handler
+  - tag: seq_preset
+    type: sequence
+    args: [{{exec: $ecs_preset}}, {{exec: $forward_main}}]
+  - tag: seq_send
+    type: sequence
+    args: [{{exec: $ecs_send}}, {{exec: $forward_main}}]
+  - tag: seq_forward
+    type: sequence
+    args: [{{exec: $ecs_forward}}, {{exec: $forward_main}}]
+  - tag: seq_strip
+    type: sequence
+    args: [{{exec: $ecs_strip}}, {{exec: $forward_main}}]
+  - tag: seq_quick
+    type: sequence
+    args: [{{exec: 'ecs_handler 203.0.113.10/16'}}, {{exec: $forward_main}}]
+"#
+    );
+    let runtime = plugin::init(parse_config(&yaml)?).await?;
+    let outcome = AssertUnwindSafe(async {
+        for (tag, class, peer, has_client_ecs, expected) in [
+            (
+                "seq_preset",
+                DNSClass::IN,
+                "192.0.2.42",
+                false,
+                Some(("203.0.113.0", 24)),
+            ),
+            (
+                "seq_preset",
+                DNSClass::IN,
+                "192.0.2.42",
+                true,
+                Some(("203.0.113.0", 24)),
+            ),
+            (
+                "seq_send",
+                DNSClass::IN,
+                "192.0.2.42",
+                false,
+                Some(("192.0.2.0", 24)),
+            ),
+            (
+                "seq_send",
+                DNSClass::IN,
+                "192.0.2.42",
+                true,
+                Some(("192.0.2.0", 24)),
+            ),
+            (
+                "seq_send",
+                DNSClass::IN,
+                "2001:db8:1::42",
+                true,
+                Some(("2001:db8:1::", 48)),
+            ),
+            (
+                "seq_forward",
+                DNSClass::IN,
+                "192.0.2.42",
+                true,
+                Some(("198.51.100.0", 24)),
+            ),
+            (
+                "seq_forward",
+                DNSClass::IN,
+                "192.0.2.42",
+                false,
+                Some(("203.0.113.0", 24)),
+            ),
+            ("seq_strip", DNSClass::IN, "192.0.2.42", true, None),
+            ("seq_strip", DNSClass::CH, "192.0.2.42", true, None),
+            ("seq_preset", DNSClass::CH, "192.0.2.42", true, None),
+            ("seq_preset", DNSClass::CH, "192.0.2.42", false, None),
+            ("seq_send", DNSClass::CH, "192.0.2.42", true, None),
+            (
+                "seq_forward",
+                DNSClass::CH,
+                "192.0.2.42",
+                true,
+                Some(("198.51.100.0", 24)),
+            ),
+            ("seq_forward", DNSClass::CH, "192.0.2.42", false, None),
+            (
+                "seq_quick",
+                DNSClass::IN,
+                "192.0.2.42",
+                true,
+                Some(("203.0.113.0", 24)),
+            ),
+        ] {
+            let sequence = runtime.get_plugin(tag).unwrap().to_executor();
+            let mut request = Message::new();
+            request.set_id(424);
+            request.add_question(Question::new(
+                Name::from_ascii("ecs-policy.test.")?,
+                RecordType::A,
+                class,
+            ));
+            let opt = request.ensure_edns_mut();
+            opt.set_dnssec_ok(true);
+            opt.set_udp_payload_size(4096);
+            let other = EdnsOption::Local(EdnsLocal::new(65001, vec![1, 2, 3]));
+            opt.insert(other.clone());
+            if has_client_ecs {
+                opt.insert(EdnsOption::Subnet(ClientSubnet::new(
+                    "198.51.100.9".parse().unwrap(),
+                    24,
+                    0,
+                )));
+            }
+            let mut context =
+                DnsContext::new(SocketAddr::new(peer.parse().unwrap(), 5353), request);
+            let mock_upstream = async {
+                let mut buf = [0; 4096];
+                let (len, remote) = upstream.recv_from(&mut buf).await?;
+                let request = Message::from_bytes(&buf[..len])?;
+                let mut response = request.response(Rcode::NoError);
+                response
+                    .ensure_edns_mut()
+                    .insert(EdnsOption::Subnet(ClientSubnet::new(
+                        "198.51.100.0".parse().unwrap(),
+                        24,
+                        0,
+                    )));
+                upstream.send_to(&response.to_bytes()?, remote).await?;
+                Ok::<_, DnsError>(request)
+            };
+            let (step, captured) = timeout(Duration::from_secs(3), async {
+                tokio::join!(sequence.execute(&mut context), mock_upstream)
+            })
+            .await
+            .map_err(|_| DnsError::runtime("ECS policy query timed out"))?;
+            assert_eq!(step?, ExecStep::Next);
+            let captured = captured?;
+            assert_eq!(context.request.id(), 424);
+            assert_eq!(context.response().unwrap().id(), 424);
+            assert_eq!(captured.first_qclass(), Some(class));
+            let opt = captured.edns().as_ref().unwrap();
+            let actual = opt.option(EdnsCode::Subnet);
+            let expected_ecs = expected.map(|(ip, prefix)| {
+                EdnsOption::Subnet(ClientSubnet::new(ip.parse().unwrap(), prefix, 0))
+            });
+            assert_eq!(
+                actual,
+                expected_ecs.as_ref(),
+                "tag={tag}, class={class:?}, client_ecs={has_client_ecs}"
+            );
+            assert!(opt.flags().dnssec_ok);
+            assert_eq!(opt.udp_payload_size(), 4096);
+            assert_eq!(opt.option(EdnsCode::Unknown(65001)), Some(&other));
+            assert_eq!(
+                context
+                    .request
+                    .edns()
+                    .as_ref()
+                    .unwrap()
+                    .option(EdnsCode::Subnet)
+                    .is_some(),
+                expected.is_some(),
+                "prepared request ECS must remain available after the chain returns"
+            );
+            let response_has_ecs = context
+                .response()
+                .unwrap()
+                .edns()
+                .as_ref()
+                .is_some_and(|edns| edns.option(EdnsCode::Subnet).is_some());
+            assert_eq!(
+                response_has_ecs,
+                tag == "seq_forward" && class == DNSClass::IN && has_client_ecs
+            );
+        }
+        Ok(())
+    })
+    .catch_unwind()
+    .await;
+    runtime.destroy().await;
+    outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+#[tokio::test]
+async fn test_ecs_handler_invalid_quick_setup_fails_sequence_init() -> Result<()> {
+    for param in ["not-an-ip", "203.0.113.999/24", "2001:db8::gg"] {
+        let yaml = format!(
+            r#"
+plugins:
+  - tag: seq_main
+    type: sequence
+    args: [{{exec: 'ecs_handler {param}'}}]
+"#
+        );
+        match plugin::init(parse_config(&yaml)?).await {
+            Ok(runtime) => {
+                runtime.destroy().await;
+                panic!("invalid ECS preset must fail sequence initialization: {param}");
+            }
+            Err(error) => assert!(
+                error.to_string().contains("invalid ecs_handler preset"),
+                "{error}"
+            ),
+        }
+    }
+    Ok(())
+}
+
 fn test_rule_path(relative_name: &str) -> String {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")

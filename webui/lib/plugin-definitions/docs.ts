@@ -178,10 +178,10 @@ export const pluginFieldDocs = {
   },
   ecs_handler: {
     forward:
-      "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：控制是否保留客户端请求中已有的 ECS。",
-    send: "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：控制在请求缺少 ECS 时，是否根据来源地址自动补充 ECS。",
+      "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：控制是否保留已有 ECS；为 false 时先删除，IN 查询再按 preset、send 选择替代来源。",
+    send: "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：未保留已有 ECS 且未配置 preset 时，根据当前客户端地址为 IN 查询生成 ECS。",
     preset:
-      "- 类型：`string`；必填：否；默认值：无\n- 作用：指定固定的 ECS 来源地址。",
+      "- 类型：`string`；必填：否；默认值：无\n- 作用：未保留已有 ECS 时使用的固定来源地址；优先于 send，即使 send: false 也生效。",
     mask4:
       "- 类型：`integer`；必填：否；默认值：`24`\n- 作用：指定 IPv4 ECS 前缀长度。",
     mask6:
