@@ -880,6 +880,120 @@ complete client IP.
 
 ---
 
+## `edns_filter`
+
+<PluginAvailability from="minimal" />
+
+### Purpose and configuration
+
+Filter request EDNS options within the remaining sequence continuation. By default, restore the entire entry request on exit while keeping the response and other context state.
+The plugin does not actively filter responses, add options, or assign business meanings to private codes.
+
+```yaml
+- tag: edns_filter_main
+  type: edns_filter
+  args:
+    policy: preserve
+    allowlist: []
+    denylist: []
+    restore_request: true
+```
+
+Omitting args, using an empty object, or omitting fields inherits these defaults. Only named configuration is supported; there is no quick setup syntax.
+
+| Field | Type and default | Behavior |
+| --- | --- | --- |
+| `policy` | `string`, `preserve` | `preserve` keeps all; `strip` removes all; `strip_unknown` keeps only IANA-registered codes |
+| `allowlist` | `u16` array, `[]` | When nonempty, keep only listed codes; empty adds no restriction |
+| `denylist` | `u16` array, `[]` | Remove listed codes last, with highest priority |
+| `restore_request` | `boolean`, `true` | Restore the entire entry request on exit; disable to retain request changes |
+
+Apply **policy → allowlist → denylist** in order, only deleting options. The allowlist cannot restore options removed by policy; codes in both lists are removed.
+Entries must be integers in `0..=65535` and are sorted and deduplicated at initialization. Invalid policies, code types, ranges, or restore switches fail parsing.
+Remaining option order, payloads, and OPT metadata (UDP payload size, version, extended RCODE, DO, etc.) are preserved. Keep an existing OPT even when all options are removed; do not create EDNS when absent.
+
+`strip_unknown` uses the IANA-registered codes maintained by `EdnsCode`. Every assigned code has a named variant,
+independently of payload parser support.
+The registry snapshot ships with OxiDNS releases; builds and runtime do not fetch it over the network.
+The snapshot verified on 2026-11-10 keeps `1–3`, `5–26`, `20292`, and `26946`, excluding reserved, unassigned,
+and local/experimental codes (including `0`, `4`, `65001`, and `65535`).
+Source: [IANA EDNS Option registry](https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-11).
+
+Each fragment below belongs under `edns_filter.args`:
+
+```yaml
+# Remove all options
+policy: strip
+```
+
+```yaml
+# Keep IANA-registered options, including codes without payload parsers
+policy: strip_unknown
+```
+
+```yaml
+# Allow only ECS, COOKIE, and EDE
+policy: preserve
+allowlist: [8, 10, 15]
+```
+
+```yaml
+# Preserve other options, denying 65001 regardless of its payload meaning
+policy: preserve
+denylist: [65001]
+```
+
+```yaml
+# Only 8 survives: 10 is denied and the base policy already removed 65001
+policy: strip_unknown
+allowlist: [8, 10, 65001]
+denylist: [10]
+```
+
+### Restoration and execution scope
+
+With `restore_request: true`, normal return, errors, `Return`, `Stop`, and future cancellation all restore the request.
+Restoration replaces the complete Message, including downstream edits to ID, QNAME, Question, and EDNS, even when the filter removed no options.
+The response, marks, extensions, client metadata, and execution records are not rolled back. Nested scopes restore in reverse entry order.
+Disabling restoration retains filtering and downstream edits in the current context, though an outer restoring scope can still undo them.
+
+The `next` continuation covers the entire remaining sequence. Matchers, caches, and other executors inside that scope all observe the filtered request.
+Use a child sequence to limit filtering to upstream resolution. Placing another handler after forward in the same sequence does not make it observe an already-restored request.
+
+```yaml
+- tag: edns_filter_main
+  type: edns_filter
+  args:
+    denylist: [65001]
+    restore_request: true
+- tag: forward_main
+  type: forward
+  args:
+    upstreams: [{addr: "udp://1.1.1.1:53"}]
+- tag: upstream_scope
+  type: sequence
+  args:
+    - exec: $edns_filter_main
+    - exec: $forward_main
+- tag: seq_main
+  type: sequence
+  args:
+    - exec: mark 1
+    - exec: jump upstream_scope
+    # The child scope has restored the request; its response remains
+    - exec: mark 2
+```
+
+Set `restore_request: false` in the same configuration for lasting request filtering.
+Without a continuation, restoring execution leaves the final request unchanged; non-restoring execution retains filtering.
+Errors, Return, and Stop propagate unchanged. If forward enables short_circuit, its Stop propagates through jump and the outer sequence does not resume.
+
+### Composition with other plugins
+
+- ECS added or preserved by a preceding ecs_handler is also filtered. Place ECS processing before the filter to subject it to this policy; options re-added downstream are not automatically filtered again.
+- forward_edns0opt reads request options before running its continuation. Place it before the filter to copy pre-filter values into the response; inside the filter scope it sees only the options present at that point.
+- Cache and query recording observe the request state in their scope. Restoring the request does not undo completed cache or recording operations.
+
 ## `ecs_handler`
 
 <PluginAvailability from="minimal" />

@@ -454,12 +454,8 @@ fn parse_edns_option(code: u16, data: &[u8]) -> EdnsOption {
         EdnsCode::ZoneVersion => parse_zone_version(data)
             .map(EdnsOption::ZoneVersion)
             .unwrap_or_else(|| EdnsOption::Local(EdnsLocal::new(code, data.to_vec()))),
-        EdnsCode::Reserved
-        | EdnsCode::Chain
-        | EdnsCode::KeyTag
-        | EdnsCode::ClientTag
-        | EdnsCode::ServerTag
-        | EdnsCode::Unknown(_) => EdnsOption::Local(EdnsLocal::new(code, data.to_vec())),
+        // Recognizing a registry code does not require a payload parser.
+        _ => EdnsOption::Local(EdnsLocal::new(code, data.to_vec())),
     }
 }
 
@@ -903,6 +899,28 @@ mod tests {
         assert_eq!(value.0.ext_rcode(), 0xAB);
         assert_eq!(value.0.version(), 0xCD);
         assert!(value.0.flags().dnssec_ok);
+    }
+
+    #[test]
+    fn registered_codes_without_parsers_preserve_opaque_payloads() {
+        let data = [0, 1, 255, 2];
+        for code in [13, 14, 16, 17, 20, 21, 22, 23, 24, 25, 26, 20292, 26946] {
+            let named = EdnsCode::from(code);
+            assert!(!matches!(named, EdnsCode::Unknown(_)), "{code}");
+            assert!(named.is_iana_registered());
+            let parsed = parse_edns_option(code, &data);
+            let EdnsOption::Local(local) = &parsed else {
+                panic!("expected opaque option for {code}");
+            };
+            assert_eq!(local.code(), code);
+            assert_eq!(local.data(), data);
+            assert_eq!(EdnsCode::from(&parsed), named);
+            let mut encoded = Vec::new();
+            encode_edns_option(&mut encoded, &parsed).unwrap();
+            assert_eq!(&encoded[..2], code.to_be_bytes());
+            assert_eq!(&encoded[2..4], [0, 4]);
+            assert_eq!(&encoded[4..], data);
+        }
     }
 
     #[test]

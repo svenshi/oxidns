@@ -49,6 +49,9 @@ assert_eq!(decoded.id(), 0x1234);
 
 - Types are owned values so they can move cleanly through async request
   handling and plugin boundaries.
+- `EdnsCode` models a versioned IANA option-code catalog independently of
+  payload parsing. Assigned codes have named variants; options without a
+  payload parser remain opaque `EdnsOption::Local` values.
 - The codec is intended for DNS server and resolver workloads, where avoiding
   unnecessary allocation on the hot path matters.
 - Feature flags `hotpath` and `hotpath-alloc` forward to the `hotpath` crate

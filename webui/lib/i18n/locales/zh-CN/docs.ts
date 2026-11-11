@@ -51,6 +51,16 @@ export const zhCNDocs = {
     "args[].exec":
       "- 类型：`string`；必填：否；默认值：无\n- 作用：定义规则命中后要执行的动作。\n- 支持内容：\n  - 插件引用\n  - 快捷表达式\n  - 内建控制流，例如 `accept`、`reject SERVFAIL`、`reject NOERROR`、`reject 3`、`jump <tag>`\n- 说明：`reject` 的 RCODE 参数支持大小写不敏感的英文名称和十进制数字。\n- 运行影响：\n  - 直接决定当前规则的执行行为。",
   },
+  edns_filter: {
+    policy:
+      "- 类型：`string`；必填：否；默认值：`preserve`\n- `preserve`：保留全部，`strip`：删除全部，`strip_unknown`：仅保留 IANA 已注册 Code\n- 按 EdnsCode 中维护的 IANA 编号判断，不要求负载解析器；Reserved、Unassigned 和本地/实验性 Code 被删除\n- 注册表随版本更新，构建和运行不联网读取；不赋予 65001 特殊业务含义",
+    allowlist:
+      "- 类型：`array`；必填：否；默认值：`[]`\n- 每项是 0–65535 的 u16 整数；初始化时排序去重\n- 非空时限制允许的 Code，不能恢复 policy 删除的选项\n- 按 policy → allowlist → denylist 依次过滤",
+    denylist:
+      "- 类型：`array`；必填：否；默认值：`[]`\n- 每项是 0–65535 的 u16 整数；初始化时排序去重\n- 最后删除指定 Code，优先于 allowlist；例如 `[65001]`",
+    restore_request:
+      "- 类型：`boolean`；必填：否；默认值：`true`\n- 开启时在正常退出、错误、提前结束或取消时恢复进入插件的整份请求，包括下游修改，即使没有删除 Option\n- 关闭时保留请求修改；响应、marks 和扩展属性均不回滚\n- next 包含当前 sequence 的剩余链路；使用子 sequence 限定过滤范围\n- 无 continuation 时，开启恢复最终请求不变；关闭时保留过滤结果",
+  },
   forward: {
     concurrent:
       "- 类型：`integer`；必填：否；默认值：`1`\n- 取值范围：实际运行时会限制在 `1..=32`，且不会超过 upstream 数量。\n- 建议范围：`2..=8`；更高值适合高级观测或特殊部署。\n- 作用：定义多上游模式下的并发查询扇出数。\n- 运行影响：\n  - 值越大，多上游竞争越积极，但同时会增加上游请求量。",

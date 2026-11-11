@@ -30,7 +30,7 @@ recipes from `justfile`.
 ```bash
 cargo test <filter>
 cargo test --test plugin_integration <filter>
-cargo test --test message_hickory_compat
+cargo test -p oxidns-proto
 ```
 
 Keep unit tests close to policy-heavy code. Use integration tests for plugin
@@ -82,7 +82,7 @@ Whether and when CI runs this recipe is defined by
 | Plugin config or factory | Plugin unit tests and matching `plugin_integration` filters | `cargo test --test plugin_integration`, `just check` |
 | Sequence/dependency graph | Sequence and registry tests, relevant integration filters | Full plugin integration suite |
 | Cache semantics | `cargo test cache` plus persistence/API filters as affected | Plugin integration and all-feature tests |
-| Message/wire/rcode/TTL behavior | Proto/core tests and Hickory compatibility | Workspace all-feature tests; hot-path review when relevant |
+| Message/wire/rcode/TTL behavior | Proto/core tests and wire roundtrips | Workspace all-feature tests; hot-path review when relevant |
 | UDP/TCP server | Server unit tests and live ephemeral-port integration | All-feature tests on CI platforms |
 | TLS/DoH/DoQ/HTTP3 | Protocol-specific tests with feature enabled | Feature matrix and cross-platform CI |
 | API route or payload | Handler/router tests | All-feature tests and affected WebUI checks |
@@ -140,8 +140,8 @@ Changes that touch responses must cover relevant invariants:
 - EDNS, DNSSEC DO/CD bits, and ECS keying where applicable.
 - RCODE and control-flow propagation through nested sequences.
 
-Compatibility with Hickory is an additional signal, not permission to replace
-OxiDNS-specific semantics.
+Comparison with independent DNS implementations is an additional signal, not
+permission to replace OxiDNS-specific semantics.
 
 ## Test Placement
 
@@ -150,7 +150,7 @@ OxiDNS-specific semantics.
 - `tests/plugin_integration.rs` owns cross-plugin and live server behavior.
 - `tests/feature_gating.rs` owns positive and negative compilation-surface
   expectations visible at runtime.
-- `tests/message_hickory_compat.rs` owns codec compatibility behavior.
+- `crates/proto/` owns message-model, wire-codec, and roundtrip behavior tests.
 
 ## Failure Triage
 

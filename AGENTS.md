@@ -32,7 +32,7 @@
 - Service-management operations and platform dispatch live in `src/infra/service/mod.rs`, with Windows SCM handling in `windows.rs`; `src/cli/service.rs` only adapts CLI service options.
 - Workspace members and their dependency relationships are declared by the root and member `Cargo.toml` files. Each member owns its local API and stability policy.
 - `tests/plugin_integration.rs` covers config parsing, plugin registry wiring, sequence quick-setup, and live server integration.
-- `tests/message_hickory_compat.rs` validates message codec compatibility behavior against Hickory.
+- `crates/proto/` owns message-model and wire-codec tests, including EDNS preservation and roundtrip behavior.
 - `config*.yaml` files are the canonical runnable configuration profiles for their corresponding bundles.
 - `README.md` and `README_EN.md` describe the architecture and capability set; keep them aligned with behavior changes.
 - `website/` contains the Docusaurus documentation site, including user-facing manuals, translations, and static assets.

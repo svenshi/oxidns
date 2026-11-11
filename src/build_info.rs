@@ -227,6 +227,11 @@ mod tests {
         assert!(
             info.supported_plugins
                 .executors
+                .contains(&"edns_filter".into())
+        );
+        assert!(
+            info.supported_plugins
+                .executors
                 .contains(&"load_balance".into())
         );
         assert!(
