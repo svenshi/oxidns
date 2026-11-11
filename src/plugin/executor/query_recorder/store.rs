@@ -1404,17 +1404,23 @@ fn load_timeseries_from_minute_stats(
     table: &str,
     query: &TimeseriesQuery,
 ) -> std::result::Result<TimeseriesResponse, DnsError> {
-    let bucket_ms = query.bucket.millis();
+    let since_ms = query.since_ms.map(as_i64).transpose()?.unwrap_or(0);
+    let until_ms = query
+        .until_ms
+        .map(as_i64)
+        .transpose()?
+        .unwrap_or(since_ms);
+    let bucket_ms = query.bucket.millis(since_ms, until_ms, query.max_buckets);
     let mut clauses = Vec::new();
     let mut params: Vec<rusqlite::types::Value> = Vec::new();
 
-    if let Some(since_ms) = query.since_ms {
+    if let Some(since_val) = query.since_ms {
         clauses.push("minute_ms >= ?");
-        params.push(rusqlite::types::Value::Integer(since_ms as i64));
+        params.push(rusqlite::types::Value::Integer(since_val as i64));
     }
-    if let Some(until_ms) = query.until_ms {
+    if let Some(until_val) = query.until_ms {
         clauses.push("minute_ms <= ?");
-        params.push(rusqlite::types::Value::Integer(until_ms as i64));
+        params.push(rusqlite::types::Value::Integer(until_val as i64));
     }
 
     let where_sql = if clauses.is_empty() {
@@ -1468,11 +1474,15 @@ fn load_timeseries_from_minute_stats(
             agg.elapsed_sum as f64 / agg.sample_count as f64
         };
         let p95_ms = (avg_ms * 1.5).round() as u64;
+        let partial = bucket < since_ms
+            || bucket.saturating_add(bucket_ms).saturating_sub(1) > until_ms;
         points.push(TimeseriesPoint {
             bucket_ms: bucket,
             total: agg.total,
             error_count: agg.error_count,
             no_response_count: 0,
+            servfail_count: 0,
+            partial,
             avg_ms,
             p95_ms,
         });
@@ -1486,6 +1496,10 @@ fn load_timeseries_from_minute_stats(
     Ok(TimeseriesResponse {
         ok: true,
         sample_size,
+        sample_limit: PLUGIN_STATS_SAMPLE_LIMIT,
+        sample_truncated: false,
+        sample_since_ms: query.since_ms.map(|v| v as i64),
+        sample_until_ms: query.until_ms.map(|v| v as i64),
         bucket_ms,
         points,
     })
