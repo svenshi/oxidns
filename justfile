@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Sven Shi
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 set positional-arguments
 
 # Run the standard local quality gate without mutating source files.
@@ -32,7 +35,7 @@ check-full:
     cargo +nightly clippy --all-features --all-targets -- -D warnings
 
 # Private/profiling features that should never be enabled on their own.
-_hack_excluded := "hotpath,hotpath-alloc,_task-cron,_tls-base,_tls-client,_tls-server,_http-server,_http-client"
+_hack_excluded := "hotpath,hotpath-alloc,hotpath-cloud,hotpath-callgrind,_task-cron,_tls-base,_tls-client,_tls-server,_http-server,_http-client"
 
 # Compile every public feature individually (and the bare no-default-features
 # core). Catches "feature X fails to build in isolation" regressions.
@@ -58,3 +61,9 @@ test-standard:
 # clippy gates + bundle tests + the all-features test suite.
 check-matrix: check-each-feature check-minimal check-standard check-full test-minimal test-standard
     cargo test --all-features
+
+# One Criterion request-path benchmark as a hotpath report. The optional target
+# selects any suite in .github/hotpath-benchmarks.json; existing codec commands
+# continue to work. HOTPATH_CRITERION_ITERATIONS fixes the runs per report.
+bench-hotpath benchmark target="message_codec":
+    cargo bench --locked --profile "${HOTPATH_PROFILE:-hotpath}" --bench "{{target}}" --no-default-features --features minimal,plugin-arbitrary,hotpath-alloc,hotpath-cloud,hotpath-callgrind -- --test --exact "{{benchmark}}"

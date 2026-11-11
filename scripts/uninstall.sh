@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Sven Shi
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Uninstall OxiDNS files installed by scripts/install.sh on Linux and macOS,
 # or luci-app-oxidns plus OxiDNS core files on OpenWrt.
 #

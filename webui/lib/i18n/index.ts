@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { WEBUI } from "./keys";
 import type { Locale, TranslationParams, TranslationTree } from "./types";
 import { LOCALES } from "./types";

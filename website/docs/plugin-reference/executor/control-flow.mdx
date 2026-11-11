@@ -1,0 +1,332 @@
+---
+title: 策略编排
+---
+
+import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
+
+`sequence` 和 `fallback` 定义请求如何进入分支、调用子链并在主备路径之间切换。
+
+## `sequence`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+把多个 matcher 和 executor 编排成一条流水线，是最常用的入口执行器。
+
+### 配置示例
+
+```yaml
+- tag: seq_main
+  type: sequence
+  args:
+    # 先尝试读取缓存
+    - exec: "$cache_main"
+    # 命中缓存后直接结束
+    - matches: "has_resp"
+      exec: "accept"
+    # 多个 matches 写成数组时是逻辑与
+    # 示例里尽量直接写 quick setup 表达式
+    - matches:
+        - "client_ip $lan_ip_set"
+        - "qname $local_domains"
+      exec: "$hosts_main"
+    # 没有前置条件时也可以直接执行观测类插件
+    - exec: "$metrics_main"
+    # 还没有响应时再继续转发
+    - matches: "!has_resp"
+      exec: "$forward_main"
+    # 响应回来后统一收敛 TTL
+    - matches: "has_resp"
+      exec: "$ttl_main"
+```
+
+### 配置项
+
+`sequence` 的 `args` 为规则数组，数组中的每个元素代表一条顺序执行规则。
+
+#### `args`
+
+- 类型：`array`；必填：是；默认值：无
+- 作用：定义 sequence 的规则链。
+- 运行影响：
+  - 规则按书写顺序依次执行。
+  - `args` 为空时插件初始化失败。
+
+#### `args[].matches`
+
+- 类型：`string` 或 `array`
+- 必填：否
+- 默认值：无
+- 作用：定义当前规则的匹配条件。
+- 支持形式：
+  - 单个 matcher 字符串
+  - 多个 matcher 组成的列表
+- 运行影响：
+  - 多个条件之间为逻辑与关系。
+  - 未配置时表示无前置匹配条件。
+
+#### `args[].exec`
+
+- 类型：`string`；必填：否；默认值：无
+- 作用：定义规则命中后要执行的动作。
+- 支持内容：
+  - 插件引用
+  - quick setup 表达式
+  - 内建控制流
+- 运行影响：
+  - 直接决定当前规则的执行行为。
+
+### 行为说明
+
+- 按顺序执行规则。
+- 一条规则里多个 `matches` 需要同时为真。
+- 可以通过 `jump` / `goto` 调用其它 `sequence`。
+
+### 内建控制流
+
+`sequence.args[].exec` 除了调用插件，也可以直接写内建控制流：
+
+#### `accept`
+
+- 立即结束当前 `sequence`。
+- 这是一次明确的提前停止，因此外层不会继续执行后续规则。
+- 不会自动生成响应；通常用于前面已经有 response 的场景。
+
+#### `return`
+
+- 立即结束当前 `sequence`，并把控制权交回调用方。
+- 不会自动生成响应。
+- 若当前 `sequence` 是被 `jump` 调用的，调用方会从下一条规则继续。
+
+#### `reject [rcode]`
+
+- 立即生成响应并结束当前 `sequence`。
+- 默认 `rcode` 为 `REFUSED`。
+- 支持十进制数值和大小写不敏感的英文 RCODE 名称，例如 `reject 2`、`reject SERVFAIL`、`reject servfail`、`reject NXDOMAIN`；常见映射与含义见 [DNS 编码速查表](../../dns-codes.md#rcode-响应码)。
+- 只支持基础 DNS RCODE `0..15`；扩展 RCODE 需要 EDNS OPT，不会由该内建动作自动生成。
+- `reject 0` 返回普通 `NOERROR` 响应，不会自动附加 SOA。
+- 会中断后续规则，不再继续执行。
+
+#### `mark ...`
+
+- 写入一个或多个整数 mark，然后继续当前 `sequence` 的下一条规则。
+- 支持 `mark 1`、`mark 1 2 3`、`mark 1,2,3`。
+
+#### `jump seq_tag`
+
+- 调用另一个 `sequence`，语义类似子过程调用。
+- 参数必须是目标 `sequence` 的 tag，不能写 `$`。
+- 目标 `sequence` 跑到尾部或执行 `return` 后，当前 `sequence` 会继续下一条规则。
+- 如果目标 `sequence` 执行 `accept` / `reject` / 其它 `Stop`，当前 `sequence` 也会停止。
+
+#### `goto seq_tag`
+
+- 把控制权单向转交给另一个 `sequence`。
+- 参数必须是目标 `sequence` 的 tag，不能写 `$`。
+- 一旦执行 `goto`，当前 `sequence` 就不会再回到后续规则。
+- 若目标 `sequence` 执行 `return`，该 `return` 会继续向外层传播。
+
+### 典型用途
+
+- 统一总入口。
+- 把缓存、本地应答、转发、联动拆分成可读的策略层。
+- 通过 marks、matchers 做复杂分支。
+
+<Admonition type="note" title="注意事项">
+
+- 被引用的插件必须已经定义。
+- `sequence` 至少需要一条规则。
+
+</Admonition>
+
+---
+
+## `fallback`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+在主路径失败或过慢时，切换到备用路径。
+
+### 配置示例
+
+```yaml
+- tag: fallback_main
+  type: fallback
+  args:
+    # 首选路径
+    primary: "forward_fast"
+    # 兜底路径
+    secondary: "forward_stable"
+    # 主路径超过 200ms 后允许备用路径接管
+    threshold: 200
+    # 让备用路径始终并行待命，换取更低尾延迟
+    always_standby: true
+```
+
+### 配置项
+
+#### `primary`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：指定主执行器。
+
+#### `secondary`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：指定备用执行器。
+
+#### `threshold`
+
+- 类型：`integer`；必填：否；默认值：`500`
+- 单位：毫秒
+- 作用：定义备用路径的等待阈值；设为 `0` 时，无需等待即可执行和接管。
+- 兼容性：早期版本将显式 `0` 按 `500` 毫秒处理；若需保持原行为，请显式配置 `500`。
+
+#### `always_standby`
+
+- 类型：`boolean`；必填：否；默认值：`false`
+- 作用：控制备用路径是否与主路径同时待命。
+
+#### `short_circuit`
+
+- 类型：`boolean`；必填：否；默认值：`false`
+- 作用：控制在主/备路径选出最终响应后，是否立即停止后续 executor 链。
+
+### 行为说明
+
+- 正向启动主路径。
+- 到达阈值或主路径失败后启动/释放备用路径。
+- 谁先拿到有效响应，谁赢。
+- 另一分支会被取消。
+- 开启 `short_circuit` 时，胜出分支写回响应后会直接结束后续 executor 链。
+
+### Metrics
+
+通过全局 `GET /api/metrics` 导出：
+
+- `fallback_primary_total`
+- `fallback_primary_error_total`
+- `fallback_secondary_total`
+
+### 典型用途
+
+- 快速上游 + 稳定上游的双层回退。
+- 不同协议上游之间的故障兜底。
+
+<Admonition type="note" title="注意事项">
+
+- 这是“路径级”回退，不是“记录级”合并。
+- `always_standby` 可以降低尾延迟，但会放大上游开销。
+
+</Admonition>
+
+---
+
+## `load_balance`
+
+<PluginAvailability from="minimal" />
+
+### 作用与配置
+
+每次调用选择一个 executor 子调用，可引用完整 `sequence`。
+
+```yaml
+- tag: balance_main
+  type: load_balance
+  args:
+    strategy: weighted_random
+    executors:
+      - exec: seq_dns_a
+        weight: 3
+      - exec: seq_dns_b
+        weight: 1
+```
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `strategy` | `round_robin` | `round_robin` 依配置顺序轮询；`random` 等概率随机；`weighted_random` 按权重随机 |
+| `executors` | 必填 | 非空对象数组，目标不能重复 |
+| `executors[].exec` | 必填 | 不带 `$` 的 executor tag；不支持快捷表达式 |
+| `executors[].weight` | `1` | 正整数 `u32`（`1..4294967295`），仅加权随机使用 |
+
+权重 `3:1` 对应概率 `3/4:1/4`，不承诺短期精确数量。
+缺失引用、类型错误、自引用和循环依赖会在启动时拒绝。
+
+### 执行语义
+
+- 一次调用只执行一个目标；执行错误原样传播，可组合 `fallback` 实现故障切换。
+- 子链正常结束或 `return` 后继续调用方；`Stop`（包括 `accept`、`reject`、cache 命中短路）向外传播。
+- 无 response 的正常返回仍是正常完成，不根据 DNS RCODE 判断执行失败。
+- 分支直接使用当前上下文，request、response、marks 和扩展状态都会保留。
+- 子调用不接收外层 continuation。`ecs_handler`、`cache` 等需要包裹下游的插件，应与其下游一起放在目标 `sequence` 内。
+- 轮询从第一项开始，每个实例共享原子游标；并发按选择顺序轮换，不保证完成顺序。失败或取消也消耗本次选择，重载后重置。
+- 比例统计进入插件的调用次数，包括分支内缓存命中；客户端自身缓存不参与轮询，不代表链路带宽比例。
+
+### 在两条 DNS 解析链之间分配请求
+
+例如，使用两个 DNS 解析服务处理相同的查询，每条解析链各自缓存结果。
+下面的完整配置会按顺序交替选择 `seq_dns_a` 和 `seq_dns_b`，再查询该分支的缓存或上游。
+
+```yaml
+plugins:
+  - tag: cache_dns_a
+    type: cache
+    args:
+      size: 1024
+      short_circuit: true
+  - tag: cache_dns_b
+    type: cache
+    args:
+      size: 1024
+      short_circuit: true
+  - tag: forward_dns_a
+    type: forward
+    args:
+      upstreams:
+        - addr: "udp://1.1.1.1:53"
+  - tag: forward_dns_b
+    type: forward
+    args:
+      upstreams:
+        - addr: "udp://8.8.8.8:53"
+  - tag: seq_dns_a
+    type: sequence
+    args:
+      - exec: $cache_dns_a
+      - exec: $forward_dns_a
+  - tag: seq_dns_b
+    type: sequence
+    args:
+      - exec: $cache_dns_b
+      - exec: $forward_dns_b
+  - tag: balance_main
+    type: load_balance
+    args:
+      strategy: round_robin
+      executors:
+        - exec: seq_dns_a
+        - exec: seq_dns_b
+  - tag: udp_server
+    type: udp_server
+    args:
+      listen: "127.0.0.1:5335"
+      entry: balance_main
+```
+
+分支内缓存命中时，仍然会完成本次轮询选择。如果希望将更多请求分配给某一条解析链，可改用 `weighted_random` 并设置两项权重，例如 `3:1`。
+如果在 `load_balance` 前放置命中后结束执行的公共缓存，则只有缓存未命中的请求才会进入分支选择。
+
+### Metrics
+
+通过全局 `GET /api/metrics` 导出，标签均为 `plugin_tag` 和 `executor`：
+
+- `load_balance_selected_total`：分支选择次数，包括随后取消的调用。
+- `load_balance_error_total`：选中分支返回执行错误的次数；无响应的正常完成不计为错误。
+
+没有独立管理 API、quick setup、自动重试或健康检查。
+
+---

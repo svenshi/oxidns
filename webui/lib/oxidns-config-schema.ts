@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 export const OXIDNS_CONFIG_TOP_LEVEL_KEYS = [
   "include",
   "runtime",

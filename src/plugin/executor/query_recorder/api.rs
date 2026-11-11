@@ -16,7 +16,7 @@ use super::backend::RecorderBackend;
 use super::model::{
     DistributionQuery, LatencyQuery, ListCursor, ListQuery, PluginStatsKind, PluginStatsRow,
     PluginsStatsQuery, QueryRecordFilter, QueryRecordStatus, RecordDetail, RecordRow,
-    TimeseriesBucket, TimeseriesQuery, TopQuery,
+    StatsSampleMetadata, TimeseriesBucket, TimeseriesQuery, TopQuery,
 };
 use super::store::{
     load_latency_summary, load_plugin_stats, load_qtype_distribution, load_rcode_distribution,
@@ -60,6 +60,8 @@ struct RecordsClearResponse {
 struct PluginStatsResponse {
     ok: bool,
     query_total: u64,
+    #[serde(flatten)]
+    sample: StatsSampleMetadata,
     stats: Vec<PluginStatsRow>,
 }
 
@@ -250,11 +252,12 @@ impl ApiHandler for StatsPluginsHandler {
         };
         let backend = self.backend.clone();
         match run_reader_query(backend, move |backend| load_plugin_stats(backend, query)).await {
-            Ok((query_total, stats)) => json_ok(
+            Ok((query_total, stats, sample)) => json_ok(
                 StatusCode::OK,
                 &PluginStatsResponse {
                     ok: true,
                     query_total,
+                    sample,
                     stats,
                 },
             ),
@@ -483,17 +486,7 @@ pub(super) fn parse_list_query(query: Option<&str>) -> std::result::Result<ListQ
             "limit" => limit = parse_limit(value)?,
             "since_ms" => since_ms = Some(parse_u64_query("since_ms", value)?),
             "until_ms" => until_ms = Some(parse_u64_query("until_ms", value)?),
-            "qname" => filter.qname = optional_text(value),
-            "qtype" => filter.qtype = optional_upper_text(value),
-            "client_ip" => filter.client_ip = optional_text(value),
-            "rcode" => filter.rcode = optional_upper_text(value),
-            "status" => {
-                if let Some(value) = optional_text(value) {
-                    filter.status = QueryRecordStatus::parse(value.as_str())?;
-                }
-            }
-            "matcher_tag" => filter.matcher_tag = optional_text(value),
-            _ => {}
+            _ => apply_filter_param(&mut filter, key, value)?,
         }
         Ok(())
     })?;
@@ -519,20 +512,11 @@ pub(super) fn parse_plugins_stats_query(
             "since_ms" => since_ms = Some(parse_u64_query("since_ms", value)?),
             "until_ms" => until_ms = Some(parse_u64_query("until_ms", value)?),
             "kind" => kind = PluginStatsKind::parse(value)?,
-            "qname" => filter.qname = optional_text(value),
-            "qtype" => filter.qtype = optional_upper_text(value),
-            "client_ip" => filter.client_ip = optional_text(value),
-            "rcode" => filter.rcode = optional_upper_text(value),
-            "status" => {
-                if let Some(value) = optional_text(value) {
-                    filter.status = QueryRecordStatus::parse(value.as_str())?;
-                }
-            }
-            "matcher_tag" => filter.matcher_tag = optional_text(value),
-            _ => {}
+            _ => apply_filter_param(&mut filter, key, value)?,
         }
         Ok(())
     })?;
+    validate_stats_range(since_ms, until_ms)?;
     Ok(PluginsStatsQuery {
         since_ms,
         until_ms,
@@ -555,6 +539,7 @@ pub(super) fn parse_top_query(query: Option<&str>) -> std::result::Result<TopQue
         }
         Ok(())
     })?;
+    validate_stats_range(since_ms, until_ms)?;
     Ok(TopQuery {
         since_ms,
         until_ms,
@@ -577,6 +562,7 @@ pub(super) fn parse_distribution_query(
         }
         Ok(())
     })?;
+    validate_stats_range(since_ms, until_ms)?;
     Ok(DistributionQuery {
         since_ms,
         until_ms,
@@ -600,6 +586,7 @@ pub(super) fn parse_latency_query(
         }
         Ok(())
     })?;
+    validate_stats_range(since_ms, until_ms)?;
     Ok(LatencyQuery {
         since_ms,
         until_ms,
@@ -626,6 +613,7 @@ pub(super) fn parse_timeseries_query(
         }
         Ok(())
     })?;
+    validate_stats_range(since_ms, until_ms)?;
     Ok(TimeseriesQuery {
         since_ms,
         until_ms,
@@ -635,6 +623,25 @@ pub(super) fn parse_timeseries_query(
     })
 }
 
+fn validate_stats_range(
+    since_ms: Option<u64>,
+    until_ms: Option<u64>,
+) -> std::result::Result<(), String> {
+    let (Some(since_ms), Some(until_ms)) = (since_ms, until_ms) else {
+        return Err("since_ms and until_ms are required for statistics".to_string());
+    };
+    if since_ms >= until_ms {
+        return Err("since_ms must be earlier than until_ms".to_string());
+    }
+    if until_ms > i64::MAX as u64 {
+        return Err("statistics timestamps must fit in a signed 64-bit integer".to_string());
+    }
+    if until_ms - since_ms > 86_400_000 {
+        return Err("statistics time range must not exceed 24 hours".to_string());
+    }
+    Ok(())
+}
+
 fn apply_filter_param(
     filter: &mut QueryRecordFilter,
     key: &str,
@@ -642,9 +649,23 @@ fn apply_filter_param(
 ) -> std::result::Result<(), String> {
     match key {
         "qname" => filter.qname = optional_text(value),
+        "qname_exact" => filter.qname_exact = optional_text(value),
         "qtype" => filter.qtype = optional_upper_text(value),
         "client_ip" => filter.client_ip = optional_text(value),
+        "client_ip_exact" => filter.client_ip_exact = optional_text(value),
         "rcode" => filter.rcode = optional_upper_text(value),
+        "rcode_bucket" => {
+            filter.rcode_bucket = optional_upper_text(value);
+            if filter
+                .rcode_bucket
+                .as_deref()
+                .is_some_and(|bucket| !matches!(bucket, "_ERROR" | "_NO_RESPONSE" | "_UNKNOWN"))
+            {
+                return Err(
+                    "rcode_bucket must be one of _ERROR, _NO_RESPONSE, _UNKNOWN".to_string()
+                );
+            }
+        }
         "status" => {
             if let Some(value) = optional_text(value) {
                 filter.status = QueryRecordStatus::parse(value.as_str())?;
@@ -681,9 +702,10 @@ fn parse_timeseries_buckets(raw: &str) -> std::result::Result<usize, String> {
 impl TimeseriesBucket {
     fn parse(raw: &str) -> std::result::Result<Self, String> {
         match raw {
+            "auto" => Ok(Self::Auto),
             "minute" => Ok(Self::Minute),
             "hour" => Ok(Self::Hour),
-            _ => Err("bucket must be one of minute, hour".to_string()),
+            _ => Err("bucket must be one of auto, minute, hour".to_string()),
         }
     }
 }
@@ -808,4 +830,83 @@ pub(super) fn register(backend: &Arc<RecorderBackend>) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::NamedTempFile;
+
+    use super::*;
+    use crate::plugin::Plugin;
+
+    #[tokio::test]
+    async fn invalid_statistics_ranges_return_400_before_waiting_for_readers() {
+        let temp = NamedTempFile::new().unwrap();
+        let config = super::super::resolve_config(Some(
+            serde_yaml_ng::to_value(super::super::model::QueryRecorderConfig {
+                path: temp.path().display().to_string(),
+                queue_size: Some(32),
+                batch_size: Some(1),
+                flush_interval_ms: Some(10),
+                memory_tail: Some(16),
+                retention_days: Some(7),
+                cleanup_interval_hours: Some(1),
+                reader_concurrency: Some(2),
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+        let mut plugin = super::super::QueryRecorder::new("bounded_api_test".into(), config);
+        plugin.init_for_test().await.unwrap();
+        let backend = plugin.backend.as_ref().unwrap().clone();
+        let permits = backend
+            .reader_semaphore
+            .clone()
+            .acquire_many_owned(2)
+            .await
+            .unwrap();
+        let handlers: Vec<Box<dyn ApiHandler>> = vec![
+            Box::new(StatsPluginsHandler {
+                backend: backend.clone(),
+            }),
+            Box::new(TopClientsHandler {
+                backend: backend.clone(),
+            }),
+            Box::new(TopQnamesHandler {
+                backend: backend.clone(),
+            }),
+            Box::new(QtypeDistributionHandler {
+                backend: backend.clone(),
+            }),
+            Box::new(RcodeDistributionHandler {
+                backend: backend.clone(),
+            }),
+            Box::new(LatencyHandler {
+                backend: backend.clone(),
+            }),
+            Box::new(TimeseriesHandler { backend }),
+        ];
+        for handler in handlers {
+            for query in [
+                "",
+                "since_ms=0",
+                "until_ms=100",
+                "since_ms=10&until_ms=10",
+                "since_ms=20&until_ms=10",
+                "since_ms=0&until_ms=86400001",
+            ] {
+                let request = Request::builder()
+                    .uri(format!("/stats?{query}"))
+                    .body(Bytes::new())
+                    .unwrap();
+                let response =
+                    tokio::time::timeout(Duration::from_millis(250), handler.handle(request))
+                        .await
+                        .expect("invalid query waited for a reader permit");
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            }
+        }
+        drop(permits);
+        plugin.destroy().await.unwrap();
+    }
 }

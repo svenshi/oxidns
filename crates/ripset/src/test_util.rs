@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Test-only helpers for parsing netlink message buffers that the crate
 //! emits. These let us assert on the on-the-wire layout without going
 //! through an actual netlink socket.

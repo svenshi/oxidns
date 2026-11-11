@@ -4,6 +4,7 @@
 //! Cache persistence helpers.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::fs;
 use tokio::fs::File;
@@ -18,8 +19,7 @@ use super::{
 };
 use crate::infra::cache::ttl::TtlCacheEntry;
 use crate::infra::clock::AppClock;
-use crate::infra::error::Result;
-use crate::infra::system::file_len_if_exists;
+use crate::infra::error::{DnsError, Result};
 use crate::proto::{DNSClass, Message, RecordType};
 
 #[derive(Debug, SchemaRead, SchemaWrite)]
@@ -176,39 +176,83 @@ fn to_cache_key(entry: &PersistedCacheEntry, ecs_in_key: bool) -> Option<CacheKe
     })
 }
 
+/// Bound file-system waiting, not CPU decoding time. Tokio may finish an
+/// already-running OS read after timeout, but it cannot mutate the cache: all
+/// decoding and restoration happen only after the read future succeeds.
+pub(super) const LOAD_IO_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum LoadOutcome {
+    Missing,
+    Restored { entries: usize },
+}
+
+/// Restore the dump before the cache becomes available to request/API callers.
+/// Missing files are valid empty starting points. Other I/O errors, timeouts,
+/// and whole-file decode failures protect the original dump from later writes.
 pub(super) async fn load_cache_from_file(
     cache_map: &CacheMap,
     dump_path: &str,
     ecs_in_key: bool,
-) -> Result<()> {
-    let Some(file_len) = file_len_if_exists(dump_path).await? else {
-        return Ok(());
+) -> Result<LoadOutcome> {
+    let data = tokio::time::timeout(LOAD_IO_TIMEOUT, async {
+        let metadata = match fs::metadata(dump_path).await {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(DnsError::from(error)),
+        };
+        // Reject FIFOs/devices before opening: reads from them need not reach
+        // EOF and could otherwise occupy a blocking worker indefinitely.
+        if !metadata.is_file() {
+            return Err(DnsError::plugin("cache dump must be a regular file"));
+        }
+        fs::read(dump_path).await.map(Some).map_err(DnsError::from)
+    })
+    .await
+    .map_err(|_| DnsError::runtime("cache dump file I/O timed out"))??;
+    let Some(data) = data else {
+        return Ok(LoadOutcome::Missing);
     };
-    if file_len == 0 {
-        return Ok(());
-    }
-
-    let data = fs::read(dump_path).await?;
-    let loaded = load_cache_from_bytes(cache_map, &data, ecs_in_key, false)?;
-
+    // Decode before mutating the map. Zero-byte/truncated/incompatible files
+    // fail; a valid serialized empty collection remains writable.
+    let entries = parse_persisted_entries(&data)
+        .ok_or_else(|| DnsError::plugin("invalid or incompatible cache dump"))?;
+    let loaded = restore_cache_entries(cache_map, entries, ecs_in_key, false);
     if loaded > 0 {
         info!("Loaded {} cache entries from {}", loaded, dump_path);
     }
-
-    Ok(())
+    Ok(LoadOutcome::Restored { entries: loaded })
 }
 
+#[cfg(any(feature = "api", test))]
 pub(super) fn load_cache_from_bytes(
     cache_map: &CacheMap,
     data: &[u8],
     ecs_in_key: bool,
     replace: bool,
 ) -> Result<usize> {
+    // Preserve the API import's existing tolerant behavior. Unlike startup
+    // file loading, invalid imports report zero restored entries and leave the
+    // current cache untouched, including when replacement was requested.
     let Some(entries) = parse_persisted_entries(data) else {
         warn!("Failed to deserialize cache dump, skip loading incompatible data");
         return Ok(0);
     };
 
+    Ok(restore_cache_entries(
+        cache_map, entries, ecs_in_key, replace,
+    ))
+}
+
+// Shared restoration keeps startup and API imports consistent for TTL, ECS,
+// and DNS validation. Individual expired/invalid entries are skipped under the
+// existing rules; that is distinct from failing to decode the whole dump.
+fn restore_cache_entries(
+    cache_map: &CacheMap,
+    entries: Vec<PersistedCacheEntry>,
+    ecs_in_key: bool,
+    replace: bool,
+) -> usize {
     if replace {
         cache_map.clear();
     }
@@ -267,7 +311,7 @@ pub(super) fn load_cache_from_bytes(
         loaded += 1;
     }
 
-    Ok(loaded)
+    loaded
 }
 
 #[cfg(test)]
@@ -275,6 +319,64 @@ mod tests {
     use super::*;
     use crate::proto::rdata::{CNAME, SOA};
     use crate::proto::{Name, Question, RData, Record};
+
+    #[tokio::test]
+    async fn startup_load_outcomes_distinguish_missing_empty_and_invalid_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("outcome.dump");
+        let map = CacheMap::with_capacity(4);
+        assert_eq!(
+            load_cache_from_file(&map, file.to_str().unwrap(), false)
+                .await
+                .unwrap(),
+            LoadOutcome::Missing
+        );
+        std::fs::write(
+            &file,
+            wincode::serialize(&Vec::<PersistedCacheEntry>::new()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            load_cache_from_file(&map, file.to_str().unwrap(), false)
+                .await
+                .unwrap(),
+            LoadOutcome::Restored { entries: 0 }
+        );
+        std::fs::write(&file, []).unwrap();
+        assert!(
+            load_cache_from_file(&map, file.to_str().unwrap(), false)
+                .await
+                .is_err()
+        );
+        assert!(
+            load_cache_from_file(&map, dir.path().to_str().unwrap(), false)
+                .await
+                .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn startup_load_rejects_fifo_before_opening() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("fifo.dump");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&file)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let map = CacheMap::with_capacity(4);
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            load_cache_from_file(&map, file.to_str().unwrap(), false),
+        )
+        .await
+        .expect("a FIFO must be rejected without waiting for a writer")
+        .unwrap_err();
+        assert!(error.to_string().contains("regular file"));
+    }
 
     fn make_entry() -> PersistedCacheEntry {
         PersistedCacheEntry {

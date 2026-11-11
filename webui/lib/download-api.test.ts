@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-FileCopyrightText: 2026 i
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DownloadBusyError, fetchDownloads, runDownload } from "./oxidns-api";
 

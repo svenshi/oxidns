@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
+use ahash::AHashSet;
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -20,7 +22,7 @@ use crate::api::{ApiHandler, json_error, json_ok, simple_response};
 use crate::infra::clock::AppClock;
 use crate::infra::error::Result;
 use crate::plugin::executor::rdata_json::{RDataPayloadMode, rdata_payload};
-use crate::proto::{DNSClass, Record, RecordType};
+use crate::proto::{DNSClass, RData, Record, RecordType};
 use crate::register_plugin_api;
 
 pub(super) fn register(
@@ -33,6 +35,9 @@ pub(super) fn register(
         tag,
         |plugin_api|
         GET "/entries" => CacheEntriesListHandler {
+            cache_map: cache_map.clone(),
+        },
+        POST "/entries/delete" => CacheEntriesDeleteHandler {
             cache_map: cache_map.clone(),
         },
         DELETE_PREFIX "/entries/" => CacheEntryDeleteHandler {
@@ -277,7 +282,10 @@ impl ApiHandler for CacheEntriesListHandler {
             .iter_entries_cloned()
             .into_iter()
             .filter(|(_, entry)| entry.expire_at_ms > now)
-            .filter(|(key, _)| cache_entry_matches_query(key, &query))
+            .filter(|(key, entry)| {
+                cache_entry_matches_query(key, &query)
+                    && answer_ip_matches(&entry.value, query.answer_ip)
+            })
             .collect::<Vec<_>>();
         entries.sort_by(|(left_key, left_entry), (right_key, right_entry)| {
             right_entry
@@ -356,6 +364,7 @@ struct CacheEntriesQuery {
     limit: usize,
     cursor: usize,
     qname: Option<String>,
+    answer_ip: Option<IpAddr>,
 }
 
 fn parse_cache_entries_query(
@@ -364,6 +373,7 @@ fn parse_cache_entries_query(
     let mut limit = 100usize;
     let mut cursor = 0usize;
     let mut qname = None;
+    let mut answer_ip = None;
     visit_query_params(query, |key, value| {
         match key {
             "limit" => {
@@ -376,6 +386,9 @@ fn parse_cache_entries_query(
                     "cursor must be a non-negative integer".to_string()
                 })?;
             }
+            "answer_ip" => {
+                answer_ip = parse_answer_ip(value)?;
+            }
             "qname" => {
                 qname = optional_text(value).map(|value| normalize_domain_key(value.as_str()));
             }
@@ -387,6 +400,7 @@ fn parse_cache_entries_query(
         limit,
         cursor,
         qname,
+        answer_ip,
     })
 }
 
@@ -395,6 +409,130 @@ fn cache_entry_matches_query(key: &CacheKey, query: &CacheEntriesQuery) -> bool 
         .qname
         .as_deref()
         .is_none_or(|qname| key.domain.to_ascii_lowercase().contains(qname))
+}
+
+fn parse_answer_ip(raw: &str) -> std::result::Result<Option<IpAddr>, String> {
+    optional_text(raw)
+        .map(|value| {
+            value
+                .parse()
+                .map_err(|_| "answer_ip must be a complete IPv4 or IPv6 address".to_string())
+        })
+        .transpose()
+}
+
+fn answer_ip_matches(item: &CacheItem, ip: Option<IpAddr>) -> bool {
+    ip.is_none_or(|ip| {
+        item.resp
+            .answers()
+            .iter()
+            .any(|record| match record.data() {
+                RData::A(addr) => ip == IpAddr::V4(addr.0),
+                RData::AAAA(addr) => ip == IpAddr::V6(addr.0),
+                _ => false,
+            })
+    })
+}
+
+#[derive(Debug)]
+struct CacheEntriesDeleteHandler {
+    cache_map: CacheMap,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteRequest {
+    ids: Option<Vec<String>>,
+    filter: Option<DeleteFilter>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteFilter {
+    qname: Option<String>,
+    answer_ip: Option<String>,
+}
+
+enum DeleteSelection {
+    Ids(AHashSet<CacheKey>),
+    Filter(CacheEntriesQuery),
+}
+
+fn parse_delete_request(body: &[u8]) -> std::result::Result<DeleteSelection, String> {
+    let request: DeleteRequest =
+        serde_json::from_slice(body).map_err(|_| "invalid delete request".to_string())?;
+    match (request.ids, request.filter) {
+        (Some(ids), None) if !ids.is_empty() => {
+            let keys = ids
+                .iter()
+                .map(|id| decode_cache_entry_id(id))
+                .collect::<std::result::Result<AHashSet<_>, _>>()?;
+            Ok(DeleteSelection::Ids(keys))
+        }
+        (None, Some(filter)) => {
+            let qname = filter
+                .qname
+                .as_deref()
+                .and_then(optional_text)
+                .map(|value| normalize_domain_key(&value))
+                .filter(|value| !value.is_empty());
+            let answer_ip = parse_answer_ip(filter.answer_ip.as_deref().unwrap_or_default())?;
+            if qname.is_none() && answer_ip.is_none() {
+                return Err("a non-empty filter is required".into());
+            }
+            Ok(DeleteSelection::Filter(CacheEntriesQuery {
+                limit: 100,
+                cursor: 0,
+                qname,
+                answer_ip,
+            }))
+        }
+        _ => Err("provide either non-empty ids or a filter".into()),
+    }
+}
+
+fn delete_filtered_entry(
+    cache: &CacheMap,
+    key: &CacheKey,
+    snapshot: &crate::infra::cache::ttl::TtlCacheEntry<Arc<CacheItem>>,
+) -> bool {
+    cache.remove_if(key, |current| {
+        Arc::ptr_eq(&current.value, &snapshot.value)
+            && current.cache_time_ms == snapshot.cache_time_ms
+            && current.expire_at_ms == snapshot.expire_at_ms
+    })
+}
+
+#[async_trait]
+impl ApiHandler for CacheEntriesDeleteHandler {
+    async fn handle(&self, request: Request<Bytes>) -> crate::api::ApiResponse {
+        let selection = match parse_delete_request(request.body()) {
+            Ok(selection) => selection,
+            Err(err) => return json_error(StatusCode::BAD_REQUEST, "invalid_delete_request", err),
+        };
+        let deleted_entries = match selection {
+            DeleteSelection::Ids(keys) => {
+                keys.iter().filter(|key| self.cache_map.remove(key)).count()
+            }
+            DeleteSelection::Filter(query) => {
+                let now = AppClock::elapsed_millis();
+                self.cache_map
+                    .iter_entries_cloned()
+                    .into_iter()
+                    .filter(|(key, entry)| {
+                        entry.expire_at_ms > now
+                            && cache_entry_matches_query(key, &query)
+                            && answer_ip_matches(&entry.value, query.answer_ip)
+                    })
+                    .filter(|(key, entry)| delete_filtered_entry(&self.cache_map, key, entry))
+                    .count()
+            }
+        };
+        json_ok(
+            StatusCode::OK,
+            &serde_json::json!({"ok": true, "deleted_entries": deleted_entries}),
+        )
+    }
 }
 
 fn cache_entry_row(
@@ -578,6 +716,7 @@ mod tests {
             limit: 100,
             cursor: 0,
             qname: Some("example.com".to_string()),
+            answer_ip: None,
         };
 
         assert!(cache_entry_matches_query(
@@ -588,5 +727,165 @@ mod tests {
             &test_cache_key("www.example.net"),
             &query
         ));
+    }
+    fn seed(cache: &CacheMap, key: CacheKey, fresh: bool, expired: bool) {
+        use crate::proto::{Message, Name};
+        let now = AppClock::elapsed_millis();
+        let mut response = Message::new();
+        response.add_answer(Record::from_rdata(
+            Name::from_ascii("alias.example.").unwrap(),
+            60,
+            RData::CNAME(crate::proto::rdata::CNAME(
+                Name::from_ascii("target.example.").unwrap(),
+            )),
+        ));
+        for ip in ["192.0.2.1", "192.0.2.2"] {
+            response.add_answer(Record::from_rdata(
+                Name::from_ascii("target.example.").unwrap(),
+                60,
+                RData::A(crate::proto::rdata::A(ip.parse().unwrap())),
+            ));
+        }
+        response.add_answer(Record::from_rdata(
+            Name::from_ascii("target.example.").unwrap(),
+            60,
+            RData::AAAA(crate::proto::rdata::AAAA("2001:db8::1".parse().unwrap())),
+        ));
+        response.add_additional(Record::from_rdata(
+            Name::from_ascii("ns.example.").unwrap(),
+            60,
+            RData::A(crate::proto::rdata::A("198.51.100.1".parse().unwrap())),
+        ));
+        cache.insert_or_update(
+            key,
+            Arc::new(CacheItem::new(
+                response,
+                60,
+                if fresh { now + 60_000 } else { 0 },
+            )),
+            now,
+            if expired { 0 } else { now + 120_000 },
+        );
+    }
+
+    async fn json(response: crate::api::ApiResponse) -> Value {
+        use http_body_util::BodyExt;
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn address_filters_apply_before_pagination_and_keep_stale() {
+        let cache = CacheMap::with_capacity(4);
+        seed(&cache, test_cache_key("alias.example"), true, false);
+        seed(&cache, test_cache_key("stale.example"), false, false);
+        seed(&cache, test_cache_key("expired.example"), true, true);
+        let handler = CacheEntriesListHandler { cache_map: cache };
+        for ip in ["192.0.2.1", "192.0.2.2", "2001:0db8:0:0:0:0:0:1"] {
+            let response = handler
+                .handle(
+                    Request::builder()
+                        .uri(format!("/?limit=1&answer_ip={ip}"))
+                        .body(Bytes::new())
+                        .unwrap(),
+                )
+                .await;
+            let value = json(response).await;
+            assert_eq!(value["total_entries"], 2);
+            assert_eq!(value["entries"].as_array().unwrap().len(), 1);
+            assert_eq!(value["next_cursor"], "1");
+        }
+        let value = json(
+            handler
+                .handle(
+                    Request::builder()
+                        .uri("/?answer_ip=192.0.2.1&qname=ALIAS.EXAMPLE.")
+                        .body(Bytes::new())
+                        .unwrap(),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(value["total_entries"], 1);
+        assert_eq!(value["entries"][0]["domain"], "alias.example");
+        let value = json(
+            handler
+                .handle(
+                    Request::builder()
+                        .uri("/?answer_ip=198.51.100.1")
+                        .body(Bytes::new())
+                        .unwrap(),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(value["total_entries"], 0);
+        assert!(parse_cache_entries_query(Some("answer_ip=192.0.2")).is_err());
+    }
+
+    #[tokio::test]
+    async fn bulk_delete_validates_before_mutation_and_preserves_key_variants() {
+        let cache = CacheMap::with_capacity(4);
+        let key = test_cache_key("alias.example");
+        let mut variant = key.clone();
+        variant.do_bit = true;
+        variant.cd_bit = true;
+        variant.ecs_scope = Some(EcsScopeDigest {
+            family: 1,
+            source_prefix: 24,
+            scope_prefix: 0,
+            network_len: 3,
+            network: [0; 16],
+        });
+        seed(&cache, key.clone(), true, false);
+        seed(&cache, variant.clone(), true, false);
+        let handler = CacheEntriesDeleteHandler {
+            cache_map: cache.clone(),
+        };
+        let id = encode_cache_entry_id(&key).unwrap();
+        for body in [
+            serde_json::json!({"ids":[id,"!"]}),
+            serde_json::json!({"ids":[]}),
+            serde_json::json!({"filter":{}}),
+            serde_json::json!({"filter":{"answer_ip":"bad"}}),
+            serde_json::json!({"ids":[id],"filter":{"qname":"example"}}),
+        ] {
+            let response = handler
+                .handle(Request::new(Bytes::from(body.to_string())))
+                .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(cache.len(), 2);
+        }
+        let missing = encode_cache_entry_id(&test_cache_key("missing.example")).unwrap();
+        let value = json(
+            handler
+                .handle(Request::new(Bytes::from(
+                    serde_json::json!({"ids":[id,id,missing]}).to_string(),
+                )))
+                .await,
+        )
+        .await;
+        assert_eq!(value["deleted_entries"], 1);
+        assert_eq!(cache.len(), 1);
+        let value = json(
+            handler
+                .handle(Request::new(Bytes::from_static(
+                    br#"{"filter":{"answer_ip":"192.0.2.1","qname":"example"}}"#,
+                )))
+                .await,
+        )
+        .await;
+        assert_eq!(value["deleted_entries"], 1);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn filtered_delete_does_not_remove_replacement() {
+        let cache = CacheMap::with_capacity(1);
+        let key = test_cache_key("alias.example");
+        seed(&cache, key.clone(), true, false);
+        let (_, snapshot) = cache.iter_entries_cloned().pop().unwrap();
+        seed(&cache, key.clone(), true, false);
+        assert!(!delete_filtered_entry(&cache, &key, &snapshot));
+        assert_eq!(cache.len(), 1);
     }
 }

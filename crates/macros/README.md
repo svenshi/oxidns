@@ -41,3 +41,10 @@ constructor, use OxiDNS's explicit `register_plugin_factory!` path instead.
 This crate is built for the OxiDNS workspace and assumes the consuming crate
 has the expected `crate::plugin` types available. It is not meant to be a
 general-purpose plugin framework.
+
+## License
+
+Licensed under either of the following, at your option:
+
+- [MIT license](LICENSE-MIT)
+- [Apache License, Version 2.0](LICENSE-APACHE)

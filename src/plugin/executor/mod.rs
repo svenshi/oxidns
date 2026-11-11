@@ -44,6 +44,7 @@ pub mod download;
 pub mod drop_resp;
 pub mod dual_selector;
 pub mod ecs_handler;
+pub mod edns_filter;
 pub mod fallback;
 pub mod forward;
 pub mod forward_edns0opt;
@@ -56,6 +57,7 @@ pub mod ip_selector;
 pub mod ipset;
 #[cfg(feature = "plugin-dynamic-domain")]
 pub mod learn_domain;
+pub mod load_balance;
 #[cfg(feature = "metrics")]
 pub mod metrics_collector;
 #[cfg(feature = "plugin-ipset")]

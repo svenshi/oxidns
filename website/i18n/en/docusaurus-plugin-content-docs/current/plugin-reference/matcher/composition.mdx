@@ -1,0 +1,205 @@
+---
+title: Composition and Constant Matchers
+---
+
+import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
+
+These matchers combine other expressions or provide always-true and always-false conditions.
+
+## `any_match`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Composes multiple matcher expressions and returns `true` when any one of them matches.
+
+### Example Configuration
+
+```yaml
+- tag: any_policy_hit
+  type: any_match
+  args:
+    - "$lan_clients"
+    - "qtype AAAA"
+    - "!$blocked_qname"
+```
+
+### Configuration Details
+
+`any_match` uses an `array[string]` `args` list.
+
+- Type: `array[string]`; Required: yes; Default: none
+- Supported entries:
+  - matcher tag references (for example `"$match_tag"`)
+  - quick-setup matcher expressions (for example `"qname domain:example.com"`)
+  - negated matcher expressions (for example `"!has_resp"` or `"!$blocked_qname"`)
+- Runtime impact:
+  - Evaluates entries in order and short-circuits on the first matched entry.
+  - Returns `false` only when all entries fail.
+
+### Typical Uses
+
+- Reuse one logical OR matcher across multiple sequence rules.
+- Keep complex branching readable by moving OR conditions into one matcher.
+
+---
+
+## `string_exp`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Matches using a string expression over request and response context.
+
+### Example Configuration
+
+```yaml
+- tag: match_http_path
+  type: string_exp
+  args: "url_path prefix /dns-"
+```
+
+It also supports a string array:
+
+```yaml
+args:
+  - "client_ip"
+  - "prefix"
+  - "192.168."
+```
+
+### Configuration Details
+
+- `string_exp` `args` can be a string or a string array.
+
+- Type: `string` or `array`
+- Required: yes
+- Default: none
+- Purpose: Defines the complete string expression.
+- Expression parts:
+  - data source `source`
+  - matching operator `op`
+  - one or more arguments
+- Runtime impact:
+  - Reads values from the context according to the expression and performs string matching.
+
+### Expression Format
+
+```text
+<source> <op> <arg...>
+```
+
+Supported `source` values:
+
+- `qname`
+- `qtype`
+- `qclass`
+- `rcode`
+- `resp_ip`
+- `mark`
+- `client_ip`
+- `server_name`
+- `url_path`
+- `$ENV_KEY`
+
+Supported `op` values:
+
+- `eq`
+- `prefix`
+- `suffix`
+- `contains`
+- `regexp`
+- `zl`
+
+<Admonition type="note" title="Notes">
+
+- `zl` means zero length and is used to determine whether a string is empty.
+- `regexp` supports one or more regex arguments.
+
+</Admonition>
+
+### quick setup
+
+```yaml
+- matches: "string_exp server_name suffix .example.net"
+```
+
+### Typical Uses
+
+- Perform flexible matching on DoH paths, SNI, mark sets, and response IP strings.
+
+<Admonition type="note" title="Notes">
+
+- In scenarios where a dedicated matcher can be used, prefer the dedicated matcher.
+- `string_exp` provides greater flexibility, but the readability and maintainability of the expression are usually lower than those of dedicated plugins.
+<span id="true"></span>
+
+</Admonition>
+
+## `_true`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Always returns true.
+
+### Example Configuration
+
+```yaml
+- tag: always_true
+  type: _true
+```
+
+### Configuration Details
+
+No standalone configuration fields.
+
+### quick setup
+
+```yaml
+- matches: "_true"
+```
+
+### Typical Uses
+
+- Fallback match condition.
+- Testing rule order in a `sequence`.
+
+---
+
+<span id="false"></span>
+
+## `_false`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Always returns false.
+
+### Example Configuration
+
+```yaml
+- tag: always_false
+  type: _false
+```
+
+### Configuration Details
+
+No standalone configuration fields.
+
+### quick setup
+
+```yaml
+- matches: "_false"
+```
+
+### Typical Uses
+
+- Temporarily disable a branch.
+
+---

@@ -35,8 +35,8 @@ struct LearnDomainArgs {
     success_only: Option<bool>,
     /// After-phase guard: require at least one answer record.
     answer_required: Option<bool>,
-    /// Rule kind generated for learned qnames.
-    rule_kind: Option<DynamicDomainRuleKind>,
+    /// Strategy used to generate a learned rule from each request qname.
+    rule_kind: Option<LearnRuleKind>,
     /// Fire-and-forget enqueue by default; sync mode waits for provider flush.
     #[serde(rename = "async")]
     async_mode: Option<bool>,
@@ -69,6 +69,29 @@ pub(super) enum QuestionMode {
     All,
 }
 
+/// Executor-local rule generation strategies, separate from provider rule
+/// syntax.
+#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum LearnRuleKind {
+    /// Match only the complete request name.
+    #[default]
+    Full,
+    /// Match the request name and its subdomains.
+    Domain,
+    /// Match the registrable domain and its subdomains using the embedded PSL.
+    RegistrableDomain,
+}
+
+impl LearnRuleKind {
+    pub(super) fn output_kind(self) -> DynamicDomainRuleKind {
+        match self {
+            Self::Full => DynamicDomainRuleKind::Full,
+            Self::Domain | Self::RegistrableDomain => DynamicDomainRuleKind::Domain,
+        }
+    }
+}
+
 /// Failure policy for provider enqueue/write errors.
 #[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -94,7 +117,7 @@ pub(super) struct LearnDomainConfig {
     pub(super) qtypes: AHashSet<u16>,
     pub(super) success_only: bool,
     pub(super) answer_required: bool,
-    pub(super) rule_kind: DynamicDomainRuleKind,
+    pub(super) rule_kind: LearnRuleKind,
     pub(super) async_mode: bool,
     pub(super) error_mode: LearnErrorMode,
     pub(super) timeout: Duration,

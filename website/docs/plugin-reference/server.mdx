@@ -1,0 +1,58 @@
+---
+title: 服务端插件
+sidebar_position: 2
+---
+
+服务端插件负责接收客户端请求，并把请求交给某个入口执行器。它们本身不承担复杂策略逻辑，核心关注点是监听协议、监听地址、TLS 参数和入口 `entry`。
+
+## 通用说明
+
+所有服务端插件都依赖一个 `entry`，该字段必须引用一个已定义的执行器插件，通常是 `sequence`：
+
+```yaml
+- tag: seq_main
+  type: sequence
+  args:
+    # 先尝试从缓存直接返回
+    - exec: "$cache_main"
+    # 没有响应时再继续走上游
+    - matches: "!has_resp"
+      exec: "$forward_main"
+
+- tag: udp_in
+  type: udp_server
+  args:
+    # 必须引用一个已存在的执行器，通常是 sequence
+    entry: "seq_main"
+    # 标准 UDP DNS 监听地址；:port 会绑定 [::]:port 并启用双栈
+    listen: ":53"
+```
+
+监听地址支持 `ip:port`、`[ipv6]:port` 和 `:port`。其中 `:port` 会解析为 `[::]:port`，监听 socket 会关闭 `IPV6_V6ONLY`，用于在同一个监听器上同时接收 IPv6 和 IPv4 流量；如只想监听 IPv4，请显式写 `0.0.0.0:port` 或具体 IPv4 地址。
+
+不支持的 DNS opcode 会直接返回 `NOTIMP`，不进入执行链；不支持的 EDNS 版本返回带 OPT 的 `BADVERS`。UDP 上的 `QR=1` 响应报文会被直接丢弃。
+
+### Metrics
+
+所有服务端插件通过全局 `GET /api/metrics` 导出统一的请求级指标，带 `plugin_tag` 与 `protocol`（`udp`/`tcp`/`dot`/`quic`/`doh`）标签：
+
+- `server_request_total`
+- `server_completed_total`
+- `server_controlled_total`
+- `server_failed_total`
+- `server_inflight`
+- `server_latency_count`
+- `server_latency_sum_ms`
+
+---
+
+## 分类导航
+
+| 分组 | 插件 | 关注点 |
+| --- | --- | --- |
+| [UDP 与 TCP 入口](server/datagram-stream.mdx) | [`udp_server`](server/datagram-stream.mdx#udp_server)、[`tcp_server`](server/datagram-stream.mdx#tcp_server) | 传统 DNS、连接参数、可选 DoT |
+| [HTTP 与 QUIC 加密入口](server/encrypted-http.mdx) | [`http_server`](server/encrypted-http.mdx#http_server)、[`quic_server`](server/encrypted-http.mdx#quic_server) | DoH、HTTP/2/3、DoQ、TLS |
+
+<span id="udp_server"></span><span id="tcp_server"></span><span id="http_server"></span><span id="quic_server"></span>
+
+旧版插件锚点保留在本目录页；字段说明已移动到上表中的职责分组。

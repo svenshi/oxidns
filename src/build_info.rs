@@ -224,6 +224,21 @@ mod tests {
                 .contains(&"sequence".into())
         );
         assert!(info.supported_plugins.matchers.contains(&"qname".into()));
+        assert!(
+            info.supported_plugins
+                .executors
+                .contains(&"edns_filter".into())
+        );
+        assert!(
+            info.supported_plugins
+                .executors
+                .contains(&"load_balance".into())
+        );
+        assert!(
+            info.supported_plugins
+                .matchers
+                .contains(&"has_cname".into())
+        );
         assert_eq!(
             info.enabled_features.contains(&"plugin-response"),
             cfg!(feature = "plugin-response")

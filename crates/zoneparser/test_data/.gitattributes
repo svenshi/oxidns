@@ -1,0 +1,2 @@
+# Keep zone fixtures byte-identical across platform checkout defaults.
+*.zn text eol=lf

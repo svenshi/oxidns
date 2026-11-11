@@ -27,7 +27,8 @@ use tokio::runtime;
 /// On Linux, after an atomic rename-over-self upgrade `/proc/self/exe` acquires
 /// a ` (deleted)` suffix that makes the path non-executable. Reading the path
 /// here — before the upgrade plugin has a chance to replace the binary —
-/// guarantees `exec_restart()` always has a valid path to hand to `execvp()`.
+/// guarantees `restart_process()` always has a valid path to hand to
+/// `execvp()`.
 static ORIGINAL_EXE: OnceLock<PathBuf> = OnceLock::new();
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info};
@@ -39,7 +40,6 @@ use crate::infra::clock::AppClock;
 use crate::infra::control::{AppController, ControlCommand};
 use crate::infra::error::{DnsError, Result};
 use crate::infra::observability::logging;
-use crate::infra::task;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartConfig {
@@ -49,9 +49,9 @@ pub struct StartConfig {
 }
 
 /// Start OxiDNS in the foreground using the provided CLI options.
-pub fn run(start: StartConfig) -> Result<()> {
+pub fn run_foreground(start: StartConfig) -> Result<()> {
     match run_until_shutdown(start)? {
-        ShutdownSignal::Restart => exec_restart(),
+        ShutdownSignal::Restart => restart_process(),
         _ => Ok(()),
     }
 }
@@ -61,22 +61,24 @@ pub(crate) fn run_windows_service(start: StartConfig) -> Result<ShutdownSignal> 
     run_until_shutdown(start)
 }
 
+/// Apply process startup options and run until shutdown, leaving restart to the
+/// caller.
 fn run_until_shutdown(start: StartConfig) -> Result<ShutdownSignal> {
     // Capture the exe path before any binary replacement can invalidate it.
     ORIGINAL_EXE.get_or_init(|| std::env::current_exe().unwrap_or_default());
     AppClock::start();
-    prepare_working_dir(start.working_dir.as_ref())?;
+    apply_working_dir_override(start.working_dir.as_ref())?;
     // Clean up any leftover staging file from an interrupted Windows upgrade.
     #[cfg(windows)]
     if let Ok(exe) = std::env::current_exe() {
         let _ = std::fs::remove_file(exe.with_extension("upgrade-new.exe"));
     }
     banner::print_startup_banner()?;
-    let config = load_config(&start)?;
-    init_runtime(start, config)
+    let config = load_startup_config(&start)?;
+    run_with_tokio_runtime(start, config)
 }
 
-fn prepare_working_dir(working_dir: Option<&std::path::PathBuf>) -> Result<()> {
+fn apply_working_dir_override(working_dir: Option<&std::path::PathBuf>) -> Result<()> {
     if let Some(working_dir) = working_dir {
         std::env::set_current_dir(working_dir).map_err(|err| {
             DnsError::runtime(format!(
@@ -89,7 +91,8 @@ fn prepare_working_dir(working_dir: Option<&std::path::PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn init_runtime(options: StartConfig, config: Config) -> Result<ShutdownSignal> {
+/// Build the Tokio runtime and block until application shutdown completes.
+fn run_with_tokio_runtime(options: StartConfig, config: Config) -> Result<ShutdownSignal> {
     let worker_threads = config.runtime.effective_worker_threads();
     let mut tokio_runtime = runtime::Builder::new_multi_thread();
     tokio_runtime
@@ -99,7 +102,7 @@ fn init_runtime(options: StartConfig, config: Config) -> Result<ShutdownSignal> 
     let tokio_runtime = tokio_runtime
         .build()
         .map_err(|err| DnsError::runtime(format!("Failed to initialize Tokio runtime: {err}")))?;
-    tokio_runtime.block_on(run_async_main(options, config))
+    tokio_runtime.block_on(run_application(options, config))
 }
 
 /// Replace the current process image with a fresh copy of OxiDNS using the
@@ -108,7 +111,7 @@ fn init_runtime(options: StartConfig, config: Config) -> Result<ShutdownSignal> 
 /// On Unix, `exec()` keeps the same PID so any process supervisor (systemd,
 /// launchd, Docker, etc.) continues tracking the process without interruption.
 /// On non-Unix platforms a new process is spawned and the current one exits.
-pub(crate) fn exec_restart() -> Result<()> {
+pub(crate) fn restart_process() -> Result<()> {
     let exe = ORIGINAL_EXE
         .get()
         .cloned()
@@ -146,7 +149,7 @@ pub(crate) fn exec_restart() -> Result<()> {
     }
 }
 
-fn load_config(options: &StartConfig) -> Result<Config> {
+fn load_startup_config(options: &StartConfig) -> Result<Config> {
     config::init(&options.config).map_err(|err| {
         DnsError::config(format!(
             "Configuration initialization failed for {}: {}",
@@ -204,7 +207,7 @@ impl ShutdownSignal {
 }
 
 #[cfg(unix)]
-async fn wait_for_shutdown_signal() -> Result<ShutdownSignal> {
+async fn wait_for_os_shutdown_signal() -> Result<ShutdownSignal> {
     use tokio::signal::unix::{SignalKind, signal as unix_signal};
 
     let mut sigint = unix_signal(SignalKind::interrupt())
@@ -222,7 +225,7 @@ async fn wait_for_shutdown_signal() -> Result<ShutdownSignal> {
 }
 
 #[cfg(windows)]
-async fn wait_for_shutdown_signal() -> Result<ShutdownSignal> {
+async fn wait_for_os_shutdown_signal() -> Result<ShutdownSignal> {
     use tokio::signal::windows::{
         ctrl_break, ctrl_c as windows_ctrl_c, ctrl_close, ctrl_logoff, ctrl_shutdown,
     };
@@ -248,18 +251,20 @@ async fn wait_for_shutdown_signal() -> Result<ShutdownSignal> {
 }
 
 #[cfg(not(any(unix, windows)))]
-async fn wait_for_shutdown_signal() -> Result<ShutdownSignal> {
+async fn wait_for_os_shutdown_signal() -> Result<ShutdownSignal> {
     tokio::signal::ctrl_c()
         .await
         .map_err(|err| DnsError::runtime(format!("Failed to listen for Ctrl+C: {err}")))?;
     Ok(ShutdownSignal::CtrlC)
 }
 
+/// Start application resources, process control commands, and shut down
+/// gracefully.
 #[hotpath::main]
-async fn run_async_main(options: StartConfig, config: Config) -> Result<ShutdownSignal> {
+async fn run_application(options: StartConfig, config: Config) -> Result<ShutdownSignal> {
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<Result<ShutdownSignal>>();
     tokio::spawn(async move {
-        let _ = shutdown_tx.send(wait_for_shutdown_signal().await);
+        let _ = shutdown_tx.send(wait_for_os_shutdown_signal().await);
     });
 
     let (app_controller, mut control_rx) = AppController::new(options.config.clone());
@@ -295,7 +300,7 @@ async fn run_async_main(options: StartConfig, config: Config) -> Result<Shutdown
 
     let mut current_config = config;
     let mut assembly =
-        match bootstrap::assemble(&current_config, Some(app_controller.clone())).await {
+        match bootstrap::start_application(&current_config, Some(app_controller.clone())).await {
             Ok(assembly) => {
                 app_controller.set_running_config_version(
                     crate::infra::control::config_file_version(app_controller.config_path()),
@@ -309,7 +314,7 @@ async fn run_async_main(options: StartConfig, config: Config) -> Result<Shutdown
             }
         };
 
-    let shutdown_signal = wait_for_termination(
+    let shutdown_signal = run_control_loop(
         &mut control_rx,
         shutdown_rx,
         &mut assembly,
@@ -321,8 +326,7 @@ async fn run_async_main(options: StartConfig, config: Config) -> Result<Shutdown
         signal = shutdown_signal.as_str(),
         "Destroying plugins for shutdown"
     );
-    bootstrap::stop(&assembly).await;
-    task::stop_all().await;
+    bootstrap::stop_application(&assembly).await;
     info!(
         signal = shutdown_signal.as_str(),
         "Graceful shutdown complete"
@@ -330,7 +334,9 @@ async fn run_async_main(options: StartConfig, config: Config) -> Result<Shutdown
     Ok(shutdown_signal)
 }
 
-async fn wait_for_termination(
+/// Handle reload commands until an OS signal, shutdown request, or restart
+/// request.
+async fn run_control_loop(
     control_rx: &mut mpsc::UnboundedReceiver<ControlCommand>,
     mut shutdown_rx: oneshot::Receiver<Result<ShutdownSignal>>,
     assembly: &mut AppAssembly,
@@ -359,7 +365,7 @@ async fn wait_for_termination(
                         return Ok(ShutdownSignal::Restart);
                     }
                     Some(ControlCommand::Reload) => {
-                        handle_reload_command(assembly, current_config, controller.clone()).await?;
+                        reload_application(assembly, current_config, controller.clone()).await?;
                     }
                     None => return Err(DnsError::runtime("Control command channel closed unexpectedly")),
                 }
@@ -368,7 +374,9 @@ async fn wait_for_termination(
     }
 }
 
-async fn handle_reload_command(
+/// Restart application resources with the new config, restoring the old config
+/// on failure.
+async fn reload_application(
     assembly: &mut AppAssembly,
     current_config: &mut Config,
     controller: std::sync::Arc<AppController>,
@@ -377,7 +385,7 @@ async fn handle_reload_command(
         controller.config_path(),
     ));
 
-    let candidate_config = match load_config_from_path(controller.config_path()) {
+    let candidate_config = match load_and_validate_reload_config(controller.config_path()) {
         Ok(config) => config,
         Err(err) => {
             controller.mark_reload_failed(err.to_string());
@@ -391,10 +399,9 @@ async fn handle_reload_command(
         "Reloading configuration from management API"
     );
 
-    bootstrap::stop(assembly).await;
-    task::stop_all().await;
+    bootstrap::stop_application(assembly).await;
 
-    match bootstrap::assemble(&candidate_config, Some(controller.clone())).await {
+    match bootstrap::start_application(&candidate_config, Some(controller.clone())).await {
         Ok(new_assembly) => {
             *assembly = new_assembly;
             *current_config = candidate_config;
@@ -404,7 +411,7 @@ async fn handle_reload_command(
         }
         Err(reload_err) => {
             error!("Configuration reload failed: {}", reload_err);
-            match bootstrap::assemble(&previous_config, Some(controller.clone())).await {
+            match bootstrap::start_application(&previous_config, Some(controller.clone())).await {
                 Ok(restored_assembly) => {
                     *assembly = restored_assembly;
                     controller.mark_reload_failed(format!(
@@ -428,7 +435,7 @@ async fn handle_reload_command(
     }
 }
 
-fn load_config_from_path(path: &std::path::Path) -> Result<Config> {
+fn load_and_validate_reload_config(path: &std::path::Path) -> Result<Config> {
     let path = path.to_path_buf();
     let config = config::init(&path).map_err(|err| {
         DnsError::config(format!(
@@ -439,4 +446,56 @@ fn load_config_from_path(path: &std::path::Path) -> Result<Config> {
     })?;
     crate::plugin::validate_configuration(&config)?;
     Ok(config)
+}
+
+#[cfg(all(test, feature = "api"))]
+mod cache_reload_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn failed_reload_restores_historical_cache() {
+        let _guard = crate::api::global_api_test_guard().await;
+        let _outbound_guard = crate::infra::network::outbound::TestGlobalGuard::clean();
+        crate::infra::clock::AppClock::start();
+        let dir = tempfile::tempdir().unwrap();
+        let dump = dir.path().join("cache.dump");
+        std::fs::write(
+            &dump,
+            crate::plugin::executor::cache::persistence_test_dump(),
+        )
+        .unwrap();
+        let yaml = format!(
+            "plugins:\n  - tag: reload_cache\n    type: cache\n    args:\n      ecs_in_key: true\n      dump_file: '{}'\n",
+            dump.display()
+        );
+        let mut config: Config = serde_yaml_ng::from_str(&yaml).unwrap();
+        let path = dir.path().join("config.yaml");
+        let (controller, _rx) = AppController::new(path.clone());
+        let mut assembly = bootstrap::start_application(&config, Some(controller.clone()))
+            .await
+            .unwrap();
+        let bad = yaml.replace("ecs_in_key: true", "ecs_in_key: false\n      size: 1")
+            + "  - tag: zz_invalid\n    type: forward\n    args:\n      upstreams: [{addr: 'invalid://bad'}]\n";
+        std::fs::write(&path, bad).unwrap();
+        reload_application(&mut assembly, &mut config, controller.clone())
+            .await
+            .unwrap();
+        bootstrap::stop_application(&assembly).await;
+        // Restoring the old config must retain all four ECS variants.
+        let restored = std::fs::read(&dump).unwrap();
+        assert_eq!(u64::from_le_bytes(restored[..8].try_into().unwrap()), 4);
+        // A successful reload still commits persistence normally.
+        std::fs::write(&path, yaml).unwrap();
+        assembly = bootstrap::start_application(&config, Some(controller.clone()))
+            .await
+            .unwrap();
+        reload_application(&mut assembly, &mut config, controller)
+            .await
+            .unwrap();
+        bootstrap::stop_application(&assembly).await;
+        assert_eq!(
+            u64::from_le_bytes(std::fs::read(&dump).unwrap()[..8].try_into().unwrap()),
+            4
+        );
+    }
 }

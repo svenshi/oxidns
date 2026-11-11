@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025 ripset contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Netlink protocol utilities for ipset/nftset operations.
 
 #![allow(dead_code)]

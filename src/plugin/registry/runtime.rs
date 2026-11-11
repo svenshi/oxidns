@@ -3,10 +3,13 @@
 
 //! Global plugin runtime lifecycle and application-control integration.
 
+use std::panic::AssertUnwindSafe;
 #[cfg(debug_assertions)]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
+use futures::FutureExt;
+use futures::future::BoxFuture;
 use tokio::sync::Mutex as AsyncMutex;
 
 use super::{
@@ -46,6 +49,69 @@ pub struct PluginRuntimeManager {
     lifecycle: Arc<AsyncMutex<()>>,
 }
 
+/// Candidate resources owned exclusively by one serialized startup operation.
+/// This session never escapes the managed task, so cancelling a caller's wait
+/// cannot strand a candidate between initialization and activation.
+pub(crate) struct StartupSession {
+    manager: Arc<PluginRuntimeManager>,
+    candidate: Option<Arc<PluginRuntime>>,
+    #[cfg(debug_assertions)]
+    test_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl StartupSession {
+    /// Build plugins without publishing an active runtime or sending readiness.
+    /// Application-specific routes and listeners can still fail afterwards.
+    pub(crate) async fn initialize(&mut self, config: Config) -> Result<Arc<PluginRuntime>> {
+        if self.candidate.is_some() {
+            return Err(DnsError::runtime("startup session already initialized"));
+        }
+        let mut candidate = PluginRegistry::new();
+        candidate.load_catalog(try_global_catalog()?);
+        #[cfg(debug_assertions)]
+        candidate.set_test_runtime_guard(self.test_guard.take());
+        let candidate = Arc::new(candidate);
+        let previous = write_rwlock(&self.manager.current).take();
+        if let Some(previous) = previous {
+            previous.destroy().await;
+        }
+        // Own the candidate before any fallible operation so the common error
+        // path can destroy partial initialization and clear outbound state.
+        self.candidate = Some(candidate.clone());
+        outbound::clear_global();
+        outbound::install_global(&config.network.outbound)?;
+        candidate
+            .clone()
+            .init_plugins_with_runtime_controls(
+                config.plugins,
+                cfg!(feature = "api") && config.api.http.is_some(),
+            )
+            .await?;
+        Ok(candidate)
+    }
+
+    fn activate(&mut self) -> Result<()> {
+        let candidate = self
+            .candidate
+            .take()
+            .ok_or_else(|| DnsError::runtime("startup completed without initializing plugins"))?;
+        // Publication and readiness are synchronous and remain under the same
+        // lifecycle permit as initialization and destruction. No later startup
+        // step can fail, and another lifecycle operation cannot retire the
+        // runtime while readiness hooks are creating maintenance tasks.
+        write_rwlock(&self.manager.current).replace(candidate.clone());
+        candidate.notify_ready();
+        Ok(())
+    }
+
+    async fn abort(&mut self) {
+        if let Some(candidate) = self.candidate.take() {
+            candidate.destroy().await;
+            outbound::clear_global();
+        }
+    }
+}
+
 impl PluginRuntimeManager {
     pub(super) fn new() -> Self {
         Self {
@@ -59,10 +125,23 @@ impl PluginRuntimeManager {
         read_rwlock(&self.current).clone()
     }
 
+    /// Run complete standalone startup, including activation, as one operation.
     pub async fn init_runtime(self: &Arc<Self>, config: Config) -> Result<Arc<PluginRuntime>> {
-        // Test serialization must not wait while holding the lifecycle lock.
-        // A concurrently running test may need `destroy_runtime` to acquire
-        // that lifecycle lock before it can drop the previous test guard.
+        self.start_with(move |session| Box::pin(async move { session.initialize(config).await }))
+            .await
+    }
+
+    /// The application supplies its own startup work here, including API setup
+    /// and failure cleanup. The owned task always finishes activation or abort
+    /// even if its caller drops the returned future after the operation starts.
+    pub(crate) async fn start_with<T, F>(self: &Arc<Self>, start: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: for<'a> FnOnce(&'a mut StartupSession) -> BoxFuture<'a, Result<T>> + Send + 'static,
+    {
+        // Tests must acquire their serialization permit before lifecycle: the
+        // current runtime may need lifecycle access to release that test
+        // permit.
         #[cfg(debug_assertions)]
         let test_guard = if SERIALIZE_RUNTIME_FOR_TESTS.load(Ordering::Relaxed) {
             Some(test_runtime_lock().lock_owned().await)
@@ -73,53 +152,61 @@ impl PluginRuntimeManager {
         let manager = self.clone();
         tokio::spawn(async move {
             let _lifecycle_guard = lifecycle_guard;
-            let mut candidate = PluginRegistry::new();
-            #[cfg(debug_assertions)]
-            candidate.set_test_runtime_guard(test_guard);
-            candidate.load_catalog(try_global_catalog()?);
-            let candidate = Arc::new(candidate);
-
-            let previous = write_rwlock(&manager.current).take();
-            if let Some(previous) = previous {
-                previous.destroy().await;
-            }
-            outbound::clear_global();
-            outbound::install_global(&config.network.outbound)?;
-
-            let matcher_runtime_controls_enabled =
-                cfg!(feature = "api") && config.api.http.is_some();
-            if let Err(err) = candidate
-                .clone()
-                .init_plugins_with_runtime_controls(
-                    config.plugins,
-                    matcher_runtime_controls_enabled,
-                )
+            let mut session = StartupSession {
+                manager,
+                candidate: None,
+                #[cfg(debug_assertions)]
+                test_guard,
+            };
+            // A plugin/setup panic is an initialization failure too. Catch it
+            // while the session still owns its candidate so ordinary cleanup
+            // can release already-initialized predecessors.
+            let outcome = AssertUnwindSafe(start(&mut session))
+                .catch_unwind()
                 .await
-            {
-                candidate.destroy().await;
-                outbound::clear_global();
-                return Err(err);
+                .unwrap_or_else(|_| Err(DnsError::runtime("runtime startup panicked")));
+            match outcome {
+                Ok(output) => match session.activate() {
+                    Ok(()) => Ok(output),
+                    Err(error) => {
+                        session.abort().await;
+                        Err(error)
+                    }
+                },
+                Err(error) => {
+                    session.abort().await;
+                    Err(error)
+                }
             }
-
-            write_rwlock(&manager.current).replace(candidate.clone());
-            Ok(candidate)
         })
         .await
-        .map_err(|error| {
-            DnsError::runtime(format!("runtime initialization task failed: {error}"))
-        })?
+        .map_err(|error| DnsError::runtime(format!("runtime startup task failed: {error}")))?
     }
 
     pub async fn destroy_runtime(self: &Arc<Self>) {
+        self.stop_with(|| Box::pin(async {}), || Box::pin(async {}))
+            .await;
+    }
+
+    /// Stop application listeners and plugins under the startup lifecycle lock.
+    /// Like startup, teardown retains ownership until cleanup actually
+    /// finishes.
+    pub(crate) async fn stop_with<F, G>(self: &Arc<Self>, before_plugins: F, after_plugins: G)
+    where
+        F: FnOnce() -> BoxFuture<'static, ()> + Send + 'static,
+        G: FnOnce() -> BoxFuture<'static, ()> + Send + 'static,
+    {
         let lifecycle_guard = self.lifecycle.clone().lock_owned().await;
         let manager = self.clone();
         let task = tokio::spawn(async move {
             let _lifecycle_guard = lifecycle_guard;
+            before_plugins().await;
             let previous = write_rwlock(&manager.current).take();
             if let Some(previous) = previous {
                 previous.destroy().await;
             }
             outbound::clear_global();
+            after_plugins().await;
         });
         if let Err(error) = task.await {
             tracing::error!(%error, "runtime destruction task failed");
@@ -204,6 +291,8 @@ pub fn current_runtime() -> Option<Arc<PluginRuntime>> {
     global_manager().current_runtime()
 }
 
+/// Start and activate a standalone runtime using the same managed lifecycle as
+/// application startup. Cancellation of the observer cannot omit activation.
 pub async fn init(config: Config) -> Result<Arc<PluginRuntime>> {
     global_manager().init_runtime(config).await
 }

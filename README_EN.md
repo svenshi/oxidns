@@ -20,7 +20,7 @@ Inspired by [mosdns](https://github.com/IrineSistiana/mosdns), OxiDNS goes beyon
 
 ## Why OxiDNS
 
-- **Composable policy**: `sequence` combines matchers, executors, and providers into reusable branches, jumps, and fallback chains.
+- **Composable policy**: `sequence` combines matchers, executors, and providers into reusable branches, jumps, and fallback chains; `load_balance` adds round-robin, random, and weighted-random branch selection.
 - **Explainable decisions**: Query records, execution paths, structured logs, and metrics show what matched, what ran, and why a result was selected.
 - **Unified ingress and egress**: One policy serves UDP, TCP, DoT, DoQ, and DoH while upstream resolution, connection reuse, concurrent selection, and proxy egress stay centrally managed.
 - **DNS-driven networking**: Resolution results can update Linux `ipset` / `nftset`, RouterOS address lists and static routes, HTTP webhooks, and external scripts.
@@ -84,7 +84,7 @@ See [Configuration](https://oxidns.org/en/configuration) and [Common Scenarios](
 | Category | Capabilities |
 | --- | --- |
 | Protocol ingress | UDP, TCP, DoT, DoQ, DoH over HTTP/1.1, HTTP/2, and HTTP/3 |
-| Policy orchestration | `sequence`, conditional matching, executor composition, jumps, and fallback chains |
+| Policy orchestration | `sequence`, conditional matching, executor composition, jumps, fallback chains, and `load_balance` |
 | Upstreams and egress | Multi-protocol upstreams, concurrent response selection, connection reuse, bootstrap, SOCKS5, unified `network.outbound` |
 | Response processing | TTL-aware positive and negative caching, ECS and ECS-derived client IPs, local records, redirects, response construction, dual-stack and IP selection |
 | Rule data | Domain and IP sets, GeoIP, GeoSite, AdGuard rules, dynamic domain learning |
@@ -94,6 +94,39 @@ See [Configuration](https://oxidns.org/en/configuration) and [Common Scenarios](
 | Deployment | Multi-platform builds, Debian packages, OpenWrt LuCI app, built-in WebUI and management API, service installation |
 
 See the [Plugin Reference](https://oxidns.org/en/plugin-reference/overview) for the complete list of built-in components and configuration fields.
+
+---
+
+## WebUI Demos
+
+### Configuration Editor
+
+Edit YAML configuration directly and use the plugin index to jump to plugin definitions.
+
+![WebUI configuration editor and plugin index demo](.github/img/config_editor.gif)
+
+### Plugin Dependency Graph
+
+Explore plugin references, `sequence` branches, and executor composition in a dependency graph.
+
+![WebUI plugin dependency graph and sequence branches demo](.github/img/plugin_dep.gif)
+
+### Query Tracing
+
+Inspect response details, match results, and the actual execution path from query records.
+
+![WebUI query records and execution tracing demo](.github/img/query_tracing.gif)
+
+---
+
+## Community WebUIs
+
+Alongside the built-in WebUI, we recommend exploring these independently maintained community interfaces:
+
+- [YoPilot](https://github.com/yyhoworks/YoPilot): A Chinese-language management frontend by yyhoworks, featuring DNS topology visualization, plugin configuration, and two visual styles.
+- [OxiDNS Dashboard](https://github.com/Luke-Lab666/oxidns-dashboard): A lightweight management panel by Luke-Lab666, built as a single HTML file with multiple themes, query logs, and configuration management.
+
+Thanks to the community developers for their contributions! See each project for deployment instructions and supported OxiDNS versions.
 
 ---
 
@@ -185,8 +218,8 @@ If OxiDNS is useful to you, you can support its ongoing development and maintena
     <th align="center">Alipay</th>
   </tr>
   <tr>
-    <td align="center"><img src="docs/static/img/support/wechat-pay.jpg" alt="WeChat Pay QR code for supporting OxiDNS development" width="260" /></td>
-    <td align="center"><img src="docs/static/img/support/alipay.jpg" alt="Alipay QR code for supporting OxiDNS development" width="260" /></td>
+    <td align="center"><img src="website/static/img/support/wechat-pay.jpg" alt="WeChat Pay QR code for supporting OxiDNS development" width="260" /></td>
+    <td align="center"><img src="website/static/img/support/alipay.jpg" alt="Alipay QR code for supporting OxiDNS development" width="260" /></td>
   </tr>
 </table>
 
@@ -197,3 +230,8 @@ Financial support does not establish a commercial service relationship or affect
 ## License
 
 This project is licensed under the [GNU General Public License v3.0 or later](LICENSE).
+
+The standalone libraries [oxidns-proto](crates/proto/README.md) and
+[oxidns-macros](crates/macros/README.md) are dual-licensed under
+`MIT OR Apache-2.0`, at your option. See each other workspace crate's
+`Cargo.toml` and license files for its licensing terms.

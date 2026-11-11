@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { describe, expect, it } from "vitest";
 import { parseOxiDnsYaml, type OxiDnsConfig } from "./oxidns-config";
 import { patchPluginsYaml } from "./oxidns-config-patch";
@@ -349,5 +354,33 @@ plugins:
     expect(result.affectedPath).toBe("plugins.main.args");
     expect(result.candidate?.content).toContain("shared: &shared");
     expect(result.candidate?.content).toContain("args: { timeout: 3s }");
+  });
+});
+
+it("patches EDNS filter policy without rewriting lists or comments", () => {
+  const source = `# untouched configuration
+plugins:
+  - tag: edns_filter_main
+    type: edns_filter
+    args:
+      policy: preserve # strategy
+      allowlist: [8, 10, 65001] # keep these bytes
+      denylist: [10]
+      restore_request: false
+log: {level: info}
+`;
+  const output = patchedContent(source, (config) => {
+    const args = config.plugins[0].args as { policy: string };
+    args.policy = "strip_unknown";
+    return config;
+  });
+  expect(output).toBe(
+    source.replace("policy: preserve", "policy: strip_unknown"),
+  );
+  expect(configOf(output).plugins[0].args).toEqual({
+    policy: "strip_unknown",
+    allowlist: [8, 10, 65001],
+    denylist: [10],
+    restore_request: false,
   });
 });

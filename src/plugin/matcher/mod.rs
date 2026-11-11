@@ -29,6 +29,7 @@ pub mod client_ip;
 pub mod cname;
 pub mod env;
 pub mod false_matcher;
+pub mod has_cname;
 pub mod has_resp;
 pub mod has_wanted_ans;
 pub mod mark;

@@ -1,0 +1,201 @@
+---
+title: UDP 与 TCP 入口
+---
+
+import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
+
+传统 DNS 入口，包括 UDP、TCP 和可选的 TCP TLS（DoT）配置。
+
+## `udp_server`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+监听 UDP DNS 请求，并把请求转交给 `entry`。
+
+### 配置示例
+
+```yaml
+- tag: udp_in
+  type: udp_server
+  args:
+    # 当前监听器的入口执行器
+    entry: "seq_main"
+    # 可写成 ip:port、[ipv6]:port 或 :port
+    listen: ":53"
+```
+
+### 配置项
+
+#### `entry`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：指定处理该监听器全部请求的入口执行器。
+- 示例：`entry: "seq_main"`
+- 配置要求：
+  - 必须引用已定义的执行器插件。
+  - 常见取值为某个 `sequence` 的 `tag`。
+- 运行影响：
+  - 所有进入当前 `udp_server` 的请求都会交由该执行器继续处理。
+  - 若引用不存在或类型错误，插件初始化将失败。
+
+#### `listen`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：指定 UDP 监听地址。
+- 示例：
+  - `listen: "0.0.0.0:53"`
+  - `listen: ":5353"`
+- 支持格式：
+  - `ip:port`
+  - `[ipv6]:port`
+  - `:port`
+- 运行影响：
+  - 决定监听器绑定的地址与端口。
+  - `:port` 等价于双栈监听 `[::]:port`；如需 IPv4-only，请写 `0.0.0.0:port`。
+  - 地址无效、端口冲突或绑定失败时，监听器无法启动。
+
+### 行为说明
+
+- 使用 UDP socket 接收请求。
+- Windows 监听器在初始化时关闭 UDP 端口不可达通知；客户端提前关闭端口产生的 10054 接收通知不会逐条记录 WARN，其他接收错误仍保留告警。若系统选项设置失败，启动时告警一次，监听器继续运行并对该通知分类处理。
+- 对发往本机单播地址的查询，回复使用请求原本的目标 IP 和端口作为源地址，包括通配监听下的 IPv4、IPv6 和双栈请求。
+- 通配监听需要系统提供逐包目标地址信息。若无法启用该功能，监听器初始化失败并提示绑定明确 IP；可改为 `192.168.1.1:53` 等具体地址，需要多个地址时分别配置监听实例。
+- Windows 上确认 IPv4 协议族不可用时，IPv6 监听仍可启动；明确配置的 IPv4 监听不依赖 IPv6。
+- 运行时若必要的目标地址信息缺失或被截断，该报文会被丢弃并记录错误，避免使用错误源地址回复。
+- 响应编码时会参考客户端宣告的 EDNS UDP payload。
+- 超长响应会按 DNS 语义截断，而不是简单裁切原始字节流。
+
+### 适用策略
+
+- 高并发、低开销的标准 DNS 入口。
+- 本地网络的主监听器。
+- 与 `tcp_server` / `http_server` 并存，构成多协议接入。
+
+<Admonition type="note" title="注意事项">
+
+- UDP 与 QUIC 都基于 UDP 端口，避免端口冲突。
+- 推荐将入口统一交给 `sequence`，避免在不同 server 实例中重复维护策略。
+
+</Admonition>
+
+---
+
+## `tcp_server`
+
+<PluginAvailability from="minimal" note="DoT 支持：standard / full" />
+
+### 作用
+
+监听 TCP DNS 请求；当同时配置 `cert` 和 `key` 时，也可作为 DoT 入口。
+
+### 配置示例
+
+```yaml
+- tag: tcp_in
+  type: tcp_server
+  args:
+    # TCP 请求统一进入主策略链
+    entry: "seq_main"
+    # 监听 53 端口
+    listen: ":53"
+    # 空闲连接保活/回收时间，单位秒
+    idle_timeout: 10
+
+- tag: dot_in
+  type: tcp_server
+  args:
+    # DoT 也复用同一条策略链
+    entry: "seq_main"
+    # 典型 DoT 端口
+    listen: ":853"
+    # PEM 证书链
+    cert: "/etc/oxidns/server.crt"
+    # PEM 私钥
+    key: "/etc/oxidns/server.key"
+    # DoT 通常适当放大空闲时间以复用连接
+    idle_timeout: 30
+```
+
+### 配置项
+
+#### `entry`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：指定 TCP 或 DoT 请求进入策略链时使用的入口执行器。
+- 示例：`entry: "seq_main"`
+- 配置要求：
+  - 必须引用已定义的执行器插件。
+- 运行影响：
+  - 所有连接上的 DNS 消息都会交由该执行器处理。
+
+#### `listen`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：指定 TCP 监听地址。
+- 示例：
+  - `listen: ":53"`
+  - `listen: "127.0.0.1:853"`
+- 支持格式：
+  - `ip:port`
+  - `[ipv6]:port`
+  - `:port`
+- 运行影响：
+  - 影响明文 TCP 或 DoT 服务的绑定地址。
+  - `:port` 等价于双栈监听 `[::]:port`；如需 IPv4-only，请写 `0.0.0.0:port`。
+
+#### `cert`
+
+- 类型：`string`；必填：否；默认值：无
+- 作用：指定 TLS 证书文件路径。
+- 示例：`cert: "/etc/oxidns/server.crt"`
+- 使用条件：
+  - 与 `key` 配合使用时启用 TLS。
+- 运行影响：
+  - 配置后可将 `tcp_server` 用作 DoT 入口。
+
+#### `key`
+
+- 类型：`string`；必填：否；默认值：无
+- 作用：指定 TLS 私钥文件路径。
+- 示例：`key: "/etc/oxidns/server.key"`
+- 使用条件：
+  - 与 `cert` 配合使用时启用 TLS。
+- 运行影响：
+  - 缺失或无效时，TLS 模式无法建立。
+
+#### `idle_timeout`
+
+- 类型：`integer`；必填：否；默认值：`10`
+- 单位：秒
+- 作用：指定连接空闲超时设置。
+- 示例：`idle_timeout: 30`
+- 运行影响：
+  - 影响长连接保活与空闲连接生命周期。
+  - 值越大，空闲连接保留时间越长。
+
+### 行为说明
+
+- 不配置 TLS 时，提供 DNS over TCP。
+- 同时配置 `cert` + `key` 时，提供 DNS over TLS。
+- TLS 场景会把 ALPN 设置为 `dot`。
+- 每个连接可以承载多个 DNS 消息。
+- 客户端断开或响应写入失败后，连接停止收发；已接收请求继续执行插件链，无法投递的响应被丢弃。
+- 停止或重载时，server 先关闭连接，再等待已接收请求完成，然后才销毁其依赖插件。没有额外的固定排空期限，耗时取决于执行链及其自身超时。
+
+### 适用策略
+
+- 提供 TCP 回退入口。
+- 提供加密 DNS 的 DoT 接入。
+- 需要长连接复用的客户端场景。
+
+<Admonition type="note" title="注意事项">
+
+- `cert` 和 `key` 需要一起配置。
+- 如需同时提供明文 TCP 与 DoT，推荐定义两个独立的插件实例。
+
+</Admonition>
+
+---

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Route manager for DNS-observed RouterOS route leases.
 //!
 //! Dynamic state is keyed only by the destination host route. DNS answers add
@@ -13,7 +16,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use super::RosRouteMetrics;
-use super::api::{MikrotikApi, RouterRoute};
+use super::api::{MikrotikApi, RouteProperties, RouterRoute};
 use super::model::{
     RouteCommentCodec, RouteCommentKind, RouteCommentMeta, RouteFamily, RouteKey,
     is_validation_comment,
@@ -55,11 +58,23 @@ pub(super) struct RouteManagerConfig {
     pub(super) persistent_ips: AHashSet<IpPrefix>,
     pub(super) comment_prefix: String,
     pub(super) distance: u8,
+    pub(super) scope: Option<u8>,
+    pub(super) target_scope: Option<u8>,
     pub(super) min_ttl: u32,
     pub(super) max_ttl: u32,
     pub(super) fixed_ttl: Option<u32>,
     pub(super) conntrack_guard: bool,
     pub(super) queue_capacity: usize,
+}
+
+impl RouteManagerConfig {
+    fn route_properties(&self) -> RouteProperties {
+        RouteProperties {
+            distance: self.distance,
+            scope: self.scope,
+            target_scope: self.target_scope,
+        }
+    }
 }
 
 fn deadline_is_later(candidate: LeaseDeadline, current: LeaseDeadline) -> bool {
@@ -652,9 +667,20 @@ impl RouteManager {
         let api = self.api.clone();
         let prefix = self.cfg.comment_prefix.clone();
         let tag = self.cfg.plugin_tag.clone();
+        let properties = self.cfg.route_properties();
         let results = join_all_bounded(
             upserts.iter().map(|(key, state, comment)| {
-                api.upsert_host_route(key, &state.gateway, state.distance, comment, &prefix, &tag)
+                api.upsert_host_route(
+                    key,
+                    &state.gateway,
+                    RouteProperties {
+                        distance: state.distance,
+                        ..properties
+                    },
+                    comment,
+                    &prefix,
+                    &tag,
+                )
             }),
             UPSERT_PIPELINE_SIZE,
         )
@@ -996,7 +1022,7 @@ impl RouteManager {
                     .position(|(route, meta)| {
                         meta.kind == RouteCommentKind::Persistent
                             && route.gateway.as_deref() == Some(gateway.as_str())
-                            && route.distance == Some(self.cfg.distance)
+                            && self.cfg.route_properties().matches(route)
                             && !route.disabled
                             && route.comment.as_deref() == Some(expected.as_str())
                     })
@@ -1009,7 +1035,7 @@ impl RouteManager {
                 }
                 let dirty = meta.kind != RouteCommentKind::Persistent
                     || route.gateway.as_deref() != Some(gateway.as_str())
-                    || route.distance != Some(self.cfg.distance)
+                    || !self.cfg.route_properties().matches(&route)
                     || route.disabled
                     || route.comment.as_deref() != Some(expected.as_str());
                 self.routes.insert(
@@ -1090,7 +1116,7 @@ impl RouteManager {
                 });
                 let dirty = newer
                     || route.gateway.as_deref() != Some(gateway.as_str())
-                    || route.distance != Some(self.cfg.distance)
+                    || !self.cfg.route_properties().matches(&route)
                     || route.disabled
                     || expected.as_deref() != route.comment.as_deref();
                 self.routes.insert(
@@ -1242,7 +1268,7 @@ impl RouteManager {
                 .position(|(route, meta)| {
                     meta.kind == RouteCommentKind::Persistent
                         && route.gateway.as_deref() == Some(gateway.as_str())
-                        && route.distance == Some(self.cfg.distance)
+                        && self.cfg.route_properties().matches(route)
                         && !route.disabled
                         && route.comment.as_deref() == Some(expected.as_str())
                 })
@@ -1255,7 +1281,7 @@ impl RouteManager {
             }
             let dirty = meta.kind != RouteCommentKind::Persistent
                 || route.gateway.as_deref() != Some(gateway.as_str())
-                || route.distance != Some(self.cfg.distance)
+                || !self.cfg.route_properties().matches(&route)
                 || route.disabled
                 || route.comment.as_deref() != Some(expected.as_str());
             self.routes.insert(
@@ -1636,6 +1662,7 @@ mod tests {
         routes: Mutex<Vec<RouterRoute>>,
         connections: Mutex<AHashSet<IpAddr>>,
         delete_failures: AtomicUsize,
+        upserts: AtomicUsize,
     }
 
     impl MockApi {
@@ -1697,17 +1724,24 @@ mod tests {
             &self,
             key: &RouteKey,
             gateway: &str,
-            distance: u8,
+            properties: RouteProperties,
             comment: &str,
             _comment_prefix: &str,
             _plugin_tag: &str,
         ) -> Result<String> {
+            self.upserts.fetch_add(1, Ordering::Relaxed);
             let mut routes = self.routes.lock().expect("routes");
             if let Some(route) = routes.iter_mut().find(|route| {
                 route.dst_address == key.dst_address() && route.routing_table == key.table
             }) {
                 route.gateway = Some(gateway.to_string());
-                route.distance = Some(distance);
+                route.distance = Some(properties.distance);
+                if let Some(scope) = properties.scope {
+                    route.scope = Some(scope);
+                }
+                if let Some(scope) = properties.target_scope {
+                    route.target_scope = Some(scope);
+                }
                 route.comment = Some(comment.to_string());
                 route.disabled = false;
                 return Ok(route.id.clone());
@@ -1719,7 +1753,9 @@ mod tests {
                 dst_address: key.dst_address(),
                 routing_table: key.table.clone(),
                 gateway: Some(gateway.to_string()),
-                distance: Some(distance),
+                distance: Some(properties.distance),
+                scope: Some(properties.scope.unwrap_or(30)),
+                target_scope: Some(properties.target_scope.unwrap_or(10)),
                 comment: Some(comment.to_string()),
                 disabled: false,
             });
@@ -1768,6 +1804,8 @@ mod tests {
             persistent_ips: AHashSet::new(),
             comment_prefix: "fdns".to_string(),
             distance: 100,
+            scope: None,
+            target_scope: None,
             min_ttl: 1,
             max_ttl: 3_600,
             fixed_ttl,
@@ -1809,6 +1847,294 @@ mod tests {
         )
         .expect("decode");
         assert!(decoded.is_none());
+    }
+
+    /// Requires OXIDNS_ROS_TEST_{ADDRESS,USERNAME,PASSWORD,TABLE,GATEWAY4,
+    /// GATEWAY6}. The caller must provision an empty disposable table with no
+    /// routing rules.
+    #[tokio::test]
+    #[ignore = "requires explicit RouterOS credentials and a disposable test table"]
+    async fn real_routeros_scope_lifecycle() {
+        use crate::plugin::executor::ros_route::api::MikrotikRsClient;
+        use crate::plugin::executor::routeros::transport::{
+            RouterOsConnectionConfig, RouterOsTimeouts,
+        };
+
+        let env = |name: &str| std::env::var(format!("OXIDNS_ROS_TEST_{name}")).expect(name);
+        let table = env("TABLE");
+        assert!(
+            table.starts_with("oxidns_scope_test_"),
+            "use a disposable test table"
+        );
+        let api = Arc::new(MikrotikRsClient::new(
+            RouterOsConnectionConfig::new(
+                env("ADDRESS"),
+                env("USERNAME"),
+                env("PASSWORD"),
+                RouterOsTimeouts::default(),
+                None,
+            )
+            .unwrap(),
+        ));
+        assert!(
+            api.list_managed_routes(&table, true, true)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let mut cfg = config(Some(300), false);
+        cfg.routing_table = table.clone();
+        cfg.gateway4 = Some(env("GATEWAY4"));
+        cfg.gateway6 = Some(env("GATEWAY6"));
+        let worker_api = api.clone();
+        let worker_table = table.clone();
+        let worker = tokio::spawn(async move {
+            for ip in ["192.0.2.241", "2001:db8:ffff::241"] {
+                let key = RouteKey::new(ip.parse().unwrap(), worker_table.clone());
+                let mut manager = RouteManager::new(worker_api.clone(), cfg.clone());
+                let now = now_millis();
+                manager
+                    .observe_key(
+                        key.clone(),
+                        &RouteObservation {
+                            deadline: LeaseDeadline::At(now + 300_000),
+                            observed_at_ms: now,
+                            completions: Vec::new(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                let initial = worker_api
+                    .find_routes(&key, "fdns", "route-test")
+                    .await
+                    .unwrap()
+                    .pop()
+                    .unwrap();
+                assert_eq!((initial.scope, initial.target_scope), (Some(30), Some(10)));
+                println!("{ip}: add with omitted scopes -> 30/10");
+                for (scope, target_scope, expected) in [
+                    (Some(30), Some(11), (Some(30), Some(11))),
+                    (Some(40), None, (Some(40), Some(11))),
+                    (None, Some(12), (Some(40), Some(12))),
+                    (None, None, (Some(40), Some(12))),
+                    (Some(1), Some(0), (Some(1), Some(0))),
+                    (Some(255), Some(255), (Some(255), Some(255))),
+                ] {
+                    let id = worker_api
+                        .upsert_host_route(
+                            &key,
+                            manager.gateway_for(key.family()).unwrap(),
+                            RouteProperties {
+                                distance: 100,
+                                scope,
+                                target_scope,
+                            },
+                            initial.comment.as_deref().unwrap(),
+                            "fdns",
+                            "route-test",
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(id, initial.id);
+                    let rows = worker_api
+                        .find_routes(&key, "fdns", "route-test")
+                        .await
+                        .unwrap();
+                    assert_eq!(rows.len(), 1);
+                    assert_eq!((rows[0].scope, rows[0].target_scope), expected);
+                }
+                println!(
+                    "{ip}: update both, individual/omitted scopes, and scope 1/255 + target 0/255 boundaries -> passed"
+                );
+
+                let mut recovered_cfg = cfg.clone();
+                recovered_cfg.scope = Some(50);
+                recovered_cfg.target_scope = Some(13);
+                manager = RouteManager::new(worker_api.clone(), recovered_cfg);
+                manager
+                    .apply_snapshot(VersionedSnapshot {
+                        generation: 0,
+                        value: worker_api
+                            .list_managed_routes(&worker_table, true, true)
+                            .await
+                            .unwrap(),
+                    })
+                    .await
+                    .unwrap();
+                let recovered = worker_api
+                    .find_routes(&key, "fdns", "route-test")
+                    .await
+                    .unwrap()
+                    .pop()
+                    .unwrap();
+                assert_eq!(
+                    (recovered.scope, recovered.target_scope),
+                    (Some(50), Some(13))
+                );
+                assert_eq!(recovered.id, initial.id);
+                println!("{ip}: startup recovery -> 50/13");
+
+                manager.persistent.insert(key.clone());
+                manager
+                    .apply_persistent_snapshot(
+                        worker_api
+                            .list_managed_routes(&worker_table, true, true)
+                            .await
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                manager.cfg.scope = None;
+                manager.cfg.target_scope = Some(14);
+                manager
+                    .apply_persistent_snapshot(
+                        worker_api
+                            .list_managed_routes(&worker_table, true, true)
+                            .await
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let persistent = worker_api
+                    .find_routes(&key, "fdns", "route-test")
+                    .await
+                    .unwrap()
+                    .pop()
+                    .unwrap();
+                assert_eq!(
+                    (persistent.scope, persistent.target_scope),
+                    (Some(50), Some(14))
+                );
+                assert_eq!(persistent.id, initial.id);
+                println!("{ip}: persistent reconcile -> 50/14");
+                let explicit_ip = match key.family() {
+                    RouteFamily::Ipv4 => "192.0.2.242",
+                    RouteFamily::Ipv6 => "2001:db8:ffff::242",
+                };
+                let explicit_key =
+                    RouteKey::new(explicit_ip.parse().unwrap(), worker_table.clone());
+                manager.cfg.scope = Some(60);
+                manager.cfg.target_scope = Some(15);
+                manager
+                    .observe_key(
+                        explicit_key.clone(),
+                        &RouteObservation {
+                            deadline: LeaseDeadline::At(now + 300_000),
+                            observed_at_ms: now,
+                            completions: Vec::new(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                let explicit = worker_api
+                    .find_routes(&explicit_key, "fdns", "route-test")
+                    .await
+                    .unwrap()
+                    .pop()
+                    .unwrap();
+                assert_eq!(
+                    (explicit.scope, explicit.target_scope),
+                    (Some(60), Some(15))
+                );
+                println!("{explicit_ip}: add with explicit scopes -> 60/15");
+                manager.shutdown(true).await.unwrap();
+                assert!(
+                    worker_api
+                        .find_routes(&key, "fdns", "route-test")
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
+                println!("{ip}: shutdown cleanup -> passed");
+            }
+        });
+        let outcome = worker.await;
+        // Clean up test-owned rows even when the worker panics on an assertion.
+        for route in api.list_managed_routes(&table, true, true).await.unwrap() {
+            assert!(
+                route
+                    .comment
+                    .as_deref()
+                    .is_some_and(|comment| comment.starts_with("fdns;pg=route-test;"))
+            );
+            api.delete_route_if_matches(&route).await.unwrap();
+        }
+        assert!(
+            api.list_managed_routes(&table, true, true)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        outcome.unwrap();
+    }
+
+    #[tokio::test]
+    async fn scope_changes_converge_on_recovery_and_persistent_reconcile() {
+        for ip in ["203.0.113.10", "2001:db8::10"] {
+            let api = Arc::new(MockApi::default());
+            let mut cfg = config(Some(300), false);
+            cfg.gateway6 = Some("2001:db8::1".to_string());
+            let mut manager = RouteManager::new(api.clone(), cfg);
+            let key = RouteKey::new(ip.parse().unwrap(), "policy".to_string());
+            let now = now_millis();
+            manager
+                .observe_key(
+                    key.clone(),
+                    &RouteObservation {
+                        deadline: LeaseDeadline::At(now + 300_000),
+                        observed_at_ms: now,
+                        completions: Vec::new(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(api.routes()[0].scope, Some(30));
+            assert_eq!(api.routes()[0].target_scope, Some(10));
+
+            let mut recovered_cfg = manager.cfg.clone();
+            recovered_cfg.scope = Some(40);
+            recovered_cfg.target_scope = Some(11);
+            manager = RouteManager::new(api.clone(), recovered_cfg);
+            manager
+                .apply_snapshot(VersionedSnapshot {
+                    generation: manager.leases.revision(),
+                    value: api.routes(),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                (api.routes()[0].scope, api.routes()[0].target_scope),
+                (Some(40), Some(11))
+            );
+
+            manager.persistent.insert(key.clone());
+            manager
+                .apply_persistent_snapshot(api.routes())
+                .await
+                .unwrap();
+            manager.cfg.scope = None;
+            manager.cfg.target_scope = Some(12);
+            manager
+                .apply_persistent_snapshot(api.routes())
+                .await
+                .unwrap();
+            assert_eq!(
+                (api.routes()[0].scope, api.routes()[0].target_scope),
+                (Some(40), Some(12))
+            );
+            let writes = api.upserts.load(Ordering::Relaxed);
+            manager.cfg.target_scope = None;
+            manager
+                .apply_persistent_snapshot(api.routes())
+                .await
+                .unwrap();
+            assert_eq!(
+                (api.routes()[0].scope, api.routes()[0].target_scope),
+                (Some(40), Some(12))
+            );
+            assert_eq!(api.routes().len(), 1);
+            assert_eq!(api.upserts.load(Ordering::Relaxed), writes);
+        }
     }
 
     #[tokio::test]
@@ -1990,6 +2316,8 @@ mod tests {
             routing_table: key.table.clone(),
             gateway: Some("192.0.2.1".to_string()),
             distance: Some(100),
+            scope: None,
+            target_scope: None,
             comment: Some(format!(
                 "{};nonce=1",
                 validation_comment("fdns", "route-test")
@@ -2024,6 +2352,8 @@ mod tests {
             routing_table: key.table.clone(),
             gateway: Some("192.0.2.1".to_string()),
             distance: Some(100),
+            scope: None,
+            target_scope: None,
             comment: Some(RouteCommentCodec::encode_dynamic(
                 "fdns",
                 "route-test",
@@ -2078,6 +2408,8 @@ mod tests {
             routing_table: key.table.clone(),
             gateway: Some("192.0.2.1".to_string()),
             distance: Some(100),
+            scope: None,
+            target_scope: None,
             comment: Some(RouteCommentCodec::encode_dynamic(
                 "fdns",
                 "route-test",
@@ -2109,6 +2441,8 @@ mod tests {
             routing_table: key.table,
             gateway: Some("192.0.2.1".to_string()),
             distance: Some(100),
+            scope: None,
+            target_scope: None,
             comment: Some(format!(
                 "{};nonce=2",
                 validation_comment("fdns", "route-test")
@@ -2151,6 +2485,8 @@ mod tests {
             routing_table: key.table,
             gateway: Some("192.0.2.1".to_string()),
             distance: Some(100),
+            scope: None,
+            target_scope: None,
             comment: Some(RouteCommentCodec::encode_dynamic(
                 "fdns",
                 "route-test",
@@ -2186,6 +2522,8 @@ mod tests {
             routing_table: key.table,
             gateway: Some("192.0.2.1".to_string()),
             distance: Some(100),
+            scope: None,
+            target_scope: None,
             comment: Some(RouteCommentCodec::encode_dynamic(
                 "fdns",
                 "route-test",

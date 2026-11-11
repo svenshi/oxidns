@@ -32,6 +32,10 @@ pub(super) fn unpack_zip(archive: &Path, out_dir: &Path) -> Result<()> {
         if entry.is_dir() {
             continue;
         }
+        let entry_name = entry
+            .name()
+            .map_err(|e| DnsError::runtime(format!("failed to decode zip entry {i} name: {e}")))?
+            .into_owned();
         // `enclosed_name()` rejects absolute paths and `..` components that
         // would escape the unpack root, mitigating zip-slip on Windows where
         // backslashes and drive letters add extra footguns. Treat any
@@ -39,8 +43,7 @@ pub(super) fn unpack_zip(archive: &Path, out_dir: &Path) -> Result<()> {
         // silently skip files and leave the install in a half-applied state.
         let Some(rel_path) = entry.enclosed_name() else {
             return Err(DnsError::runtime(format!(
-                "refusing to extract zip entry with unsafe path: '{}'",
-                entry.name()
+                "refusing to extract zip entry with unsafe path: '{entry_name}'"
             )));
         };
         let dest = out_dir_canon.join(&rel_path);
@@ -62,7 +65,7 @@ pub(super) fn unpack_zip(archive: &Path, out_dir: &Path) -> Result<()> {
             DnsError::runtime(format!("failed to create '{}': {e}", dest.display()))
         })?;
         std::io::copy(&mut entry, &mut out)
-            .map_err(|e| DnsError::runtime(format!("failed to extract '{}': {e}", entry.name())))?;
+            .map_err(|e| DnsError::runtime(format!("failed to extract '{entry_name}': {e}")))?;
     }
     Ok(())
 }

@@ -1,0 +1,119 @@
+name: Hotpath
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  catalog:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.catalog.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - id: catalog
+        run: |
+          matrix=$(jq -c '{include: .}' .github/hotpath-benchmarks.json)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+  upload:
+    if: github.event_name == 'push'
+    needs: catalog
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    strategy: &benchmark-strategy
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.catalog.outputs.matrix) }}
+    concurrency:
+      group: hotpath-upload-${{ matrix.target }}-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env: &benchmark-env
+      HOTPATH_OUTPUT_FORMAT: json
+      HOTPATH_USER_METADATA: runner=Linux-X64,toolchain=1.99.0,profile=hotpath,valgrind=3.26.0
+    steps: &benchmark-steps
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install Valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind=1:3.26.0-0ubuntu1
+          valgrind --version
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - name: Run benchmarks and merge native and Callgrind reports
+        env:
+          BENCH_TARGET: ${{ matrix.target }}
+          BENCH_CASES: ${{ toJSON(matrix.cases) }}
+          HOTPATH_CRITERION_ITERATIONS: ${{ matrix.iterations }}
+          HOTPATH_UPLOAD: ${{ github.event_name == 'push' && 'fail-on-error' || '0' }}
+        run: |
+          mkdir -p hotpath-reports
+          jq -r '.[] | [.benchmark, .id] | @tsv' <<< "$BENCH_CASES" > "$RUNNER_TEMP/cases.tsv"
+          test -s "$RUNNER_TEMP/cases.tsv"
+          while IFS=$'\t' read -r benchmark id; do
+            export HOTPATH_BENCHMARK="$benchmark"
+            native="$RUNNER_TEMP/$benchmark.native.json"
+            report="$PWD/hotpath-reports/$benchmark.json"
+            upload="$RUNNER_TEMP/$benchmark.upload.json"
+            callgrind="$RUNNER_TEMP/$benchmark.callgrind.%p"
+
+            HOTPATH_OUTPUT_PATH="$native" HOTPATH_UPLOAD=0 \
+              just bench-hotpath "$id" "$BENCH_TARGET"
+            HOTPATH_OUTPUT_PATH="$report" \
+              HOTPATH_MERGE_REPORT="$native" \
+              HOTPATH_CALLGRIND_OUT_FILE="$callgrind" \
+              HOTPATH_UPLOAD_RESPONSE_PATH="$upload" \
+              CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="valgrind -q --tool=callgrind --instr-atstart=no --callgrind-out-file=$callgrind" \
+              just bench-hotpath "$id" "$BENCH_TARGET"
+
+            jq -e --arg benchmark "$benchmark" --arg id "$id" \
+              --arg iterations "$HOTPATH_CRITERION_ITERATIONS" '
+                .meta.run == "merged" and .meta.benchmark == $benchmark
+                and .user_metadata.criterion_benchmark == $id
+                and .user_metadata.criterion_iterations == $iterations
+                and (.functions_icount.data | length > 0)
+                and (.functions_timing.data | length > 0)
+                and (.meta.policy.source | type == "string" and length > 0)
+              ' "$report" > /dev/null
+            if [ "$HOTPATH_UPLOAD" = fail-on-error ]; then
+              test -s "$upload"
+            fi
+          done < "$RUNNER_TEMP/cases.tsv"
+      - name: Upload reports
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hotpath-${{ matrix.target }}
+          path: hotpath-reports/*.json
+          retention-days: 1
+          if-no-files-found: error
+  report:
+    if: github.event_name != 'push'
+    needs: catalog
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    strategy: *benchmark-strategy
+    concurrency:
+      group: hotpath-report-${{ matrix.target }}-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    env: *benchmark-env
+    steps: *benchmark-steps

@@ -1,0 +1,246 @@
+---
+title: HTTP 与 QUIC 加密入口
+---
+
+import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
+
+基于 HTTP 和 QUIC 的加密 DNS 入口，包括 DoH、HTTP/2、可选 HTTP/3 和 DoQ。
+
+## `http_server`
+
+<PluginAvailability from="standard" note="HTTP/3 支持：仅 full" />
+
+### 作用
+
+提供 DNS over HTTPS 服务，可同时支持 HTTP/1.1、HTTP/2 与可选 HTTP/3。
+
+### 配置示例
+
+```yaml
+- tag: doh_in
+  type: http_server
+  args:
+    # HTTPS / DoH 监听地址
+    listen: ":443"
+    # 启用 HTTPS / HTTP3 所需证书
+    cert: "/etc/oxidns/server.crt"
+    # 启用 HTTPS / HTTP3 所需私钥
+    key: "/etc/oxidns/server.key"
+    # 在 TLS 已启用时同时开启 DoH over HTTP/3
+    enable_http3: true
+    # 反代场景下从指定头部恢复真实客户端 IP
+    src_ip_header: "X-Forwarded-For"
+    # HTTP/1.1 / HTTP/2 / HTTP/3 连接空闲超时
+    idle_timeout: 30
+    entries:
+      # 标准 RFC 8484 路径
+      - path: "/dns-query"
+        exec: "seq_main"
+        # 是否在该 entry 上开启 JSON DNS API
+        json_api: true
+      # 为另一条策略链保留的备用路径
+      - path: "/dns-alt"
+        exec: "seq_alt"
+```
+
+### 配置项
+
+#### `entries`
+
+- 类型：`array`；必填：是；默认值：无
+- 作用：定义 HTTP 路径到执行器的映射关系。
+- 示例：
+  - `path: "/dns-query", exec: "seq_main"`
+  - `path: "/dns-alt", exec: "seq_alt"`
+- 每个元素包含以下字段：
+  - `path`
+    - 类型：`string`
+    - 必填：是
+    - 作用：指定 DoH 请求路径。
+    - 约束：必须以 `/` 开头。
+  - `exec`
+    - 类型：`string`
+    - 必填：是
+    - 作用：指定处理该路径请求的执行器。
+    - 约束：必须引用已定义的执行器插件。
+  - `json_api`
+    - 类型：`boolean`
+    - 必填：否
+    - 默认值：`false`
+    - 作用：控制该路径是否接受 JSON DNS API。
+- 运行影响：
+  - 不同路径可进入不同策略链。
+
+#### `listen`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：指定 HTTP/HTTPS 监听地址。
+- 示例：
+  - `listen: ":80"`
+  - `listen: ":443"`
+- 支持格式：
+  - `ip:port`
+  - `[ipv6]:port`
+  - `:port`
+- 运行影响：
+  - `:port` 等价于双栈监听 `[::]:port`；如需 IPv4-only，请写 `0.0.0.0:port`。
+
+#### `src_ip_header`
+
+- 类型：`string`；必填：否；默认值：无
+- 作用：指定从请求头中读取真实客户端来源地址的字段名。
+- 示例：`src_ip_header: "X-Forwarded-For"`
+- 运行影响：
+  - 配置后，请求来源地址可由反向代理透传。
+
+#### `cert`
+
+- 类型：`string`；必填：否；默认值：无
+- 作用：指定 HTTPS 证书文件路径。
+- 示例：`cert: "/etc/oxidns/server.crt"`
+- 运行影响：
+  - 与 `key` 同时配置时启用 HTTPS。
+
+#### `key`
+
+- 类型：`string`；必填：否；默认值：无
+- 作用：指定 HTTPS 私钥文件路径。
+- 示例：`key: "/etc/oxidns/server.key"`
+- 运行影响：
+  - 与 `cert` 同时配置时启用 HTTPS。
+
+#### `idle_timeout`
+
+- 类型：`integer`；必填：否；默认值：`30`
+- 单位：秒
+- 作用：指定 HTTP 连接空闲超时。
+- 示例：`idle_timeout: 30`
+- 运行影响：
+  - 影响 HTTP/1.1 / HTTP/2 长连接生命周期。
+
+#### `enable_http3`
+
+- 类型：`boolean`；必填：否；默认值：`false`
+- 作用：指定是否同时启用 HTTP/3。
+- 示例：`enable_http3: true`
+- 使用条件：
+  - 需要同时配置 `cert` 与 `key`。
+- 运行影响：
+  - 启用后会额外启动基于 QUIC 的 DoH 监听任务。
+  - HTTP/1.1 / HTTP/2 响应会返回 `Alt-Svc: h3=":<listen-port>"; ma=86400`，提示客户端可升级到同端口 HTTP/3。
+
+### 行为说明
+
+- 每个 `path` 可以路由到不同 `exec`，适合做多入口策略。
+- 自动注册 GET 与 POST 两种 RFC 8484 常见 DoH 访问方式。
+- 开启 `json_api` 后，GET 请求可使用 JSON API 参数：`name`（必填）、`type`（可选，默认 `1`，支持数字或文本类型）、`cd`、`do`、`edns_client_subnet`、`random_padding`（接受但忽略）。
+- 当 GET 同时包含 `dns=` 与 `name/type` 参数时，优先按 RFC 8484 `dns=` 处理。
+- `ct=application/dns-message` 会返回 DNS wire-format；否则 JSON API 返回 `application/dns-json`。
+- HTTP/1.1 与 HTTP/2 使用同一个监听地址自动协商，不需要额外配置。
+- 开启 HTTP/3 时，会额外启动基于 QUIC 的监听任务。
+- 开启 HTTP/3 时，HTTP/1.1 / HTTP/2 响应会携带 `Alt-Svc` 头宣告同监听端口的 HTTP/3 服务。
+
+### 适用策略
+
+- 暴露标准 DoH 接口。
+- 在同一个监听地址下提供多条 DNS 策略入口。
+- 部署在反向代理后，使用 `src_ip_header` 保留真实来源地址。
+
+<Admonition type="note" title="注意事项">
+
+- `enable_http3: true` 时必须提供 `cert` 和 `key`。
+- 若后面有反代，请确认 `src_ip_header` 的可信边界，避免伪造来源 IP。
+
+</Admonition>
+
+## `quic_server`
+
+<PluginAvailability from="standard" />
+
+### 作用
+
+提供 DNS over QUIC 服务。
+
+### 配置示例
+
+```yaml
+- tag: doq_in
+  type: quic_server
+  args:
+    # DoQ 请求进入的策略链
+    entry: "seq_main"
+    # DoQ 常见监听端口
+    listen: ":853"
+    # DoQ 必须配置 TLS 证书
+    cert: "/etc/oxidns/server.crt"
+    # DoQ 必须配置 TLS 私钥
+    key: "/etc/oxidns/server.key"
+    # QUIC transport 空闲超时，单位秒
+    idle_timeout: 30
+```
+
+### 配置项
+
+#### `entry`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：指定 DoQ 请求进入策略链时使用的入口执行器。
+- 示例：`entry: "seq_main"`
+- 配置要求：
+  - 必须引用已定义的执行器插件。
+
+#### `listen`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：指定 QUIC 监听地址。
+- 示例：`listen: ":853"`
+- 运行影响：
+  - 实际占用 UDP 端口。
+  - `:port` 等价于双栈监听 `[::]:port`；如需 IPv4-only，请写 `0.0.0.0:port`。
+
+#### `cert`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：指定 DoQ 所需 TLS 证书文件。
+- 示例：`cert: "/etc/oxidns/server.crt"`
+- 运行影响：
+  - 证书无效时监听器无法启动。
+
+#### `key`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：指定 DoQ 所需 TLS 私钥文件。
+- 示例：`key: "/etc/oxidns/server.key"`
+- 运行影响：
+  - 私钥无效时监听器无法启动。
+
+#### `idle_timeout`
+
+- 类型：`integer`；必填：否；默认值：无
+- 单位：秒
+- 作用：指定 QUIC transport 的空闲超时。
+- 示例：`idle_timeout: 30`
+- 运行影响：
+  - 影响空闲 QUIC 连接的回收时机。
+
+### 行为说明
+
+- DoQ 强制要求 TLS，所以 `cert` 和 `key` 是必填项。
+- ALPN 固定为 `doq`。
+- 每个双向流代表一次独立 DNS 交换。
+- 关停或重载时关闭 QUIC 连接，终止未完成的收包和写回，并等待已经进入执行链的请求完成。排空时间取决于执行链自身的超时。
+
+### 适用策略
+
+- 低时延加密 DNS 入口。
+- 需要结合 QUIC 优势的现代客户端接入。
+
+<Admonition type="note" title="注意事项">
+
+- 监听端口底层仍然占用 UDP。
+- 与 `udp_server` 不应绑定同一地址端口。
+
+</Admonition>
+
+---

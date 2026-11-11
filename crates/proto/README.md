@@ -25,7 +25,7 @@ upstream pools, caching, configuration, logging, and plugin orchestration.
 
 ```toml
 [dependencies]
-oxidns-proto = "0.1"
+oxidns-proto = "0.1.7"
 ```
 
 ```rust
@@ -49,6 +49,9 @@ assert_eq!(decoded.id(), 0x1234);
 
 - Types are owned values so they can move cleanly through async request
   handling and plugin boundaries.
+- `EdnsCode` models a versioned IANA option-code catalog independently of
+  payload parsing. Assigned codes have named variants; options without a
+  payload parser remain opaque `EdnsOption::Local` values.
 - The codec is intended for DNS server and resolver workloads, where avoiding
   unnecessary allocation on the hot path matters.
 - Feature flags `hotpath` and `hotpath-alloc` forward to the `hotpath` crate
@@ -63,3 +66,10 @@ upstream clients, matchers, executors, tests, and the `oxidns-zoneparser`
 crate. Changes here can affect parsing, rewriting, caching, and transport
 behavior across the full server, so semantic changes should be covered by
 codec and integration tests.
+
+## License
+
+Licensed under either of the following, at your option:
+
+- [MIT license](LICENSE-MIT)
+- [Apache License, Version 2.0](LICENSE-APACHE)

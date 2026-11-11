@@ -9,6 +9,7 @@
 //! [`crate::infra::control`].
 
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -501,6 +502,11 @@ fn read_config_file_response(path: &Path) -> std::result::Result<ConfigFileRespo
     })
 }
 
+/// Serializes config saves so the version check and the write happen as one
+/// step: two concurrent PUTs would otherwise both pass against the same
+/// base_version and silently last-write-win.
+static CONFIG_SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn save_config_file(
     controller: Arc<AppController>,
     request: ConfigSaveRequest,
@@ -510,8 +516,23 @@ fn save_config_file(
         return Err(ConfigSaveError::InvalidFormat(format.to_string()));
     }
 
+    let _save_guard = CONFIG_SAVE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     let path = controller.config_path();
-    let current = fs::read_to_string(path).map_err(|err| {
+    // Resolve once so both the version check and atomic replacement refer to
+    // the same target, including relative symlinks and symlinked directories.
+    let target = fs::canonicalize(path).map_err(|err| {
+        ConfigSaveError::Io(format!(
+            "failed to resolve config {}: {err}",
+            path.display()
+        ))
+    })?;
+    let metadata = fs::metadata(&target).map_err(|err| {
+        ConfigSaveError::Io(format!("failed to stat config {}: {err}", path.display()))
+    })?;
+    let current = fs::read_to_string(&target).map_err(|err| {
         ConfigSaveError::Io(format!("failed to read config {}: {err}", path.display()))
     })?;
     if let Some(base_version) = request.base_version.as_deref()
@@ -533,15 +554,8 @@ fn save_config_file(
         }
     };
 
-    fs::write(path, request.content.as_bytes()).map_err(|err| {
-        ConfigSaveError::Io(format!("failed to write config {}: {err}", path.display()))
-    })?;
-
-    let saved = fs::read_to_string(path).map_err(|err| {
-        ConfigSaveError::Io(format!(
-            "failed to read saved config {}: {err}",
-            path.display()
-        ))
+    write_config_file(&target, &metadata, request.content.as_bytes()).map_err(|err| {
+        ConfigSaveError::Io(format!("failed to save config {}: {err}", path.display()))
     })?;
 
     let reload = if request.reload.unwrap_or(false) {
@@ -558,13 +572,51 @@ fn save_config_file(
         ok: true,
         path: path.display().to_string(),
         format: "yaml",
-        version: config_version(&saved),
+        version: config_version(&request.content),
         updated_at_ms: config_updated_at_ms(path),
         plugin_count: summary.plugin_count,
         init_order: summary.dependency_graph.init_order,
         reload,
         message: "configuration saved".to_string(),
     })
+}
+
+/// Stage beside the resolved target so replacement stays atomic and preserves
+/// the operator's symlinks. Never follow or truncate an existing staging path.
+fn write_config_file(path: &Path, metadata: &fs::Metadata, content: &[u8]) -> std::io::Result<()> {
+    let staging = path.with_file_name(format!(".oxidns-save-{:032x}.tmp", rand::random::<u128>()));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    // Restrict access from creation, before any configuration secrets are
+    // written. Restore the original mode afterwards to avoid umask changes.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&staging)?;
+    let outcome = (|| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, fchown};
+            let staged_metadata = file.metadata()?;
+            if staged_metadata.uid() != metadata.uid() || staged_metadata.gid() != metadata.gid() {
+                // Refuse the save if ownership cannot be preserved. Changing
+                // ownership can clear mode bits, so do it before chmod.
+                fchown(&file, Some(metadata.uid()), Some(metadata.gid()))?;
+            }
+        }
+        file.set_permissions(metadata.permissions())?;
+        file.write_all(content)?;
+        file.sync_all()?;
+        // Close before replacement for Windows as well as Unix.
+        drop(file);
+        fs::rename(&staging, path)
+    })();
+    if outcome.is_err() {
+        let _ = fs::remove_file(&staging);
+    }
+    outcome
 }
 
 fn config_updated_at_ms(path: &Path) -> Option<u64> {
@@ -916,6 +968,89 @@ plugins:
             rx.try_recv().expect("reload command"),
             ControlCommand::Reload
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_save_preserves_permissions_and_ownership() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.yaml");
+        for mode in [0o600, 0o640, 0o644] {
+            fs::write(&path, valid_config_yaml()).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+            let before = fs::metadata(&path).unwrap();
+            let (controller, _rx) = AppController::new(path.clone());
+            let content = format!("{}\n# saved\n", valid_config_yaml());
+
+            let response = save_config_file(
+                controller,
+                ConfigSaveRequest {
+                    format: None,
+                    content: content.clone(),
+                    base_version: Some(config_version(valid_config_yaml())),
+                    validate: Some(true),
+                    reload: None,
+                },
+            )
+            .unwrap();
+
+            let after = fs::metadata(&path).unwrap();
+            assert_eq!(after.mode() & 0o7777, mode);
+            assert_eq!((after.uid(), after.gid()), (before.uid(), before.gid()));
+            assert_eq!(fs::read_to_string(&path).unwrap(), content);
+            assert_eq!(response.version, config_version(&content));
+            assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_save_follows_relative_symlink_chain_without_replacing_links() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir(root.join("settings")).unwrap();
+        fs::create_dir(root.join("links")).unwrap();
+        let target = root.join("settings/config.yaml");
+        fs::write(&target, valid_config_yaml()).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        symlink("../settings/config.yaml", root.join("links/active.yaml")).unwrap();
+        let path = root.join("config.yaml");
+        symlink("links/active.yaml", &path).unwrap();
+        let (controller, _rx) = AppController::new(path.clone());
+        let content = format!("{}\n# saved through links\n", valid_config_yaml());
+
+        let response = save_config_file(
+            controller,
+            ConfigSaveRequest {
+                format: None,
+                content: content.clone(),
+                base_version: Some(config_version(valid_config_yaml())),
+                validate: Some(true),
+                reload: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_link(&path).unwrap(),
+            Path::new("links/active.yaml")
+        );
+        assert_eq!(
+            fs::read_link(root.join("links/active.yaml")).unwrap(),
+            Path::new("../settings/config.yaml")
+        );
+        assert_eq!(fs::read_to_string(&target).unwrap(), content);
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+            0o600
+        );
+        assert_eq!(response.path, path.display().to_string());
+        assert_eq!(fs::read_dir(root.join("settings")).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(root.join("links")).unwrap().count(), 1);
     }
 
     #[tokio::test]
