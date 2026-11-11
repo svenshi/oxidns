@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use bytes::{Buf, BufMut, Bytes};
+use bytes::{Buf, Bytes};
 use futures::future::poll_fn;
 use h3::client::{RequestStream, SendRequest};
 use h3_quinn::{BidiStream, OpenStreams};

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use bytes::{BufMut, Bytes};
+use bytes::Bytes;
 use h2::client::{ResponseFuture, SendRequest};
 use http::Version;
 use tokio::select;
