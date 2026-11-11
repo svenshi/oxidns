@@ -324,6 +324,38 @@ export const enUSPluginDefined = {
         },
       },
     },
+    edns_filter: {
+      name: "EDNS Filter",
+      description:
+        "Filter request EDNS options within the remaining chain, optionally restoring the entire request on exit.",
+      fields: {
+        policy: {
+          label: "Base policy",
+          description:
+            "Preserve all, strip all, or keep only IANA-registered option codes.",
+          options: {
+            preserve: "Preserve all",
+            strip: "Strip all",
+            strip_unknown: "Keep registered only",
+          },
+        },
+        allowlist: {
+          label: "Allowed option codes",
+          description:
+            "Integer array (0–65535). Empty adds no restriction; otherwise keep only listed codes that survive the base policy.",
+        },
+        denylist: {
+          label: "Denied option codes",
+          description:
+            "Integer array (0–65535), applied last with precedence over the allowlist.",
+        },
+        restore_request: {
+          label: "Restore request on exit",
+          description:
+            "Restore the entire entry request, including downstream edits, by default. Disable to retain changes. Response and other context state are not rolled back.",
+        },
+      },
+    },
     forward: {
       name: "Forward",
       description: "Initiate a query to one or more upstream DNS",

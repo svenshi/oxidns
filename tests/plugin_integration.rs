@@ -6805,3 +6805,173 @@ async fn test_cache_persistence_survives_standalone_reinitialization() -> Result
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn test_edns_filter_upstream_scopes_and_composition() -> Result<()> {
+    use oxidns::proto::{ClientSubnet, EdnsCookie, EdnsLocal, EdnsOption};
+
+    // Empty answers make concurrent selection wait for every active upstream.
+    for (options, quick, compose, expected) in [
+        ("", false, false, vec![8, 10, 20, 65001]),
+        ("denylist: [65001]", false, false, vec![8, 10, 20]),
+        ("policy: strip", false, false, vec![]),
+        ("policy: strip_unknown", false, false, vec![8, 10, 20]),
+        ("allowlist: [8, 10], denylist: [10]", false, false, vec![8]),
+        ("policy: strip, allowlist: [8]", false, false, vec![]),
+        ("", true, false, vec![8, 10, 20, 65001]),
+        ("policy: strip", false, true, vec![]),
+    ] {
+        for (upstream_count, restore_request) in [(1, true), (2, true), (1, false), (2, false)] {
+            let mut sockets = Vec::new();
+            let mut addresses = Vec::new();
+            for _ in 0..upstream_count {
+                let socket = UdpSocket::bind("127.0.0.1:0").await?;
+                addresses.push(format!("udp://{}", socket.local_addr()?));
+                sockets.push(socket);
+            }
+            let mut yaml = "plugins:\n".to_owned();
+            let forward_exec = if quick {
+                format!("forward {}", addresses.join(" "))
+            } else {
+                let upstreams = addresses
+                    .iter()
+                    .map(|addr| format!("{{addr: '{addr}', timeout: 1s}}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                yaml.push_str(&format!("  - tag: forward_edns_main\n    type: forward\n    args:\n      concurrent: {upstream_count}\n      response_selection: prefer_positive\n      upstreams: [{upstreams}]\n"));
+                "$forward_edns_main".to_owned()
+            };
+            yaml.push_str("  - tag: filter_main\n    type: edns_filter\n");
+            if !options.is_empty() || !restore_request {
+                let separator = if options.is_empty() { "" } else { ", " };
+                yaml.push_str(&format!(
+                    "    args: {{{options}{separator}restore_request: {restore_request}}}\n"
+                ));
+            }
+            yaml.push_str(&format!("  - tag: upstream_scope\n    type: sequence\n    args:\n      - exec: $filter_main\n      - exec: '{forward_exec}'\n"));
+            yaml.push_str("  - tag: seq_edns_main\n    type: sequence\n    args:\n");
+            if compose {
+                yaml.push_str(
+                    "      - exec: $ecs_edns_main\n      - exec: 'forward_edns0opt 65001'\n",
+                );
+            }
+            yaml.push_str("      - exec: jump upstream_scope\n      - exec: mark 7\n");
+            if compose {
+                yaml.push_str("  - tag: ecs_edns_main\n    type: ecs_handler\n    args: {preset: '192.0.2.42', mask4: 24}\n");
+            }
+            let runtime = plugin::init(parse_config(&yaml)?).await?;
+            let mut responders = Vec::new();
+            for socket in sockets {
+                responders.push(tokio::spawn(async move {
+                    timeout(Duration::from_secs(2), async {
+                        let mut buffer = [0u8; 4096];
+                        let (length, peer) = socket.recv_from(&mut buffer).await?;
+                        let request = Message::from_bytes(&buffer[..length])?;
+                        let mut response = request.response(Rcode::NoError);
+                        response
+                            .ensure_edns_mut()
+                            .insert(EdnsOption::Local(EdnsLocal::new(65002, vec![9])));
+                        socket.send_to(&response.to_bytes()?, peer).await?;
+                        Ok::<_, DnsError>(request)
+                    })
+                    .await
+                    .map_err(|_| DnsError::runtime("EDNS mock upstream timed out"))?
+                }));
+            }
+            let mut context = make_context(runtime.clone(), "edns-filter.test.");
+            context.request.set_id(4242);
+            let edns = context.request.ensure_edns_mut();
+            edns.set_udp_payload_size(4096);
+            edns.set_dnssec_ok(true);
+            edns.flags_mut().z = 3;
+            if !compose {
+                edns.insert(EdnsOption::Subnet(ClientSubnet::new(
+                    "192.0.2.0".parse().unwrap(),
+                    24,
+                    0,
+                )));
+            }
+            edns.insert(EdnsOption::Cookie(EdnsCookie::new(vec![1; 8])));
+            edns.insert(EdnsOption::Local(EdnsLocal::new(20, vec![1, 2, 3])));
+            edns.insert(EdnsOption::Local(EdnsLocal::new(65001, vec![4, 5, 6])));
+            let mut original = context.request.clone();
+            if compose {
+                original
+                    .ensure_edns_mut()
+                    .insert(EdnsOption::Subnet(ClientSubnet::new(
+                        "192.0.2.42".parse().unwrap(),
+                        24,
+                        0,
+                    )));
+            }
+            let sequence = runtime.get_plugin("seq_edns_main").unwrap().to_executor();
+            let outcome = timeout(Duration::from_secs(3), sequence.execute(&mut context)).await;
+            let mut observed = Vec::new();
+            for mut responder in responders {
+                let result = timeout(Duration::from_secs(3), &mut responder).await;
+                if result.is_err() {
+                    responder.abort();
+                    let _ = responder.await;
+                }
+                observed.push(result);
+            }
+            timeout(Duration::from_secs(3), runtime.destroy())
+                .await
+                .map_err(|_| DnsError::runtime("EDNS runtime cleanup timed out"))?;
+            outcome.map_err(|_| DnsError::runtime("EDNS forwarding timed out"))??;
+            assert!(
+                context.marks().contains(&7),
+                "outer sequence should resume after the scope"
+            );
+            let mut expected_request = original.clone();
+            if !restore_request {
+                expected_request
+                    .edns_mut()
+                    .as_mut()
+                    .unwrap()
+                    .retain_options(|option| expected.contains(&option.code()));
+            }
+            assert_eq!(context.request, expected_request);
+            let response_codes = context
+                .response()
+                .unwrap()
+                .edns()
+                .as_ref()
+                .unwrap()
+                .options()
+                .iter()
+                .map(EdnsOption::code)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                response_codes,
+                if compose {
+                    vec![65002, 65001]
+                } else {
+                    vec![65002]
+                }
+            );
+            for captured in observed {
+                let captured = captured
+                    .map_err(|_| DnsError::runtime("EDNS mock join timed out"))?
+                    .map_err(|error| DnsError::runtime(error.to_string()))??;
+                assert_eq!(captured.questions(), original.questions());
+                let edns = captured.edns().as_ref().unwrap();
+                assert_eq!(
+                    edns.options()
+                        .iter()
+                        .map(EdnsOption::code)
+                        .collect::<Vec<_>>(),
+                    expected,
+                    "options={options}, quick={quick}, upstreams={upstream_count}"
+                );
+                assert_eq!(edns.udp_payload_size(), 4096);
+                assert!(edns.flags().dnssec_ok);
+                assert_eq!(edns.flags().z, 3);
+                for option in edns.options() {
+                    assert!(original.edns().as_ref().unwrap().options().contains(option));
+                }
+            }
+        }
+    }
+    Ok(())
+}

@@ -289,6 +289,36 @@ export const zhCNPluginDefined = {
         },
       },
     },
+    edns_filter: {
+      name: "EDNS Filter",
+      description: "在后续执行链中筛选请求 EDNS Option，可在退出时恢复整份请求",
+      fields: {
+        policy: {
+          label: "基础策略",
+          description:
+            "按 IANA 注册编号保留全部、删除全部或仅保留已注册 Option。",
+          options: {
+            preserve: "保留全部",
+            strip: "删除全部",
+            strip_unknown: "仅保留已注册",
+          },
+        },
+        allowlist: {
+          label: "允许的 Option Code",
+          description:
+            "0–65535 的整数数组；空数组不额外限制，非空时仅保留列表内且未被基础策略删除的 Code。",
+        },
+        denylist: {
+          label: "禁止的 Option Code",
+          description: "0–65535 的整数数组；最后应用，优先于允许列表。",
+        },
+        restore_request: {
+          label: "退出时恢复请求",
+          description:
+            "默认恢复进入插件时的整份请求，包括下游改写；关闭时保留修改。响应和其他上下文状态不回滚。",
+        },
+      },
+    },
     forward: {
       name: "Forward",
       description: "向一个或多个上游 DNS 发起查询",

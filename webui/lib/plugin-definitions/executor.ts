@@ -71,6 +71,53 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
     ],
   },
   {
+    kind: "edns_filter",
+    type: "executor",
+    name: "EDNS Filter",
+    description: "在后续执行链中筛选请求 EDNS Option，可在退出时恢复整份请求",
+    icon: "Filter",
+    configSchema: [
+      {
+        key: "policy",
+        label: "基础策略",
+        type: "select",
+        default: "preserve",
+        description:
+          "按 IANA 注册编号保留全部、删除全部或仅保留已注册 Option。",
+        options: [
+          { label: "保留全部", value: "preserve" },
+          { label: "删除全部", value: "strip" },
+          { label: "仅保留已注册", value: "strip_unknown" },
+        ],
+      },
+      {
+        key: "allowlist",
+        label: "允许的 Option Code",
+        type: "array",
+        default: [],
+        description:
+          "0–65535 的整数数组；空数组不额外限制，非空时仅保留列表内且未被基础策略删除的 Code。",
+        item: { type: "number" },
+      },
+      {
+        key: "denylist",
+        label: "禁止的 Option Code",
+        type: "array",
+        default: [],
+        description: "0–65535 的整数数组；最后应用，优先于允许列表。",
+        item: { type: "number" },
+      },
+      {
+        key: "restore_request",
+        label: "退出时恢复请求",
+        type: "switch",
+        default: true,
+        description:
+          "默认恢复进入插件时的整份请求，包括下游改写；关闭时保留修改。响应和其他上下文状态不回滚。",
+      },
+    ],
+  },
+  {
     kind: "forward",
     type: "executor",
     name: "Forward",

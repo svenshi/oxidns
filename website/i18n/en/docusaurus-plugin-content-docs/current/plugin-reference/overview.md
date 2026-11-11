@@ -71,6 +71,7 @@ See [Executor Plugins](executor.mdx) for full field reference. Grouped as: polic
 | [`response`](executor/resolution.mdx#response) | Builds complete DNS responses from zone-record templates, including sections, RCODE, and response flags. | <PluginAvailability from="standard" compact /> |
 | [`redirect`](executor/resolution.mdx#redirect) | Rewrites a query name toward another target and restores the visible CNAME on the way back. | <PluginAvailability from="minimal" compact /> |
 | [`client_ip_from_ecs`](executor/resolution.mdx#client_ip_from_ecs) | Replaces the request-local client IP with the ECS address for subsequent matchers and recorders. | <PluginAvailability from="standard" compact /> |
+| [`edns_filter`](executor/resolution.mdx#edns_filter) | Filters request EDNS options, optionally restoring the entire request on scope exit. | <PluginAvailability from="minimal" compact /> |
 | [`ecs_handler`](executor/resolution.mdx#ecs_handler) | Handles EDNS Client Subnet: keep, rewrite, or auto-fill from source IP. | <PluginAvailability from="minimal" compact /> |
 | [`forward_edns0opt`](executor/resolution.mdx#forward_edns0opt) | Forwards selected EDNS0 options from the request into the final response. | <PluginAvailability from="minimal" compact /> |
 

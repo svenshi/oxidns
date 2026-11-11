@@ -451,7 +451,7 @@ export function oxidnsYamlExtensions(
     autocompletion({
       override: [
         (completionContext) =>
-          buildCompletionResult(completionContext, context),
+          getOxiDnsYamlCompletions(completionContext, context),
       ],
       activateOnTyping: true,
     }),
@@ -522,7 +522,8 @@ export function applyOxiDnsYamlDiagnostics(
   );
 }
 
-function buildCompletionResult(
+/** Build schema-aware completions without requiring a mounted EditorView. */
+export function getOxiDnsYamlCompletions(
   completionContext: CompletionContext,
   context: OxiDnsYamlEditorContext,
 ): CompletionResult | null {
@@ -814,7 +815,10 @@ function diagnosticFromBackend(
     line.from + Math.max(0, (diagnostic.column ?? 1) - 1),
   );
   const to = Math.max(
-    Math.min(line.to, line.from + Math.max(0, (diagnostic.end_column ?? 2) - 1)),
+    Math.min(
+      line.to,
+      line.from + Math.max(0, (diagnostic.end_column ?? 2) - 1),
+    ),
     Math.min(line.to, from + 1),
   );
   return [
@@ -1182,14 +1186,17 @@ function fieldsForCompletion(
   context: OxiDnsYamlEditorContext,
   path: string[],
 ): ConfigField[] | undefined {
+  // Until the current line has a colon, the path contains only its parents.
+  const pathEndsAtParent = isKeyPosition(state.doc.line(lineNumber).text);
   if (context.variant === "plugin-args") {
-    return fieldsForPath(context.fields, path);
+    return fieldsForPath(context.fields, path, pathEndsAtParent);
   }
   if (context.variant === "config" && isConfigPluginArgsPath(path)) {
     const pluginKind = inferConfigPluginKind(state, lineNumber, path);
     return fieldsForPath(
       getPluginKindDefinition(pluginKind ?? "")?.configSchema,
       path,
+      pathEndsAtParent,
     );
   }
   return context.fields;
@@ -1198,24 +1205,28 @@ function fieldsForCompletion(
 function fieldsForPath(
   fields: ConfigField[] | undefined,
   path: string[],
+  pathEndsAtParent = false,
 ): ConfigField[] | undefined {
   if (!fields || path.length === 0) return fields;
-  let normalizedPath = path.filter(
-    (part) => part !== "plugins" && part !== "args",
-  );
+  // A full configuration path can include a list-item header such as `tag`
+  // before `args`; none of that prefix belongs to the plugin's field schema.
+  const argsIndex = path.indexOf("args");
+  const normalizedPath =
+    argsIndex >= 0
+      ? path.slice(argsIndex + 1)
+      : path.filter((part) => part !== "plugins");
   let current: ConfigField[] | undefined = fields;
   const argsField =
     fields.length === 1 && fields[0].key === "args" ? fields[0] : undefined;
   const argsChildFields = childFields(argsField);
   if (argsChildFields) {
     current = argsChildFields;
-    normalizedPath = path.filter((part) => part !== "plugins");
-    if (normalizedPath[0] === "args") {
-      normalizedPath = normalizedPath.slice(1);
-    }
   }
 
-  for (const key of normalizedPath.slice(0, -1)) {
+  const parents = pathEndsAtParent
+    ? normalizedPath
+    : normalizedPath.slice(0, -1);
+  for (const key of parents) {
     const field = current?.find((entry) => entry.key === key);
     current = childFields(field);
     if (!current) break;

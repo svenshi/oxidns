@@ -54,6 +54,16 @@ export const enUSDocs = {
     "args[].exec":
       "- Type: `string`; Required: No; Default: None\n- Function: Define the action to be performed after the rule is hit.\n- Support content:\n  - Plugin reference\n  - Shortcut expressions\n  - Built-in control flow, for example `accept`, `reject SERVFAIL`, `reject NOERROR`, `reject 3`, `jump <tag>`\n- Note: the RCODE argument for `reject` accepts case-insensitive English names and decimal numbers.\n- Operational impact:\n  - Directly determines the execution behavior of the current rule.",
   },
+  edns_filter: {
+    policy:
+      "- Type: `string`; required: no; default: `preserve`\n- `preserve`: keep all; `strip`: remove all; `strip_unknown`: keep IANA-registered codes only\n- Uses the IANA catalog maintained in EdnsCode independently of payload parsers; reserved, unassigned, and local/experimental codes are excluded\n- Registry updates ship with releases without build-time or runtime network access; code 65001 has no special business meaning",
+    allowlist:
+      "- Type: `array`; required: no; default: `[]`\n- Each item is a u16 integer (0–65535); sorted and deduplicated at initialization\n- Nonempty restricts allowed codes; cannot restore options removed by policy\n- Apply policy → allowlist → denylist in order",
+    denylist:
+      "- Type: `array`; required: no; default: `[]`\n- Each item is a u16 integer (0–65535); sorted and deduplicated at initialization\n- Applied last with precedence over allowlist; for example `[65001]`",
+    restore_request:
+      "- Type: `boolean`; required: no; default: `true`\n- Restore the entire entry request on normal return, error, early termination, or cancellation, including downstream edits even if no option was removed\n- Disable to retain request changes; response, marks, and extensions are not rolled back\n- next covers the remaining sequence; use a child sequence to limit scope\n- Without a continuation, restoring execution leaves the request unchanged; non-restoring execution retains filtering",
+  },
   forward: {
     concurrent:
       "- Type: `integer`; required: no; default value: `1`\n- Value range: clamped to `1..=32` during actual operation, and never above the upstream count.\n- Recommended range: `2..=8`; higher values are intended for advanced observation or special deployments.\n- Function: Define the number of concurrent query fanouts in multi-upstream mode.\n- Operational impact:\n  - The larger the value, the more active the multi-upstream competition will be, but at the same time it will increase the amount of upstream requests.",

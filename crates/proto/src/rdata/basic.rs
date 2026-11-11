@@ -58,7 +58,13 @@ pub struct NS(pub Name);
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PTR(pub Name);
 
-/// Named EDNS option codes carried inside an OPT pseudo-record.
+/// EDNS option codes from the IANA registry, independently of payload parsers.
+///
+/// Registry snapshot verified on 2026-11-10:
+/// <https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-11>.
+/// Every assigned code has a named variant, including codes whose payloads are
+/// preserved as opaque bytes. Update the enum and conversions together when
+/// registrations change.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum EdnsCode {
     /// Option code 0, reserved by RFC 6891.
@@ -69,7 +75,7 @@ pub enum EdnsCode {
     UpdateLease,
     /// Name Server Identifier option (code 3).
     Nsid,
-    /// ENUM Source-URI option (code 4).
+    /// Legacy ENUM Source-URI option (code 4), currently reserved by IANA.
     Esu,
     /// DNSSEC Algorithm Understood option (code 5).
     Dau,
@@ -101,8 +107,46 @@ pub enum EdnsCode {
     ReportChannel,
     /// Zone Version option (code 19).
     ZoneVersion,
-    /// Any unmodeled or currently unknown option code.
+    /// MQTYPE-Query option (code 20).
+    MqtypeQuery,
+    /// MQTYPE-Response option (code 21).
+    MqtypeResponse,
+    /// EDE-EXTRA-TEXT-LANGUAGE option (code 22).
+    EdeExtraTextLanguage,
+    /// FILTERING-CONTACT option (code 23).
+    FilteringContact,
+    /// FILTERING-ORGANIZATION option (code 24).
+    FilteringOrganization,
+    /// FILTERING-DB option (code 25).
+    FilteringDb,
+    /// Structured DNS Error option (code 26).
+    StructuredDnsError,
+    /// Umbrella Ident option (code 20292).
+    UmbrellaIdent,
+    /// DeviceID option (code 26946).
+    DeviceId,
+    /// Code 65535, reserved for future expansion.
+    ReservedFuture,
+    /// An unassigned or local/experimental option code.
     Unknown(u16),
+}
+
+impl EdnsCode {
+    /// Whether this code identifies an assigned IANA option in the enum's
+    /// registry snapshot, independently of payload parser support.
+    ///
+    /// Reserved and unknown codes are excluded. Manually constructed
+    /// `Unknown(code)` values are canonicalized through the enum's conversions.
+    pub fn is_iana_registered(self) -> bool {
+        let canonical = match self {
+            Self::Unknown(code) => Self::from(code),
+            named => named,
+        };
+        !matches!(
+            canonical,
+            Self::Reserved | Self::Esu | Self::ReservedFuture | Self::Unknown(_)
+        )
+    }
 }
 
 impl From<u16> for EdnsCode {
@@ -128,6 +172,16 @@ impl From<u16> for EdnsCode {
             17 => Self::ServerTag,
             18 => Self::ReportChannel,
             19 => Self::ZoneVersion,
+            20 => Self::MqtypeQuery,
+            21 => Self::MqtypeResponse,
+            22 => Self::EdeExtraTextLanguage,
+            23 => Self::FilteringContact,
+            24 => Self::FilteringOrganization,
+            25 => Self::FilteringDb,
+            26 => Self::StructuredDnsError,
+            20292 => Self::UmbrellaIdent,
+            26946 => Self::DeviceId,
+            65535 => Self::ReservedFuture,
             other => Self::Unknown(other),
         }
     }
@@ -156,6 +210,16 @@ impl From<EdnsCode> for u16 {
             EdnsCode::ServerTag => 17,
             EdnsCode::ReportChannel => 18,
             EdnsCode::ZoneVersion => 19,
+            EdnsCode::MqtypeQuery => 20,
+            EdnsCode::MqtypeResponse => 21,
+            EdnsCode::EdeExtraTextLanguage => 22,
+            EdnsCode::FilteringContact => 23,
+            EdnsCode::FilteringOrganization => 24,
+            EdnsCode::FilteringDb => 25,
+            EdnsCode::StructuredDnsError => 26,
+            EdnsCode::UmbrellaIdent => 20292,
+            EdnsCode::DeviceId => 26946,
+            EdnsCode::ReservedFuture => 65535,
             EdnsCode::Unknown(other) => other,
         }
     }
@@ -800,6 +864,12 @@ impl Edns {
         &self.inner.options
     }
 
+    /// Retain matching options in their original order, preserving all EDNS
+    /// metadata. Mutations are isolated from clones through copy-on-write.
+    pub fn retain_options(&mut self, predicate: impl FnMut(&EdnsOption) -> bool) {
+        Arc::make_mut(&mut self.inner).options.retain(predicate);
+    }
+
     /// Insert or replace an EDNS option with the same code.
     ///
     /// This mirrors the common DNS library behavior that an OPT RR should not
@@ -1142,6 +1212,61 @@ mod tests {
     use crate::proto::EdnsLocal;
 
     #[test]
+    fn iana_registration_uses_canonical_enum_values() {
+        for code in (1..=3).chain(5..=26).chain([20292, 26946]) {
+            assert!(
+                !matches!(EdnsCode::from(code), EdnsCode::Unknown(_)),
+                "{code}"
+            );
+            assert!(EdnsCode::from(code).is_iana_registered(), "{code}");
+            assert!(EdnsCode::Unknown(code).is_iana_registered(), "{code}");
+        }
+        for code in [
+            0, 4, 27, 20291, 20293, 26945, 26947, 65000, 65001, 65534, 65535,
+        ] {
+            assert!(!EdnsCode::from(code).is_iana_registered(), "{code}");
+        }
+        assert!(!EdnsCode::Esu.is_iana_registered());
+        assert!(!EdnsCode::ReservedFuture.is_iana_registered());
+    }
+
+    #[test]
+    fn retain_options_preserves_order_metadata_and_clone_isolation() {
+        let options: Vec<_> = [65001, 20, 65002]
+            .into_iter()
+            .map(|code| EdnsOption::Local(EdnsLocal::new(code, vec![1, 2, 3])))
+            .collect();
+        let original = Edns::new_with_param(
+            4096,
+            2,
+            1,
+            EdnsFlags {
+                dnssec_ok: true,
+                z: 9,
+            },
+            options,
+        );
+        let mut filtered = original.clone();
+        let mut visited = Vec::new();
+        filtered.retain_options(|option| {
+            visited.push(option.code());
+            option.code() != 20
+        });
+        assert_eq!(visited, [65001, 20, 65002]);
+        assert_eq!(original.options().len(), 3);
+        assert_eq!(
+            filtered.options(),
+            &[original.options()[0].clone(), original.options()[2].clone()]
+        );
+        assert_eq!(filtered.udp_payload_size(), original.udp_payload_size());
+        assert_eq!(filtered.raw_ttl(), original.raw_ttl());
+        filtered.retain_options(|_| false);
+        assert!(filtered.options().is_empty());
+        assert_eq!(filtered.raw_ttl(), original.raw_ttl());
+        assert_eq!(original.options().len(), 3);
+    }
+
+    #[test]
     fn edns_code_roundtrip_covers_named_registry_values() {
         let cases = [
             (0u16, EdnsCode::Reserved),
@@ -1164,6 +1289,16 @@ mod tests {
             (17, EdnsCode::ServerTag),
             (18, EdnsCode::ReportChannel),
             (19, EdnsCode::ZoneVersion),
+            (20, EdnsCode::MqtypeQuery),
+            (21, EdnsCode::MqtypeResponse),
+            (22, EdnsCode::EdeExtraTextLanguage),
+            (23, EdnsCode::FilteringContact),
+            (24, EdnsCode::FilteringOrganization),
+            (25, EdnsCode::FilteringDb),
+            (26, EdnsCode::StructuredDnsError),
+            (20292, EdnsCode::UmbrellaIdent),
+            (26946, EdnsCode::DeviceId),
+            (65535, EdnsCode::ReservedFuture),
         ];
 
         for (wire, named) in cases {

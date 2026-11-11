@@ -71,6 +71,7 @@ server -> sequence
 | [`response`](executor/resolution.mdx#response) | 使用 zone record 模板构造完整 DNS 响应，包括记录区、RCODE 与响应标志。 | <PluginAvailability from="standard" compact /> |
 | [`redirect`](executor/resolution.mdx#redirect) | 把请求域名改写为另一个目标域名，并在返回阶段补回客户端可见的 CNAME。 | <PluginAvailability from="minimal" compact /> |
 | [`client_ip_from_ecs`](executor/resolution.mdx#client_ip_from_ecs) | 使用请求 ECS 地址覆盖当前请求的客户端 IP，供后续 matcher 与记录器使用。 | <PluginAvailability from="standard" compact /> |
+| [`edns_filter`](executor/resolution.mdx#edns_filter) | 筛选请求 EDNS Option，可在退出执行范围时恢复整份请求。 | <PluginAvailability from="minimal" compact /> |
 | [`ecs_handler`](executor/resolution.mdx#ecs_handler) | 处理 EDNS Client Subnet：保留、改写或按来源 IP 自动补齐。 | <PluginAvailability from="minimal" compact /> |
 | [`forward_edns0opt`](executor/resolution.mdx#forward_edns0opt) | 把指定 EDNS0 option code 从请求转发到最终响应中。 | <PluginAvailability from="minimal" compact /> |
 
