@@ -10,17 +10,19 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-11
 
 <div className="release-stack">
-   <ReleaseCard version="v1.7.0" badge="Minor Release" date="2026-11-10" defaultOpen>
+   <ReleaseCard version="v1.7.0" badge="Minor Release" date="2026-11-11" defaultOpen>
        **Release Scope**
 
-       - v1.7.0 expands policy composition, domain learning, and cache management; improves query analysis and the management API; and fixes DNS protocol handling, persistence rollback, and RouterOS integrations.
+       - v1.7.0 expands policy composition, EDNS filtering, domain learning, and cache management; improves query analysis and the management API; and fixes ECS source selection, DNS protocol handling, persistence rollback, and RouterOS integrations.
        - **Read before upgrading**: query-recorder `/stats/*` aggregation endpoints now require `since_ms` and `until_ms`, with a maximum span of 24 hours. `fallback.threshold: 0` now starts the secondary branch immediately instead of waiting 500 milliseconds.
 
        **Changes**
 
        - `feat(load_balance/has_cname)`: add executor branch balancing with round-robin, random, and weighted-random strategies, plus a matcher for CNAME records in the response answer section. Both are available in the minimal bundle.
+       - `feat(edns_filter/proto)`: add a request EDNS option filter available in minimal, with `preserve`, `strip`, and `strip_unknown` policies plus code allowlists/denylists. Filtering only removes options and preserves OPT metadata; by default, the entire request is restored when the continuation exits or is cancelled. Expand named registry codes while preserving opaque payloads through wire roundtrips and displaying their names in query records.
+       - `fix(ecs_handler)`: apply `preset`/`send` after removing client ECS. Non-IN queries honor the `forward: false` removal policy without generating ECS. Invalid quick-setup IPs now produce explicit errors.
        - `feat(hosts/learn_domain)`: support standard hosts files and address merging with `hosts.format: standard`, while keeping `oxidns` as the default. Add `learn_domain.rule_kind: registrable_domain` using an embedded public suffix list; the default remains `full`.
-       - `feat(query_recorder/webui)`: add a shared timeline, adaptive trend buckets, truncation metadata, and record drilldowns. Support exact domain/client-IP and special response-bucket filters. Aggregations use at most the latest 10,000 records in the selected interval.
+       - `feat(query_recorder/webui)`: add a shared timeline, adaptive trend buckets, truncation metadata, and record drilldowns. Support exact domain/client-IP and special response-bucket filters. Aggregations use at most the latest 10,000 records in the selected interval. Add EDNS filter configuration and fix nested YAML field completion in full-configuration and plugin-argument editors.
        - `feat(cache)`: filter entries by answer IP and delete selected entries or all filter matches. Await cache restoration during initialization, preserve historical dumps after failed startup/reload, and protect files after read failures.
        - `feat(routeros)`: add optional `ros_route.scope` and `target_scope`; fix address-list address representations, duplicate-insert recovery, and cleanup while preserving entries owned by others.
        - `fix(server/transport)`: return NOTIMP for unsupported opcodes and BADVERS for unsupported EDNS versions. Drop unsolicited UDP responses before spawning work, reject oversized TCP frames, improve TCP keepalive, and track DoQ/DoH3 request tasks during shutdown.
@@ -31,7 +33,9 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
        **Compatibility and Upgrade Notes**
 
        - The root crate is `1.7.0`; use tag `v1.7.0`. Support crates are `oxidns-proto 0.1.7`, `oxidns-macros 0.1.1`, and `oxidns-zoneparser 0.1.3`; `oxidns-ripset` remains `0.1.3`.
-       - v1.6.1 YAML configurations remain usable, and new fields are optional. Change an explicit `fallback.threshold: 0` to `500` to retain the previous delay; omitting the field still defaults to 500 milliseconds.
+       - Existing v1.6.1 YAML configurations remain usable except for the behavior fixes and stricter validation below; new fields are optional. Change an explicit `fallback.threshold: 0` to `500` to retain the previous delay; omitting the field still defaults to 500 milliseconds.
+       - **ECS source selection and validation**: IN queries use retained client ECS first, then `preset`, then the client address when `send` is enabled. Removing ECS with `forward: false` still permits replacement, and `preset` works independently of `send`. Invalid quick-setup IPs now fail configuration loading. Legacy `IP/mask` syntax still ignores the mask and uses IPv4 `/24` or IPv6 `/48`; use full configuration for custom prefixes. Response ECS cleanup neither restores the request nor automatically changes cache keys.
+       - Add `edns_filter` explicitly to a chain to use it. Defaults are `policy: preserve`, `restore_request: true`, and empty allowlists/denylists. `strip_unknown` checks code registration independently of payload parser support. Restoration covers the entire continuation; use a child sequence to limit its scope, or `restore_request: false` to retain request changes.
        - Custom statistics clients must supply the time interval. Management request bodies are limited to 4 MiB; check large configuration submissions and cache imports. Update the bundled WebUI together with the binary.
        - Upgrading from v1.6.1 requires no query-history migration or Windows service reinstallation. Earlier versions still require the v1.6.0 migration steps. Back up configuration and persisted data, then run `oxidns check -c <config-file>` before upgrading.
    </ReleaseCard>
