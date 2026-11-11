@@ -64,6 +64,9 @@ struct MikrotikConfigArgs {
     comment_prefix: Option<String>,
     /// Route distance written to RouterOS for managed routes.
     distance: Option<u8>,
+    /// Optional route scopes; omitted properties remain managed by RouterOS.
+    scope: Option<u8>,
+    target_scope: Option<u8>,
     /// Always-present routes that should not expire with DNS TTL.
     persistent: Option<PersistentArgs>,
     /// Minimum effective TTL clamp (seconds) for observed records.
@@ -109,6 +112,8 @@ pub(super) struct MikrotikConfig {
     pub(super) comment_prefix: String,
     /// Route distance written to RouterOS.
     pub(super) distance: u8,
+    pub(super) scope: Option<u8>,
+    pub(super) target_scope: Option<u8>,
     /// Minimum effective TTL clamp in seconds.
     pub(super) min_ttl: u32,
     /// Maximum effective TTL clamp in seconds.
@@ -151,6 +156,11 @@ impl MikrotikConfigArgs {
             .unwrap_or_else(|| DEFAULT_COMMENT_PREFIX.to_string());
         validate_comment_token("comment_prefix", &comment_prefix)?;
         let distance = self.distance.unwrap_or(DEFAULT_ROUTE_DISTANCE);
+        if self.scope == Some(0) {
+            return Err(DnsError::plugin(
+                "ros_route 'scope' must be between 1 and 255",
+            ));
+        }
 
         let gateway4 = optional_non_empty(self.gateway4);
         let gateway6 = optional_non_empty(self.gateway6);
@@ -205,6 +215,8 @@ impl MikrotikConfigArgs {
             persistent_ips: parsed_persistent.all_ips,
             comment_prefix,
             distance,
+            scope: self.scope,
+            target_scope: self.target_scope,
             min_ttl,
             max_ttl,
             fixed_ttl,

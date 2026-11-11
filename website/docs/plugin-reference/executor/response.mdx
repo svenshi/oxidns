@@ -1,0 +1,496 @@
+---
+title: 响应处理
+---
+
+import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
+
+这些执行器在已有或合成响应上调整 TTL、地址选择、拦截结果和反向查询数据。
+
+## `ttl`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+改写响应 TTL。
+
+### 配置示例
+
+完整对象形式：
+
+```yaml
+- tag: ttl_main
+  type: ttl
+  args:
+    # 先把 TTL 固定为 300
+    fix: 300
+    # 再做下限兜底
+    min: 60
+    # 再做上限约束
+    max: 600
+```
+
+
+### 配置项
+
+#### `fix`
+
+- 类型：`integer`；必填：否；默认值：无
+- 作用：将所有响应 TTL 固定为同一个值。
+
+#### `min`
+
+- 类型：`integer`；必填：否；默认值：无
+- 作用：定义 TTL 下限。
+
+#### `max`
+
+- 类型：`integer`；必填：否；默认值：无
+- 作用：定义 TTL 上限。
+
+### quick setup
+
+```yaml
+- exec: "ttl 300"
+- exec: "ttl 60-600"
+```
+
+### 行为说明
+
+- 会改写 answers、authority、additionals 中的 TTL。
+- 适合放在获得响应之后。
+
+### 典型用途
+
+- 缩短高波动域名的 TTL。
+- 统一本地策略结果的缓存行为。
+
+---
+
+## `ip_selector`
+
+<PluginAvailability from="standard" />
+
+### 作用
+
+响应 IP 优选器。它只处理已有 response 中的 A/AAAA 地址记录，根据缓存评分和有界测速结果进行稳定排序或裁剪。
+
+`ip_selector` 不负责上游响应竞速、双栈抑制或域名规则。上游竞速继续使用 `forward` / `fallback`，双栈策略继续使用 `prefer_ipv4` / `prefer_ipv6`，域名差异化策略继续用 `sequence`、matcher 和 provider 组合多个插件实例。
+
+### 配置示例
+
+```yaml
+- tag: ip_select
+  type: ip_selector
+  args:
+    selection_mode: first_success
+    outbound: remote
+    probe_methods: ["tcp:443", "tcp:80"]
+    probe_stagger: 200
+    probe_timeout: 600
+    max_wait: 1000
+    top_n: 1
+    dnssec_policy: reorder_only
+    max_parallel_probes: 256
+    cache:
+      enabled: true
+      size: 4096
+      ttl: 3600
+      failure_ttl: 60
+```
+
+推荐放在 `cache` 之前，让 `cache` 保存原始上游响应，`ip_selector` 在返回路径做最终优选：
+
+```yaml
+- exec: $ip_select
+- exec: $cache_main
+- matches: !$has_resp
+  exec: $forward_main
+- exec: accept
+```
+
+### 配置项
+
+#### `selection_mode`
+
+- 类型：`string`；必填：否；默认值：`first_success`
+- 可选值：`first_success`、`best_within_budget`、`background`
+- 作用：
+  - `first_success`：返回第一个成功测速的候选 IP。
+  - `best_within_budget`：在 `max_wait` 预算内选择最低延迟 IP。
+  - `background`：优先返回原响应或缓存排序结果，并在后台刷新测速缓存。
+
+#### `probe_methods`
+
+- 类型：`array<string> | string`；必填：否；默认值：`["tcp:443", "tcp:80"]`
+- 可选值：`tcp:<port>`、`ping`、`none`
+- 作用：定义用于评分 IP 的探测方法。`ping` 为 best-effort；平台或权限不支持时会失败开放。
+
+#### `outbound`
+
+- 类型：`string`；必填：否；默认值：`network.outbound.default`
+- 作用：引用 `network.outbound.profiles` 中的出站配置，为 TCP 探测复用 profile proxy。
+- 说明：
+  - 仅 `tcp:<port>` 探测会使用 proxy；`ping` 始终走本机命令。
+  - 本字段只使用 profile proxy，不会对目标 IP 再做 resolver 解析。
+
+#### `socks5`
+
+- 类型：`string`；必填：否；默认值：无
+- 作用：为 TCP 探测指定局部 SOCKS5 代理。
+- 说明：
+  - 格式与 `upstreams[].socks5` 一致。
+  - 同时配置 `outbound` 和 `socks5` 时，局部 `socks5` 覆盖 profile proxy。
+  - 仅 `tcp:<port>` 探测会使用 SOCKS5；`ping` 始终走本机命令。
+
+#### `probe_stagger`
+
+- 类型：`integer`；单位：毫秒；必填：否；默认值：`200`
+- 作用：多种测速方式之间的错峰启动间隔。
+
+#### `probe_timeout`
+
+- 类型：`integer`；单位：毫秒；必填：否；默认值：`600`
+- 作用：单次 IP 探测超时时间。
+
+#### `max_wait`
+
+- 类型：`integer`；单位：毫秒；必填：否；默认值：`1000`
+- 作用：一次响应优选最多等待多久。
+
+#### `top_n`
+
+- 类型：`integer`；必填：否；默认值：`1`
+- 作用：保留排序后的前 N 个地址。设为 `0` 时只重排，不删除记录。
+
+#### `dnssec_policy`
+
+- 类型：`string`；必填：否；默认值：`reorder_only`
+- 可选值：`reorder_only`、`skip`
+- 作用：请求带 DO bit 或响应含覆盖 A/AAAA 的 RRSIG 时，默认只重排不裁剪；设为 `skip` 时完全跳过优选。
+
+#### `max_parallel_probes`
+
+- 类型：`integer`；必填：否；默认值：`256`
+- 作用：限制插件级并发探测数量，避免冷查询大量 fanout。
+
+#### `cache`
+
+- 类型：`object`；必填：否
+- 子字段：
+  - `enabled`：是否启用探测评分缓存，默认 `true`。
+  - `size`：缓存容量目标，默认 `4096`。
+  - `ttl`：成功评分保留时间，单位秒，默认 `3600`。
+  - `failure_ttl`：失败评分保留时间，单位秒，默认 `60`。
+
+### quick setup
+
+```yaml
+- exec: "ip_selector"
+- exec: "ip_selector best_within_budget tcp:443,tcp:80,ping"
+```
+
+`ip_selector` 只接受上面列出的 OxiDNS 原生命名，不提供兼容别名。
+
+### 指标
+
+- `ip_selector_probe_total{method,result}`
+- `ip_selector_probe_latency_count{method}`
+- `ip_selector_probe_latency_sum_ms{method}`
+- `ip_selector_selected_total{source="probe|cache|fallback"}`
+- `ip_selector_cache_entries`
+- `ip_selector_dropped_probe_total{reason="parallel_limit|inflight"}`
+
+---
+
+<span id="prefer_ipv4-prefer_ipv6"></span>
+
+## `prefer_ipv4` / `prefer_ipv6`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+双栈优选器。对偏好类型做学习，对非偏好类型做抑制。
+
+### 配置示例
+
+```yaml
+- tag: probe_v4
+  type: forward
+  args:
+    upstreams:
+      - addr: "udp://1.1.1.1:53"
+
+- tag: prefer_v4
+  type: prefer_ipv4
+  args:
+    # 可选：仅由 preferred QTYPE 内部探针执行
+    probe_executor: probe_v4
+    # 记录 preferred 类型是否存在
+    cache: true
+    # preferred 状态缓存时长
+    cache_ttl: 3600
+```
+
+### 配置项
+
+#### `probe_executor`
+
+- 类型：`string`；必填：否；默认值：未配置
+- 作用：指定仅用于 preferred QTYPE 内部探针的 executor tag。填写不带 `$` 的普通 tag。
+- 可引用 `forward`、`sequence` 或其他能够独立生成 DNS response 的 executor。
+- 不支持字段内 quick setup。缺失引用、非 executor 引用、自引用和间接循环会在启动时由依赖图校验拒绝。
+- 未配置时保留原有 continuation 探针模式，已有配置无需修改。
+
+#### `cache`
+
+- 类型：`boolean`；必填：否；默认值：`true`
+- 作用：控制是否缓存 preferred 类型存在状态。
+
+#### `cache_ttl`
+
+- 类型：`integer`；必填：否；默认值：`3600`
+- 单位：秒
+- 作用：定义 preferred 状态缓存时长。
+
+### quick setup
+
+```yaml
+- exec: "prefer_ipv4"
+- exec: "prefer_ipv6"
+```
+
+说明：
+
+- quick setup 使用兼容模式及默认配置：不设置 `probe_executor`、`cache: true`、`cache_ttl: 3600`。
+- 如需指定专用探针 executor、关闭缓存或调整缓存时长，请使用完整插件配置。
+
+### 行为说明
+
+- `prefer_ipv4`
+  - 偏好 `A`。
+- `prefer_ipv6`
+  - 偏好 `AAAA`。
+- 偏好类型请求正常放行，并记录“该域名存在 preferred answer”。
+- 非偏好类型请求：
+  - 若缓存已知 preferred answer 存在，则直接返回空成功响应抑制该类型。
+  - 若缓存未命中，原始查询继续执行优选器之后的外层链路。
+  - 配置 `probe_executor` 时，preferred 类型探针仅执行指定 executor；未配置时，探针按兼容模式执行优选器之后的外层链路。
+  - preferred 探针包含对应类型答案时抑制原始类型；非截断 `NOERROR` 无对应答案或 `NXDOMAIN` 时明确采用原始结果。无响应、执行错误、超时、截断或其他失败 RCODE 属于未知状态，采用原始结果且不写入负缓存。
+
+### 子查询与上下文隔离
+
+- preferred 类型查询是内部可用性探测，不是客户端请求的替代响应。探测命中后，外层仍保留原始 QTYPE，并为原始请求生成 `NOERROR/NODATA`。
+- 缓存未命中时，原始查询和 preferred 探测分别使用隔离的 `DnsContext`。探测继承 ingress 和进入优选器前的 marks，但其 request、response、后续 marks、runtime extensions、执行路径及 `ExecStep` 均不会合并回外层 context；因此，抑制发生后，外层 marks 与进入优选器时保持一致。
+- preferred 探测无答案、失败或超时并采用原始查询结果时，原始子查询的完整结果（包括其 marks）会成为外层结果。
+- 该隔离规则使实时探测命中与缓存直接命中保持一致：两者都不会把 preferred 探测路径的状态暴露给外层后处理插件，也不应使用 marks 推断内部探测结果。
+- 未配置 `probe_executor` 的兼容模式可能让优选器之后的链路执行两次。具有日志、计数、学习、脚本、Webhook 或其它非幂等副作用的执行器不应放在该探测链路中，除非配置者明确接受两次执行。
+- 专用探针 executor 也应尽量保持无副作用。任务取消只能阻止尚未发生的工作，不能回滚已经完成的外部操作。
+- selector 缓存仍仅以域名为键。如果探针 sequence 依赖客户端、marks、随机、限流或其他请求级状态，应关闭 `cache`。
+
+### 典型用途
+
+- 客户端双栈策略收敛。
+- 某些网络环境下优先收敛到更稳定的一类地址。
+
+<Admonition type="note" title="注意事项">
+
+- 推荐通过 `probe_executor` 引用专用 `forward` 或 `sequence`，避免探针重复执行外层后续链路。未配置时仍可放置在 `forward` 之前并通过 continuation 兼容生效。
+
+</Admonition>
+
+---
+
+## `black_hole`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+按指定模式对命中的 DNS 请求生成本地拦截响应，覆盖所有 qtype。
+
+### 配置示例
+
+```yaml
+- tag: sinkhole
+  type: black_hole
+  args:
+    mode: custom
+    ips:
+      # A 查询时返回
+      - "0.0.0.0"
+      # AAAA 查询时返回
+      - "::"
+    short_circuit: true
+
+- tag: block_nxdomain
+  type: black_hole
+  args:
+    mode: nxdomain
+    short_circuit: true
+```
+
+### 配置项
+
+#### `mode`
+
+- 类型：`string`；必填：否；默认值：无 `ips` 时为 `nxdomain`，配置了 `ips` 时为 `custom`
+- 可选值：
+  - `nxdomain`：返回 `NXDOMAIN`，并在 authority 区加入用于负缓存的 SOA。
+  - `nodata`：返回 `NOERROR` 空应答，并在 authority 区加入用于负缓存的 SOA。
+  - `null`：`A` 返回 `0.0.0.0`，`AAAA` 返回 `::`，其它 qtype 返回 NODATA。
+  - `custom`：`A` / `AAAA` 返回 `ips` 中对应地址族；缺失地址族或其它 qtype 返回 NODATA。
+  - `refused`：返回 `REFUSED` 空应答。
+- 兼容性：旧的 `ips` + `short_circuit` 配置不需要写 `mode`，会自动按 `custom` 处理。
+
+#### `ips`
+
+- 类型：`array`；必填：否；默认值：空数组
+- 作用：定义 `custom` 模式使用的本地合成返回地址集合。
+- 运行影响：
+  - IPv4 地址仅用于 A 应答。
+  - IPv6 地址仅用于 AAAA 应答。
+  - 仅允许在隐式或显式 `custom` 模式下使用。
+
+#### `short_circuit`
+
+- 类型：`bool`；必填：否；默认值：`false`
+- 作用：生成拦截响应后，是否立即停止后续 executor 链。
+
+### quick setup
+
+```yaml
+- exec: "black_hole"
+- exec: "black_hole nxdomain short_circuit=true"
+- exec: "black_hole nodata"
+- exec: "black_hole null"
+- exec: "black_hole custom 0.0.0.0 :: short_circuit=true"
+# legacy 写法，等价于 custom
+- exec: "black_hole 0.0.0.0 ::"
+```
+
+### 行为说明
+
+- 默认无参 `black_hole` 返回 `NXDOMAIN`。
+- `nxdomain`、`nodata`、`refused` 覆盖所有 qtype。
+- `null` 和 `custom` 对 A/AAAA 返回地址，对其它 qtype 返回 NODATA。
+- 请求没有 question 时透传。
+- 命中后默认继续后续执行；开启 `short_circuit` 时会立即停止。
+
+### Metrics
+
+通过全局 `GET /api/metrics` 导出：
+
+- `blackhole_block_total`
+
+### 典型用途
+
+- 广告、跟踪、恶意域名拦截。
+- 按策略返回 NXDOMAIN / NODATA / REFUSED。
+- 返回空地址或自定义占位地址。
+
+---
+
+## `drop_resp`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+清空当前上下文中的响应。
+
+### 配置示例
+
+```yaml
+- tag: clear_response
+  type: drop_resp
+  # 无独立 args；执行时会直接清掉当前 response
+```
+
+### 配置项
+
+无独立配置字段。
+
+### quick setup
+
+```yaml
+- exec: "drop_resp"
+```
+
+### 行为说明
+
+- 仅清理 `context.response`。
+- 不会清 marks 或请求元信息。
+
+### 典型用途
+
+- 覆盖前面错误或不满意的响应结果。
+- 配合后续重新转发或重建响应。
+
+---
+
+## `reverse_lookup`
+
+<PluginAvailability from="standard" />
+
+### 作用
+
+缓存应答中的 IP -> 域名关系，并可选地处理 PTR 查询。
+
+### 配置示例
+
+```yaml
+- tag: reverse_lookup_main
+  type: reverse_lookup
+  args:
+    # 反查缓存容量
+    size: 65535
+    # IP -> 域名映射保留时间
+    ttl: 7200
+    # 命中缓存时直接回答 PTR
+    handle_ptr: true
+```
+
+### 配置项
+
+#### `size`
+
+- 类型：`integer`；必填：否；默认值：`65535`
+- 作用：定义反查缓存容量上限。
+
+#### `handle_ptr`
+
+- 类型：`boolean`；必填：否；默认值：`false`
+- 作用：控制是否直接用反查缓存响应 PTR 请求。
+
+#### `ttl`
+
+- 类型：`integer`；必填：否；默认值：`7200`
+- 单位：秒
+- 作用：定义 IP 到域名映射的缓存 TTL。
+
+### 行为说明
+
+- 若 `handle_ptr: true` 且 PTR 命中缓存，会直接返回 PTR 响应并停止后续链路。
+- 正常回程阶段会扫描 `A` / `AAAA` answers，把 IP 与请求域名写入缓存。
+- 会把记录 TTL 限制在插件配置 TTL 上限内。
+
+### 插件 API
+
+- `GET /plugins/<tag>?ip=<ip>`
+  - 返回命中的完全限定域名。
+
+### 典型用途
+
+- 本地快速 IP 反查。
+- 策略排障、日志联动、资产可视化。
+
+<Admonition type="note" title="注意事项">
+
+- 推荐放置在 `cache` 之前，否则缓存命中可能绕过该插件，导致反查表不更新。
+
+</Admonition>
+
+---

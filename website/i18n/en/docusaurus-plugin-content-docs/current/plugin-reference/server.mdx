@@ -1,0 +1,58 @@
+---
+title: Server Plugins
+sidebar_position: 2
+---
+
+Server plugins receive client requests and hand them off to an entry executor. They do not implement complex policy logic themselves. Their main concerns are the listening protocol, bind address, TLS parameters, and the `entry` executor.
+
+## General Notes
+
+Every server plugin depends on an `entry`. It must reference an existing executor plugin, usually a `sequence`:
+
+```yaml
+- tag: seq_main
+  type: sequence
+  args:
+    # Try cache first
+    - exec: "$cache_main"
+    # Only forward when no response exists yet
+    - matches: "!has_resp"
+      exec: "$forward_main"
+
+- tag: udp_in
+  type: udp_server
+  args:
+    # Must reference an existing executor, usually a sequence
+    entry: "seq_main"
+    # Standard UDP DNS bind address; :port binds [::]:port as dual-stack
+    listen: ":53"
+```
+
+Listen addresses support `ip:port`, `[ipv6]:port`, and `:port`. The `:port` shorthand resolves to `[::]:port`, and the listener socket clears `IPV6_V6ONLY` so one listener can accept both IPv6 and IPv4 traffic. To listen on IPv4 only, explicitly use `0.0.0.0:port` or a concrete IPv4 address.
+
+Unsupported DNS opcodes receive `NOTIMP` without entering the executor chain. Unsupported EDNS versions receive `BADVERS` with an OPT record. UDP datagrams with `QR=1` are discarded.
+
+### Metrics
+
+Every server plugin exports a shared set of request-level metrics through the global `GET /api/metrics` endpoint, labelled with `plugin_tag` and `protocol` (`udp`/`tcp`/`dot`/`quic`/`doh`):
+
+- `server_request_total`
+- `server_completed_total`
+- `server_controlled_total`
+- `server_failed_total`
+- `server_inflight`
+- `server_latency_count`
+- `server_latency_sum_ms`
+
+---
+
+## Category map
+
+| Group | Plugins | Focus |
+| --- | --- | --- |
+| [UDP and TCP Ingress](server/datagram-stream.mdx) | [`udp_server`](server/datagram-stream.mdx#udp_server), [`tcp_server`](server/datagram-stream.mdx#tcp_server) | Traditional DNS, connection options, optional DoT |
+| [HTTP and QUIC Encrypted Ingress](server/encrypted-http.mdx) | [`http_server`](server/encrypted-http.mdx#http_server), [`quic_server`](server/encrypted-http.mdx#quic_server) | DoH, HTTP/2/3, DoQ, and TLS |
+
+<span id="udp_server"></span><span id="tcp_server"></span><span id="http_server"></span><span id="quic_server"></span>
+
+Legacy plugin anchors remain on this directory page; field references now live in the responsibility groups above.

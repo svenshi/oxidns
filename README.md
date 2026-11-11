@@ -21,7 +21,7 @@ OxiDNS 是一个使用 Rust 构建、面向软路由、OpenWrt、Homelab 和高�
 
 ## 为什么选择 OxiDNS
 
-- **策略可编排**：`sequence` 将 matcher、executor 和 provider 组合成可复用的条件分支、跳转和回退链。
+- **策略可编排**：`sequence` 将 matcher、executor 和 provider 组合成可复用的条件分支、跳转和回退链，`load_balance` 支持执行链轮询、随机和加权随机。
 - **决策可解释**：查询记录、执行路径、结构化日志和指标可以回答一次查询匹配了什么、执行了什么、为何选择当前结果。
 - **接入与出口统一**：同一策略可服务 UDP、TCP、DoT、DoQ 和 DoH，并统一管理上游解析、连接复用、并发裁决与代理出口。
 - **DNS 驱动网络行为**：解析结果可以直接联动 Linux `ipset` / `nftset`、RouterOS 地址列表与静态路由、HTTP webhook 和外部脚本。
@@ -85,7 +85,7 @@ plugins:
 | 类别 | 能力 |
 | --- | --- |
 | 协议接入 | UDP、TCP、DoT、DoQ、DoH（HTTP/1.1、HTTP/2、HTTP/3） |
-| 策略编排 | `sequence`、条件匹配、执行器组合、跳转与回退链 |
+| 策略编排 | `sequence`、条件匹配、执行器组合、跳转、回退链与 `load_balance` |
 | 上游与出口 | 多协议上游、并发响应裁决、连接复用、bootstrap、SOCKS5、统一 `network.outbound` |
 | 响应处理 | TTL 感知缓存与负缓存、ECS 与 ECS 客户端地址映射、本地记录、重定向、响应构造、双栈与 IP 优选 |
 | 规则数据 | 域名与 IP 集、GeoIP、GeoSite、AdGuard 规则、动态域名学习 |
@@ -95,6 +95,39 @@ plugins:
 | 部署能力 | 多平台构建、Debian 包、OpenWrt LuCI 插件、内置 WebUI 与管理 API、服务化安装 |
 
 完整的内置组件和配置字段见[插件参考](https://oxidns.org/plugin-reference/overview)。
+
+---
+
+## WebUI 演示
+
+### 配置编辑
+
+直接编辑 YAML 配置，通过插件索引快速定位插件定义。
+
+![WebUI 配置编辑器与插件索引演示](.github/img/config_editor.gif)
+
+### 插件依赖图
+
+以依赖图查看插件引用、`sequence` 分支和执行器组合。
+
+![WebUI 插件依赖图与 sequence 分支演示](.github/img/plugin_dep.gif)
+
+### 查询追踪
+
+从查询记录查看响应详情、匹配结果和实际执行路径。
+
+![WebUI 查询记录与执行路径追踪演示](.github/img/query_tracing.gif)
+
+---
+
+## 社区 WebUI
+
+除了内置 WebUI，也推荐体验社区开发者独立维护的管理界面：
+
+- [YoPilot](https://github.com/yyhoworks/YoPilot)：由 yyhoworks 开发的中文管理前端，提供解析拓扑、插件配置和双皮肤界面。
+- [OxiDNS Dashboard](https://github.com/Luke-Lab666/oxidns-dashboard)：由 Luke-Lab666 开发的轻量管理面板，构建为单个 HTML 文件，支持多种主题、查询日志和配置管理。
+
+感谢社区开发者的贡献！部署方法和适配版本请参阅各项目说明。
 
 ---
 
@@ -186,8 +219,8 @@ OxiDNS 主要由 [Sven Shi](https://github.com/svenshi) 创建和维护。
     <th align="center">支付宝</th>
   </tr>
   <tr>
-    <td align="center"><img src="docs/static/img/support/wechat-pay.jpg" alt="支持 OxiDNS 项目开发的微信支付收款码" width="260" /></td>
-    <td align="center"><img src="docs/static/img/support/alipay.jpg" alt="支持 OxiDNS 项目开发的支付宝收款码" width="260" /></td>
+    <td align="center"><img src="website/static/img/support/wechat-pay.jpg" alt="支持 OxiDNS 项目开发的微信支付收款码" width="260" /></td>
+    <td align="center"><img src="website/static/img/support/alipay.jpg" alt="支持 OxiDNS 项目开发的支付宝收款码" width="260" /></td>
   </tr>
 </table>
 
@@ -198,3 +231,8 @@ OxiDNS 主要由 [Sven Shi](https://github.com/svenshi) 创建和维护。
 ## 许可证
 
 本项目基于 [GNU General Public License v3.0 or later](LICENSE) 开源。
+
+独立的自有库 [oxidns-proto](crates/proto/README.md) 和
+[oxidns-macros](crates/macros/README.md) 采用 `MIT OR Apache-2.0` 双重许可证，
+使用者可以任选其一。其他 workspace crate 的许可证见各自的 `Cargo.toml`
+和许可证文件。

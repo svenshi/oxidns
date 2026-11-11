@@ -1,0 +1,130 @@
+---
+title: Docker Deployment
+---
+
+import Admonition from '@theme/Admonition';
+
+Official images are published to:
+
+- Docker Hub: `svenshi/oxidns`
+- GitHub Container Registry: `ghcr.io/svenshi/oxidns`
+
+Current images support `linux/amd64`, `linux/arm64`, and `linux/arm/v7`. Pin an explicit version tag in production so pulling `latest` cannot introduce an unexpected upgrade.
+
+## Prepare the configuration
+
+Create a deployment directory, then export the matching default configuration from the image you intend to use:
+
+```bash
+mkdir -p oxidns
+cd oxidns
+
+docker pull svenshi/oxidns:latest
+docker run --rm \
+  --entrypoint /bin/cat \
+  svenshi/oxidns:latest \
+  /etc/oxidns/config.yaml > config.yaml
+
+test -s config.yaml
+```
+
+Use this only to create the initial configuration. Preserve the existing `config.yaml` during upgrades and restarts; do not overwrite it with the image default.
+
+<Admonition type="warning" title="Create a regular file first">
+
+If the bind-mount source does not exist, Docker may create a directory with that name and then fail to mount it over `/etc/oxidns/config.yaml`. Confirm that `config.yaml` is a regular file before starting the container.
+
+</Admonition>
+
+## Use docker run
+
+```bash
+docker run -d \
+  --name oxidns \
+  --restart unless-stopped \
+  -p 53:53/udp \
+  -p 53:53/tcp \
+  -p 9199:9199/tcp \
+  -v "$(pwd)/config.yaml:/etc/oxidns/config.yaml:ro" \
+  svenshi/oxidns:latest
+```
+
+The image default command is equivalent to:
+
+```bash
+oxidns start -c /etc/oxidns/config.yaml -d /etc/oxidns
+```
+
+The image exposes `53/udp`, `53/tcp`, and `9199/tcp` by default.
+
+<Admonition type="warning" title="Protect the management interface">
+
+The example publishes port 9199 on every host interface, while the default configuration may not require authentication. If only local access is needed, use `127.0.0.1:9199:9199/tcp`. Before allowing remote access, enable API authentication and restrict sources with a firewall.
+
+</Admonition>
+
+If systemd-resolved, dnsmasq, or another DNS service already occupies host port 53, temporarily map port 5353 instead:
+
+```bash
+-p 5353:53/udp -p 5353:53/tcp
+```
+
+The container still listens on 53. Test with `dig @127.0.0.1 -p 5353 example.com`.
+
+## Verify the container
+
+```bash
+docker ps --filter name=oxidns
+docker logs --tail 50 oxidns
+curl -fsS http://127.0.0.1:9199/api/readyz
+dig @127.0.0.1 example.com
+dig @127.0.0.1 example.com +tcp
+```
+
+The WebUI is available at `http://SERVER_IP:9199/`. After enabling Basic Auth, enter the same credentials in WebUI settings.
+
+## Docker Compose
+
+Prepare `config.yaml`, then create `compose.yaml`:
+
+```yaml
+services:
+  oxidns:
+    image: svenshi/oxidns:latest
+    container_name: oxidns
+    restart: unless-stopped
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+      - "9199:9199/tcp"
+    volumes:
+      - ./config.yaml:/etc/oxidns/config.yaml:ro
+```
+
+Start and inspect it with:
+
+```bash
+docker compose up -d
+docker compose logs -f oxidns
+```
+
+## Update the image
+
+For a pinned deployment, change the image tag first, then run:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Back up configuration and mounted persistent data first. After updating, check the version, bundle, readiness, and DNS behavior. Replacing containers through the image orchestration layer is generally clearer than running the binary self-upgrade inside an ephemeral container filesystem.
+
+## Troubleshooting
+
+- **Container exits immediately**: inspect `docker logs`; confirm the mount source is a file, YAML is valid, and configured ports match the container.
+- **Port binding fails**: check host port 53/9199 usage, or bind an explicit host IP or alternate port.
+- **API works but DNS fails**: inspect UDP and TCP mappings separately, the server listener, and upstream connectivity.
+- **Configuration changes do not apply**: the configuration is mounted read-only; reload through the API or restart the container after editing the host file.
+- **Real client addresses are lost**: normal UDP/TCP port publishing generally preserves the source; inspect any additional proxy or NAT layer in the actual network path.
+
+See [Operations and Troubleshooting](../operations.md) for the complete diagnostic sequence, and read [Security Hardening](../security.md) before any public exposure.

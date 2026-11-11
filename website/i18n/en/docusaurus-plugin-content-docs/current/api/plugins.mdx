@@ -1,0 +1,439 @@
+---
+title: Plugin Extension APIs
+---
+
+import Admonition from "@theme/Admonition";
+
+Plugins register management and observability endpoints below a common tag path. Route availability depends on the active configuration and compiled binary capabilities.
+
+## Plugin Extension APIs
+
+### Unified Format
+
+```
+/api/plugins/<plugin_tag>/<route>
+```
+
+<Admonition type="note" title="Notes">
+
+* A few plugins also expose prefix routes. For example, `query_recorder` uses `/api/plugins/<tag>/records/<id>`.
+
+</Admonition>
+
+### cache
+
+#### `GET /api/plugins/<cache_tag>/entries`
+
+Reads cache entries with pagination.
+
+Query parameters:
+
+* `limit`: Page size. Defaults to `100`, maximum `500`.
+* `cursor`: Pagination cursor.
+* `qname`: Case-insensitive substring filter for the query domain in the cache key.
+
+
+* `answer_ip`: A complete IPv4/IPv6 address, matched exactly against Answer A/AAAA records (including CNAME terminal addresses). Combined with `qname` using AND, before pagination; retained stale entries are included, expired entries excluded. Invalid addresses return `400 invalid_query`.
+
+#### `POST /api/plugins/<cache_tag>/entries/delete`
+
+Bulk-delete entries from the current plugin. Supply either `{"ids":["entry ID"]}` or `{"filter":{"qname":"example.com","answer_ip":"192.0.2.1"}}`. Either filter field may be omitted, but at least one effective non-empty condition is required. Filtered deletion includes unloaded results. IDs preserve QTYPE/QCLASS, DO/CD and ECS distinctions.
+
+The entire request is validated before deletion. Invalid IDs/IPs, empty selections or mixed modes return `400 invalid_delete_request`. Duplicate IDs are deduplicated and missing entries skipped. Success returns `{"ok":true,"deleted_entries":actual_count}`. Filtered deletion skips entries replaced after scanning. Concurrent cache changes affect the actual count; subsequent queries or ongoing refreshes can repopulate entries.
+
+The WebUI supports individual selection, selecting loaded entries, and explicitly selecting all filtered results, with scope and filter confirmation before deletion.
+
+#### `GET /api/plugins/<cache_tag>/flush`
+
+Clears the cache.
+
+#### `GET /api/plugins/<cache_tag>/dump`
+
+Exports a cache dump.
+
+#### `POST /api/plugins/<cache_tag>/load_dump`
+
+Imports a cache dump.
+
+### cron
+
+#### `POST /api/plugins/<cron_tag>/jobs/<job_name>/run`
+
+Starts one configured cron job immediately. `job_name` is the URL-encoded `args.jobs[].name`. A manual trigger uses the same executor list and overlap protection as scheduled triggers, but does not change the existing interval or cron-expression schedule.
+
+Responses:
+
+* `202 Accepted`
+  * The background runtime accepted the job. The response contains `status: "started"`, `trigger: "manual"`, and the new `run_id`. A `202` does not mean the executor chain completed successfully.
+* `404 Not Found`
+  * The job does not exist in the active cron runtime.
+* `409 Conflict`
+  * The same job already has an active run. The request returns `cron_job_already_running` and is not queued.
+* `503 Service Unavailable`
+  * The manual-trigger queue is full, TaskCenter is stopping, or the task handle is unavailable.
+
+Example accepted response:
+
+```json
+{
+  "ok": true,
+  "job": "refresh_sets",
+  "status": "started",
+  "trigger": "manual",
+  "run_id": 12
+}
+```
+
+`run_id` starts at `1` and increases within one registered job lifetime. Scheduled and manual runs share the same sequence; re-registering the plugin or restarting the process resets it.
+
+#### `GET /api/plugins/<cron_tag>/jobs/status`
+
+Returns lightweight status for every job in the active cron runtime, keyed by job name:
+
+```json
+{
+  "ok": true,
+  "jobs": {
+    "refresh_sets": {
+      "current_run": {
+        "run_id": 12,
+        "trigger": "manual",
+        "status": "running",
+        "started_at_ms": 1780000000000
+      },
+      "last_manual_run": null
+    },
+    "cleanup": {
+      "current_run": null,
+      "last_manual_run": {
+        "run_id": 8,
+        "status": "completed_with_errors",
+        "executor_error_count": 2,
+        "completed_at_ms": 1780000001000
+      }
+    }
+  }
+}
+```
+
+- `current_run.trigger` is `manual`, `schedule`, or `interval`; its `status` is `pending` or `running`.
+- `last_manual_run.status` is `completed`, `completed_with_errors`, `failed`, or `cancelled`. Executor errors increment `executor_error_count` without stopping later executors.
+- Timestamps are Unix milliseconds. The API retains only the current run and latest manual result; it does not expose history, log content, result details, or a stop action.
+
+The WebUI shows **Run now** only when the displayed config version is active and batch-syncs real status every two seconds. The action is hidden while editing or after saving an unapplied version, and reopening the detail view does not replay old terminal results.
+
+### matcher
+
+Every matcher declared in `plugins:` with a stable tag registers these runtime-control endpoints:
+
+```text
+GET  /api/plugins/<matcher_tag>/status
+POST /api/plugins/<matcher_tag>/mode
+```
+
+Both endpoints return the same status shape:
+
+```json
+{
+  "ok": true,
+  "matcher": "match_cn",
+  "mode": "normal"
+}
+```
+
+Set the mode with a JSON request body:
+
+```json
+{ "mode": "always_false" }
+```
+
+Supported values are `normal`, `always_false`, and `always_true`; setting the current mode again is idempotent. Both fixed modes skip the internal matcher and fix its base Boolean value, after which each reference still applies its own negation. With `always_false`, `$match_cn` misses and `!$match_cn` matches; `always_true` produces the opposite results. A missing or unsupported mode returns `400 invalid_matcher_runtime_mode`.
+
+The mode belongs only to the current runtime and is not written to YAML. An application reload or process restart restores `normal`. Quick-setup matchers inside `sequence` or `any_match` use internal `qs.match...` tags and do not register these endpoints. Extract a quick-setup expression into a standalone matcher under `plugins:` and reference it with `$tag` when runtime control is required.
+
+The WebUI requires confirmation for both `always_false` and `always_true`; restoring `normal` does not require confirmation. The old `/enable` and `/disable` endpoints and the `enabled` response field have been removed, so API clients must migrate to `/mode`.
+
+### provider
+
+#### `POST /api/plugins/<provider_tag>/reload`
+
+Purpose:
+
+* Reloads that provider's internal snapshot with the same configuration it used at startup.
+* Does not rebuild unrelated plugins and does not change provider tags, dependency topology, or config structure.
+
+Responses:
+
+* `200 OK`
+  * The provider reload succeeded.
+* `400 Bad Request`
+  * The provider returned an error while reloading.
+* `404 Not Found`
+  * The tag is not a loaded provider in the current runtime, so no route was registered for it.
+* `409 Conflict`
+  * A reload is already running for the same provider. The new request returns `provider_reload_busy` immediately instead of waiting in a queue.
+
+Good fit:
+
+* Refreshing only the affected `domain_set`, `ip_set`, `geosite`, `geoip`, or `adguard_rule` provider after downloading new rule files.
+* Avoiding the blast radius of an application-wide `POST /api/reload`.
+
+<Admonition type="note" title="Notes">
+
+* When the change also updates `config.yaml`, provider topology, the plugin list, or other non-provider structures, `POST /api/reload` is still required.
+
+</Admonition>
+
+The WebUI exposes **Reload data** on every applied provider card and detail view. It does not show a configuration-change confirmation; while the command is running, duplicate requests for the same provider are disabled and the success, failure, or busy result is surfaced inline.
+
+### reverse_lookup
+
+#### `GET /api/plugins/<tag>?ip=<ip_addr>`
+
+Looks up the domain cached for an IP address.
+
+Example:
+
+```
+GET /api/plugins/reverse_lookup_main?ip=8.8.8.8
+```
+
+Responses:
+
+* Hit: domain text, usually a fully-qualified domain name
+* Miss: empty response body
+* Invalid parameter: `400 Bad Request`
+
+
+### download
+
+`GET /api/plugins/<tag>/downloads` returns the live download list (`index`, `url`, `path`) and a `running` flag. Indices are zero-based and refer to the running configuration.
+
+`POST /api/plugins/<tag>/download` downloads one item with `{"index": 0}`, or all items with `{}`. The request waits for completion and returns HTTP 200 with `{"ok": true, "total": 1, "succeeded": 1, "failed": 0}`. A partial or complete download failure sets `ok` to `false`; `failed` includes timeouts. Remaining items still run in declaration order. Details are recorded in the server logs and existing download metrics.
+
+Malformed input returns 400, an out-of-range index returns 404, and an overlapping download returns 409. Manual requests share a lock with pipeline/cron downloads; pipeline executions wait for the active batch. These routes require both the `api` and `plugin-download` features and use the management API's authentication.
+
+Only configured targets can be downloaded; URLs and output paths cannot be supplied by this API. Downloads replace files using the plugin's existing behavior. Provider reloads and other steps in a surrounding sequence are not triggered.
+
+### query_recorder
+
+#### `GET /api/plugins/<tag>/records`
+
+Returns recorder rows ordered by `created_at_ms` descending and does not include `steps`.
+
+Query parameters:
+
+* `cursor=<created_at_ms>:<id>`
+  * Continue pagination after the last row from the previous page.
+* `limit=<n>`
+  * Default `100`, maximum `500`.
+* `since_ms=<unix_ms>`
+  * Only return rows at or after this timestamp.
+* `until_ms=<unix_ms>`
+  * Only return rows at or before this timestamp.
+* `qname=<text>`
+  * Case-insensitive substring match against request question names.
+* `client_ip=<text>`
+  * Case-insensitive substring match against the client IP string; IPv4/IPv6 fragments are accepted.
+* `qtype=<type>`
+  * Exact match against request question type.
+* `rcode=<rcode>`
+  * Exact match against response code.
+* `status=all|error|has_response|no_response`
+  * Filter by recorder row status.
+* `matcher_tag=<tag>`
+  * Filter matching queries by exact Matcher tag, including historical tags; an empty value removes the filter.
+
+`client_ip` is the transport peer observed by the DNS server. If record lists or `/stats/top_clients` show only `127.0.0.1`, the queries are usually passing through a local forwarder first, such as systemd-resolved, dnsmasq, AdGuardHome, dae, or clash. Check the deployment chain, point clients directly at OxiDNS, or configure a trusted `src_ip_header` for HTTP/DoH reverse-proxy deployments.
+
+Responses:
+
+* `200 OK`
+  * JSON shaped like:
+
+```json
+{
+  "ok": true,
+  "next_cursor": "1713510000123:42",
+  "records": [
+    {
+      "id": 42,
+      "created_at_ms": 1713510000123,
+      "elapsed_ms": 12,
+      "request_id": 1234,
+      "client_ip": "192.0.2.10",
+      "questions_json": [
+        { "name": "www.example.com.", "qtype": "A", "qclass": "IN" }
+      ],
+      "req_rd": true,
+      "req_cd": false,
+      "req_ad": false,
+      "req_opcode": "Query",
+      "req_edns_json": null,
+      "error": null,
+      "has_response": true,
+      "rcode": "NoError",
+      "resp_aa": false,
+      "resp_tc": false,
+      "resp_ra": true,
+      "resp_ad": false,
+      "resp_cd": false,
+      "answer_count": 1,
+      "authority_count": 0,
+      "additional_count": 0,
+      "answers_json": [
+        {
+          "name": "www.example.com.",
+          "class": "IN",
+          "ttl": 300,
+          "rr_type": "A",
+          "payload_kind": "A",
+          "payload_text": "192.0.2.1",
+          "payload": { "ip": "192.0.2.1" }
+        }
+      ],
+      "authorities_json": [],
+      "additionals_json": [],
+      "signature_json": [],
+      "resp_edns_json": null
+    }
+  ]
+}
+```
+
+#### `GET /api/plugins/<tag>/records/<id>`
+
+Returns one full record plus its `steps` array.
+
+Responses:
+
+* `200 OK`
+  * JSON containing a `record` object. `record.record` holds the fixed main-table fields and `record.steps` holds path events.
+* `404 Not Found`
+  * The record does not exist.
+
+#### `DELETE /api/plugins/<tag>/records`
+
+Clears the current recorder's v2 query history (including `steps` path events) and in-memory replay cache. The operation first flushes the background writer queue; `cleared_records` reports the number of v2 query records deleted.
+
+**Pre-upgrade v1 history is retained and continues to occupy disk space.** Other recorders' data is also unaffected. To manually remove v1 history, delete only the corresponding old tables, not the shared database.
+
+Responses:
+
+* `200 OK`
+  * JSON shaped like:
+
+```json
+{
+  "ok": true,
+  "cleared_records": 128
+}
+```
+
+All `/stats/*` aggregation endpoints require `since_ms` and `until_ms` in Unix milliseconds, with the start earlier than the end and a span of at most 24 hours. Missing or invalid intervals return HTTP 400. Each statistic uses at most the latest 10,000 saved records within the interval, ordered by timestamp and record ID descending. Existing calls without time bounds must add them; record-list, detail, and SSE parameter semantics are unchanged.
+
+Every aggregation response includes `sample_limit` (10,000), `sample_truncated`, `sample_since_ms`, and `sample_until_ms`. Truncation is checked by probing only one extra row, excluded from statistics. Exactly 10,000 records is not truncation; empty sample timestamps are `null`. Record and statistics filters also accept `qname_exact`, `client_ip_exact`, and `rcode_bucket=_ERROR|_NO_RESPONSE|_UNKNOWN` for exact drilldown. Existing `qname` and `client_ip` substring semantics remain unchanged. Special RCODE categories prioritize an actual response code, then errors, missing responses, and missing response codes.
+
+#### `GET /api/plugins/<tag>/stats/plugins`
+
+Aggregates plugin hit information from recorded path events.
+
+Query parameters:
+
+* `since_ms=<unix_ms>`
+* `until_ms=<unix_ms>`
+* `kind=matcher|executor|builtin|all`
+* Same as `/records`, supports `qname`, `client_ip`, `qtype`, `rcode`, and `status` filters.
+
+Response fields:
+
+* `kind`
+* `tag`
+* `checked`
+* `matched`
+* `executed`
+* `query_total`
+* `query_share`
+
+#### `GET /api/plugins/<tag>/stats/top_clients`
+
+Aggregates query counts by client IP.
+
+Query parameters:
+
+* `limit=<n>`
+  * Number of buckets to return. Defaults to `20`. The backend no longer enforces a `200` cap; large values increase SQLite sorting and response-size cost.
+* Same as `/records`, supports `since_ms`, `until_ms`, `qname`, `client_ip`, `qtype`, `rcode`, `status`, and `matcher_tag` filters.
+
+Response fields:
+
+* `sample_size`
+* `rows[].key`
+* `rows[].count`
+* `rows[].share`
+
+#### `GET /api/plugins/<tag>/stats/top_qnames`
+
+Aggregates query counts by question name. Query parameters and response fields match `/stats/top_clients`.
+
+#### `GET /api/plugins/<tag>/stats/qtype`
+
+Aggregates distribution by QTYPE. Supports the same time range and filter parameters as `/records`, and returns `sample_size` plus `rows[].key/count/share`.
+
+#### `GET /api/plugins/<tag>/stats/rcode`
+
+Aggregates distribution by response code or special status bucket. Supports the same time range and filter parameters as `/records`, and returns `sample_size` plus `rows[].key/count/share`.
+
+#### `GET /api/plugins/<tag>/stats/latency`
+
+Returns latency summary values, histogram buckets, and slow-query ranking.
+
+Query parameters:
+
+* `slow_limit=<n>` or `limit=<n>`
+  * Number of slow-query rows to return. Defaults to `20`. The backend no longer enforces a `200` cap.
+* Same as `/records`, supports time range and filter parameters.
+
+#### `GET /api/plugins/<tag>/stats/timeseries`
+
+Aggregates query trends into time buckets.
+
+Query parameters:
+
+* `bucket=auto|minute|hour`
+* `buckets=<n>`
+  * Number of buckets to return. Defaults to `60`, maximum `720`.
+* Same as `/records`, supports time range and filter parameters.
+
+Response fields:
+
+* `sample_size`, `sample_limit`: included record count and the statistics limit (10,000).
+* `sample_truncated`: whether additional matching records exist; only the 10,001st row is probed. Exactly 10,000 records does not imply truncation.
+* `sample_since_ms`, `sample_until_ms`: earliest/latest included record timestamps; `null` when empty.
+* `bucket_ms`: the resolved interval in milliseconds.
+* `points[]`: nonempty buckets containing `bucket_ms` (bucket start), `total`, `error_count`, `no_response_count`, `servfail_count`, `partial`, `avg_ms`, and `p95_ms`. The three anomaly counts are mutually exclusive.
+
+The default `bucket` remains `minute`. `auto` chooses the smallest common interval that fits the entire requested range; truncated samples start at the oldest included record. Fixed minute/hour modes retain the latest nonempty buckets when `buckets` is exceeded; sample metadata describes all included records. The WebUI automatic mode does not drop buckets within coverage.
+
+Example (querying a historical interval):
+
+```http
+GET /api/plugins/rec/stats/timeseries?since_ms=1700000000000&until_ms=1700003600000&bucket=auto&buckets=120
+```
+
+#### `GET /api/plugins/<tag>/stream`
+
+Streams newly written records over SSE.
+
+Query parameters:
+
+* `tail=<n>`
+  * Replay the most recent `n` records from the in-memory tail first, then continue streaming.
+
+<Admonition type="note" title="Notes">
+
+* `event: record` uses the full `RecordDetail` JSON as `data`.
+* Heartbeat comment frames are sent periodically to keep the connection alive.
+* Clients should send `Accept: text/event-stream` and tolerate heartbeat frames, error events, empty payloads, and brief reconnects.
+
+</Admonition>

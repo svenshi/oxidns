@@ -27,7 +27,7 @@ use crate::core::context::DnsContext;
 use crate::infra::error::{DnsError, Result};
 use crate::plugin::executor::{ExecStep, Executor, ExecutorNext};
 use crate::plugin::{Plugin, PluginFactory, UninitializedPlugin};
-use crate::proto::{EdnsCode, EdnsOption};
+use crate::proto::EdnsOption;
 use crate::{continue_next, plugin_factory};
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -89,7 +89,7 @@ impl Executor for ForwardEdns0Opt {
             let mut existing_codes = collect_selected_codes(response, &self.code_set);
             let opt = ensure_opt_record(response);
             for option in selected {
-                let code = u16::from(EdnsCode::from(&option));
+                let code = option.code();
                 if existing_codes.insert(code) {
                     opt.insert(option);
                 }
@@ -166,7 +166,7 @@ fn collect_selected_options(
 
     let mut selected = Vec::new();
     for option in edns.options() {
-        let code = u16::from(EdnsCode::from(option));
+        let code = option.code();
         if code_set.contains(&code) {
             selected.push(option.clone());
         }
@@ -184,7 +184,7 @@ fn collect_selected_codes(
 
     let mut out = AHashSet::new();
     for option in edns.options() {
-        let code = u16::from(EdnsCode::from(option));
+        let code = option.code();
         if code_set.contains(&code) {
             out.insert(code);
         }
@@ -246,7 +246,7 @@ mod tests {
             .map(|edns| {
                 edns.options()
                     .iter()
-                    .filter(|option| u16::from(EdnsCode::from(*option)) == code)
+                    .filter(|option| option.code() == code)
                     .count()
             })
             .unwrap_or(0)

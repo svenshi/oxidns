@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 "use client";
 
 import { useMemo, useState } from "react";
@@ -51,6 +56,9 @@ export function PluginDetailTemplate({
   summaryItems,
   configContent,
   metricsContent,
+  statsTabLabel,
+  tabValue,
+  onTabValueChange,
   runtimeContent,
   extraTabs,
 }: PluginDetailTemplateProps) {
@@ -366,6 +374,8 @@ export function PluginDetailTemplate({
       )}
 
       <Tabs
+        value={tabValue}
+        onValueChange={onTabValueChange}
         defaultValue="config"
         className="mx-auto min-h-0 w-full max-w-6xl flex-1 overflow-y-auto px-5 py-5 [scrollbar-gutter:stable]"
       >
@@ -382,7 +392,9 @@ export function PluginDetailTemplate({
         >
           <TabsTrigger value="config">{t(WEBUI.plugins.configTab)}</TabsTrigger>
           {hasStatsContent && (
-            <TabsTrigger value="stats">{t(WEBUI.plugins.statsTab)}</TabsTrigger>
+            <TabsTrigger value="stats">
+              {statsTabLabel ?? t(WEBUI.plugins.statsTab)}
+            </TabsTrigger>
           )}
           {resolvedExtraTabs.map((tab) => (
             <TabsTrigger key={tab.value} value={tab.value}>

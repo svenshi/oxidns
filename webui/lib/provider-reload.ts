@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import type { DependencyGraphReport } from "./oxidns-api";
 import type { PluginInstance } from "./types";
 

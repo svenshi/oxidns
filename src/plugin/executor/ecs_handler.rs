@@ -7,13 +7,17 @@
 //!
 //! Supported policies:
 //! - `forward = true`: keep client-supplied ECS when present.
-//! - `forward = false`: remove client-supplied ECS.
-//! - `send = true`: synthesize ECS from source IP when request has no ECS.
-//! - `preset`: force ECS source IP regardless of client source address.
+//! - `forward = false`: remove existing ECS before selecting a replacement.
+//! - `preset`: use a fixed source IP when existing ECS is not preserved.
+//! - `send = true`: otherwise synthesize ECS from the request-local client IP.
+//! - non-IN queries never receive synthesized ECS; `forward = false` still
+//!   removes existing ECS before downstream execution.
 //!
 //! Post-stage behavior:
-//! - when ECS was not forwarded from client, response ECS is stripped to avoid
-//!   leaking internally generated subnet metadata back to downstream clients.
+//! - response ECS is preserved only when existing client ECS was retained for
+//!   an IN query, avoiding disclosure of internally generated subnet metadata.
+//! - request ECS remains available after execution; this plugin does not
+//!   restore or clear the query when the downstream chain returns.
 
 use std::net::IpAddr;
 
@@ -35,7 +39,7 @@ struct EcsHandlerConfig {
     /// Keep client-supplied ECS option when present.
     #[serde(default)]
     forward: bool,
-    /// Synthesize ECS from source IP when request has no ECS.
+    /// Synthesize ECS when existing ECS is not preserved and no preset is set.
     #[serde(default)]
     send: bool,
     /// Optional fixed IP used as ECS source instead of client source IP.
@@ -103,42 +107,38 @@ impl Executor for EcsHandler {
 
 impl EcsHandler {
     fn prepare_request(&self, context: &mut DnsContext) -> Result<bool> {
-        let Some(query_class) = context.request.first_qclass() else {
+        let has_ecs = request_has_ecs(&context.request);
+        if has_ecs && !self.forward {
+            strip_ecs_from_message(context.request_mut());
+        }
+
+        if context.request.first_qclass() != Some(DNSClass::IN) {
             return Ok(false);
+        }
+
+        if has_ecs && self.forward {
+            return Ok(true);
+        }
+
+        let source_ip = if let Some(preset) = self.preset {
+            Some(normalize_ipv4_mapped_ip(preset))
+        } else if self.send {
+            Some(normalize_ipv4_mapped_ip(context.peer_addr().ip()))
+        } else {
+            None
         };
 
-        if query_class != DNSClass::IN {
-            return Ok(false);
-        }
-
-        let mut forwarded_client_ecs = false;
-        if request_has_ecs(&context.request) {
-            if self.forward {
-                forwarded_client_ecs = true;
-            } else {
-                strip_ecs_from_message(context.request_mut());
-            }
-        } else {
-            let source_ip = if let Some(preset) = self.preset {
-                Some(normalize_ipv4_mapped_ip(preset))
-            } else if self.send {
-                Some(normalize_ipv4_mapped_ip(context.peer_addr().ip()))
-            } else {
-                None
+        if let Some(source_ip) = source_ip {
+            let mask = match source_ip {
+                IpAddr::V4(_) => self.mask4,
+                IpAddr::V6(_) => self.mask6,
             };
-
-            if let Some(source_ip) = source_ip {
-                let mask = match source_ip {
-                    IpAddr::V4(_) => self.mask4,
-                    IpAddr::V6(_) => self.mask6,
-                };
-                let ecs = EdnsOption::Subnet(ClientSubnet::new(source_ip, mask, 0));
-                let opt = ensure_opt_record(context.request_mut());
-                opt.insert(ecs);
-            }
+            let ecs = EdnsOption::Subnet(ClientSubnet::new(source_ip, mask, 0));
+            let opt = ensure_opt_record(context.request_mut());
+            opt.insert(ecs);
         }
 
-        Ok(forwarded_client_ecs)
+        Ok(false)
     }
 }
 
@@ -160,12 +160,16 @@ impl PluginFactory for EcsHandlerFactory {
     fn quick_setup(&self, tag: &str, param: Option<String>) -> Result<UninitializedPlugin> {
         // Quick setup syntax: `ecs [ip[/mask]]`.
         let preset = param
-            .map(|s| s.trim().to_string())
+            .as_deref()
+            .map(str::trim)
             .filter(|s| !s.is_empty())
-            .and_then(|s| {
-                let (ip, _) = s.split_once('/').unwrap_or((&s, ""));
-                ip.parse::<IpAddr>().ok()
-            });
+            .map(|s| {
+                let (ip, _) = s.split_once('/').unwrap_or((s, ""));
+                ip.parse::<IpAddr>().map_err(|error| {
+                    DnsError::plugin(format!("invalid ecs_handler preset '{}': {}", ip, error))
+                })
+            })
+            .transpose()?;
 
         Ok(UninitializedPlugin::Executor(Box::new(EcsHandler {
             tag: tag.to_string(),
@@ -269,6 +273,147 @@ mod tests {
     fn add_ecs_option(message: &mut Message, ip: IpAddr, mask: u8) {
         let opt = ensure_opt_record(message);
         opt.insert(EdnsOption::Subnet(ClientSubnet::new(ip, mask, 0)));
+    }
+
+    #[test]
+    fn test_ecs_handler_source_priority() {
+        let client_ecs = ClientSubnet::new("198.51.100.9".parse().unwrap(), 32, 0);
+        for peer in ["192.0.2.42", "2001:db8::42", "::ffff:192.0.2.42"] {
+            let peer: IpAddr = peer.parse().unwrap();
+            for preset in [
+                None,
+                Some("203.0.113.10"),
+                Some("2001:db8:1::10"),
+                Some("::ffff:203.0.113.10"),
+            ] {
+                let preset = preset.map(|ip| ip.parse::<IpAddr>().unwrap());
+                for forward in [false, true] {
+                    for send in [false, true] {
+                        for has_client_ecs in [false, true] {
+                            let plugin = EcsHandler {
+                                tag: "ecs".to_string(),
+                                forward,
+                                send,
+                                preset,
+                                mask4: 20,
+                                mask6: 56,
+                            };
+                            let mut ctx = make_context(DNSClass::IN);
+                            ctx.set_peer_addr(SocketAddr::new(peer, 5353));
+                            if has_client_ecs {
+                                ensure_opt_record(ctx.request_mut())
+                                    .insert(EdnsOption::Subnet(client_ecs.clone()));
+                            }
+                            let forwarded = plugin.prepare_request(&mut ctx).unwrap();
+                            assert_eq!(forwarded, forward && has_client_ecs);
+                            let expected = if forwarded {
+                                Some(client_ecs.clone())
+                            } else {
+                                preset.or(send.then_some(peer)).map(|ip| {
+                                    let ip = normalize_ipv4_mapped_ip(ip);
+                                    ClientSubnet::new(ip, if ip.is_ipv4() { 20 } else { 56 }, 0)
+                                })
+                            };
+                            let actual = ctx
+                                .request
+                                .edns()
+                                .as_ref()
+                                .and_then(|edns| edns.option(EdnsCode::Subnet));
+                            let expected = expected.map(EdnsOption::Subnet);
+                            assert_eq!(
+                                actual,
+                                expected.as_ref(),
+                                "peer={peer}, preset={preset:?}, forward={forward}, send={send}, client_ecs={has_client_ecs}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_ecs_handler_non_in_only_applies_strip_policy() {
+        use crate::proto::EdnsLocal;
+
+        for forward in [false, true] {
+            for has_client_ecs in [false, true] {
+                let plugin = EcsHandler {
+                    tag: "ecs".to_string(),
+                    forward,
+                    send: true,
+                    preset: Some("203.0.113.10".parse().unwrap()),
+                    mask4: 24,
+                    mask6: 48,
+                };
+                let mut ctx = make_context(DNSClass::CH);
+                let opt = ensure_opt_record(ctx.request_mut());
+                opt.set_dnssec_ok(true);
+                opt.set_udp_payload_size(4096);
+                let other = EdnsOption::Local(EdnsLocal::new(65001, vec![1, 2, 3]));
+                opt.insert(other.clone());
+                if has_client_ecs {
+                    add_ecs_option(ctx.request_mut(), "198.51.100.9".parse().unwrap(), 24);
+                }
+                assert!(!plugin.prepare_request(&mut ctx).unwrap());
+                assert_eq!(request_has_ecs(&ctx.request), forward && has_client_ecs);
+                let opt = ctx.request.edns().as_ref().unwrap();
+                assert!(opt.flags().dnssec_ok);
+                assert_eq!(opt.udp_payload_size(), 4096);
+                assert_eq!(opt.option(EdnsCode::Unknown(65001)), Some(&other));
+            }
+        }
+    }
+
+    #[test]
+    fn test_ecs_handler_quick_setup_rejects_invalid_preset() {
+        for param in [
+            "203.0.113.999",
+            "not-an-ip",
+            "203.0.113.999/24",
+            "/24",
+            "2001:db8::gg",
+        ] {
+            let error = EcsHandlerFactory
+                .quick_setup("ecs", Some(param.to_string()))
+                .err()
+                .expect("invalid preset must be rejected");
+            assert!(
+                error.to_string().contains("invalid ecs_handler preset"),
+                "{error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ecs_handler_quick_setup_presets_and_empty_args() {
+        for (param, expected) in [
+            (None, None),
+            (Some(""), None),
+            (Some("  "), None),
+            (Some(" 203.0.113.10 "), Some(("203.0.113.10", 24))),
+            (Some("203.0.113.10/16"), Some(("203.0.113.10", 24))),
+            (Some("2001:db8::10/64"), Some(("2001:db8::10", 48))),
+        ] {
+            let UninitializedPlugin::Executor(plugin) = EcsHandlerFactory
+                .quick_setup("ecs", param.map(str::to_string))
+                .unwrap()
+            else {
+                panic!("ecs_handler must create an executor");
+            };
+            let mut ctx = make_context(DNSClass::IN);
+            add_ecs_option(ctx.request_mut(), "198.51.100.9".parse().unwrap(), 24);
+            plugin.execute(&mut ctx).await.unwrap();
+            let actual = ctx
+                .request
+                .edns()
+                .as_ref()
+                .and_then(|edns| edns.option(EdnsCode::Subnet));
+            let expected = expected.map(|(ip, mask)| {
+                EdnsOption::Subnet(ClientSubnet::new(ip.parse().unwrap(), mask, 0))
+            });
+            assert_eq!(actual, expected.as_ref(), "param={param:?}");
+        }
     }
 
     #[tokio::test]

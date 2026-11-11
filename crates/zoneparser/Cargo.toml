@@ -1,6 +1,6 @@
 [package]
 name = "oxidns-zoneparser"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 authors = ["Sven Shi <isvenshi@gmail.com>"]
 license = "MIT"
@@ -11,7 +11,7 @@ keywords = ["dns", "zonefile", "parser"]
 categories = ["parser-implementations", "network-programming"]
 
 [dependencies]
-oxidns-proto = { version = "0.1", path = "../proto" }
+oxidns-proto = { version = "0.1.7", path = "../proto" }
 thiserror = "2.0"
 
 [lib]

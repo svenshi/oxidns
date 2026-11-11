@@ -1,0 +1,242 @@
+---
+title: Response Matchers
+---
+
+import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
+
+These matchers inspect response addresses, CNAMEs, RCODEs, and whether a response contains the wanted answer type.
+
+## `resp_ip`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Matches A and AAAA addresses in the response answers.
+
+### Example Configuration
+
+```yaml
+- tag: matched_resp_ip
+  type: resp_ip
+  args:
+    - "100.64.0.0/10"
+    - "$special_targets"
+```
+
+### Configuration Details
+
+- Type: `array`; Required: yes; Default: none
+- Supported items:
+  - single IPs
+  - CIDRs
+  - provider references with IP match capability, such as `ip_set` or `geoip`
+- Runtime impact:
+  - Returns `true` when any A or AAAA answer IP matches any rule.
+
+### quick setup
+
+```yaml
+- matches: "resp_ip 10.0.0.0/8"
+```
+
+### Typical Uses
+
+- Trigger side effects based on returned answer addresses.
+
+---
+
+## `cname`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Matches CNAME targets in the response.
+
+### Example Configuration
+
+```yaml
+- tag: cname_target
+  type: cname
+  args:
+    - "full:alias.example.com"
+    - "domain:example.com"
+    - "keyword:cdn"
+    - "regexp:^edge[0-9]+\\.example\\.net$"
+    - "$core_domains"
+    - "&/etc/oxidns/cnames.txt"
+```
+
+### Configuration Details
+
+- Type: `array`; Required: yes; Default: none
+- Supported items:
+  - domain expressions, supporting `full:`, `domain:`, `keyword:`, `regexp:`,
+    and bare domains without a prefix as `domain:` rules
+  - provider references with domain match capability, such as `domain_set` or `geosite`
+  - file references
+- Runtime impact:
+  - Returns `true` when any CNAME target in the response matches.
+
+### quick setup
+
+```yaml
+- matches: "cname keyword:cdn"
+```
+
+### Typical Uses
+
+- Branch on canonical names returned by upstreams.
+
+---
+
+## `rcode`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Matches the current response code.
+
+### Example Configuration
+
+This example mixes text and numeric forms. Both formats are equivalent and can be used together.
+
+```yaml
+- tag: failure_rcodes
+  type: rcode
+  args:
+    - "SERVFAIL"
+    - "3"
+```
+
+### Configuration Details
+
+- Type: `array`; Required: yes; Default: none
+- Supports both enum text and decimal numeric codes; text matching is case-insensitive, and both formats can be mixed in the same list.
+- Common mappings and meanings are listed in the [DNS Code Reference](../../dns-codes.md#rcode-response-codes).
+- Unknown or future rcodes can still be matched with numeric codes.
+- Runtime impact:
+  - Returns `true` when the response rcode matches the configured set.
+
+### quick setup
+
+```yaml
+- matches: "rcode SERVFAIL,3"
+```
+
+### Typical Uses
+
+- Follow-up handling for upstream failures or negative responses.
+
+---
+
+## `has_cname`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Check whether the current response's Answer section contains a CNAME record, regardless of request qtype or response RCODE.
+
+- Returns `true` for any CNAME in Answer, including CNAME chains and answers mixing CNAME with A/AAAA records.
+- Returns `false` for a missing response, an empty Answer section, or CNAME records only in Authority/Additional.
+- Only inspects the current response: it does not modify records, issue additional queries, or depend on other plugins.
+- Use [`cname`](#cname) to match CNAME target domain names.
+
+### Configuration Example
+
+```yaml
+- tag: response_has_cname
+  type: has_cname
+```
+
+Reference it in a `sequence` with `matches: "$response_has_cname"`, or negate it with `matches: "!$response_has_cname"`.
+
+### Configuration Fields
+
+No independent configuration fields; `args` is unnecessary. Initialization and destruction allocate no additional runtime resources.
+
+### quick setup
+
+Accepts no parameters. Evaluate after upstream resolution or local response creation:
+
+```yaml
+- exec: "$forward_main"
+- matches: "has_cname"
+  exec: "mark 100"
+- matches: "!has_cname"
+  exec: "mark 200"
+```
+
+`!has_cname` also matches when there is no response. Combine `has_resp` with `!has_cname` to match only existing responses without CNAME records.
+
+### Typical Uses
+
+- Branch on the presence of CNAME records without configuring target domain rules.
+
+---
+
+## `has_resp`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Matches whether a response already exists in the context.
+
+### Example Configuration
+
+```yaml
+- tag: has_resp_flag
+  type: has_resp
+```
+
+### Configuration Details
+
+No standalone configuration fields.
+
+### quick setup
+
+```yaml
+- matches: "has_resp"
+```
+
+### Typical Uses
+
+- Guard forwarding so it only runs when no earlier plugin has answered.
+
+---
+
+## `has_wanted_ans`
+
+<PluginAvailability from="minimal" />
+
+### Purpose
+
+Matches whether the response already contains wanted answers.
+
+### Example Configuration
+
+```yaml
+- tag: has_wanted_answer
+  type: has_wanted_ans
+```
+
+### Configuration Details
+
+No standalone configuration fields.
+
+### quick setup
+
+```yaml
+- matches: "has_wanted_ans"
+```
+
+### Typical Uses
+
+- Build follow-up logic only when a meaningful answer is already present.
+
+---

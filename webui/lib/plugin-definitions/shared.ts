@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import type { PluginType } from "../types";
 
 /**
@@ -100,6 +105,8 @@ export interface ConfigField {
   default?: unknown;
   /** Render this field inside the collapsed advanced-settings section. */
   advanced?: boolean;
+  /** Show when a plugin-root field equals this value, using its default when omitted. Hidden values are retained. */
+  visibleWhen?: { field: string; equals: string | number | boolean };
   options?: {
     label: string;
     value: string | number;

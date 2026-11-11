@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Sven Shi
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 set positional-arguments
 
 # Run the standard local quality gate without mutating source files.
@@ -59,9 +62,8 @@ test-standard:
 check-matrix: check-each-feature check-minimal check-standard check-full test-minimal test-standard
     cargo test --all-features
 
-# One message_codec Criterion benchmark as a hotpath report, run
-# HOTPATH_CRITERION_ITERATIONS times. The `hotpath` profile keeps the symbols
-# Callgrind needs, e.g.
-# `HOTPATH_CRITERION_ITERATIONS=100000 just bench-hotpath message_compression_heavy/decode/655`
-bench-hotpath benchmark:
-    cargo bench --profile hotpath --bench message_codec --no-default-features --features minimal,hotpath-alloc,hotpath-cloud,hotpath-callgrind -- --test --exact "{{benchmark}}"
+# One Criterion request-path benchmark as a hotpath report. The optional target
+# selects any suite in .github/hotpath-benchmarks.json; existing codec commands
+# continue to work. HOTPATH_CRITERION_ITERATIONS fixes the runs per report.
+bench-hotpath benchmark target="message_codec":
+    cargo bench --locked --profile "${HOTPATH_PROFILE:-hotpath}" --bench "{{target}}" --no-default-features --features minimal,plugin-arbitrary,hotpath-alloc,hotpath-cloud,hotpath-callgrind -- --test --exact "{{benchmark}}"

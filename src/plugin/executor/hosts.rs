@@ -9,7 +9,14 @@
 //! - inline `entries`
 //! - external files (`files`)
 //!
-//! Supported matchers:
+//! `format` defaults to `oxidns` (`domain_rule IP [IP ...]`). The optional
+//! `standard` format reads `IP hostname [alias ...]`, merging unique addresses
+//! for each exact hostname. Parsing and merging happen only during creation;
+//! the request path uses the same immutable index for both formats.
+//! Invalid rules that match the other format report a configuration hint
+//! without switching formats automatically.
+//!
+//! Supported matchers in `oxidns` format:
 //! - exact name (`full:example.com`)
 //! - suffix domain (`domain:example.com`)
 //! - keyword (`keyword:cdn`)
@@ -45,6 +52,9 @@ const HOSTS_ANSWER_TTL: u32 = 10;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct HostsConfig {
+    /// Rule syntax shared by inline entries and external files.
+    #[serde(default)]
+    format: HostsFormat,
     /// Inline hosts rules.
     #[serde(default)]
     entries: Vec<String>,
@@ -54,6 +64,14 @@ struct HostsConfig {
     /// Whether to stop the executor chain after producing a local answer.
     #[serde(default)]
     short_circuit: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum HostsFormat {
+    #[default]
+    Oxidns,
+    Standard,
 }
 
 #[derive(Debug, Clone)]
@@ -70,7 +88,7 @@ struct HostsRule {
     answers: HostsAnswers,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct HostsAnswers {
     ipv4: Vec<Arc<RData>>,
     ipv6: Vec<Arc<RData>>,
@@ -282,6 +300,17 @@ fn build_rule_index(cfg: &HostsConfig) -> Result<RuleIndex> {
         .scan(
             &LineClassifier::new(&["#"]),
             |line| -> std::result::Result<(), String> {
+                if cfg.format == HostsFormat::Standard {
+                    let raw = line.raw();
+                    let rule_text = raw.split_once('#').map_or(raw, |(left, _)| left).trim();
+                    if rule_text.is_empty() {
+                        return Ok(());
+                    }
+                    return parse_standard_hosts_line(rule_text, &mut builder).map_err(|error| {
+                        hosts_rule_error(cfg.format, line.raw(), line.location(), error)
+                    });
+                }
+
                 let rule_text = match line.location() {
                     TextLocation::Inline { .. } => line.raw().trim(),
                     TextLocation::File { .. } => {
@@ -293,8 +322,9 @@ fn build_rule_index(cfg: &HostsConfig) -> Result<RuleIndex> {
                         raw.split_once('#').map_or(raw, |(left, _)| left).trim()
                     }
                 };
-                let rule = parse_hosts_line(rule_text)
-                    .map_err(|error| format!("invalid hosts rule '{rule_text}': {error}"))?;
+                let rule = parse_hosts_line(rule_text).map_err(|error| {
+                    hosts_rule_error(cfg.format, line.raw(), line.location(), error)
+                })?;
                 builder.add_rule(rule);
                 Ok(())
             },
@@ -302,6 +332,42 @@ fn build_rule_index(cfg: &HostsConfig) -> Result<RuleIndex> {
         .map_err(|error| DnsError::plugin(error.to_string()))?;
 
     builder.build()
+}
+
+fn hosts_rule_error(
+    format: HostsFormat,
+    raw: &str,
+    location: TextLocation<'_>,
+    error: String,
+) -> String {
+    let standard_text = raw.split_once('#').map_or(raw, |(left, _)| left).trim();
+    let oxidns_text = match location {
+        TextLocation::Inline { .. } => raw.trim(),
+        TextLocation::File { .. } => standard_text,
+    };
+    let (rule_text, configured, suggested) = match format {
+        HostsFormat::Oxidns => (
+            oxidns_text,
+            "oxidns",
+            parse_standard_hosts_fields(standard_text)
+                .is_ok()
+                .then_some("standard"),
+        ),
+        HostsFormat::Standard => (
+            standard_text,
+            "standard",
+            parse_hosts_line(oxidns_text).is_ok().then_some("oxidns"),
+        ),
+    };
+    if let Some(suggested) = suggested {
+        format!(
+            "invalid hosts rule '{rule_text}': format mismatch: configured format: {configured}, \
+             but this rule matches {suggested}; set format: {suggested} or convert this rule to \
+             {configured} format; {error}"
+        )
+    } else {
+        format!("invalid hosts rule '{rule_text}': {error}")
+    }
 }
 
 fn parse_hosts_line(raw: &str) -> std::result::Result<HostsRule, String> {
@@ -329,6 +395,37 @@ fn parse_hosts_line(raw: &str) -> std::result::Result<HostsRule, String> {
         matcher,
         answers: HostsAnswers { ipv4, ipv6 },
     })
+}
+
+fn parse_standard_hosts_line(
+    raw: &str,
+    builder: &mut RuleIndexBuilder,
+) -> std::result::Result<(), String> {
+    let (ip, hostnames) = parse_standard_hosts_fields(raw)?;
+    let address = Arc::new(match ip {
+        IpAddr::V4(ip) => RData::A(A(ip)),
+        IpAddr::V6(ip) => RData::AAAA(AAAA(ip)),
+    });
+    for name in hostnames {
+        builder.add_standard_address(normalize_name(name), &address);
+    }
+    Ok(())
+}
+
+fn parse_standard_hosts_fields(
+    raw: &str,
+) -> std::result::Result<(IpAddr, std::str::SplitWhitespace<'_>), String> {
+    let mut fields = raw.split_whitespace();
+    let Some(ip_raw) = fields.next() else {
+        return Err("standard hosts rule must include an IP and at least one hostname".to_string());
+    };
+    let ip = ip_raw
+        .parse::<IpAddr>()
+        .map_err(|error| format!("invalid hosts IP '{ip_raw}': {error}"))?;
+    if fields.clone().next().is_none() {
+        return Err("standard hosts rule contains no hostname".to_string());
+    }
+    Ok((ip, fields))
 }
 
 fn parse_rule_matcher(raw_rule: &str) -> std::result::Result<RuleMatcher, String> {
@@ -377,6 +474,25 @@ fn build_hosts_response(
 }
 
 impl RuleIndexBuilder {
+    fn add_standard_address(&mut self, name: String, address: &Arc<RData>) {
+        let slot = if let Some(&slot) = self.full_rules.get(name.as_str()) {
+            slot
+        } else {
+            let slot = self.push_answers(HostsAnswers::default());
+            self.full_rules.insert(name.into_boxed_str(), slot);
+            slot
+        };
+        let answers = Arc::make_mut(&mut self.payloads[slot]);
+        let family = if matches!(address.as_ref(), RData::A(_)) {
+            &mut answers.ipv4
+        } else {
+            &mut answers.ipv6
+        };
+        if !family.contains(address) {
+            family.push(Arc::clone(address));
+        }
+    }
+
     fn add_rule(&mut self, rule: HostsRule) {
         match rule.matcher {
             RuleMatcher::Full(name) => self.add_full_rule(name, rule.answers),
@@ -632,6 +748,248 @@ mod tests {
     }
 
     #[test]
+    fn test_hosts_format_defaults_and_validation() {
+        assert_eq!(parse_config(None).unwrap().format, HostsFormat::Oxidns);
+        for (yaml, expected) in [
+            ("entries: []", HostsFormat::Oxidns),
+            ("format: oxidns", HostsFormat::Oxidns),
+            ("format: standard", HostsFormat::Standard),
+        ] {
+            let args = serde_yaml_ng::from_str(yaml).unwrap();
+            assert_eq!(parse_config(Some(args)).unwrap().format, expected);
+        }
+        for format in ["unknown", "mosdns"] {
+            let args = serde_yaml_ng::from_str(&format!("format: {format}")).unwrap();
+            let error = parse_config(Some(args)).unwrap_err().to_string();
+            assert!(error.contains("unknown variant"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_hosts_omitted_and_explicit_oxidns_format_preserve_overrides() {
+        for format in ["", "format: oxidns\n"] {
+            let args = serde_yaml_ng::from_str(&format!(
+                "{format}entries:\n  - 'example.test 192.0.2.1'\n  - 'example.test 192.0.2.2'\n"
+            ))
+            .unwrap();
+            let plugin = build_plugin(parse_config(Some(args)).unwrap());
+            let mut context = make_context("example.test.", RecordType::A);
+            plugin.execute(&mut context).await.unwrap();
+            assert_eq!(
+                context.response().unwrap().answer_ips(),
+                vec!["192.0.2.2".parse::<IpAddr>().unwrap()]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_standard_hosts_merges_aliases_and_families_across_sources() {
+        let mut first_file = NamedTempFile::new().unwrap();
+        first_file
+            .write_all(
+                b"\r\n # comment\r\n\t192.0.2.2\tEXAMPLE.test\tAlias.TEST.\t# trailing\r\n2001:db8::2 example.test alias.test\r\n",
+            )
+            .unwrap();
+        let mut second_file = NamedTempFile::new().unwrap();
+        writeln!(second_file, "192.0.2.1 example.test").unwrap();
+        writeln!(second_file, "2001:0db8::1 example.test").unwrap();
+        writeln!(second_file, "192.0.2.3 example.test").unwrap();
+        let plugin = build_plugin(HostsConfig {
+            format: HostsFormat::Standard,
+            entries: vec![
+                String::new(),
+                "  # inline comment".into(),
+                "192.0.2.1 Example.TEST. alias.test # trailing".into(),
+                "2001:db8::1 example.test".into(),
+                "192.0.2.1 example.test example.test".into(),
+                "192.0.2.9 domain:literal.test".into(),
+            ],
+            files: vec![
+                first_file.path().display().to_string(),
+                second_file.path().display().to_string(),
+            ],
+            ..HostsConfig::default()
+        });
+
+        for (name, qtype, expected) in [
+            (
+                "EXAMPLE.test.",
+                RecordType::A,
+                vec!["192.0.2.1", "192.0.2.2", "192.0.2.3"],
+            ),
+            (
+                "example.test.",
+                RecordType::AAAA,
+                vec!["2001:db8::1", "2001:db8::2"],
+            ),
+            ("alias.test.", RecordType::A, vec!["192.0.2.1", "192.0.2.2"]),
+            ("alias.test.", RecordType::AAAA, vec!["2001:db8::2"]),
+        ] {
+            let mut context = make_context(name, qtype);
+            plugin.execute(&mut context).await.unwrap();
+            let response = context.response().unwrap();
+            assert_eq!(
+                response.answer_ips(),
+                expected
+                    .into_iter()
+                    .map(|ip| ip.parse::<IpAddr>().unwrap())
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                response
+                    .answers()
+                    .iter()
+                    .all(|rr| rr.ttl() == HOSTS_ANSWER_TTL)
+            );
+        }
+        assert!(plugin.index.match_answers("www.example.test").is_none());
+        assert!(plugin.index.match_answers("literal.test").is_none());
+        assert!(plugin.index.match_answers("domain:literal.test").is_some());
+    }
+
+    #[test]
+    fn test_standard_hosts_errors_include_source_location() {
+        for rule in ["not-an-ip example.test", "192.0.2.1 # missing hostname"] {
+            let cfg = HostsConfig {
+                format: HostsFormat::Standard,
+                entries: vec!["# comment".into(), rule.into()],
+                ..HostsConfig::default()
+            };
+            let error = build_rule_index(&cfg).unwrap_err().to_string();
+            assert!(error.contains("args.entries[1]"), "{error}");
+            assert!(error.contains("invalid hosts rule"), "{error}");
+
+            let mut file = NamedTempFile::new().unwrap();
+            writeln!(file, "# comment\n{rule}").unwrap();
+            let cfg = HostsConfig {
+                format: HostsFormat::Standard,
+                files: vec![file.path().display().to_string()],
+                ..HostsConfig::default()
+            };
+            let error = build_rule_index(&cfg).unwrap_err().to_string();
+            assert!(
+                error.contains(&file.path().display().to_string()),
+                "{error}"
+            );
+            assert!(error.contains("line 2"), "{error}");
+        }
+    }
+
+    #[test]
+    fn test_hosts_format_mismatch_suggests_other_format_with_location() {
+        for (format, rule, configured, suggested) in [
+            (
+                HostsFormat::Oxidns,
+                "192.0.2.1 example.test alias.test # standard comment",
+                "oxidns",
+                "standard",
+            ),
+            (
+                HostsFormat::Oxidns,
+                "2001:db8::1 example.test alias.test",
+                "oxidns",
+                "standard",
+            ),
+            (
+                HostsFormat::Standard,
+                "example.test 192.0.2.1 2001:db8::1",
+                "standard",
+                "oxidns",
+            ),
+            (
+                HostsFormat::Standard,
+                "domain:example.test 192.0.2.1",
+                "standard",
+                "oxidns",
+            ),
+        ] {
+            let cfg = HostsConfig {
+                format,
+                entries: vec![rule.into()],
+                ..HostsConfig::default()
+            };
+            let error = build_rule_index(&cfg).unwrap_err().to_string();
+            assert!(error.contains("args.entries[0]"), "{error}");
+            assert!(error.contains("format mismatch"), "{error}");
+            assert!(
+                error.contains(&format!("configured format: {configured}")),
+                "{error}"
+            );
+            assert!(
+                error.contains(&format!("set format: {suggested}")),
+                "{error}"
+            );
+
+            let mut file = NamedTempFile::new().unwrap();
+            let valid_rule = match format {
+                HostsFormat::Oxidns => "valid.test 192.0.2.2",
+                HostsFormat::Standard => "192.0.2.2 valid.test",
+            };
+            writeln!(file, "{valid_rule}\n{rule} # file comment").unwrap();
+            let cfg = HostsConfig {
+                format,
+                files: vec![file.path().display().to_string()],
+                ..HostsConfig::default()
+            };
+            let error = build_rule_index(&cfg).unwrap_err().to_string();
+            assert!(
+                error.contains(&file.path().display().to_string()),
+                "{error}"
+            );
+            assert!(error.contains("line 2"), "{error}");
+            assert!(
+                error.contains(&format!("set format: {suggested}")),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hosts_format_hint_preserves_inline_regexp_hash() {
+        let cfg = HostsConfig {
+            format: HostsFormat::Standard,
+            entries: vec!["regexp:^[a-z#]+\\.example$ 192.0.2.1".into()],
+            ..HostsConfig::default()
+        };
+        let error = build_rule_index(&cfg).unwrap_err().to_string();
+        assert!(error.contains("set format: oxidns"), "{error}");
+    }
+
+    #[test]
+    fn test_hosts_format_hints_do_not_guess_for_invalid_or_ambiguous_rules() {
+        for format in [HostsFormat::Oxidns, HostsFormat::Standard] {
+            for rule in [
+                "not-an-ip example.test",
+                "192.0.2.1",
+                "example.test 192.0.2.1 invalid-ip",
+            ] {
+                let cfg = HostsConfig {
+                    format,
+                    entries: vec![rule.into()],
+                    ..HostsConfig::default()
+                };
+                let error = build_rule_index(&cfg).unwrap_err().to_string();
+                assert!(error.contains("invalid hosts rule"), "{error}");
+                assert!(!error.contains("format mismatch"), "{error}");
+                assert!(!error.contains("set format:"), "{error}");
+            }
+
+            let cfg = HostsConfig {
+                format,
+                entries: vec!["192.0.2.1 192.0.2.2".into()],
+                ..HostsConfig::default()
+            };
+            let index = build_rule_index(&cfg).unwrap();
+            let (matched, unmatched) = match format {
+                HostsFormat::Oxidns => ("192.0.2.1", "192.0.2.2"),
+                HostsFormat::Standard => ("192.0.2.2", "192.0.2.1"),
+            };
+            assert!(index.match_answers(matched).is_some());
+            assert!(index.match_answers(unmatched).is_none());
+        }
+    }
+
+    #[test]
     fn inline_regexp_preserves_hash_while_file_comments_are_stripped() {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(file, "# ignored").unwrap();
@@ -640,6 +998,7 @@ mod tests {
             entries: vec!["regexp:^[a-z#]+\\.example$ 192.0.2.1".to_string()],
             files: vec![file.path().display().to_string()],
             short_circuit: false,
+            ..HostsConfig::default()
         };
         let index = build_rule_index(&cfg).expect("inline regexp should build");
 
@@ -673,6 +1032,7 @@ mod tests {
             entries: vec!["example.com 1.1.1.1".to_string()],
             files: vec![],
             short_circuit: false,
+            ..HostsConfig::default()
         });
 
         let mut exact = make_context("example.com.", RecordType::A);
@@ -707,6 +1067,7 @@ mod tests {
             ],
             files: vec![],
             short_circuit: false,
+            ..HostsConfig::default()
         });
 
         let mut ctx = make_context("api.svc.example.com.", RecordType::A);
@@ -730,6 +1091,7 @@ mod tests {
             ],
             files: vec![],
             short_circuit: false,
+            ..HostsConfig::default()
         });
 
         let mut full_hit = make_context("api.example.com.", RecordType::A);
@@ -783,6 +1145,7 @@ mod tests {
             ],
             files: vec![],
             short_circuit: false,
+            ..HostsConfig::default()
         });
 
         let mut full_ctx = make_context("example.com.", RecordType::A);
@@ -818,6 +1181,7 @@ mod tests {
             entries: vec!["full:example.com 1.1.1.1".to_string()],
             files: vec![],
             short_circuit: false,
+            ..HostsConfig::default()
         });
 
         let mut ctx = make_context("example.com.", RecordType::A);
@@ -834,6 +1198,7 @@ mod tests {
             entries: vec!["full:example.com 1.1.1.1".to_string()],
             files: vec![],
             short_circuit: false,
+            ..HostsConfig::default()
         });
 
         let mut ctx = make_context("example.com.", RecordType::AAAA);
@@ -857,6 +1222,7 @@ mod tests {
             entries: vec!["full:example.com 1.1.1.1".to_string()],
             files: vec![],
             short_circuit: true,
+            ..HostsConfig::default()
         });
 
         let mut ctx = make_context("example.com.", RecordType::AAAA);
@@ -872,6 +1238,7 @@ mod tests {
             entries: vec!["full:example.com 1.1.1.1".to_string()],
             files: vec![],
             short_circuit: false,
+            ..HostsConfig::default()
         });
 
         let mut request = Message::new();
@@ -901,6 +1268,7 @@ mod tests {
             entries: vec!["full:example.com 192.0.2.10".to_string()],
             files: vec![file.path().to_string_lossy().to_string()],
             short_circuit: false,
+            ..HostsConfig::default()
         };
         let index = build_rule_index(&cfg).expect("rule index should build");
         let answers = index

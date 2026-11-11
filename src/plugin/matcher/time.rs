@@ -155,7 +155,7 @@ fn resolve_timezone(
             Ok((timezone, value.to_string(), "configured"))
         }
         None => {
-            let timezone = TimeZone::try_system().map_err(|err| {
+            let timezone = crate::infra::system::try_system_timezone().map_err(|err| {
                 DnsError::plugin(format!(
                     "time matcher '{tag}': failed to resolve system timezone: {err}; configure args.timezone explicitly"
                 ))

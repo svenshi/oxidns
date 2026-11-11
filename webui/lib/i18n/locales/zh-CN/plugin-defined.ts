@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 export const zhCNPluginDefined = {
   pluginTypes: {
     labels: {
@@ -284,6 +289,36 @@ export const zhCNPluginDefined = {
         },
       },
     },
+    edns_filter: {
+      name: "EDNS Filter",
+      description: "在后续执行链中筛选请求 EDNS Option，可在退出时恢复整份请求",
+      fields: {
+        policy: {
+          label: "基础策略",
+          description:
+            "按 IANA 注册编号保留全部、删除全部或仅保留已注册 Option。",
+          options: {
+            preserve: "保留全部",
+            strip: "删除全部",
+            strip_unknown: "仅保留已注册",
+          },
+        },
+        allowlist: {
+          label: "允许的 Option Code",
+          description:
+            "0–65535 的整数数组；空数组不额外限制，非空时仅保留列表内且未被基础策略删除的 Code。",
+        },
+        denylist: {
+          label: "禁止的 Option Code",
+          description: "0–65535 的整数数组；最后应用，优先于允许列表。",
+        },
+        restore_request: {
+          label: "退出时恢复请求",
+          description:
+            "默认恢复进入插件时的整份请求，包括下游改写；关闭时保留修改。响应和其他上下文状态不回滚。",
+        },
+      },
+    },
     forward: {
       name: "Forward",
       description: "向一个或多个上游 DNS 发起查询",
@@ -521,6 +556,49 @@ export const zhCNPluginDefined = {
         },
       },
     },
+    load_balance: {
+      name: "Load Balance",
+      description: "在多条执行链之间轮询、随机或按权重随机分配请求",
+      fields: {
+        strategy: {
+          label: "选择策略",
+          description: "每次仅执行一个分支；轮询从第一项开始，重载后重置。",
+          options: {
+            round_robin: "轮询",
+            random: "随机",
+            weighted_random: "加权随机",
+          },
+        },
+        executors: {
+          label: "候选执行器",
+          description:
+            "配置非空且不重复的执行器列表；需要包裹下游的插件应放入完整 sequence。",
+        },
+        "executors[]": {
+          label: "分支",
+        },
+        "executors[].exec": {
+          label: "执行器",
+          description: "引用不带 $ 的 executor tag，不支持快捷表达式。",
+        },
+        "executors[].weight": {
+          label: "权重",
+          description: "正整数，默认 1；仅加权随机使用。",
+        },
+      },
+      metrics: {
+        labels: {
+          load_balance_selected_total: "分支选择",
+          load_balance_error_total: "分支错误",
+        },
+        help: {
+          load_balance_selected_total:
+            "按执行器统计的选择次数，包括随后取消的调用。",
+          load_balance_error_total:
+            "选中分支返回执行错误的次数；无响应的正常返回不计为错误。",
+        },
+      },
+    },
     fallback: {
       name: "Fallback",
       description: "主路径失败或过慢时切换到备用执行器",
@@ -535,7 +613,7 @@ export const zhCNPluginDefined = {
         },
         threshold: {
           label: "接管阈值(ms)",
-          description: "定义主路径超时或延迟判定阈值。",
+          description: "定义备用路径的等待阈值；0 表示无需等待即可执行和接管。",
         },
         always_standby: {
           label: "备用路径并行待命",
@@ -567,9 +645,18 @@ export const zhCNPluginDefined = {
       name: "Hosts",
       description: "按域名规则直接返回静态 A / AAAA",
       fields: {
+        format: {
+          label: "规则格式",
+          description: "选择 entries 和 files 的规则格式；省略时使用 oxidns。",
+          options: {
+            oxidns: "OxiDNS（域名在前）",
+            standard: "标准 hosts（IP 在前）",
+          },
+        },
         entries: {
           label: "内联 hosts 规则",
-          description: "定义内联 hosts 规则。",
+          description:
+            "规则格式由 format 决定；standard 使用 IP 主机名 [别名…]。",
           example:
             "router.local 192.168.1.1\nfull:gateway.local 192.168.1.2\ndomain:svc.local 10.0.0.10\nkeyword:nas 192.168.1.20\nregexp:^api[0-9]+\\.corp\\.local$ 10.10.0.5",
         },
@@ -579,7 +666,7 @@ export const zhCNPluginDefined = {
         },
         files: {
           label: "hosts 文件",
-          description: "指定外部 hosts 规则文件列表。",
+          description: "按 format 指定的格式加载外部 hosts 规则文件。",
           example: "/etc/oxidns/hosts.txt",
         },
         "files[]": {
@@ -736,19 +823,22 @@ export const zhCNPluginDefined = {
     },
     ecs_handler: {
       name: "ECS Handler",
-      description: "处理 EDNS Client Subnet 的保留、注入和回程清理",
+      description: "控制上游请求的 ECS 来源及响应 ECS 的保留",
       fields: {
         forward: {
           label: "保留客户端 ECS",
-          description: "控制是否保留客户端请求中已有的 ECS。",
+          description:
+            "控制是否保留已有 ECS；关闭后先删除，IN 查询再按 preset、send 选择来源。",
         },
         send: {
-          label: "缺失时发送 ECS",
-          description: "控制在请求缺少 ECS 时，是否根据来源地址自动补充 ECS。",
+          label: "根据来源生成 ECS",
+          description:
+            "未保留已有 ECS 且未配置 preset 时，根据客户端地址为 IN 查询生成 ECS。",
         },
         preset: {
           label: "预设 ECS 地址",
-          description: "指定固定的 ECS 来源地址。",
+          description:
+            "未保留已有 ECS 时使用的固定来源地址；优先于 send，且不依赖 send 开启。",
           example: "203.0.113.10",
         },
         mask4: {
@@ -761,7 +851,7 @@ export const zhCNPluginDefined = {
         },
       },
       quickSetup: {
-        paramPlaceholder: "203.0.113.10/24",
+        paramPlaceholder: "203.0.113.10",
       },
     },
     forward_edns0opt: {
@@ -1085,11 +1175,13 @@ export const zhCNPluginDefined = {
           description: "仅响应包含 answer 时学习；只在 after 阶段生效。",
         },
         rule_kind: {
-          label: "规则类型",
-          description: "控制写入 dynamic_domain_set 的规则类型。",
+          label: "学习策略",
+          description:
+            "选择学习范围：仅当前域名、当前域名及其子域，或可注册域及其子域。",
           options: {
-            full: "Full",
-            domain: "Domain",
+            full: "仅当前域名",
+            domain: "当前域名及子域",
+            registrable_domain: "可注册域及子域",
           },
         },
         async: {
@@ -1559,6 +1651,8 @@ export const zhCNPluginDefined = {
         gateway4: { label: "IPv4 网关", example: "192.168.88.2@main" },
         gateway6: { label: "IPv6 网关", example: "fe80::2%ether1" },
         distance: { label: "路由距离" },
+        scope: { label: "路由 Scope" },
+        target_scope: { label: "下一跳 Target Scope" },
         comment_prefix: { label: "注释前缀" },
         persistent: {
           label: "常驻路由",
@@ -2261,6 +2355,11 @@ export const zhCNPluginDefined = {
       quickSetup: {
         paramPlaceholder: "SERVFAIL,NXDOMAIN 或 2,3",
       },
+    },
+    has_cname: {
+      name: "Has CNAME",
+      description: "响应 Answer 区包含 CNAME 记录时命中",
+      fields: {},
     },
     has_resp: {
       name: "Has Response",

@@ -1,7 +1,10 @@
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use std::hint::black_box;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use hotpath::criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use oxidns::core::rule_matcher::IpPrefixMatcher;
 
 fn make_ip_rules() -> Vec<String> {
@@ -66,4 +69,5 @@ fn bench_ip_matcher(c: &mut Criterion) {
 }
 
 criterion_group!(ip_rule_matcher, bench_ip_matcher);
-criterion_main!(ip_rule_matcher);
+// The library's #[hotpath::main] already installs the counting allocator.
+criterion_main!(allocator = none; ip_rule_matcher);

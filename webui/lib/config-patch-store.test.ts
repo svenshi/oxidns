@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import { beforeEach, describe, expect, it } from "vitest";
 import { parseOxiDnsYaml, pluginsFromConfig } from "./oxidns-config";
 import { useAppStore } from "./store";

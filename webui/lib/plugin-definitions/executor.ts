@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import type { PluginKindDefinition, PluginMetricsDef } from "./shared";
 import {
   executorRef,
@@ -62,6 +67,53 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
             },
           ],
         },
+      },
+    ],
+  },
+  {
+    kind: "edns_filter",
+    type: "executor",
+    name: "EDNS Filter",
+    description: "在后续执行链中筛选请求 EDNS Option，可在退出时恢复整份请求",
+    icon: "Filter",
+    configSchema: [
+      {
+        key: "policy",
+        label: "基础策略",
+        type: "select",
+        default: "preserve",
+        description:
+          "按 IANA 注册编号保留全部、删除全部或仅保留已注册 Option。",
+        options: [
+          { label: "保留全部", value: "preserve" },
+          { label: "删除全部", value: "strip" },
+          { label: "仅保留已注册", value: "strip_unknown" },
+        ],
+      },
+      {
+        key: "allowlist",
+        label: "允许的 Option Code",
+        type: "array",
+        default: [],
+        description:
+          "0–65535 的整数数组；空数组不额外限制，非空时仅保留列表内且未被基础策略删除的 Code。",
+        item: { type: "number" },
+      },
+      {
+        key: "denylist",
+        label: "禁止的 Option Code",
+        type: "array",
+        default: [],
+        description: "0–65535 的整数数组；最后应用，优先于允许列表。",
+        item: { type: "number" },
+      },
+      {
+        key: "restore_request",
+        label: "退出时恢复请求",
+        type: "switch",
+        default: true,
+        description:
+          "默认恢复进入插件时的整份请求，包括下游改写；关闭时保留修改。响应和其他上下文状态不回滚。",
       },
     ],
   },
@@ -439,6 +491,73 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
     },
   },
   {
+    kind: "load_balance",
+    type: "executor",
+    name: "Load Balance",
+    description: "在多条执行链之间轮询、随机或按权重随机分配请求",
+    icon: "GitBranch",
+    configSchema: [
+      {
+        key: "strategy",
+        label: "选择策略",
+        description: "每次仅执行一个分支；轮询从第一项开始，重载后重置。",
+        type: "select",
+        default: "round_robin",
+        options: [
+          { label: "轮询", value: "round_robin" },
+          { label: "随机", value: "random" },
+          { label: "加权随机", value: "weighted_random" },
+        ],
+      },
+      {
+        key: "executors",
+        label: "候选执行器",
+        description:
+          "配置非空且不重复的执行器列表；需要包裹下游的插件应放入完整 sequence。",
+        type: "array",
+        required: true,
+        item: {
+          type: "object",
+          label: "分支",
+          summaryFields: ["exec", "weight"],
+          fields: [
+            {
+              ...executorRef(
+                "exec",
+                "执行器",
+                true,
+                undefined,
+                "引用不带 $ 的 executor tag，不支持快捷表达式。",
+              ),
+              referencePrefix: "",
+            },
+            {
+              key: "weight",
+              label: "权重",
+              description: "正整数，默认 1；仅加权随机使用。",
+              type: "number",
+              default: 1,
+              visibleWhen: { field: "strategy", equals: "weighted_random" },
+            },
+          ],
+        },
+      },
+    ],
+    metrics: {
+      metricLabels: {
+        load_balance_selected_total: "分支选择",
+        load_balance_error_total: "分支错误",
+      },
+      metricHelp: {
+        load_balance_selected_total:
+          "按执行器统计的选择次数，包括随后取消的调用。",
+        load_balance_error_total:
+          "选中分支返回执行错误的次数；无响应的正常返回不计为错误。",
+      },
+      cardPriority: ["load_balance_selected_total", "load_balance_error_total"],
+    } satisfies PluginMetricsDef,
+  },
+  {
     kind: "fallback",
     type: "executor",
     name: "Fallback",
@@ -480,10 +599,10 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       ),
       {
         key: "threshold",
-        description: "定义主路径超时或延迟判定阈值。",
+        description: "定义备用路径的等待阈值；0 表示无需等待即可执行和接管。",
         label: "接管阈值(ms)",
         type: "number",
-        default: 0,
+        default: 500,
       },
       {
         key: "always_standby",
@@ -529,19 +648,30 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       ],
     } satisfies PluginMetricsDef,
     configSchema: [
+      {
+        key: "format",
+        description: "选择 entries 和 files 的规则格式；省略时使用 oxidns。",
+        label: "规则格式",
+        type: "select",
+        default: "oxidns",
+        options: [
+          { label: "OxiDNS（域名在前）", value: "oxidns" },
+          { label: "标准 hosts（IP 在前）", value: "standard" },
+        ],
+      },
       stringArrayField(
         "entries",
         "内联 hosts 规则",
         "router.local 192.168.1.1\nfull:gateway.local 192.168.1.2\ndomain:svc.local 10.0.0.10\nkeyword:nas 192.168.1.20\nregexp:^api[0-9]+\\.corp\\.local$ 10.10.0.5",
         false,
-        "定义内联 hosts 规则。",
+        "规则格式由 format 决定；standard 使用 IP 主机名 [别名…]。",
       ),
       stringArrayField(
         "files",
         "hosts 文件",
         "/etc/oxidns/hosts.txt",
         false,
-        "指定外部 hosts 规则文件列表。",
+        "按 format 指定的格式加载外部 hosts 规则文件。",
       ),
       {
         key: "short_circuit",
@@ -692,26 +822,29 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
     kind: "ecs_handler",
     type: "executor",
     name: "ECS Handler",
-    description: "处理 EDNS Client Subnet 的保留、注入和回程清理",
+    description: "控制上游请求的 ECS 来源及响应 ECS 的保留",
     icon: "Globe",
     configSchema: [
       {
         key: "forward",
-        description: "控制是否保留客户端请求中已有的 ECS。",
+        description:
+          "控制是否保留已有 ECS；关闭后先删除，IN 查询再按 preset、send 选择来源。",
         label: "保留客户端 ECS",
         type: "switch",
         default: false,
       },
       {
         key: "send",
-        description: "控制在请求缺少 ECS 时，是否根据来源地址自动补充 ECS。",
-        label: "缺失时发送 ECS",
+        description:
+          "未保留已有 ECS 且未配置 preset 时，根据客户端地址为 IN 查询生成 ECS。",
+        label: "根据来源生成 ECS",
         type: "switch",
         default: false,
       },
       {
         key: "preset",
-        description: "指定固定的 ECS 来源地址。",
+        description:
+          "未保留已有 ECS 时使用的固定来源地址；优先于 send，且不依赖 send 开启。",
         label: "预设 ECS 地址",
         type: "text",
         example: "203.0.113.10",
@@ -734,7 +867,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
     ],
     quickSetup: {
-      paramPlaceholder: "203.0.113.10/24",
+      paramPlaceholder: "203.0.113.10",
     },
   },
   {
@@ -1201,6 +1334,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "success_only",
+        visibleWhen: { field: "phase", equals: "after" },
         description: "仅响应为 NOERROR 时学习；只在 after 阶段生效。",
         label: "仅成功响应",
         type: "switch",
@@ -1208,6 +1342,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "answer_required",
+        visibleWhen: { field: "phase", equals: "after" },
         description: "仅响应包含 answer 时学习；只在 after 阶段生效。",
         label: "需要 Answer",
         type: "switch",
@@ -1215,12 +1350,14 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "rule_kind",
-        description: "控制写入 dynamic_domain_set 的规则类型。",
-        label: "规则类型",
+        description:
+          "选择学习范围：仅当前域名、当前域名及其子域，或可注册域及其子域。",
+        label: "学习策略",
         type: "select",
         options: [
-          { label: "Full", value: "full" },
-          { label: "Domain", value: "domain" },
+          { label: "仅当前域名", value: "full" },
+          { label: "当前域名及子域", value: "domain" },
+          { label: "可注册域及子域", value: "registrable_domain" },
         ],
         default: "full",
       },
@@ -1246,6 +1383,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "timeout",
+        visibleWhen: { field: "async", equals: false },
         description: "async 关闭时等待 provider 写入完成的最长时间。",
         label: "同步超时",
         type: "duration",
@@ -1580,6 +1718,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "queue_size",
+        visibleWhen: { field: "async", equals: true },
         description: "异步模式下后台发送队列的容量。",
         label: "异步队列大小",
         type: "number",
@@ -1971,6 +2110,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "wait_timeout",
+        visibleWhen: { field: "async", equals: false },
         label: "同步等待时间",
         type: "text",
         default: "8s",
@@ -2008,6 +2148,18 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         label: "路由距离",
         type: "number",
         default: 100,
+        advanced: true,
+      },
+      {
+        key: "scope",
+        label: "路由 Scope",
+        type: "number",
+        advanced: true,
+      },
+      {
+        key: "target_scope",
+        label: "下一跳 Target Scope",
+        type: "number",
         advanced: true,
       },
       {
@@ -2208,6 +2360,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "wait_timeout",
+        visibleWhen: { field: "async", equals: false },
         description: "仅 async=false 时生效；超时后任务继续在后台执行。",
         label: "同步等待时间",
         type: "text",
@@ -2347,6 +2500,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "bundle",
+        visibleWhen: { field: "asset", equals: "auto" },
         description:
           "asset 为 auto 时使用的编译版本；auto 会跟随当前二进制的编译版本。",
         label: "编译版本",
@@ -2385,6 +2539,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
       },
       {
         key: "webui_dir",
+        visibleWhen: { field: "skip_webui", equals: false },
         description: "升级时安装 WebUI 静态资源的目录。",
         label: "WebUI 目录",
         type: "text",

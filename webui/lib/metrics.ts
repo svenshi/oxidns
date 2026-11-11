@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 // Prometheus text-format parsing and plugin-level metric curation.
 //
 // The backend exposes a single Prometheus endpoint (`/metrics`). Plugin series

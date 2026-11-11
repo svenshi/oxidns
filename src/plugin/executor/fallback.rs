@@ -49,7 +49,8 @@ struct FallbackConfig {
     /// Executor tag used as the standby path.
     secondary: String,
     /// Timeout threshold in milliseconds before primary is treated as slow.
-    #[serde(default)]
+    /// `0` starts the standby path immediately.
+    #[serde(default = "default_threshold_ms")]
     threshold: u64,
     /// Always run standby path in parallel regardless of primary latency.
     #[serde(default)]
@@ -57,6 +58,10 @@ struct FallbackConfig {
     /// Whether to stop the executor chain after fallback picks a response.
     #[serde(default)]
     short_circuit: bool,
+}
+
+fn default_threshold_ms() -> u64 {
+    500
 }
 
 #[derive(Debug)]
@@ -194,7 +199,10 @@ impl Executor for FallbackExecutor {
                 tokio::pin!(sleeper);
                 loop {
                     tokio::select! {
-                        _ = &mut sleeper => break,
+                        // Poll the primary state first: when the sleeper and a
+                        // primary success are both ready, avoid firing a
+                        // wasted standby query that the main loop would abort.
+                        biased;
                         changed = primary_state_rx.changed() => {
                             if changed.is_err() {
                                 break;
@@ -214,6 +222,7 @@ impl Executor for FallbackExecutor {
                                 PrimaryState::Failed => break,
                             }
                         }
+                        _ = &mut sleeper => break,
                     }
                 }
             }
@@ -354,11 +363,7 @@ impl PluginFactory for FallbackFactory {
             secondary_tag: cfg.secondary.clone(),
             primary,
             secondary,
-            threshold: Duration::from_millis(if cfg.threshold == 0 {
-                500
-            } else {
-                cfg.threshold
-            }),
+            threshold: Duration::from_millis(cfg.threshold),
             always_standby: cfg.always_standby,
             short_circuit: cfg.short_circuit,
             metrics: Arc::new(FallbackMetrics::new(plugin_config.tag.clone())),
@@ -402,6 +407,16 @@ mod tests {
     use crate::plugin::test_utils::{plugin_config, test_context};
 
     #[test]
+    fn test_fallback_threshold_defaults_to_500_and_preserves_explicit_zero() {
+        for (threshold, expected) in [("", 500), ("threshold: 0", 0), ("threshold: 200", 200)] {
+            let cfg: FallbackConfig =
+                serde_yaml_ng::from_str(&format!("primary: fast\nsecondary: slow\n{threshold}\n"))
+                    .unwrap();
+            assert_eq!(cfg.threshold, expected);
+        }
+    }
+
+    #[test]
     fn test_fallback_factory_requires_args() {
         let factory = FallbackFactory;
         let cfg = plugin_config("fb", "fallback", None);
@@ -414,6 +429,7 @@ mod tests {
         should_fail: bool,
         produce_response: bool,
         refused_with_next: bool,
+        delay: Duration,
     }
 
     #[async_trait]
@@ -438,6 +454,9 @@ mod tests {
         }
 
         async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
+            if !self.delay.is_zero() {
+                tokio::time::sleep(self.delay).await;
+            }
             if self.should_fail {
                 return Err(DnsError::plugin("stub failed"));
             }
@@ -469,6 +488,7 @@ mod tests {
                 should_fail: false,
                 produce_response: true,
                 refused_with_next: false,
+                delay: Duration::ZERO,
             }),
             test_context(),
             "primary",
@@ -483,6 +503,7 @@ mod tests {
                 should_fail: false,
                 produce_response: false,
                 refused_with_next: false,
+                delay: Duration::ZERO,
             }),
             test_context(),
             "secondary",
@@ -502,6 +523,7 @@ mod tests {
                 should_fail: true,
                 produce_response: false,
                 refused_with_next: false,
+                delay: Duration::ZERO,
             }),
             test_context(),
             "primary",
@@ -524,6 +546,7 @@ mod tests {
                 should_fail: false,
                 produce_response: false,
                 refused_with_next: true,
+                delay: Duration::ZERO,
             }),
             test_context(),
             "primary",
@@ -569,12 +592,14 @@ short_circuit: true
                 should_fail: false,
                 produce_response: true,
                 refused_with_next: false,
+                delay: Duration::ZERO,
             }),
             secondary: Arc::new(StubExecutor {
                 tag: "secondary".to_string(),
                 should_fail: false,
                 produce_response: false,
                 refused_with_next: false,
+                delay: Duration::ZERO,
             }),
             threshold: Duration::from_secs(60),
             always_standby: false,
@@ -592,6 +617,43 @@ short_circuit: true
         assert_eq!(metrics.secondary_total.load(Ordering::Relaxed), 0);
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn test_fallback_zero_threshold_allows_immediate_secondary_response() {
+        for always_standby in [false, true] {
+            let metrics = Arc::new(FallbackMetrics::new("fb".to_string()));
+            let executor = FallbackExecutor {
+                tag: "fb".to_string(),
+                primary_tag: "primary".to_string(),
+                secondary_tag: "secondary".to_string(),
+                primary: Arc::new(StubExecutor {
+                    tag: "primary".to_string(),
+                    should_fail: false,
+                    produce_response: true,
+                    refused_with_next: false,
+                    delay: Duration::from_millis(100),
+                }),
+                secondary: Arc::new(StubExecutor {
+                    tag: "secondary".to_string(),
+                    should_fail: false,
+                    produce_response: true,
+                    refused_with_next: false,
+                    delay: Duration::ZERO,
+                }),
+                threshold: Duration::ZERO,
+                always_standby,
+                short_circuit: false,
+                metrics: metrics.clone(),
+            };
+            let start = tokio::time::Instant::now();
+            let mut context = test_context();
+            executor.execute(&mut context).await.unwrap();
+            assert!(start.elapsed() < Duration::from_millis(100));
+            assert!(context.response().is_some());
+            assert_eq!(metrics.secondary_total.load(Ordering::Relaxed), 1);
+            assert_eq!(metrics.primary_error_total.load(Ordering::Relaxed), 0);
+        }
+    }
+
     #[tokio::test]
     async fn test_fallback_metrics_record_primary_error_and_secondary() {
         let metrics = Arc::new(FallbackMetrics::new("fb".to_string()));
@@ -604,12 +666,14 @@ short_circuit: true
                 should_fail: true,
                 produce_response: false,
                 refused_with_next: false,
+                delay: Duration::ZERO,
             }),
             secondary: Arc::new(StubExecutor {
                 tag: "secondary".to_string(),
                 should_fail: false,
                 produce_response: true,
                 refused_with_next: false,
+                delay: Duration::ZERO,
             }),
             threshold: Duration::ZERO,
             always_standby: false,
@@ -639,12 +703,14 @@ short_circuit: true
                 should_fail: false,
                 produce_response: false,
                 refused_with_next: false,
+                delay: Duration::ZERO,
             }),
             secondary: Arc::new(StubExecutor {
                 tag: "secondary".to_string(),
                 should_fail: false,
                 produce_response: false,
                 refused_with_next: false,
+                delay: Duration::ZERO,
             }),
             threshold: Duration::ZERO,
             always_standby: false,

@@ -1,0 +1,480 @@
+---
+title: 维护与调度
+---
+
+import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
+
+这些执行器执行下载、升级、provider reload、全量 reload 和后台调度。生产环境应限制触发来源并准备回滚。
+
+## `upgrade`
+
+<PluginAvailability from="standard" />
+
+### 作用
+
+执行 OxiDNS 升级流程，可用于 `cron`、`sequence` 或其它执行器触发的维护任务。
+
+### 配置示例
+
+```yaml
+- tag: upgrade_auto
+  type: upgrade
+  args:
+      repository: svenshi/oxidns
+      asset: auto
+      bundle: auto
+      github_token: ghp_xxx
+      cache_dir: ./upgrade/cache
+      backup_dir: ./upgrade/backups
+      webui_dir: ./webui
+      skip_webui: false
+      no_restart: false
+      force: false
+      cleanup: true
+      timeout: 30s
+      outbound: remote
+      socks5: 127.0.0.1:1080
+      insecure_skip_verify: false
+```
+
+### 配置项
+
+- `force`
+    - 类型：`bool`
+    - 默认值：`false`
+    - 即使目标 release 不比当前版本更新，也继续下载、校验并替换。
+- `cleanup`
+    - 类型：`bool`
+    - 默认值：`true`
+    - 升级成功后清理 `cache_dir` 和 `backup_dir`。
+- `repository`
+    - GitHub 仓库，默认 `svenshi/oxidns`。
+- `asset`
+    - Release asset 名称；`auto` 会按当前平台和编译版本选择 archive。
+    - 显式填写 asset 时优先级最高，不再根据 `bundle` 推导。
+- `bundle`
+    - 类型：`auto | full | standard | minimal`
+    - 默认值：`auto`
+    - 当 `asset: auto` 时选择 release 编译版本。`full` 使用旧资产名，`standard` / `minimal` 使用带 bundle 前缀的 slim 资产名。
+- `github_token`
+    - GitHub 个人访问令牌，用于提高 API 速率限制或访问私有仓库。
+    - 会作为 GitHub API 请求的 Bearer token 使用。
+- `cache_dir` / `backup_dir`
+    - 下载缓存目录和替换前备份目录。
+- `webui_dir`
+    - 类型：`path`
+    - 默认值：`./webui`
+    - 升级时安装 WebUI 静态资源的目录，应与 `api.http.webui.root` 一致。
+- `skip_webui`
+    - 类型：`bool`
+    - 默认值：`false`
+    - 设为 `true` 时只替换二进制文件，跳过 WebUI 目录升级。
+- `no_restart`
+    - 类型：`bool`
+    - 默认值：`false`
+    - 设为 `true` 时，升级成功后不触发自动重启。
+    - 默认值 `false` 会在升级成功后自动重启：CLI `apply` 通过系统服务管理器重启已安装服务，插件内执行时通过应用控制通道触发优雅重启并加载新二进制。
+- `timeout`、`outbound`、`socks5`、`insecure_skip_verify`
+    - 与 CLI `upgrade` 参数含义一致。
+    - `outbound` 引用 `network.outbound.profiles` 中的出站配置；旧 `socks5` 字段继续兼容，且会覆盖 profile 里的代理设置。
+
+### 行为说明
+
+- 执行器总是返回 `ExecStep::Next`。
+- 插件只执行 `apply` 动作，不提供 `check` 或 `download` 模式。
+- 默认只有检测到新版本才会更新；`force: true` 会强制更新。
+- 默认升级成功后会清理缓存和备份；如需保留回滚文件，设置 `cleanup: false`。
+- 升级时会下载 archive，并使用 GitHub release asset 的 `digest` 字段校验 SHA256。
+- `asset: auto` 会根据 `bundle` 选择 archive；`bundle: auto` 跟随当前二进制的编译版本，custom 构建需要显式设置 `bundle` 或 `asset`。
+- Unix 平台解包 `.tar.gz`、备份当前二进制并替换；Windows 当前不支持插件升级。
+- 默认在替换二进制后，将 archive 中的 `webui/` 目录备份并安装到 `webui_dir`；`skip_webui: true` 可跳过。archive 不含 `webui/`（旧版本 release）时会跳过 WebUI 升级且不影响二进制升级结果。
+
+### quick setup
+
+```yaml
+- exec: upgrade
+- exec: upgrade force
+- exec: upgrade force=false
+- exec: upgrade bundle=standard
+```
+
+- 空参数使用默认配置执行 apply。
+- 只支持 `force` 或 `force=true|false`。
+- 其它参数使用默认值；需要覆盖仓库、目录、重启方式或代理时，请使用完整 `args` 配置。
+- 不支持 `mode`；插件固定执行 apply。
+
+## `download`
+
+<PluginAvailability from="standard" />
+
+### 作用
+
+下载一个或多个 `http/https` 文件到本地目录，并在新内容完整写入后覆盖目标文件。
+
+### 配置示例
+
+```yaml
+- tag: rules_download
+  type: download
+  args:
+    timeout: 30s
+    outbound: remote
+    socks5: "127.0.0.1:1080"
+    downloads:
+      - url: "https://example.com/geosite.dat"
+        dir: "/etc/oxidns"
+      - url: "https://example.com/geoip.dat"
+        dir: "/etc/oxidns"
+        filename: "geoip.dat"
+```
+
+### Quick Setup
+
+```yaml
+- exec: "download https://example.com/rules.txt /etc/oxidns"
+```
+
+### 行为说明
+
+- `downloads` 按声明顺序串行执行。
+- 单个下载失败只会写 warning 日志，不会阻止后续项继续下载。
+- 目标目录不存在时会自动创建。
+- 文件会先写入临时文件，再覆盖目标文件，避免半写入状态。
+- 配置 `outbound` 后，下载使用 `network.outbound.profiles` 中定义的解析器和代理。
+- 配置 `socks5` 后，所有下载连接都会通过该 SOCKS5 代理发起，格式与 `upstream[].socks5` 一致。
+- 默认会在启动时检查目标文件；缺失项会在其它插件初始化前自动下载，失败会直接中止启动。
+- 如需关闭该行为，可显式配置 `startup_if_missing: false`。
+
+<Admonition type="note" title="注意事项">
+
+- 只支持 `http` / `https`。
+- `outbound` 未配置时使用 `network.outbound.default`；同时配置 `outbound` 和 `socks5` 时，`socks5` 会覆盖 profile 代理但保留 profile resolver。
+- `socks5` 支持 `host:port` 和 `username:password@host:port`，IPv6 需写成 `"[::1]:1080"`。
+- `startup_if_missing` 只会补齐缺失文件，不会在每次启动时强制覆盖已有文件。
+- 放进普通 `sequence` 时会直接占用该次请求的执行时间。
+- 覆盖本地文件后不会自动触发生效；如果只是让文件型 provider 立即读取新内容，优先串联 `reload_provider`；如果连 `config.yaml`、依赖拓扑或插件列表也一起变化，再使用 `reload`。
+
+</Admonition>
+
+### 推荐搭配
+
+```yaml
+- tag: rules_refresh
+  type: sequence
+  args:
+    - exec: "$rules_download"
+    - exec: "$reload_rules"
+
+- tag: rules_download
+  type: download
+  args:
+    downloads:
+      - url: "https://example.com/geosite.dat"
+        dir: "/etc/oxidns"
+
+- tag: provider_geosite
+  type: geosite
+  args:
+    file: "/etc/oxidns/geosite.dat"
+
+- tag: reload_rules
+  type: reload_provider
+  args:
+    - "$provider_geosite"
+```
+
+### 订阅更新示例
+
+下面这个例子适合“远程规则订阅 -> 定时拉取 -> 定向刷新 provider”的场景：
+
+```yaml
+plugins:
+  # 1. 周期性执行订阅更新流程
+  - tag: subscription_cron
+    type: cron
+    args:
+      timezone: "Asia/Shanghai"
+      jobs:
+        - name: refresh_rule_subscriptions
+          interval: 6h
+          executors:
+            - "$subscription_refresh"
+
+  # 2. 用 sequence 串联下载和 provider 定向 reload
+  - tag: subscription_refresh
+    type: sequence
+    args:
+      - exec: "$subscription_download"
+      - exec: "$reload_rule_providers"
+
+  # 3. 拉取远程订阅文件
+  - tag: subscription_download
+    type: download
+    args:
+      timeout: 60s
+      startup_if_missing: true
+      downloads:
+        - url: "https://example.com/geosite.dat"
+          dir: "/etc/oxidns/rules"
+          filename: "geosite.dat"
+        - url: "https://example.com/geoip.dat"
+          dir: "/etc/oxidns/rules"
+          filename: "geoip.dat"
+
+  # 4. 下载完成后只刷新相关 provider
+  - tag: reload_rule_providers
+    type: reload_provider
+    args:
+      - "$provider_geosite"
+      - "$provider_geoip"
+
+  # 5. 这些 provider 会在 reload 后重新读取本地文件
+  - tag: provider_geosite
+    type: geosite
+    args:
+      file: "/etc/oxidns/rules/geosite.dat"
+
+  - tag: provider_geoip
+    type: geoip
+    args:
+      file: "/etc/oxidns/rules/geoip.dat"
+```
+
+说明：
+
+- `download` 负责把订阅内容落到本地。
+- `reload_provider` 负责只刷新相关 provider 的内部快照，不会重建其它插件。
+- `startup_if_missing: true` 适合首次部署时自动补齐缺失文件。
+- 如果订阅源需要代理，可直接在 `subscription_download.args.socks5` 中配置 SOCKS5 代理。
+- 不希望定时任务在启动后立刻覆盖已有文件时，可以保留默认行为，仅在文件缺失时做启动补齐。
+- 如果这次更新还改动了 `config.yaml`、provider 依赖拓扑或插件列表，请改用全量 `reload`。
+
+### 配置变更场景仍使用全量 reload
+
+```yaml
+- tag: config_refresh
+  type: sequence
+  args:
+    - exec: "$subscription_download"
+    - exec: "$reload_all"
+
+- tag: reload_all
+  type: reload
+```
+
+---
+
+
+### 手动下载
+
+WebUI 的 download 插件详情页在运行清单上方提供 **下载全部**，每个下载项提供 **下载** 按钮。运行期间按钮显示忙碌状态并禁用重复触发；完成后显示成功和失败数量，单项失败不阻止后续下载。修改配置后需先应用，才能使用更新后的清单。
+
+对应的[管理 API](../../api/plugins.mdx#download) 支持单项和批量下载。手动下载只更新文件，需要刷新规则时请另行重新加载对应 provider。
+
+
+## `reload_provider`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+按 tag 定向刷新一个或多个 provider，使用它们启动时的同一份配置重建内部快照，而不会触发应用级全量重载。
+
+### 配置示例
+
+```yaml
+- tag: reload_rule_providers
+  type: reload_provider
+  args:
+    - "$geosite_cn"
+    - "$geoip_cn"
+```
+
+### Quick Setup
+
+```yaml
+- exec: "reload_provider $geosite_cn"
+```
+
+### 行为说明
+
+- 按 `args` 中声明顺序逐个执行 targeted provider reload。
+- 语义等同于分别调用这些 provider 的管理 API `POST /plugins/<provider_tag>/reload`。
+- 全部 provider reload 成功后，当前 executor 返回 `Next`。
+- 只刷新 provider 内部数据，不修改 tag、依赖关系或其它插件配置。
+
+### 典型用途
+
+- 在 `download` 后只刷新受影响的 `domain_set`、`ip_set`、`geosite`、`geoip`、`adguard_rule` provider。
+- 在后台维护链路里降低全量 `reload` 的开销和影响面。
+
+<Admonition type="note" title="注意事项">
+
+- `args` 只接受 provider 引用，例如 `"$geoip_cn"`；不接受内联规则或文件引用。
+- 如果更新涉及 `config.yaml`、provider 依赖拓扑、插件列表或其它非 provider 数据结构变化，仍然需要使用 `reload`。
+- 放进实时请求路径时，provider reload 可能触发文件读取和重新编译，通常更适合后台 `cron` / `sequence` 任务。
+
+</Admonition>
+
+---
+
+## `reload`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+触发一次与管理 API `POST /reload` 相同的应用级全量 reload，重新加载当前配置并重建所有插件。
+
+### 配置示例
+
+```yaml
+- tag: reload_all
+  type: reload
+```
+
+### Quick Setup
+
+```yaml
+- exec: "reload"
+```
+
+### 行为说明
+
+- 执行时会向应用控制层提交一次 reload 请求。
+- 语义等同于调用管理 API 的 `POST /reload`。
+- reload 请求被接受后当前 executor 返回 `Next`。
+- 这是全量应用 reload，不支持按指定 tag 只重载部分插件。
+
+### 典型用途
+
+- 在 `cron` 任务中配合 `download`，周期性刷新本地规则文件后立即让新配置生效。
+- 在后台维护 `sequence` 中统一触发一次全量配置重载。
+
+<Admonition type="note" title="注意事项">
+
+- 需要运行在带有应用控制上下文的正常 OxiDNS 进程中。
+- 如果已有 reload 处于 `pending` 或 `in_progress`，本次执行会返回错误。
+- 放进普通请求 `sequence` 时会触发全量应用 reload，通常不建议在实时请求路径上使用。
+
+</Admonition>
+
+---
+
+## `cron`
+
+<PluginAvailability from="standard" />
+
+### 作用
+
+后台调度一组 executor。它不会参与实时 DNS 请求链，而是在插件初始化后按 cron 或固定间隔触发任务。
+
+### 配置示例
+
+```yaml
+- tag: cron_jobs
+  type: cron
+  args:
+    timezone: "Asia/Shanghai"
+    jobs:
+      - name: refresh_sets
+        interval: 5m
+        executors:
+          - "$seq_refresh"
+          - "debug_print cron refresh"
+
+      - name: nightly_cleanup
+        schedule: "15 3 * * *"
+        executors:
+          - "sleep 2s"
+          - "$seq_cleanup"
+```
+
+### 配置项
+
+#### `args.jobs`
+
+- 类型：`array`；必填：是；默认值：无
+- 作用：定义一个或多个后台任务。
+- 运行影响：
+  - 数组不能为空。
+  - 每个任务独立维护自己的调度状态和重叠保护。
+
+#### `args.timezone`
+
+- 类型：`string`；必填：否；默认值：系统本地时区
+- 作用：为当前 `cron` 插件下的所有 `schedule` 任务指定时区。
+- 运行影响：
+  - 仅对 `schedule` 生效。
+  - 未配置时会使用系统本地时区；无法获取时退回 `UTC`。
+  - OpenWrt 未提供 `/etc/localtime` 时，会读取 `/etc/TZ` 中的 POSIX 时区规则，保留夏令时转换；显式 `TZ` 环境变量优先。
+  - 应填写 IANA 时区名称，例如 `Asia/Shanghai`、`UTC`、`America/Los_Angeles`。
+
+#### `args.jobs[].name`
+
+- 类型：`string`；必填：是；默认值：无
+- 作用：任务名称，用于日志与运行时标识。
+- 运行影响：
+  - 在同一个 `cron` 插件内必须唯一。
+
+#### `args.jobs[].schedule`
+
+- 类型：`string`；必填：与 `interval` 二选一；默认值：无
+- 作用：使用标准 5 字段 cron 表达式调度任务。
+- 规则说明：
+  - 仅支持 `minute hour day month day-of-week`。
+  - 不支持秒级 cron。
+  - 按 `args.timezone` 或系统本地时区计算下一次触发时间。
+  - TaskCenter 会重新校准系统墙钟；NTP 同步或手动校时会影响后续触发时间。
+
+#### `args.jobs[].interval`
+
+- 类型：`string`；必填：与 `schedule` 二选一；默认值：无
+- 作用：用简单固定间隔调度任务。
+- 支持格式：
+  - `5m`
+  - `1h`
+  - `1d`
+- 运行影响：
+  - 最小粒度为 `1m`。
+  - 启动后会等待一个完整间隔再首次触发。
+  - 固定间隔使用单调时间，不受系统墙钟调整影响。
+
+#### `args.jobs[].executors`
+
+- 类型：`array`；必填：是；默认值：无
+- 作用：定义任务触发时顺序执行的 executor 列表。
+- 支持形式：
+  - `$tag`：显式引用已存在 executor
+  - `tag`：裸 tag 引用
+  - quick setup 表达式，例如 `debug_print cron refresh`
+- 运行影响：
+  - 数组不能为空。
+  - 即使某个 executor 返回 `Stop`、设置了响应、或执行报错，后续 executor 仍会继续执行。
+
+### 行为说明
+
+- `schedule` 和 `interval` 必须二选一。
+- 同一个 job 若上一轮仍在运行，本轮会被跳过，不补跑。
+- 管理 API 和 WebUI 可以手动启动单个 job，并与定时触发共享重叠保护。手动运行不会改变 `interval` 或 cron 表达式任务的原定计划。
+- 每个 job 的定时与手动运行共用递增的运行编号；运行时只保留当前运行和最近一次手动结果，不保存历史。
+- executor 返回错误时会记录失败数量并继续执行后续 executor；全部 executor 正常结束才算 `completed`，存在普通错误时为 `completed_with_errors`，panic 为 `failed`，任务因销毁、reload 或停止而中断时为 `cancelled`。
+- 任务使用空的 `DnsContext`，适合副作用类 executor 或后台编排的 `sequence`。
+- `cron` 本身不能放进普通请求 `sequence` 里执行。
+
+### 典型用途
+
+- 定时触发后台副作用逻辑。
+- 定时执行一个专门的 `sequence` 编排。
+- 在 WebUI 中按需验证或立即执行某个维护任务。
+- 为未来的 `reload` 之类后台动作提供统一调度入口。
+
+<Admonition type="note" title="注意事项">
+
+- 不允许引用另一个 `cron` executor。
+- 依赖真实 DNS 请求内容的 executor 在空上下文任务中通常没有意义。
+
+</Admonition>
+
+---

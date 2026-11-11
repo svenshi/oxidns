@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use std::hint::black_box;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
@@ -418,4 +421,5 @@ fn bench_message_encode_decode(c: &mut Criterion) {
 }
 
 criterion_group!(message_codec, bench_message_encode_decode);
+// The library's #[hotpath::main] already installs the counting allocator.
 criterion_main!(allocator = none; message_codec);

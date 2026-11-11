@@ -21,8 +21,8 @@ use super::model::{
     DistributionQuery, DistributionResponse, DistributionRow, LatencyHistogramBucket, LatencyQuery,
     LatencySlowRow, LatencySummary, ListCursor, ListQuery, PendingRecord, PluginStatsKind,
     PluginStatsRow, PluginsStatsQuery, QueryRecordFilter, QueryRecordStatus, RecordDetail,
-    RecordRow, TableNames, TimeseriesPoint, TimeseriesQuery, TimeseriesResponse, TopBucketRow,
-    TopBucketsResponse, TopQuery,
+    RecordRow, StatsSampleMetadata, TableNames, TimeseriesPoint, TimeseriesQuery,
+    TimeseriesResponse, TopBucketRow, TopBucketsResponse, TopQuery,
 };
 use super::persistence::{
     PreparedRecord, RECORD_COLUMNS, StoredRecord, assemble_records, insert_batch, load_steps,
@@ -682,10 +682,48 @@ pub(super) fn load_record_detail(
     Ok(Some(RecordDetail { record, steps }))
 }
 
+// Both CTEs are bounded. The probe row is excluded before any aggregation.
+fn stats_sample_ctes(records: &str, where_sql: &str, columns: &str) -> String {
+    format!(
+        "sample_candidates AS (
+            SELECT {columns}, r.created_at_ms
+            FROM {records} r
+            WHERE {where_sql}
+            ORDER BY r.created_at_ms DESC, r.id DESC
+            LIMIT ?
+         ),
+         sample_records AS (
+            SELECT * FROM sample_candidates
+            ORDER BY created_at_ms DESC, id DESC
+            LIMIT {limit}
+         ),
+         totals AS (
+            SELECT COUNT(*) AS sample_size,
+                (SELECT COUNT(*) FROM sample_candidates) > {limit} AS sample_truncated,
+                MIN(created_at_ms) AS sample_since_ms,
+                MAX(created_at_ms) AS sample_until_ms
+            FROM sample_records
+         )",
+        limit = PLUGIN_STATS_SAMPLE_LIMIT,
+    )
+}
+
+fn stats_sample_metadata(
+    row: &rusqlite::Row<'_>,
+    offset: usize,
+) -> rusqlite::Result<StatsSampleMetadata> {
+    Ok(StatsSampleMetadata {
+        sample_limit: PLUGIN_STATS_SAMPLE_LIMIT,
+        sample_truncated: row.get(offset)?,
+        sample_since_ms: row.get(offset + 1)?,
+        sample_until_ms: row.get(offset + 2)?,
+    })
+}
+
 pub(super) fn load_plugin_stats(
     backend: Arc<RecorderBackend>,
     query: PluginsStatsQuery,
-) -> std::result::Result<(u64, Vec<PluginStatsRow>), DnsError> {
+) -> std::result::Result<(u64, Vec<PluginStatsRow>, StatsSampleMetadata), DnsError> {
     let conn = open_reader_database(&backend.path)?;
     let (clauses, mut params) = record_filter_clauses(
         "r",
@@ -703,23 +741,15 @@ pub(super) fn load_plugin_stats(
     } else {
         "AND s.kind = ?".to_string()
     };
-    params.push(Value::Integer(PLUGIN_STATS_SAMPLE_LIMIT as i64));
+    params.push(Value::Integer((PLUGIN_STATS_SAMPLE_LIMIT + 1) as i64));
     if query.kind != PluginStatsKind::All {
         params.push(Value::Text(query.kind.sql_value().to_string()));
     }
     // Join through each sampled record so shared paths retain per-query event
     // multiplicity, while query_hits counts each record only once.
+    let sample_ctes = stats_sample_ctes(&backend.tables.records, &where_sql, "r.id, r.trace_id");
     let sql = format!(
-        "WITH sample_records AS (
-            SELECT r.id, r.trace_id
-            FROM {records} r
-            WHERE {where_sql}
-            ORDER BY r.created_at_ms DESC, r.id DESC
-            LIMIT ?
-         ),
-         totals AS (
-            SELECT COUNT(*) AS total_records FROM sample_records
-         ),
+        "WITH {sample_ctes},
          step_agg AS (
             SELECT
                 s.kind,
@@ -753,18 +783,18 @@ pub(super) fn load_plugin_stats(
             GROUP BY s.kind, s.tag
          )
          SELECT
-            totals.total_records,
+            totals.sample_size,
             sa.kind,
             sa.tag,
             sa.checked,
             sa.matched,
             sa.executed,
-            sa.query_hits
+            sa.query_hits,
+            totals.sample_truncated, totals.sample_since_ms, totals.sample_until_ms
          FROM totals
          LEFT JOIN step_agg sa ON 1 = 1
          ORDER BY sa.kind ASC, sa.query_hits DESC, sa.tag ASC",
         steps = backend.tables.trace_steps,
-        records = backend.tables.records,
         kind_where_filter = kind_where_filter
     );
 
@@ -772,9 +802,14 @@ pub(super) fn load_plugin_stats(
     let mut rows = stmt.query(params_from_iter(params))?;
 
     let mut total_records = 0u64;
+    let mut sample = StatsSampleMetadata {
+        sample_limit: PLUGIN_STATS_SAMPLE_LIMIT,
+        ..Default::default()
+    };
     let mut stats = Vec::new();
     while let Some(row) = rows.next()? {
         total_records = row.get::<_, i64>(0).and_then(non_negative_u64)?;
+        sample = stats_sample_metadata(row, 7)?;
         let Some(kind) = row.get::<_, Option<String>>(1)? else {
             continue;
         };
@@ -796,7 +831,7 @@ pub(super) fn load_plugin_stats(
             },
         });
     }
-    Ok((total_records, stats))
+    Ok((total_records, stats, sample))
 }
 
 pub(super) fn load_top_clients(
@@ -812,35 +847,32 @@ pub(super) fn load_top_clients(
         &query.filter,
     )?;
     let where_sql = join_clauses(&clauses);
-    params.push(Value::Integer(PLUGIN_STATS_SAMPLE_LIMIT as i64));
+    params.push(Value::Integer((PLUGIN_STATS_SAMPLE_LIMIT + 1) as i64));
     params.push(Value::Integer(limit_to_i64(query.limit)?));
 
+    let sample_ctes = stats_sample_ctes(&backend.tables.records, &where_sql, "r.id, r.client_ip");
     let sql = format!(
-        "WITH sample_records AS (
-            SELECT r.id, r.client_ip
-            FROM {records} r
-            WHERE {where_sql}
-            ORDER BY r.created_at_ms DESC, r.id DESC
-            LIMIT ?
-         ),
-         totals AS (
-            SELECT COUNT(*) AS sample_size FROM sample_records
-         )
-         SELECT totals.sample_size, sample_records.client_ip, COUNT(*) AS count
+        "WITH {sample_ctes}
+         SELECT totals.sample_size, sample_records.client_ip, COUNT(sample_records.id) AS count,
+            totals.sample_truncated, totals.sample_since_ms, totals.sample_until_ms
          FROM totals
          LEFT JOIN sample_records ON 1 = 1
          GROUP BY totals.sample_size, sample_records.client_ip
          ORDER BY count DESC, sample_records.client_ip ASC
          LIMIT ?",
-        records = backend.tables.records,
     );
 
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params_from_iter(params))?;
     let mut sample_size = 0u64;
+    let mut sample = StatsSampleMetadata {
+        sample_limit: PLUGIN_STATS_SAMPLE_LIMIT,
+        ..Default::default()
+    };
     let mut bucket_rows: Vec<TopBucketRow> = Vec::new();
     while let Some(row) = rows.next()? {
         sample_size = row.get::<_, i64>(0).and_then(non_negative_u64)?;
+        sample = stats_sample_metadata(row, 3)?;
         let Some(client_ip) = row.get::<_, Option<String>>(1)? else {
             continue;
         };
@@ -855,6 +887,7 @@ pub(super) fn load_top_clients(
     Ok(TopBucketsResponse {
         ok: true,
         sample_size,
+        sample,
         rows: bucket_rows,
     })
 }
@@ -872,40 +905,41 @@ pub(super) fn load_top_qnames(
         &query.filter,
     )?;
     let where_sql = join_clauses(&clauses);
-    params.push(Value::Integer(PLUGIN_STATS_SAMPLE_LIMIT as i64));
+    params.push(Value::Integer((PLUGIN_STATS_SAMPLE_LIMIT + 1) as i64));
     params.push(Value::Integer(limit_to_i64(query.limit)?));
 
+    let sample_ctes = stats_sample_ctes(
+        &backend.tables.records,
+        &where_sql,
+        "r.id, r.question_set_id",
+    );
     let sql = format!(
-        "WITH sample_records AS (
-            SELECT r.id, r.question_set_id
-            FROM {records} r
-            WHERE {where_sql}
-            ORDER BY r.created_at_ms DESC, r.id DESC
-            LIMIT ?
-         ),
-         totals AS (
-            SELECT COUNT(*) AS sample_size FROM sample_records
-         )
+        "WITH {sample_ctes}
          SELECT
             totals.sample_size,
             q.name_lc AS qname,
-            COUNT(q.name_lc) AS count
+            COUNT(q.name_lc) AS count,
+            totals.sample_truncated, totals.sample_since_ms, totals.sample_until_ms
          FROM totals
          LEFT JOIN sample_records ON 1 = 1
          LEFT JOIN {questions} q ON q.question_set_id = sample_records.question_set_id
          GROUP BY totals.sample_size, qname
          ORDER BY count DESC, qname ASC
          LIMIT ?",
-        records = backend.tables.records,
         questions = backend.tables.question_items,
     );
 
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params_from_iter(params))?;
     let mut sample_size = 0u64;
+    let mut sample = StatsSampleMetadata {
+        sample_limit: PLUGIN_STATS_SAMPLE_LIMIT,
+        ..Default::default()
+    };
     let mut bucket_rows: Vec<TopBucketRow> = Vec::new();
     while let Some(row) = rows.next()? {
         sample_size = row.get::<_, i64>(0).and_then(non_negative_u64)?;
+        sample = stats_sample_metadata(row, 3)?;
         let Some(qname) = row.get::<_, Option<String>>(1)? else {
             continue;
         };
@@ -920,6 +954,7 @@ pub(super) fn load_top_qnames(
     Ok(TopBucketsResponse {
         ok: true,
         sample_size,
+        sample,
         rows: bucket_rows,
     })
 }
@@ -937,38 +972,39 @@ pub(super) fn load_qtype_distribution(
         &query.filter,
     )?;
     let where_sql = join_clauses(&clauses);
-    params.push(Value::Integer(PLUGIN_STATS_SAMPLE_LIMIT as i64));
+    params.push(Value::Integer((PLUGIN_STATS_SAMPLE_LIMIT + 1) as i64));
 
+    let sample_ctes = stats_sample_ctes(
+        &backend.tables.records,
+        &where_sql,
+        "r.id, r.question_set_id",
+    );
     let sql = format!(
-        "WITH sample_records AS (
-            SELECT r.id, r.question_set_id
-            FROM {records} r
-            WHERE {where_sql}
-            ORDER BY r.created_at_ms DESC, r.id DESC
-            LIMIT ?
-         ),
-         totals AS (
-            SELECT COUNT(*) AS sample_size FROM sample_records
-         )
+        "WITH {sample_ctes}
          SELECT
             totals.sample_size,
             q.qtype,
-            COUNT(q.qtype) AS count
+            COUNT(q.qtype) AS count,
+            totals.sample_truncated, totals.sample_since_ms, totals.sample_until_ms
          FROM totals
          LEFT JOIN sample_records ON 1 = 1
          LEFT JOIN {questions} q ON q.question_set_id = sample_records.question_set_id
          GROUP BY totals.sample_size, qtype
          ORDER BY count DESC, qtype ASC",
-        records = backend.tables.records,
         questions = backend.tables.question_items,
     );
 
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params_from_iter(params))?;
     let mut sample_size = 0u64;
+    let mut sample = StatsSampleMetadata {
+        sample_limit: PLUGIN_STATS_SAMPLE_LIMIT,
+        ..Default::default()
+    };
     let mut distribution_rows: Vec<DistributionRow> = Vec::new();
     while let Some(row) = rows.next()? {
         sample_size = row.get::<_, i64>(0).and_then(non_negative_u64)?;
+        sample = stats_sample_metadata(row, 3)?;
         let Some(qtype) = row.get::<_, Option<String>>(1)? else {
             continue;
         };
@@ -983,6 +1019,7 @@ pub(super) fn load_qtype_distribution(
     Ok(DistributionResponse {
         ok: true,
         sample_size,
+        sample,
         rows: distribution_rows,
     })
 }
@@ -1000,41 +1037,43 @@ pub(super) fn load_rcode_distribution(
         &query.filter,
     )?;
     let where_sql = join_clauses(&clauses);
-    params.push(Value::Integer(PLUGIN_STATS_SAMPLE_LIMIT as i64));
+    params.push(Value::Integer((PLUGIN_STATS_SAMPLE_LIMIT + 1) as i64));
 
+    let sample_ctes = stats_sample_ctes(
+        &backend.tables.records,
+        &where_sql,
+        "r.id, r.rcode, r.error, r.has_response",
+    );
     let sql = format!(
-        "WITH sample_records AS (
-            SELECT r.id, r.rcode, r.error, r.has_response
-            FROM {records} r
-            WHERE {where_sql}
-            ORDER BY r.created_at_ms DESC, r.id DESC
-            LIMIT ?
-         ),
-         totals AS (
-            SELECT COUNT(*) AS sample_size FROM sample_records
-         )
+        "WITH {sample_ctes}
          SELECT
             totals.sample_size,
             CASE
+                WHEN sample_records.id IS NULL THEN NULL
                 WHEN sample_records.rcode IS NOT NULL THEN sample_records.rcode
                 WHEN sample_records.error IS NOT NULL THEN '_ERROR'
                 WHEN sample_records.has_response = 0 THEN '_NO_RESPONSE'
                 ELSE '_UNKNOWN'
             END AS bucket,
-            COUNT(*) AS count
+            COUNT(sample_records.id) AS count,
+            totals.sample_truncated, totals.sample_since_ms, totals.sample_until_ms
          FROM totals
          LEFT JOIN sample_records ON 1 = 1
          GROUP BY totals.sample_size, bucket
          ORDER BY count DESC, bucket ASC",
-        records = backend.tables.records,
     );
 
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params_from_iter(params))?;
     let mut sample_size = 0u64;
+    let mut sample = StatsSampleMetadata {
+        sample_limit: PLUGIN_STATS_SAMPLE_LIMIT,
+        ..Default::default()
+    };
     let mut distribution_rows: Vec<DistributionRow> = Vec::new();
     while let Some(row) = rows.next()? {
         sample_size = row.get::<_, i64>(0).and_then(non_negative_u64)?;
+        sample = stats_sample_metadata(row, 3)?;
         let Some(bucket) = row.get::<_, Option<String>>(1)? else {
             continue;
         };
@@ -1049,6 +1088,7 @@ pub(super) fn load_rcode_distribution(
     Ok(DistributionResponse {
         ok: true,
         sample_size,
+        sample,
         rows: distribution_rows,
     })
 }
@@ -1057,7 +1097,9 @@ pub(super) fn load_latency_summary(
     backend: Arc<RecorderBackend>,
     query: LatencyQuery,
 ) -> std::result::Result<LatencySummary, DnsError> {
-    let conn = open_reader_database(&backend.path)?;
+    let mut database = open_reader_database(&backend.path)?;
+    // Keep summary and slow-query rows on the same read snapshot.
+    let conn = database.transaction()?;
     let (clauses, mut params) = record_filter_clauses(
         "r",
         &backend.tables,
@@ -1066,9 +1108,9 @@ pub(super) fn load_latency_summary(
         &query.filter,
     )?;
     let where_sql = join_clauses(&clauses);
-    params.push(Value::Integer(PLUGIN_STATS_SAMPLE_LIMIT as i64));
+    params.push(Value::Integer((PLUGIN_STATS_SAMPLE_LIMIT + 1) as i64));
     let elapsed_sql = format!(
-        "SELECT r.elapsed_ms
+        "SELECT r.elapsed_ms, r.created_at_ms
          FROM {records} r
          WHERE {where_sql}
          ORDER BY r.created_at_ms DESC, r.id DESC
@@ -1077,10 +1119,21 @@ pub(super) fn load_latency_summary(
     );
 
     let mut elapsed_values: Vec<u64> = Vec::new();
+    let mut sample = StatsSampleMetadata {
+        sample_limit: PLUGIN_STATS_SAMPLE_LIMIT,
+        ..Default::default()
+    };
     {
         let mut stmt = conn.prepare(&elapsed_sql)?;
         let mut rows = stmt.query(params_from_iter(params.clone()))?;
         while let Some(row) = rows.next()? {
+            if elapsed_values.len() == PLUGIN_STATS_SAMPLE_LIMIT {
+                sample.sample_truncated = true;
+                break;
+            }
+            let timestamp = row.get(1)?;
+            sample.sample_until_ms.get_or_insert(timestamp);
+            sample.sample_since_ms = Some(timestamp);
             let value = row.get::<_, i64>(0).and_then(non_negative_u64)?;
             elapsed_values.push(value);
         }
@@ -1144,6 +1197,7 @@ pub(super) fn load_latency_summary(
     Ok(LatencySummary {
         ok: true,
         sample_size,
+        sample,
         avg_ms,
         p50_ms,
         p95_ms,
@@ -1167,11 +1221,12 @@ pub(super) fn load_timeseries(
         &query.filter,
     )?;
     let where_sql = join_clauses(&clauses);
-    params.push(Value::Integer(PLUGIN_STATS_SAMPLE_LIMIT as i64));
-
-    let bucket_ms = query.bucket.millis();
+    // The extra row only detects truncation and never participates in
+    // statistics.
+    params.push(Value::Integer((PLUGIN_STATS_SAMPLE_LIMIT + 1) as i64));
     let sql = format!(
-        "SELECT r.created_at_ms, r.elapsed_ms, r.error, r.has_response
+        "SELECT r.created_at_ms, r.elapsed_ms, r.error IS NOT NULL, r.has_response,
+                COALESCE(r.rcode = 'Server Failure', 0)
          FROM {records} r
          WHERE {where_sql}
          ORDER BY r.created_at_ms DESC, r.id DESC
@@ -1179,52 +1234,86 @@ pub(super) fn load_timeseries(
         records = backend.tables.records,
     );
 
+    struct Sample {
+        created_at_ms: i64,
+        elapsed_ms: u64,
+        error: bool,
+        has_response: bool,
+        servfail: bool,
+    }
+    let mut samples = Vec::new();
+    let mut sample_truncated = false;
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(params_from_iter(params))?;
+    while let Some(row) = rows.next()? {
+        if samples.len() == PLUGIN_STATS_SAMPLE_LIMIT {
+            sample_truncated = true;
+            break;
+        }
+        samples.push(Sample {
+            created_at_ms: row.get(0)?,
+            elapsed_ms: row.get::<_, i64>(1).and_then(non_negative_u64)?,
+            error: row.get(2)?,
+            has_response: row.get(3)?,
+            servfail: row.get(4)?,
+        });
+    }
+    let sample_size = samples.len() as u64;
+    let sample_since_ms = samples.last().map(|sample| sample.created_at_ms);
+    let sample_until_ms = samples.first().map(|sample| sample.created_at_ms);
+    let since_ms = if sample_truncated {
+        sample_since_ms
+    } else {
+        query.since_ms.map(as_i64).transpose()?.or(sample_since_ms)
+    }
+    .unwrap_or(0);
+    let until_ms = query
+        .until_ms
+        .map(as_i64)
+        .transpose()?
+        .or(sample_until_ms)
+        .unwrap_or(since_ms);
+    let bucket_ms = query.bucket.millis(since_ms, until_ms, query.max_buckets);
+
     #[derive(Default)]
     struct Aggregator {
         total: u64,
         error_count: u64,
         no_response_count: u64,
+        servfail_count: u64,
         elapsed_sum: u64,
         elapsed_values: Vec<u64>,
     }
     let mut buckets: std::collections::BTreeMap<i64, Aggregator> =
         std::collections::BTreeMap::new();
-    let mut sample_size = 0u64;
-
-    let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt.query(params_from_iter(params))?;
-    while let Some(row) = rows.next()? {
-        let created_at_ms = row.get::<_, i64>(0)?;
-        let elapsed_ms = row.get::<_, i64>(1).and_then(non_negative_u64)?;
-        let error = row.get::<_, Option<String>>(2)?;
-        let has_response = row.get::<_, i64>(3)? != 0;
-        let bucket = bucket_floor(created_at_ms, bucket_ms);
+    for sample in samples {
+        let bucket = bucket_floor(sample.created_at_ms, bucket_ms);
         let aggregator = buckets.entry(bucket).or_default();
-        aggregator.total = aggregator.total.saturating_add(1);
-        if error.is_some() {
-            aggregator.error_count = aggregator.error_count.saturating_add(1);
+        aggregator.total += 1;
+        if sample.error {
+            aggregator.error_count += 1;
+        } else if !sample.has_response {
+            aggregator.no_response_count += 1;
+        } else if sample.servfail {
+            aggregator.servfail_count += 1;
         }
-        if error.is_none() && !has_response {
-            aggregator.no_response_count = aggregator.no_response_count.saturating_add(1);
-        }
-        aggregator.elapsed_sum = aggregator.elapsed_sum.saturating_add(elapsed_ms);
-        aggregator.elapsed_values.push(elapsed_ms);
-        sample_size = sample_size.saturating_add(1);
+        aggregator.elapsed_sum = aggregator.elapsed_sum.saturating_add(sample.elapsed_ms);
+        aggregator.elapsed_values.push(sample.elapsed_ms);
     }
 
     let mut points: Vec<TimeseriesPoint> = Vec::with_capacity(buckets.len());
     for (bucket, mut aggregator) in buckets {
-        let avg_ms = if aggregator.total == 0 {
-            0.0
-        } else {
-            aggregator.elapsed_sum as f64 / aggregator.total as f64
-        };
+        let avg_ms = aggregator.elapsed_sum as f64 / aggregator.total as f64;
         let p95_ms = percentile_value(&mut aggregator.elapsed_values, 0.95);
         points.push(TimeseriesPoint {
             bucket_ms: bucket,
             total: aggregator.total,
             error_count: aggregator.error_count,
             no_response_count: aggregator.no_response_count,
+            servfail_count: aggregator.servfail_count,
+            partial: bucket < since_ms
+                || bucket.saturating_add(bucket_ms).saturating_sub(1) > until_ms
+                || (sample_truncated && bucket == bucket_floor(since_ms, bucket_ms)),
             avg_ms,
             p95_ms,
         });
@@ -1237,6 +1326,10 @@ pub(super) fn load_timeseries(
     Ok(TimeseriesResponse {
         ok: true,
         sample_size,
+        sample_limit: PLUGIN_STATS_SAMPLE_LIMIT,
+        sample_truncated,
+        sample_since_ms,
+        sample_until_ms,
         bucket_ms,
         points,
     })
@@ -1359,6 +1452,26 @@ fn record_filter_clauses(
             questions = tables.question_items,
         ));
         params.push(Value::Text(like_pattern(&qname.to_ascii_lowercase())));
+    }
+    if let Some(qname) = filter.qname_exact.as_deref() {
+        clauses.push(format!(
+            "{alias}.question_set_id IN (SELECT q.question_set_id FROM {questions} q WHERE q.name_lc = ?)",
+            questions = tables.question_items,
+        ));
+        params.push(Value::Text(qname.to_ascii_lowercase()));
+    }
+    if let Some(client_ip) = filter.client_ip_exact.as_deref() {
+        clauses.push(format!("{alias}.client_ip = ?"));
+        params.push(Value::Text(client_ip.to_string()));
+    }
+    if let Some(bucket) = filter.rcode_bucket.as_deref() {
+        clauses.push(format!(
+            "CASE WHEN {alias}.rcode IS NOT NULL THEN {alias}.rcode
+                WHEN {alias}.error IS NOT NULL THEN '_ERROR'
+                WHEN {alias}.has_response = 0 THEN '_NO_RESPONSE'
+                ELSE '_UNKNOWN' END = ?"
+        ));
+        params.push(Value::Text(bucket.to_string()));
     }
     if let Some(qtype) = filter.qtype.as_deref() {
         clauses.push(format!(

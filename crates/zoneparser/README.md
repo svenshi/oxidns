@@ -14,6 +14,9 @@ parsing pipeline are now adapted for OxiDNS:
   `default_ttl`, `base_dir`, and `max_include_depth`
 - the parser supports a zonefile superset intended for OxiDNS `arbitrary`
 
+The latest reviewed upstream branch and full commit hash, synchronization
+decisions, and retained local differences are recorded in [UPSTREAM.md](UPSTREAM.md).
+
 ## Role in OxiDNS
 
 OxiDNS uses this crate to load static DNS records into plugins that synthesize
@@ -34,7 +37,7 @@ let file_records = parse_file("/etc/oxidns/zone.txt", &options)?;
 
 ```toml
 [dependencies]
-zoneparser = { package = "oxidns-zoneparser", version = "0.1" }
+zoneparser = { package = "oxidns-zoneparser", version = "0.1.3" }
 ```
 
 ## Syntax Coverage
@@ -53,6 +56,11 @@ zoneparser = { package = "oxidns-zoneparser", version = "0.1" }
 Common RR presentation formats are parsed directly. For types without a
 dedicated text parser, RFC3597 generic syntax can still be used as long as the
 wire format is supported by `oxidns-proto`.
+
+Decimal byte escapes in text RDATA use exactly three digits (`\000` through
+`\255`); incomplete or out-of-range escapes are rejected. Quoted strings may
+span physical lines inside parentheses, with their newlines and spaces preserved.
+Parenthesis nesting is limited to 1000 levels.
 
 ## Options
 

@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Sven Shi
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 import type { PluginInstance, SystemMetrics, SystemInfo } from "./types";
 
 export const mockPlugins: PluginInstance[] = [
@@ -254,6 +259,7 @@ export const pluginKinds: Record<string, string[]> = {
     "forward",
     "cache",
     "fallback",
+    "load_balance",
     "hosts",
     "arbitrary",
     "redirect",

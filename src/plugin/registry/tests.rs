@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sven Shi
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use std::any::Any;
 use std::collections::HashMap as StdHashMap;
 use std::sync::Mutex as StdMutex;
@@ -68,6 +71,7 @@ async fn matcher_runtime_control_is_not_attached_when_api_is_not_running() {
 
 #[tokio::test]
 async fn test_init_runtime_failure_leaves_runtime_stopped() {
+    let _outbound_guard = crate::infra::network::outbound::TestGlobalGuard::clean();
     let manager = Arc::new(PluginRuntimeManager::new());
     manager
         .init_runtime(test_config(Vec::new()))
@@ -91,6 +95,7 @@ async fn test_init_runtime_failure_leaves_runtime_stopped() {
 
 #[tokio::test]
 async fn test_runtime_manager_recovers_poisoned_current_lock() {
+    let _outbound_guard = crate::infra::network::outbound::TestGlobalGuard::clean();
     let manager = Arc::new(PluginRuntimeManager::new());
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _guard = manager
@@ -711,4 +716,254 @@ async fn test_reload_provider_rejects_non_provider_and_missing_tags() {
 
     registry.destroy().await;
     clear_global_api();
+}
+
+#[tokio::test]
+async fn failed_candidate_preserves_both_cache_dumps() {
+    #[cfg(feature = "api")]
+    let _guard = global_api_test_guard().await;
+    crate::infra::clock::AppClock::start();
+    let dir = tempfile::tempdir().unwrap();
+    let baseline = crate::plugin::executor::cache::persistence_test_dump();
+    let files = [dir.path().join("a.dump"), dir.path().join("b.dump")];
+    for file in &files {
+        std::fs::write(file, &baseline).unwrap();
+    }
+    let _outbound_guard = crate::infra::network::outbound::TestGlobalGuard::clean();
+    let manager = Arc::new(PluginRuntimeManager::new());
+    for (size, ecs) in [(1, true), (128, false)] {
+        let mut plugins = Vec::new();
+        for (idx, file) in files.iter().enumerate() {
+            plugins.push(PluginConfig {
+                tag: format!("cache_{idx}"),
+                plugin_type: "cache".into(),
+                args: Some(
+                    serde_yaml_ng::from_str(&format!(
+                        "size: {size}\necs_in_key: {ecs}\ndump_file: '{}'",
+                        file.display()
+                    ))
+                    .unwrap(),
+                ),
+            });
+        }
+        plugins.push(PluginConfig {
+            tag: "zz_invalid".into(),
+            plugin_type: "forward".into(),
+            args: Some(serde_yaml_ng::from_str("upstreams: [{addr: 'invalid://bad'}]").unwrap()),
+        });
+        assert!(manager.init_runtime(test_config(plugins)).await.is_err());
+        for file in &files {
+            assert_eq!(std::fs::read(file).unwrap(), baseline);
+        }
+    }
+}
+
+fn lifecycle_cache_config(file: &std::path::Path) -> Config {
+    test_config(vec![PluginConfig {
+        tag: "lifecycle_cache".into(),
+        plugin_type: "cache".into(),
+        args: Some(
+            serde_yaml_ng::from_str(&format!(
+                "ecs_in_key: true\ndump_file: '{}'",
+                file.display()
+            ))
+            .unwrap(),
+        ),
+    }])
+}
+
+fn lifecycle_cache_context(with_response: bool) -> crate::core::context::DnsContext {
+    use crate::proto::rdata::A;
+    use crate::proto::{DNSClass, Message, Question, RData, Record, RecordType};
+    let name = Name::from_ascii("created-during-startup.example.").unwrap();
+    let mut request = Message::new();
+    request.add_question(Question::new(name.clone(), RecordType::A, DNSClass::IN));
+    let mut context =
+        crate::core::context::DnsContext::new("127.0.0.1:5300".parse().unwrap(), request.clone());
+    if with_response {
+        request.add_answer(Record::from_rdata(
+            name,
+            3600,
+            RData::A(A(std::net::Ipv4Addr::LOCALHOST)),
+        ));
+        context.set_response(request);
+    }
+    context
+}
+
+#[tokio::test]
+async fn startup_cancellation_and_concurrent_shutdown_preserve_activation() {
+    #[cfg(feature = "api")]
+    let _guard = global_api_test_guard().await;
+    crate::infra::clock::AppClock::start();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("startup.dump");
+    std::fs::write(
+        &file,
+        crate::plugin::executor::cache::persistence_test_dump(),
+    )
+    .unwrap();
+    let _outbound_guard = crate::infra::network::outbound::TestGlobalGuard::clean();
+    let manager = Arc::new(PluginRuntimeManager::new());
+    let config = lifecycle_cache_config(&file);
+    let candidate_config = config.clone();
+    let prepared = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let prepared_signal = prepared.clone();
+    let release_signal = release.clone();
+    let mut startup = Box::pin(manager.start_with(move |session| {
+        Box::pin(async move {
+            let runtime = session.initialize(candidate_config).await?;
+            let cache = runtime.get_plugin("lifecycle_cache").unwrap().to_executor();
+            cache.execute(&mut lifecycle_cache_context(true)).await?;
+            prepared_signal.notify_one();
+            release_signal.notified().await;
+            Ok(runtime)
+        })
+    }));
+    assert!(futures::poll!(startup.as_mut()).is_pending());
+    tokio::time::timeout(std::time::Duration::from_secs(5), prepared.notified())
+        .await
+        .unwrap();
+    assert!(
+        manager.current_runtime().is_none(),
+        "unactivated candidates must not be published"
+    );
+    drop(startup); // Cancel the observer while the owned operation is preparing.
+
+    let stopping = Arc::new(Notify::new());
+    let stopping_signal = stopping.clone();
+    let stop_manager = manager.clone();
+    let mut shutdown = tokio::spawn(async move {
+        stopping_signal.notify_one();
+        stop_manager.destroy_runtime().await;
+    });
+    stopping.notified().await;
+    assert!(futures::poll!(&mut shutdown).is_pending());
+    release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(5), shutdown)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(manager.current_runtime().is_none());
+
+    // Re-open the file through the normal runtime path. The new answer is
+    // present only if the cancelled startup still activated before shutdown.
+    let runtime = manager.init_runtime(config).await.unwrap();
+    let mut context = lifecycle_cache_context(false);
+    runtime
+        .get_plugin("lifecycle_cache")
+        .unwrap()
+        .to_executor()
+        .execute(&mut context)
+        .await
+        .unwrap();
+    let restored = context.response().is_some();
+    manager.destroy_runtime().await;
+    assert!(
+        restored,
+        "cancelled startup must not omit readiness and lose its final snapshot"
+    );
+}
+
+#[tokio::test]
+async fn startup_late_failure_aborts_without_publishing_or_dumping() {
+    #[cfg(feature = "api")]
+    let _guard = global_api_test_guard().await;
+    crate::infra::clock::AppClock::start();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("aborted.dump");
+    let baseline = crate::plugin::executor::cache::persistence_test_dump();
+    std::fs::write(&file, &baseline).unwrap();
+    let config = lifecycle_cache_config(&file);
+    let _outbound_guard = crate::infra::network::outbound::TestGlobalGuard::clean();
+    let manager = Arc::new(PluginRuntimeManager::new());
+    let error = manager
+        .start_with(move |session| {
+            Box::pin(async move {
+                let runtime = session.initialize(config).await?;
+                let mut context = lifecycle_cache_context(true);
+                runtime
+                    .get_plugin("lifecycle_cache")
+                    .unwrap()
+                    .to_executor()
+                    .execute(&mut context)
+                    .await?;
+                Err::<(), _>(DnsError::runtime("late application setup failed"))
+            })
+        })
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("late application setup failed"));
+    assert!(manager.current_runtime().is_none());
+    assert_eq!(std::fs::read(&file).unwrap(), baseline);
+}
+
+#[tokio::test]
+async fn startup_panic_cleans_up_the_owned_candidate() {
+    #[cfg(feature = "api")]
+    let _guard = global_api_test_guard().await;
+    crate::infra::clock::AppClock::start();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("panic.dump");
+    let baseline = crate::plugin::executor::cache::persistence_test_dump();
+    std::fs::write(&file, &baseline).unwrap();
+    let config = lifecycle_cache_config(&file);
+    let _outbound_guard = crate::infra::network::outbound::TestGlobalGuard::clean();
+    let manager = Arc::new(PluginRuntimeManager::new());
+    let error = manager
+        .start_with::<(), _>(move |session| {
+            Box::pin(async move {
+                session.initialize(config).await?;
+                panic!("simulated setup panic after plugin initialization")
+            })
+        })
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("panicked"));
+    assert!(manager.current_runtime().is_none());
+    assert_eq!(std::fs::read(&file).unwrap(), baseline);
+    // The failed candidate must have released registrations and lifecycle so
+    // another runtime using the same tag can start normally.
+    manager
+        .init_runtime(lifecycle_cache_config(&file))
+        .await
+        .unwrap();
+    manager.destroy_runtime().await;
+}
+
+#[tokio::test]
+async fn startup_waits_for_cancelled_shutdown_to_finish_application_cleanup() {
+    let _outbound_guard = crate::infra::network::outbound::TestGlobalGuard::clean();
+    let manager = Arc::new(PluginRuntimeManager::new());
+    manager.init_runtime(test_config(Vec::new())).await.unwrap();
+    let cleaning = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let cleaning_signal = cleaning.clone();
+    let release_signal = release.clone();
+    let mut shutdown = Box::pin(manager.stop_with(
+        || Box::pin(async {}),
+        move || {
+            Box::pin(async move {
+                cleaning_signal.notify_one();
+                release_signal.notified().await;
+            })
+        },
+    ));
+    assert!(futures::poll!(shutdown.as_mut()).is_pending());
+    tokio::time::timeout(std::time::Duration::from_secs(5), cleaning.notified())
+        .await
+        .unwrap();
+    assert!(manager.current_runtime().is_none());
+    drop(shutdown); // The cleanup operation must retain its lifecycle permit.
+    let mut startup = Box::pin(manager.init_runtime(test_config(Vec::new())));
+    assert!(futures::poll!(startup.as_mut()).is_pending());
+    assert!(manager.current_runtime().is_none());
+    release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(5), startup)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(manager.current_runtime().is_some());
+    manager.destroy_runtime().await;
 }

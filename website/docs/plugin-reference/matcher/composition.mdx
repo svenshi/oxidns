@@ -1,0 +1,203 @@
+---
+title: 组合与常量匹配器
+---
+
+import Admonition from "@theme/Admonition";
+import PluginAvailability from "@site/src/components/PluginAvailability";
+
+这些 matcher 组合其它表达式或提供恒真、恒假的基础条件。
+
+## `any_match`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+组合多个 matcher 表达式，只要任意一个命中就返回 `true`。
+
+### 配置示例
+
+```yaml
+- tag: any_policy_hit
+  type: any_match
+  args:
+    - "$lan_clients"
+    - "qtype AAAA"
+    - "!$blocked_qname"
+```
+
+### 配置项
+
+`any_match` 的 `args` 为 matcher 表达式列表。
+
+- 类型：`array[string]`；必填：是；默认值：无
+- 支持元素：
+  - matcher tag 引用（如 `"$match_tag"`）
+  - quick setup matcher 表达式（如 `"qname domain:example.com"`）
+  - 取反 matcher 表达式（如 `"!has_resp"` 或 `"!$blocked_qname"`）
+- 运行影响：
+  - 按配置顺序依次判断，命中任意一个后立即短路返回 `true`。
+  - 全部不命中时返回 `false`。
+
+### 典型用途
+
+- 把多个“可放行条件”合并为单个 matcher，复用到多个 sequence 规则。
+- 作为复杂条件的“或”组合层，减少重复配置。
+
+---
+
+## `string_exp`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+通用字符串表达式匹配器，用于补足专用 matcher 不够灵活的场景。
+
+### 配置示例
+
+```yaml
+- tag: match_http_path
+  type: string_exp
+  args: "url_path prefix /dns-"
+```
+
+也支持字符串数组：
+
+```yaml
+args:
+  - "client_ip"
+  - "prefix"
+  - "192.168."
+```
+
+### 配置项
+
+`string_exp` 的 `args` 可以为字符串或字符串数组。
+
+- 类型：`string` 或 `array`
+- 必填：是
+- 默认值：无
+- 作用：定义完整字符串表达式。
+- 表达式组成：
+  - 数据来源 `source`
+  - 匹配操作 `op`
+  - 一个或多个参数
+- 运行影响：
+  - 按表达式从上下文中取值并执行字符串匹配。
+
+### 表达式格式
+
+```text
+<source> <op> <arg...>
+```
+
+支持的 `source`：
+
+- `qname`
+- `qtype`
+- `qclass`
+- `rcode`
+- `resp_ip`
+- `mark`
+- `client_ip`
+- `server_name`
+- `url_path`
+- `$ENV_KEY`
+
+支持的 `op`：
+
+- `eq`
+- `prefix`
+- `suffix`
+- `contains`
+- `regexp`
+- `zl`
+
+说明：
+
+- `zl` 表示 zero length，用于判断字符串是否为空。
+- `regexp` 支持一个或多个正则参数。
+
+### quick setup
+
+```yaml
+- matches: "string_exp server_name suffix .example.net"
+```
+
+### 典型用途
+
+- 按 DoH 路径、SNI、mark 集合、响应 IP 字符串做灵活判断。
+
+<Admonition type="note" title="注意事项">
+
+- 可使用专用 matcher 的场景，宜优先采用专用 matcher。
+- `string_exp` 提供更高灵活性，但表达式的可读性与可维护性通常低于专用插件。
+<span id="true"></span>
+
+</Admonition>
+
+## `_true`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+恒为真。
+
+### 配置示例
+
+```yaml
+- tag: always_true
+  type: _true
+```
+
+### 配置项
+
+无独立配置字段。
+
+### quick setup
+
+```yaml
+- matches: "_true"
+```
+
+### 典型用途
+
+- 作为保底命中条件。
+- 测试 sequence 分支顺序。
+
+---
+
+<span id="false"></span>
+
+## `_false`
+
+<PluginAvailability from="minimal" />
+
+### 作用
+
+恒为假。
+
+### 配置示例
+
+```yaml
+- tag: always_false
+  type: _false
+```
+
+### 配置项
+
+无独立配置字段。
+
+### quick setup
+
+```yaml
+- matches: "_false"
+```
+
+### 典型用途
+
+- 临时禁用某条规则。
+
+---
