@@ -442,6 +442,7 @@ impl Name {
         }
 
         let mut cursor = start;
+        let mut pointer_limit = start;
         let mut next_offset = None;
         let mut wire = WireBuf::new();
         let mut wire_label_offsets = WireLabelOffsets::new();
@@ -513,13 +514,11 @@ impl Name {
                             "dns compression pointer exceeds packet length",
                         ));
                     }
-                    // RFC 1035 4.1.4: a pointer references a prior occurrence,
-                    // so every jump must land strictly before the current
-                    // position. Enforcing this makes each jump strictly
-                    // decrease the cursor, which rules out loops without the
-                    // previous O(n^2) visited-offset scan (a crafted packet
-                    // could burn ~1000x CPU on it).
-                    if ptr >= cursor {
+                    // RFC 1035 4.1.4: a pointer references a prior occurrence.
+                    // Labels advance cursor, so compare against the start of
+                    // the current label sequence instead. Each jump lowers
+                    // this bound, rejecting cycles in O(1) per pointer.
+                    if ptr >= pointer_limit {
                         return Err(DnsError::protocol(
                             "dns compression pointer does not reference a prior occurrence",
                         ));
@@ -533,6 +532,7 @@ impl Name {
                     if next_offset.is_none() {
                         next_offset = Some(cursor + 2);
                     }
+                    pointer_limit = ptr;
                     cursor = ptr;
                 }
                 _ => return Err(DnsError::protocol("invalid dns label type")),
@@ -829,6 +829,53 @@ mod tests {
                 .contains("does not reference a prior occurrence"),
             "{error}"
         );
+    }
+
+    #[test]
+    // A label can advance the cursor back to a backward pointer. Reject the
+    // cycle directly, including when it is entered through a compressed suffix,
+    // rather than exhausting the name-length or pointer budget.
+    fn parse_wire_name_rejects_label_pointer_cycles() {
+        let mut packet = vec![0; 12];
+        packet.extend_from_slice(&[1, b'a', 0xC0, 0x0C, 0xC0, 0x0C]);
+
+        for start in [12, 16] {
+            let error = Name::parse(&packet, start).expect_err("label pointer cycle must fail");
+            assert!(
+                error
+                    .to_string()
+                    .contains("does not reference a prior occurrence"),
+                "start={start}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_wire_name_accepts_nested_compressed_suffixes() {
+        let packet = [
+            3, b'c', b'o', b'm', 0, 1, b'b', 0xC0, 0, 1, b'a', 0xC0, 5, 0xC0, 9,
+        ];
+
+        for (start, end, fqdn) in [(5, 9, "b.com."), (9, 13, "a.b.com."), (13, 15, "a.b.com.")] {
+            let (name, next) = Name::parse(&packet, start).expect("backward suffixes must parse");
+            assert_eq!(name.to_fqdn(), fqdn);
+            assert_eq!(next, end);
+        }
+    }
+
+    #[test]
+    fn parse_wire_name_accepts_pointer_budget_boundary() {
+        let mut packet = vec![1, b'a', 0];
+        let mut start = 0;
+        for _ in 0..MAX_COMPRESSION_POINTERS {
+            let pointer_offset = packet.len();
+            packet.extend_from_slice(&(0xC000 | start as u16).to_be_bytes());
+            start = pointer_offset;
+        }
+
+        let (name, next) = Name::parse(&packet, start).expect("pointer budget boundary must parse");
+        assert_eq!(name.to_fqdn(), "a.");
+        assert_eq!(next, packet.len());
     }
 
     #[test]
