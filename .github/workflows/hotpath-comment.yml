@@ -1,0 +1,32 @@
+name: Hotpath PR comment
+
+on:
+  workflow_run:
+    workflows: [Hotpath]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  comment:
+    if: github.repository == 'svenshi/oxidns' && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: hotpath-comment-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+    steps:
+      # Only execute trusted default-branch code. Artifact data is never extracted
+      # or executed, and the PR number is resolved through the GitHub API.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Publish or update the benchmark comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/hotpath_comment.py

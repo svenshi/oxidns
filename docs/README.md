@@ -2,6 +2,8 @@
 
 This directory contains repository-maintained project documentation.
 
+- [Benchmarking and performance CI](benchmarks.md): measurement boundaries,
+  regression checks, and automated PR feedback.
 - [AI and agent guidance](ai/README.md): architecture, development, testing,
   maintenance, release, and operations workflows.
 

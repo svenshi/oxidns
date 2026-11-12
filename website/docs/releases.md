@@ -10,7 +10,25 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-11
 
 <div className="release-stack">
-   <ReleaseCard version="v1.7.0" badge="Minor Release" date="2026-11-11" defaultOpen>
+   <ReleaseCard version="v1.7.1" badge="Patch Release" date="2026-11-12" defaultOpen>
+       **版本定位**
+
+       - v1.7.1 聚焦上游响应内存边界、DNS 压缩指针解析与容器配置保存，修复 v1.7.0 的资源安全和部署兼容问题。
+
+       **主要变更**
+
+       - `fix(upstream)`：DoH/H2/H3 上游响应缓冲区不再信任超大的 `Content-Length`，并逐块限制响应体最多 65,535 字节；即使长度头缺失或虚报，也会拒绝超限响应，避免无界缓冲。
+       - `fix/perf(proto)`：DNS 名称压缩指针必须引用此前的名称片段，以每次跳转 O(1) 的边界检查替代已访问偏移扫描；拒绝前向指针及跨标签与指针的循环，保留合法嵌套后缀和既有跳转次数限制。
+       - `fix(api)`：Unix 配置保存遇到单文件挂载点的 `EBUSY` 时，校验文件身份后原地写入，保留 inode、权限和属主/属组；普通文件继续原子替换，补充 Docker 与 RouterOS Container 的目录挂载说明。
+
+       **配置与升级说明**
+
+       - 根 crate 为 `1.7.1`，tag 为 `v1.7.1`；`oxidns-proto` 升级为 `0.1.8`，`oxidns-zoneparser` 因协议依赖版本更新升级为 `0.1.4`；`oxidns-macros` 保持 `0.1.1`，`oxidns-ripset` 保持 `0.1.3`。
+       - v1.7.0 YAML 配置可直接升级，没有新增、重命名或删除字段，现有默认值和 bundle 保持不变。升级前备份配置与持久化数据，并运行 `oxidns check -c <配置文件>`；更早版本仍须遵循对应版本的迁移说明。
+       - **协议校验收紧**：上游 DoH 响应体超过 65,535 字节，以及包含前向或循环压缩指针的 DNS 报文会被拒绝；合法的后向压缩指针仍受支持。
+       - **单文件挂载保存风险**：原地写入不具备原子性，中断或 I/O 错误可能留下不完整配置，并会记录警告。Docker 与 RouterOS Container 应优先可写挂载配置所在目录；只读挂载仍无法通过 WebUI 保存。
+   </ReleaseCard>
+   <ReleaseCard version="v1.7.0" badge="Minor Release" date="2026-11-11">
        **版本定位**
 
        - v1.7.0 扩展策略编排、EDNS 过滤、域名学习与缓存管理，改进查询分析和管理 API，并修复 ECS 来源选择、DNS 协议处理、持久化回滚及 RouterOS 联动。

@@ -1,341 +1,468 @@
 [
   {
     "target": "domain_rule_matcher",
-    "iterations": 100000,
+    "iterations": 10000,
     "cases": [
       {
         "benchmark": "rule-matcher-domain-lookup-match-full",
-        "id": "rule_matcher_domain/lookup/match_full"
+        "id": "rule_matcher_domain/lookup/match_full",
+        "tier": "core"
       },
       {
         "benchmark": "rule-matcher-domain-lookup-match-suffix",
-        "id": "rule_matcher_domain/lookup/match_suffix"
+        "id": "rule_matcher_domain/lookup/match_suffix",
+        "tier": "core"
       },
       {
         "benchmark": "rule-matcher-domain-lookup-match-keyword",
-        "id": "rule_matcher_domain/lookup/match_keyword"
+        "id": "rule_matcher_domain/lookup/match_keyword",
+        "tier": "core"
       },
       {
         "benchmark": "rule-matcher-domain-lookup-match-regexp",
-        "id": "rule_matcher_domain/lookup/match_regexp"
+        "id": "rule_matcher_domain/lookup/match_regexp",
+        "tier": "core"
       },
       {
         "benchmark": "rule-matcher-domain-lookup-miss",
-        "id": "rule_matcher_domain/lookup/miss"
+        "id": "rule_matcher_domain/lookup/miss",
+        "tier": "core"
       },
       {
-        "benchmark": "domain-suffix-lookup-direct-hit-1000",
-        "id": "rule_matcher_domain_suffix_scaling/lookup_direct_hit/1000"
+        "benchmark": "rule-matcher-domain-suffix-scaling-lookup-two-level-hit-1000",
+        "id": "rule_matcher_domain_suffix_scaling/lookup_two_level_hit/1000",
+        "tier": "extended"
       },
       {
-        "benchmark": "domain-suffix-lookup-two-level-hit-1000",
-        "id": "rule_matcher_domain_suffix_scaling/lookup_two_level_hit/1000"
+        "benchmark": "rule-matcher-domain-suffix-scaling-lookup-shared-suffix-miss-1000",
+        "id": "rule_matcher_domain_suffix_scaling/lookup_shared_suffix_miss/1000",
+        "tier": "extended"
       },
       {
-        "benchmark": "domain-suffix-lookup-shared-suffix-miss-1000",
-        "id": "rule_matcher_domain_suffix_scaling/lookup_shared_suffix_miss/1000"
+        "benchmark": "rule-matcher-domain-suffix-scaling-lookup-unshared-tld-miss-1000",
+        "id": "rule_matcher_domain_suffix_scaling/lookup_unshared_tld_miss/1000",
+        "tier": "extended"
       },
       {
-        "benchmark": "domain-suffix-lookup-ten-level-hit-1000",
-        "id": "rule_matcher_domain_suffix_scaling/lookup_ten_level_hit/1000"
+        "benchmark": "rule-matcher-domain-suffix-scaling-lookup-two-level-hit-100000",
+        "id": "rule_matcher_domain_suffix_scaling/lookup_two_level_hit/100000",
+        "tier": "core"
       },
       {
-        "benchmark": "domain-suffix-lookup-unshared-tld-miss-1000",
-        "id": "rule_matcher_domain_suffix_scaling/lookup_unshared_tld_miss/1000"
+        "benchmark": "rule-matcher-domain-suffix-scaling-lookup-shared-suffix-miss-100000",
+        "id": "rule_matcher_domain_suffix_scaling/lookup_shared_suffix_miss/100000",
+        "tier": "core"
       },
       {
-        "benchmark": "domain-suffix-lookup-deep-unshared-tld-miss-1000",
-        "id": "rule_matcher_domain_suffix_scaling/lookup_deep_unshared_tld_miss/1000"
+        "benchmark": "rule-matcher-domain-suffix-scaling-lookup-unshared-tld-miss-100000",
+        "id": "rule_matcher_domain_suffix_scaling/lookup_unshared_tld_miss/100000",
+        "tier": "extended"
       },
       {
-        "benchmark": "domain-suffix-lookup-direct-hit-100000",
-        "id": "rule_matcher_domain_suffix_scaling/lookup_direct_hit/100000"
+        "benchmark": "rule-matcher-domain-build-4000",
+        "id": "rule_matcher_domain/build/4000",
+        "iterations": 10,
+        "tier": "extended"
       },
       {
-        "benchmark": "domain-suffix-lookup-two-level-hit-100000",
-        "id": "rule_matcher_domain_suffix_scaling/lookup_two_level_hit/100000"
+        "benchmark": "rule-matcher-domain-suffix-scaling-build-1000",
+        "id": "rule_matcher_domain_suffix_scaling/build/1000",
+        "iterations": 10,
+        "tier": "extended"
       },
       {
-        "benchmark": "domain-suffix-lookup-shared-suffix-miss-100000",
-        "id": "rule_matcher_domain_suffix_scaling/lookup_shared_suffix_miss/100000"
-      },
-      {
-        "benchmark": "domain-suffix-lookup-ten-level-hit-100000",
-        "id": "rule_matcher_domain_suffix_scaling/lookup_ten_level_hit/100000"
-      },
-      {
-        "benchmark": "domain-suffix-lookup-unshared-tld-miss-100000",
-        "id": "rule_matcher_domain_suffix_scaling/lookup_unshared_tld_miss/100000"
-      },
-      {
-        "benchmark": "domain-suffix-lookup-deep-unshared-tld-miss-100000",
-        "id": "rule_matcher_domain_suffix_scaling/lookup_deep_unshared_tld_miss/100000"
+        "benchmark": "rule-matcher-domain-suffix-scaling-build-100000",
+        "id": "rule_matcher_domain_suffix_scaling/build/100000",
+        "iterations": 1,
+        "tier": "extended"
       }
     ]
   },
   {
     "target": "ip_rule_matcher",
-    "iterations": 100000,
+    "iterations": 10000,
     "cases": [
       {
-        "benchmark": "rule-matcher-ip-lookup-match-ipv4",
-        "id": "rule_matcher_ip/lookup/match_ipv4"
+        "benchmark": "rule-matcher-ip-lookup-bitmap-hit-ipv4",
+        "id": "rule_matcher_ip/lookup/bitmap_hit_ipv4",
+        "tier": "core"
       },
       {
-        "benchmark": "rule-matcher-ip-lookup-miss-ipv4",
-        "id": "rule_matcher_ip/lookup/miss_ipv4"
+        "benchmark": "rule-matcher-ip-lookup-bitmap-miss-ipv4",
+        "id": "rule_matcher_ip/lookup/bitmap_miss_ipv4",
+        "tier": "core"
       },
       {
-        "benchmark": "rule-matcher-ip-lookup-match-ipv6",
-        "id": "rule_matcher_ip/lookup/match_ipv6"
+        "benchmark": "rule-matcher-ip-lookup-fragmented-hit-ipv6",
+        "id": "rule_matcher_ip/lookup/fragmented_hit_ipv6",
+        "tier": "core"
       },
       {
-        "benchmark": "rule-matcher-ip-lookup-miss-ipv6",
-        "id": "rule_matcher_ip/lookup/miss_ipv6"
+        "benchmark": "rule-matcher-ip-lookup-fragmented-miss-ipv6",
+        "id": "rule_matcher_ip/lookup/fragmented_miss_ipv6",
+        "tier": "core"
+      },
+      {
+        "benchmark": "rule-matcher-ip-build-3000",
+        "id": "rule_matcher_ip/build/3000",
+        "iterations": 10,
+        "tier": "extended"
+      },
+      {
+        "benchmark": "rule-matcher-ip-compact-inline-ipv4",
+        "id": "rule_matcher_ip_compact/inline_ipv4",
+        "tier": "extended"
+      },
+      {
+        "benchmark": "rule-matcher-ip-compact-linear-ipv6",
+        "id": "rule_matcher_ip_compact/linear_ipv6",
+        "tier": "extended"
       }
     ]
   },
   {
     "target": "message_codec",
-    "iterations": 100000,
+    "iterations": 10000,
     "cases": [
       {
-        "benchmark": "message-small-response-encode",
-        "id": "message_small_response/encode/45"
+        "benchmark": "message-small-response-encode-45",
+        "id": "message_small_response/encode/45",
+        "tier": "core"
       },
       {
-        "benchmark": "message-small-response-decode",
-        "id": "message_small_response/decode/45"
+        "benchmark": "message-small-response-decode-45",
+        "id": "message_small_response/decode/45",
+        "tier": "core"
       },
       {
-        "benchmark": "message-compression-heavy-encode",
-        "id": "message_compression_heavy/encode/655"
+        "benchmark": "message-compression-heavy-encode-655",
+        "id": "message_compression_heavy/encode/655",
+        "tier": "core"
       },
       {
-        "benchmark": "message-compression-heavy-decode",
-        "id": "message_compression_heavy/decode/655"
+        "benchmark": "message-compression-heavy-decode-655",
+        "id": "message_compression_heavy/decode/655",
+        "tier": "core"
       },
       {
-        "benchmark": "message-large-payload-encode",
-        "id": "message_large_payload/encode/1833"
+        "benchmark": "message-large-payload-encode-1833",
+        "id": "message_large_payload/encode/1833",
+        "tier": "extended"
       },
       {
-        "benchmark": "message-large-payload-decode",
-        "id": "message_large_payload/decode/1833"
+        "benchmark": "message-large-payload-decode-1833",
+        "id": "message_large_payload/decode/1833",
+        "tier": "extended"
       },
       {
-        "benchmark": "message-compat-fixture-encode",
-        "id": "message_compat_fixture/encode/302"
+        "benchmark": "message-compat-fixture-encode-302",
+        "id": "message_compat_fixture/encode/302",
+        "tier": "extended"
       },
       {
-        "benchmark": "message-compat-fixture-decode",
-        "id": "message_compat_fixture/decode/302"
+        "benchmark": "message-compat-fixture-decode-302",
+        "id": "message_compat_fixture/decode/302",
+        "tier": "extended"
       },
       {
-        "benchmark": "message-response-response-no-edns-single-question",
-        "id": "message_response_builders/response_no_edns_single_question"
+        "benchmark": "message-response-builders-response-no-edns-single-question",
+        "id": "message_response_builders/response_no_edns_single_question",
+        "tier": "extended"
       },
       {
-        "benchmark": "message-response-response-with-edns-copy-only",
-        "id": "message_response_builders/response_with_edns_copy_only"
+        "benchmark": "message-response-builders-response-with-edns-copy-only",
+        "id": "message_response_builders/response_with_edns_copy_only",
+        "tier": "extended"
       },
       {
-        "benchmark": "message-response-response-with-edns-copy-and-mutate",
-        "id": "message_response_builders/response_with_edns_copy_and_mutate"
+        "benchmark": "message-response-builders-response-with-edns-copy-and-mutate",
+        "id": "message_response_builders/response_with_edns_copy_and_mutate",
+        "tier": "extended"
       },
       {
-        "benchmark": "message-response-address-response-v4-1",
-        "id": "message_response_builders/address_response_v4_1"
+        "benchmark": "message-response-builders-address-response-v4-1",
+        "id": "message_response_builders/address_response_v4_1",
+        "tier": "extended"
       },
       {
-        "benchmark": "message-response-address-response-v4-8",
-        "id": "message_response_builders/address_response_v4_8"
+        "benchmark": "message-response-builders-address-response-v4-8",
+        "id": "message_response_builders/address_response_v4_8",
+        "tier": "extended"
       },
       {
-        "benchmark": "message-response-address-response-v6-1",
-        "id": "message_response_builders/address_response_v6_1"
+        "benchmark": "message-response-builders-address-response-v6-1",
+        "id": "message_response_builders/address_response_v6_1",
+        "tier": "extended"
       },
       {
-        "benchmark": "message-response-address-response-v6-8",
-        "id": "message_response_builders/address_response_v6_8"
+        "benchmark": "message-response-builders-address-response-v6-8",
+        "id": "message_response_builders/address_response_v6_8",
+        "tier": "extended"
       },
       {
-        "benchmark": "message-response-then-encode-a",
-        "id": "message_response_builders/response_then_encode_a"
+        "benchmark": "message-response-builders-response-then-encode-a",
+        "id": "message_response_builders/response_then_encode_a",
+        "tier": "extended"
       },
       {
-        "benchmark": "message-response-response-then-encode-txt",
-        "id": "message_response_builders/response_then_encode_txt"
+        "benchmark": "message-response-builders-response-then-encode-txt",
+        "id": "message_response_builders/response_then_encode_txt",
+        "tier": "extended"
       }
     ]
   },
   {
     "target": "plugin_local_answers",
-    "iterations": 10000,
+    "iterations": 2000,
     "cases": [
       {
         "benchmark": "plugin-black-hole-execute-a-1",
-        "id": "plugin_black_hole/execute/a_1"
+        "id": "plugin_black_hole/execute/a_1",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-black-hole-execute-a-8",
-        "id": "plugin_black_hole/execute/a_8"
+        "id": "plugin_black_hole/execute/a_8",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-black-hole-execute-aaaa-1",
-        "id": "plugin_black_hole/execute/aaaa_1"
+        "id": "plugin_black_hole/execute/aaaa_1",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-black-hole-execute-aaaa-8",
-        "id": "plugin_black_hole/execute/aaaa_8"
+        "id": "plugin_black_hole/execute/aaaa_8",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-hosts-execute-full",
-        "id": "plugin_hosts/execute/full"
+        "id": "plugin_hosts/execute/full",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-hosts-execute-domain",
-        "id": "plugin_hosts/execute/domain"
+        "id": "plugin_hosts/execute/domain",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-hosts-execute-keyword",
-        "id": "plugin_hosts/execute/keyword"
+        "id": "plugin_hosts/execute/keyword",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-hosts-execute-regex",
-        "id": "plugin_hosts/execute/regex"
+        "id": "plugin_hosts/execute/regex",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-hosts-execute-large-full",
-        "id": "plugin_hosts/execute/large_full"
+        "id": "plugin_hosts/execute/large_full",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-hosts-execute-large-domain",
-        "id": "plugin_hosts/execute/large_domain"
+        "id": "plugin_hosts/execute/large_domain",
+        "tier": "core"
       },
       {
         "benchmark": "plugin-hosts-execute-large-keyword",
-        "id": "plugin_hosts/execute/large_keyword"
+        "id": "plugin_hosts/execute/large_keyword",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-hosts-execute-large-regex",
-        "id": "plugin_hosts/execute/large_regex"
+        "id": "plugin_hosts/execute/large_regex",
+        "tier": "core"
       },
       {
         "benchmark": "plugin-hosts-execute-large-miss",
-        "id": "plugin_hosts/execute/large_miss"
+        "id": "plugin_hosts/execute/large_miss",
+        "tier": "core"
       },
       {
         "benchmark": "plugin-hosts-execute-family-mismatch-nodata",
-        "id": "plugin_hosts/execute/family_mismatch_nodata"
+        "id": "plugin_hosts/execute/family_mismatch_nodata",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-arbitrary-execute-a-1",
-        "id": "plugin_arbitrary/execute/a_1"
+        "id": "plugin_arbitrary/execute/a_1",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-arbitrary-execute-a-8",
-        "id": "plugin_arbitrary/execute/a_8"
+        "id": "plugin_arbitrary/execute/a_8",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-arbitrary-execute-aaaa",
-        "id": "plugin_arbitrary/execute/aaaa"
+        "id": "plugin_arbitrary/execute/aaaa",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-arbitrary-execute-txt",
-        "id": "plugin_arbitrary/execute/txt"
+        "id": "plugin_arbitrary/execute/txt",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-arbitrary-execute-cname",
-        "id": "plugin_arbitrary/execute/cname"
+        "id": "plugin_arbitrary/execute/cname",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-arbitrary-execute-any-miss",
-        "id": "plugin_arbitrary/execute/any_miss"
+        "id": "plugin_arbitrary/execute/any_miss",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-redirect-execute-full",
-        "id": "plugin_redirect/execute/full"
+        "id": "plugin_redirect/execute/full",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-redirect-execute-suffix-2",
-        "id": "plugin_redirect/execute/suffix_2"
+        "id": "plugin_redirect/execute/suffix_2",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-redirect-execute-suffix-10",
-        "id": "plugin_redirect/execute/suffix_10"
+        "id": "plugin_redirect/execute/suffix_10",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-redirect-execute-keyword",
-        "id": "plugin_redirect/execute/keyword"
+        "id": "plugin_redirect/execute/keyword",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-redirect-execute-regexp",
-        "id": "plugin_redirect/execute/regexp"
+        "id": "plugin_redirect/execute/regexp",
+        "tier": "extended"
       },
       {
         "benchmark": "plugin-redirect-execute-miss",
-        "id": "plugin_redirect/execute/miss"
+        "id": "plugin_redirect/execute/miss",
+        "tier": "extended"
+      },
+      {
+        "benchmark": "plugin-redirect-response-suffix",
+        "id": "plugin_redirect/response/suffix",
+        "tier": "core"
       }
     ]
   },
   {
     "target": "request_pipeline",
-    "iterations": 10000,
+    "iterations": 1000,
     "cases": [
       {
         "benchmark": "request-pipeline-local-answer",
-        "id": "request_pipeline/local_answer"
+        "id": "request_pipeline/local_answer",
+        "tier": "core"
       },
       {
         "benchmark": "request-pipeline-positive-cache-hit",
-        "id": "request_pipeline/positive_cache_hit"
+        "id": "request_pipeline/positive_cache_hit",
+        "tier": "core"
       },
       {
-        "benchmark": "request-pipeline-negative-cache-hit",
-        "id": "request_pipeline/negative_cache_hit"
+        "benchmark": "request-pipeline-negative-cache-hit-soa",
+        "id": "request_pipeline/negative_cache_hit_soa",
+        "tier": "core"
       },
       {
-        "benchmark": "request-pipeline-cache-miss",
-        "id": "request_pipeline/cache_miss"
+        "benchmark": "request-pipeline-cache-miss-no-response",
+        "id": "request_pipeline/cache_miss_no_response",
+        "tier": "extended"
       },
       {
         "benchmark": "request-pipeline-matcher-miss",
-        "id": "request_pipeline/matcher_miss"
+        "id": "request_pipeline/matcher_miss",
+        "tier": "extended"
+      },
+      {
+        "benchmark": "request-pipeline-positive-cache-hit-ecs",
+        "id": "request_pipeline/positive_cache_hit_ecs",
+        "tier": "core"
+      },
+      {
+        "benchmark": "request-pipeline-positive-cache-hit-multi-rr",
+        "id": "request_pipeline/positive_cache_hit_multi_rr",
+        "tier": "core"
+      },
+      {
+        "benchmark": "request-pipeline-cache-miss-insert",
+        "id": "request_pipeline/cache_miss_insert",
+        "tier": "core"
+      },
+      {
+        "benchmark": "request-pipeline-provider-chain",
+        "id": "request_pipeline/provider_chain",
+        "tier": "core"
+      },
+      {
+        "benchmark": "request-handle-local-answer",
+        "id": "request_handle/local_answer",
+        "tier": "extended"
+      },
+      {
+        "benchmark": "request-handle-local-answer-edns",
+        "id": "request_handle/local_answer_edns",
+        "tier": "core"
       }
     ]
   },
   {
     "target": "response_classification",
-    "iterations": 100000,
+    "iterations": 10000,
     "cases": [
       {
         "benchmark": "response-classification-direct-a",
-        "id": "response_classification/direct_a"
+        "id": "response_classification/direct_a",
+        "tier": "core"
       },
       {
         "benchmark": "response-classification-cname-1-hop-a",
-        "id": "response_classification/cname_1_hop_a"
+        "id": "response_classification/cname_1_hop_a",
+        "tier": "extended"
       },
       {
         "benchmark": "response-classification-cname-4-hop-a",
-        "id": "response_classification/cname_4_hop_a"
+        "id": "response_classification/cname_4_hop_a",
+        "tier": "core"
       },
       {
         "benchmark": "response-classification-cname-16-hop-a",
-        "id": "response_classification/cname_16_hop_a"
+        "id": "response_classification/cname_16_hop_a",
+        "tier": "core"
       },
       {
         "benchmark": "response-classification-cname-only",
-        "id": "response_classification/cname_only"
+        "id": "response_classification/cname_only",
+        "tier": "extended"
       },
       {
         "benchmark": "response-classification-cname-nodata",
-        "id": "response_classification/cname_nodata"
+        "id": "response_classification/cname_nodata",
+        "tier": "extended"
       },
       {
         "benchmark": "response-classification-nxdomain",
-        "id": "response_classification/nxdomain"
+        "id": "response_classification/nxdomain",
+        "tier": "extended"
+      }
+    ]
+  },
+  {
+    "target": "forward_local",
+    "iterations": 100,
+    "cases": [
+      {
+        "benchmark": "forward-local-udp-reused",
+        "id": "forward_local/udp_reused",
+        "tier": "extended",
+        "measurement": "native"
       }
     ]
   }
