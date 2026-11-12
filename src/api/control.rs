@@ -583,6 +583,8 @@ fn save_config_file(
 
 /// Stage beside the resolved target so replacement stays atomic and preserves
 /// the operator's symlinks. Never follow or truncate an existing staging path.
+/// Unix file mount points reject replacement with EBUSY and require an in-place
+/// write instead; mounting the containing directory allows atomic saves.
 fn write_config_file(path: &Path, metadata: &fs::Metadata, content: &[u8]) -> std::io::Result<()> {
     let staging = path.with_file_name(format!(".oxidns-save-{:032x}.tmp", rand::random::<u128>()));
     let mut options = fs::OpenOptions::new();
@@ -611,12 +613,53 @@ fn write_config_file(path: &Path, metadata: &fs::Metadata, content: &[u8]) -> st
         file.sync_all()?;
         // Close before replacement for Windows as well as Unix.
         drop(file);
-        fs::rename(&staging, path)
+        match fs::rename(&staging, path) {
+            #[cfg(unix)]
+            Err(err) if err.raw_os_error() == Some(libc::EBUSY) => {
+                let result = write_mounted_config_file(path, metadata, content);
+                let _ = fs::remove_file(&staging);
+                result
+            }
+            result => result,
+        }
     })();
     if outcome.is_err() {
         let _ = fs::remove_file(&staging);
     }
     outcome
+}
+
+#[cfg(unix)]
+fn write_mounted_config_file(
+    path: &Path,
+    metadata: &fs::Metadata,
+    content: &[u8],
+) -> std::io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    // Open the existing inode without truncating or following a new symlink.
+    // O_NONBLOCK also keeps a concurrently substituted FIFO from blocking.
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    let opened = file.metadata()?;
+    if !opened.is_file() || (opened.dev(), opened.ino()) != (metadata.dev(), metadata.ino()) {
+        return Err(std::io::Error::other(
+            "config file changed before in-place save; retry the save",
+        ));
+    }
+
+    tracing::warn!(
+        path = %path.display(),
+        "config mount point requires an in-place save without atomic replacement; mount the containing directory to enable atomic saves"
+    );
+    // The complete content has already been staged and synced. Keep the inode,
+    // ownership and permissions, and remove any old tail only after writing.
+    // A crash or I/O error during this fallback can still leave a partial save.
+    file.write_all(content)?;
+    file.set_len(content.len() as u64)?;
+    file.sync_all()
 }
 
 fn config_updated_at_ms(path: &Path) -> Option<u64> {
@@ -997,12 +1040,92 @@ plugins:
             .unwrap();
 
             let after = fs::metadata(&path).unwrap();
+            assert_ne!(after.ino(), before.ino());
             assert_eq!(after.mode() & 0o7777, mode);
             assert_eq!((after.uid(), after.gid()), (before.uid(), before.gid()));
             assert_eq!(fs::read_to_string(&path).unwrap(), content);
             assert_eq!(response.version, config_version(&content));
             assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_save_in_place_preserves_inode_and_file_access() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.yaml");
+        let alias = directory.path().join("mounted-source.yaml");
+        fs::write(&path, valid_config_yaml()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        fs::hard_link(&path, &alias).unwrap();
+        let longer = format!("{}\n# longer saved configuration\n", valid_config_yaml());
+
+        for content in [longer.as_str(), valid_config_yaml()] {
+            let before = fs::metadata(&path).unwrap();
+            write_mounted_config_file(&path, &before, content.as_bytes()).unwrap();
+
+            let after = fs::metadata(&path).unwrap();
+            assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+            assert_eq!(after.mode() & 0o7777, 0o640);
+            assert_eq!((after.uid(), after.gid()), (before.uid(), before.gid()));
+            assert_eq!(fs::read_to_string(&path).unwrap(), content);
+            assert_eq!(fs::read_to_string(&alias).unwrap(), content);
+            assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_save_in_place_rejects_substituted_files_and_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        for use_symlink in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("config.yaml");
+            let replacement = directory.path().join("replacement.yaml");
+            fs::write(&path, valid_config_yaml()).unwrap();
+            fs::write(&replacement, "replacement must remain unchanged").unwrap();
+            let metadata = fs::metadata(&path).unwrap();
+
+            if use_symlink {
+                fs::remove_file(&path).unwrap();
+                symlink("replacement.yaml", &path).unwrap();
+            } else {
+                fs::rename(&replacement, &path).unwrap();
+            }
+            let result = write_mounted_config_file(&path, &metadata, b"plugins: []\n");
+
+            assert!(result.is_err());
+            assert_eq!(
+                fs::read_to_string(&path).unwrap(),
+                "replacement must remain unchanged"
+            );
+            assert_eq!(
+                fs::symlink_metadata(&path).unwrap().is_symlink(),
+                use_symlink
+            );
+            assert_eq!(
+                fs::read_dir(directory.path()).unwrap().count(),
+                if use_symlink { 2 } else { 1 }
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_save_in_place_does_not_recreate_missing_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.yaml");
+        fs::write(&path, valid_config_yaml()).unwrap();
+        let metadata = fs::metadata(&path).unwrap();
+
+        fs::remove_file(&path).unwrap();
+        let err = write_mounted_config_file(&path, &metadata, b"plugins: []\n").unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
     }
 
     #[cfg(unix)]
