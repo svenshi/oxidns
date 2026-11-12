@@ -108,6 +108,20 @@ docker compose up -d
 docker compose logs -f oxidns
 ```
 
+## Save configuration through the WebUI
+
+The read-only mounts above suit configurations maintained on the host. To save through the WebUI, put the configuration in a dedicated directory and mount that directory read-write:
+
+```yaml
+    volumes:
+      - ./conf:/etc/oxidns-config:rw
+    command: ["start", "-c", "/etc/oxidns-config/config.yaml", "-d", "/etc/oxidns"]
+```
+
+Copy the existing configuration to `./conf/config.yaml` on the host before recreating the container. This allows atomic configuration replacement while keeping the image's `/etc/oxidns/webui` assets available. Mounting the containing directory is also recommended for RouterOS Container.
+
+A single-file mount at `/etc/oxidns/config.yaml` makes the file itself a mount point, which cannot be replaced with rename. Version 1.7.0 reports `Resource busy (os error 16)` when saving in this setup; the directory mount above avoids this error. Versions with the compatibility fix write to the existing file in place after `EBUSY`. That fallback is not atomic: interruption or an I/O error can still leave an incomplete configuration. Prefer a directory mount and retain backups. Read-only mounts still prevent WebUI saves.
+
 ## Update the image
 
 For a pinned deployment, change the image tag first, then run:
