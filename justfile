@@ -35,7 +35,7 @@ check-full:
     cargo +nightly clippy --all-features --all-targets -- -D warnings
 
 # Private/profiling features that should never be enabled on their own.
-_hack_excluded := "hotpath,hotpath-alloc,hotpath-cloud,hotpath-callgrind,_task-cron,_tls-base,_tls-client,_tls-server,_http-server,_http-client"
+_hack_excluded := "hotpath,hotpath-alloc,hotpath-callgrind,_task-cron,_tls-base,_tls-client,_tls-server,_http-server,_http-client"
 
 # Compile every public feature individually (and the bare no-default-features
 # core). Catches "feature X fails to build in isolation" regressions.
@@ -62,8 +62,8 @@ test-standard:
 check-matrix: check-each-feature check-minimal check-standard check-full test-minimal test-standard
     cargo test --all-features
 
-# One Criterion request-path benchmark as a hotpath report. The optional target
-# selects any suite in .github/hotpath-benchmarks.json; existing codec commands
-# continue to work. HOTPATH_CRITERION_ITERATIONS fixes the runs per report.
+# One Criterion benchmark as a local hotpath report, without cloud integration.
+# The optional target selects a suite in .github/hotpath-benchmarks.json.
+# HOTPATH_CRITERION_ITERATIONS fixes the runs per report; hotpath.py owns CI output.
 bench-hotpath benchmark target="message_codec":
-    cargo bench --locked --profile "${HOTPATH_PROFILE:-hotpath}" --bench "{{target}}" --no-default-features --features minimal,plugin-arbitrary,hotpath-alloc,hotpath-cloud,hotpath-callgrind -- --test --exact "{{benchmark}}"
+    cargo bench --locked --profile "${HOTPATH_PROFILE:-hotpath}" --bench "{{target}}" --no-default-features --features minimal,plugin-arbitrary,hotpath-alloc,hotpath-callgrind -- --test --exact "{{benchmark}}"

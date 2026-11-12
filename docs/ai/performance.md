@@ -60,6 +60,15 @@ When retaining profiling evidence, record the commit, build profile, enabled
 features, runtime configuration, command, sampling duration, and symbolized call
 path. Remove temporary instrumentation from normal builds after the diagnosis.
 
+The regression selection and iteration budgets live in
+`.github/hotpath-benchmarks.json`; the Hotpath workflow distinguishes core PR
+coverage from extended diagnostics. Prefer complete local request paths and
+distinct algorithm/resource costs over repeated fixture permutations. Reports
+and compatible baseline comparisons stay in GitHub Actions. See
+`docs/benchmarks.md` for measurement boundaries, fixture invariants, and local
+validation. Keep network load/concurrency measurements in the separate
+`benchmarks/` pack rather than interpreting microbenchmarks as server capacity.
+
 ## Design Review Questions
 
 For every hot-path change, ask:

@@ -10,7 +10,25 @@ import ReleaseCard from '@site/src/components/ReleaseCard';
 ## 2026-11
 
 <div className="release-stack">
-   <ReleaseCard version="v1.7.0" badge="Minor Release" date="2026-11-11" defaultOpen>
+   <ReleaseCard version="v1.7.1" badge="Patch Release" date="2026-11-12" defaultOpen>
+       **Release Scope**
+
+       - v1.7.1 addresses upstream response memory bounds, DNS compression-pointer parsing, and configuration saves in containers, fixing resource safety and deployment compatibility issues in v1.7.0.
+
+       **Changes**
+
+       - `fix(upstream)`: stop trusting oversized `Content-Length` values for DoH/H2/H3 response buffer allocation and enforce a 65,535-byte body limit on every chunk. Reject oversized responses even when the length header is missing or misleading, preventing unbounded buffering.
+       - `fix/perf(proto)`: require DNS name compression pointers to reference an earlier name sequence. Replace visited-offset scans with an O(1) bound check per jump, rejecting forward pointers and cycles across labels and pointers while preserving valid nested suffixes and the existing hop limit.
+       - `fix(api)`: when a Unix configuration save encounters `EBUSY` at a single-file mount point, verify file identity and write in place, preserving the inode, permissions, and ownership. Ordinary files still use atomic replacement. Document directory mounts for Docker and RouterOS Container.
+
+       **Compatibility and Upgrade Notes**
+
+       - The root crate is `1.7.1`; use tag `v1.7.1`. Update `oxidns-proto` to `0.1.8` and `oxidns-zoneparser` to `0.1.4` for its updated protocol dependency. `oxidns-macros` remains `0.1.1` and `oxidns-ripset` remains `0.1.3`.
+       - v1.7.0 YAML configurations upgrade directly. No fields are added, renamed, or removed; existing defaults and bundles are unchanged. Back up configuration and persisted data, then run `oxidns check -c <config-file>` before upgrading. Earlier versions still require their corresponding migration steps.
+       - **Stricter protocol validation**: upstream DoH response bodies larger than 65,535 bytes and DNS packets containing forward or cyclic compression pointers are rejected. Valid backward compression pointers remain supported.
+       - **Single-file mount save risk**: in-place writes are not atomic; interruption or I/O errors can leave an incomplete configuration, and the fallback logs a warning. Prefer a writable mount of the containing configuration directory in Docker and RouterOS Container. Read-only mounts still prevent WebUI saves.
+   </ReleaseCard>
+   <ReleaseCard version="v1.7.0" badge="Minor Release" date="2026-11-11">
        **Release Scope**
 
        - v1.7.0 expands policy composition, EDNS filtering, domain learning, and cache management; improves query analysis and the management API; and fixes ECS source selection, DNS protocol handling, persistence rollback, and RouterOS integrations.

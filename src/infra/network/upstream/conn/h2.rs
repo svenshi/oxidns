@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use bytes::{BufMut, Bytes};
+use bytes::Bytes;
 use h2::client::{ResponseFuture, SendRequest};
 use http::Version;
 use tokio::select;
@@ -19,7 +19,8 @@ use crate::infra::network::buffer_pool::wire_buffer_pool;
 use crate::infra::network::dial::{DialTarget, SocketOptions, TlsDialOptions, connect_tls};
 use crate::infra::network::proxy::{Socks5Opt, connect_tcp};
 use crate::infra::network::upstream::conn::doh::{
-    build_dns_get_request, build_doh_request_uri, get_cap_buf_with_context_len,
+    append_response_chunk, build_dns_get_request, build_doh_request_uri,
+    get_cap_buf_with_context_len,
 };
 use crate::infra::network::upstream::pool::{ConnectionBuilder, DeadlineOutcome, QueryDeadline};
 use crate::infra::network::upstream::{Connection, ConnectionInfo};
@@ -245,7 +246,9 @@ async fn recv(response_future: ResponseFuture) -> std::result::Result<Bytes, H2R
         let partial_bytes = partial_bytes.map_err(|e| {
             H2RecvError::Transport(DnsError::protocol(format!("H2 body error: {}", e)))
         })?;
-        response_bytes.put_slice(&partial_bytes);
+        append_response_chunk(&mut response_bytes, &partial_bytes).map_err(|e| {
+            H2RecvError::Transport(DnsError::protocol(format!("H2 body error: {}", e)))
+        })?;
     }
 
     if !status_code.is_success() {

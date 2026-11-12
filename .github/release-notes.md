@@ -1,41 +1,32 @@
-# OxiDNS v1.7.0 (Fork with Liquid Glass UI & Minute Stats Engine)
+# OxiDNS v1.7.1 (Fork with Liquid Glass UI & Minute Stats Engine)
 
 ## 🚀 发布概览
 
-本版本基于官方 **OxiDNS v1.7.0** 上游最新源码同步合并，同时保留并升级了定制功能：
-- **微秒级后台分钟归总引擎**（7×24h 毫秒级秒开 24h & 1h 完整走势，彻底解决 1w 封顶断层问题）；
+本版本基于官方 **OxiDNS v1.7.1** 上游最新源码同步合并，同时保留并升级了定制功能：
+- **微秒级后台分钟归总引擎**（7×24h 毫秒级秒开 24h & 1h 完整走势，无缝兼容 v1.7.0/v1.7.1 24h 统计校验）；
 - **全屏流体玻璃定制登录界面**（带亮暗模式自适应、密码眼睛显隐切换，彻底消除浏览器原生 Basic Auth 弹窗）；
 - **Liquid Glass 现代美学监控大屏**（流光环形进度条、智能万位换算、平滑响应式卡片）。
 
 ---
 
-# OxiDNS v1.7.0
+# OxiDNS v1.7.1
 
 ## 🚀 发布概览
 
-- v1.7.0 是功能版本，扩展策略编排、EDNS 过滤、域名学习、缓存管理和查询分析，并修复 ECS 来源选择、持久化回滚、DNS 协议处理与 RouterOS 联动。
+- v1.7.1 是补丁版本，修复上游响应缓冲边界、DNS 压缩指针解析及容器单文件挂载的配置保存问题。
 
 ## ✨ 主要亮点
 
-- 新增 `load_balance` 执行器，支持轮询、随机和加权随机；新增 `has_cname` matcher，两者均可用于 minimal bundle。
-- 新增 minimal 可用的 `edns_filter` 执行器，支持 `preserve`、`strip`、`strip_unknown` 策略及 option code 白名单/黑名单；默认在后续执行链退出或取消时恢复整个请求。补齐 EDNS 注册代码识别，未实现 payload 解析的选项仍保留原始数据，查询记录同步显示名称。
-- 修复 `ecs_handler` 删除客户端 ECS 后未继续应用 `preset`/`send` 的问题；非 IN 查询也遵循删除策略，但不生成 ECS。
-- `hosts.format: standard` 支持标准 hosts 文件与地址合并；`learn_domain.rule_kind: registrable_domain` 使用内置公共后缀表学习可注册域及其子域。
-- WebUI 查询分析增加统一时间条、自适应趋势桶、统计截断提示和记录下钻，支持精确域名、客户端 IP 与特殊响应分类筛选；补充 EDNS 过滤配置入口并修复 YAML 嵌套字段补全。
-- 缓存支持按 answer IP 过滤和批量删除；启动时等待恢复，失败的启动/reload 不再覆盖历史 dump，读取失败时保护原文件。
-- RouterOS 路由增加可选 `scope`、`target_scope`，修复地址列表重复插入恢复、地址表示及清理。
-- 修正 NOTIMP/BADVERS 响应、超大 TCP 帧、TCP keepalive 和 DoQ/DoH3 停机任务等待；支持 OpenWrt `/etc/TZ`，同步 zoneparser 修复。
-- 管理 API 限制请求体大小、改进 Basic Auth 凭据比较；配置原子保存保留 Unix 权限、属主、属组及符号链接。
-- Docker 新增 ARMv7 镜像；文档源码迁至 `website/`，补充社区 WebUI 推荐。`oxidns-proto` 与 `oxidns-macros` 改为 MIT/Apache-2.0 双许可证，主项目许可证不变。
+- DoH/H2/H3 上游响应体限制为 65,535 字节，限制 `Content-Length` 预分配并逐块校验实际长度，避免缺失或虚报长度头导致无界缓冲。
+- DNS 名称解析以每次跳转 O(1) 的边界检查替代已访问偏移扫描，拒绝前向指针及跨标签/指针的循环，保留合法嵌套压缩后缀与既有跳转次数限制。
+- Unix 配置保存遇到单文件挂载点的 `EBUSY` 时，校验文件身份后原地写入，保留 inode、权限与属主/属组；普通文件仍原子替换。补充 Docker 与 RouterOS Container 的配置目录挂载说明。
 
 ## ⚠️ 升级说明
 
-- **统计 API 调用变更**：`query_recorder` 的 `/stats/*` 必须提供 `since_ms`、`until_ms`，开始时间早于结束时间，跨度最多 24 小时；旧的不带时间调用会返回 HTTP 400。统计最多使用区间内最近 10,000 条记录；列表、详情与 SSE 接口保持原有时间参数语义。
-- **回退行为变更**：显式 `fallback.threshold: 0` 现在立即启动备用分支；如需保留旧延迟，改为 `500`。省略字段仍默认 500 毫秒。
-- **ECS 行为修复**：IN 查询依次采用保留的客户端 ECS、`preset`、`send` 对应的客户端地址；`forward: false` 删除原 ECS 后仍可补发。非法 quick-setup IP 现在会导致配置加载失败；旧 `IP/mask` 写法仍忽略 mask，使用 IPv4 `/24`、IPv6 `/48`，自定义前缀请用完整配置。
-- 除上述行为修复和校验收紧外，现有 v1.6.1 YAML 配置可继续使用，新增字段均为可选。`edns_filter` 需要显式加入执行链，默认 `policy: preserve`、`restore_request: true`，白名单和黑名单默认留空。管理 API 请求体上限为 4 MiB，大型配置提交或缓存导入需核对大小；建议同步更新随包 WebUI。
-- 从 v1.6.1 升级无需迁移查询历史或重新安装 Windows 服务；更早版本仍须遵循 v1.6.0 的迁移说明。升级前备份配置和持久化数据，并运行 `oxidns check -c <配置文件>`。
-- 根 crate 为 `1.7.0`，tag 为 `v1.7.0`；辅助 crate 为 `oxidns-proto 0.1.7`、`oxidns-macros 0.1.1`、`oxidns-zoneparser 0.1.3`，`oxidns-ripset` 保持 `0.1.3`。
+- v1.7.0 YAML 配置可直接升级，没有新增、重命名或删除字段，默认值和 bundle 不变。超出上述大小限制的上游 DoH 响应、包含前向或循环压缩指针的 DNS 报文现在会被拒绝。
+- **单文件挂载保存不具备原子性**：中断或 I/O 错误可能留下不完整配置，回退时会记录警告。建议可写挂载配置所在目录并保留备份；只读挂载仍无法通过 WebUI 保存。
+- 升级前备份配置和持久化数据，并运行 `oxidns check -c <配置文件>`；更早版本仍须遵循对应版本的迁移说明。
+- 根 crate 为 `1.7.1`，tag 为 `v1.7.1`；`oxidns-proto` 为 `0.1.8`、`oxidns-zoneparser` 为 `0.1.4`（更新协议依赖），`oxidns-macros` 保持 `0.1.1`、`oxidns-ripset` 保持 `0.1.3`。由发布 Action 按依赖顺序发布辅助 crate，再验证和发布根包。
 
 ## 📦 下载与校验
 
@@ -45,12 +36,11 @@
 
 - `just check`
 - `just check-matrix`
-- EDNS 补充验证：`cargo test --locked -p oxidns-proto`、`cargo test --locked --no-default-features --features minimal edns_filter`。
-- WebUI：`pnpm typecheck`、`pnpm lint`、`pnpm test`、`pnpm build`
-- 双语文档：`npm run build`
-- Telegram 发布消息：`python3 -m unittest discover -s .github/scripts -p '*_test.py'`，渲染后无需截断。
-- full/minimal：`oxidns --version`、`oxidns build-info` 与对应的 `oxidns check -c config.yaml` / `oxidns check -c config.minimal.yaml`。
-- crates.io workspace dry-run：`cargo publish --locked --dry-run --allow-dirty --workspace`；实际发布由 Action 先发布辅助 crate，再验证和发布根包。
+- 协议与 zoneparser：`cargo test --locked -p oxidns-proto -p oxidns-zoneparser`。
+- 双语文档：在 `website/` 运行 `npm run build`。
+- Telegram 发布消息：`python3 -m unittest discover -s .github/scripts -p '*_test.py'`。
+- full/minimal：`cargo build --locked --no-default-features --features full` / `minimal`，以及 `oxidns --version`、`oxidns build-info` 和对应的 `oxidns check -c config.yaml` / `oxidns check -c config.minimal.yaml`。
+- crates.io workspace dry-run：`cargo publish --locked --dry-run --allow-dirty --workspace`（包含打包后编译验证，未上传）。
 
 ---
 
@@ -186,3 +176,10 @@ OxiDNS v1.6.8 带来全新的 **现代极简液态玻璃 (Liquid Glass)** 交互
 - v1.6.0 YAML 配置可直接升级，配置字段、默认值与 bundle 不变。替换二进制前建议运行 `oxidns check -c <配置文件>`。
 - 从 v1.6.0 升级无需迁移查询历史或重新安装 Windows 服务；从更早版本升级仍需遵循 v1.6.0 的迁移说明。
 - 根 crate 为 `1.6.1`，辅助 crate 版本保持不变；tag 为 `v1.6.1`。
+=======
+- 协议与 zoneparser：`cargo test --locked -p oxidns-proto -p oxidns-zoneparser`。
+- 双语文档：在 `website/` 运行 `npm run build`。
+- Telegram 发布消息：`python3 -m unittest discover -s .github/scripts -p '*_test.py'`。
+- full/minimal：`cargo build --locked --no-default-features --features full` / `minimal`，以及 `oxidns --version`、`oxidns build-info` 和对应的 `oxidns check -c config.yaml` / `oxidns check -c config.minimal.yaml`。
+- crates.io workspace dry-run：`cargo publish --locked --dry-run --allow-dirty --workspace`（包含打包后编译验证，未上传）。
+>>>>>>> upstream/main

@@ -16,7 +16,10 @@ use serde_yaml_ng::{Mapping, Value};
 use tokio::runtime::Runtime;
 
 fn runtime() -> Runtime {
-    Runtime::new().expect("benchmark tokio runtime should start")
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("benchmark tokio runtime should start")
 }
 
 fn plugin_config(tag: &str, plugin_type: &str, args: Value) -> PluginConfig {
@@ -56,14 +59,21 @@ fn make_config(plugin: PluginConfig) -> Config {
     }
 }
 
-fn make_context(_registry: Arc<PluginRegistry>, name: &str, qtype: RecordType) -> DnsContext {
+fn make_request(name: &str, qtype: RecordType) -> Message {
     let mut request = Message::new();
     request.add_question(Question::new(
         Name::from_ascii(name).expect("benchmark qname should parse"),
         qtype,
         DNSClass::IN,
     ));
-    DnsContext::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 5300)), request)
+    request
+}
+
+fn make_context(request: &Message) -> DnsContext {
+    DnsContext::new(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 5300)),
+        request.clone(),
+    )
 }
 
 fn load_executor(
@@ -129,9 +139,10 @@ fn bench_black_hole(c: &mut Criterion) {
         .expect("black_hole args should parse");
         let (executor, registry) = load_executor(&rt, plugin_config("bench", "black_hole", args));
 
+        let request = make_request("bench.test.", qtype);
         group.bench_function(BenchmarkId::new("execute", label), |b| {
             b.iter(|| {
-                let mut ctx = make_context(registry.clone(), "bench.test.", qtype);
+                let mut ctx = make_context(black_box(&request));
                 let step = rt
                     .block_on(executor.execute_with_next(&mut ctx, None))
                     .expect("black_hole execute should succeed");
@@ -139,6 +150,7 @@ fn bench_black_hole(c: &mut Criterion) {
                 black_box(ctx.response().expect("response should be present"));
             })
         });
+        rt.block_on(registry.destroy());
     }
 
     group.finish();
@@ -173,9 +185,10 @@ fn bench_hosts(c: &mut Criterion) {
         let args = hosts_args(&[entry.to_string()]);
         let (executor, registry) = load_executor(&rt, plugin_config("bench", "hosts", args));
 
+        let request = make_request(qname, RecordType::A);
         group.bench_function(BenchmarkId::new("execute", label), |b| {
             b.iter(|| {
-                let mut ctx = make_context(registry.clone(), qname, RecordType::A);
+                let mut ctx = make_context(black_box(&request));
                 let step = rt
                     .block_on(executor.execute_with_next(&mut ctx, None))
                     .expect("hosts execute should succeed");
@@ -183,6 +196,7 @@ fn bench_hosts(c: &mut Criterion) {
                 black_box(ctx.response().expect("response should be present"));
             })
         });
+        rt.block_on(registry.destroy());
     }
 
     let mut large_entries = Vec::with_capacity(4_000);
@@ -212,9 +226,17 @@ fn bench_hosts(c: &mut Criterion) {
         ("large_regex", "svc777-alpha.bench.example.", RecordType::A),
         ("large_miss", "miss.case.example.", RecordType::A),
     ] {
+        let request = make_request(qname, qtype);
+        let mut probe = make_context(&request);
+        rt.block_on(large_executor.execute(&mut probe)).unwrap();
+        assert_eq!(
+            probe.response().is_some(),
+            label != "large_miss",
+            "invalid fixture: {label}"
+        );
         group.bench_function(BenchmarkId::new("execute", label), |b| {
             b.iter(|| {
-                let mut ctx = make_context(large_registry.clone(), qname, qtype);
+                let mut ctx = make_context(black_box(&request));
                 let step = rt
                     .block_on(large_executor.execute_with_next(&mut ctx, None))
                     .expect("hosts execute should succeed");
@@ -232,13 +254,10 @@ fn bench_hosts(c: &mut Criterion) {
             hosts_args(&["full:v4-only.bench.test 192.0.2.10".to_string()]),
         ),
     );
+    let request = make_request("v4-only.bench.test.", RecordType::AAAA);
     group.bench_function(BenchmarkId::new("execute", "family_mismatch_nodata"), |b| {
         b.iter(|| {
-            let mut ctx = make_context(
-                nodata_registry.clone(),
-                "v4-only.bench.test.",
-                RecordType::AAAA,
-            );
+            let mut ctx = make_context(black_box(&request));
             let step = rt
                 .block_on(nadata_executor.execute_with_next(&mut ctx, None))
                 .expect("hosts execute should succeed");
@@ -247,6 +266,8 @@ fn bench_hosts(c: &mut Criterion) {
         })
     });
 
+    rt.block_on(large_registry.destroy());
+    rt.block_on(nodata_registry.destroy());
     group.finish();
 }
 
@@ -317,14 +338,15 @@ fn bench_arbitrary(c: &mut Criterion) {
         .expect("arbitrary args should parse");
         let (executor, registry) = load_executor(&rt, plugin_config("bench", "arbitrary", args));
 
-        let mut probe = make_context(registry.clone(), qname, qtype);
+        let request = make_request(qname, qtype);
+        let mut probe = make_context(&request);
         rt.block_on(executor.execute_with_next(&mut probe, None))
             .expect("arbitrary probe should succeed");
         // Arbitrary records are indexed by exact QTYPE; ANY is a miss.
         assert_eq!(probe.response().is_some(), qtype != RecordType::ANY);
         group.bench_function(BenchmarkId::new("execute", label), |b| {
             b.iter(|| {
-                let mut ctx = make_context(registry.clone(), qname, qtype);
+                let mut ctx = make_context(black_box(&request));
                 let step = rt
                     .block_on(executor.execute_with_next(&mut ctx, None))
                     .expect("arbitrary execute should succeed");
@@ -332,6 +354,7 @@ fn bench_arbitrary(c: &mut Criterion) {
                 black_box(ctx.response());
             })
         });
+        rt.block_on(registry.destroy());
     }
 
     group.finish();
@@ -365,9 +388,10 @@ fn bench_redirect(c: &mut Criterion) {
         ("regexp", "svc777-alpha.bench.example."),
         ("miss", "no-match.example."),
     ] {
+        let request = make_request(qname, RecordType::A);
         group.bench_function(BenchmarkId::new("execute", label), |b| {
             b.iter(|| {
-                let mut ctx = make_context(registry.clone(), qname, RecordType::A);
+                let mut ctx = make_context(black_box(&request));
                 let step = rt
                     .block_on(executor.execute_with_next(&mut ctx, None))
                     .expect("redirect execute should succeed");
@@ -376,7 +400,50 @@ fn bench_redirect(c: &mut Criterion) {
             })
         });
     }
+    rt.block_on(registry.destroy());
     group.finish();
+}
+
+fn bench_redirect_response(c: &mut Criterion) {
+    let rt = runtime();
+    let config: Config = serde_yaml_ng::from_str(
+        r#"
+plugins:
+  - tag: rewrite
+    type: redirect
+    args:
+      rules: ["domain:bench.test target.bench.example"]
+  - tag: bench
+    type: sequence
+    args:
+      - exec: $rewrite
+      - exec: black_hole 192.0.2.10
+"#,
+    )
+    .unwrap();
+    let registry = rt.block_on(init_plugins(config)).unwrap();
+    let executor = registry.get_plugin("bench").unwrap().to_executor();
+    let request = make_request("api.bench.test.", RecordType::A);
+    let run = || {
+        let mut ctx = make_context(black_box(&request));
+        black_box(rt.block_on(executor.execute(&mut ctx)).unwrap());
+        ctx
+    };
+    let probe = run();
+    let response = probe
+        .response()
+        .expect("downstream must produce a response");
+    assert_eq!(probe.request.first_question(), request.first_question());
+    assert_eq!(response.first_question(), request.first_question());
+    assert_eq!(response.answers().len(), 2);
+    assert_eq!(response.answers()[0].rr_type(), RecordType::CNAME);
+    assert_eq!(response.answers()[1].rr_type(), RecordType::A);
+    c.bench_function("plugin_redirect/response/suffix", |b| {
+        b.iter(|| {
+            black_box(run());
+        });
+    });
+    rt.block_on(registry.destroy());
 }
 
 criterion_group!(
@@ -384,7 +451,8 @@ criterion_group!(
     bench_black_hole,
     bench_hosts,
     bench_arbitrary,
-    bench_redirect
+    bench_redirect,
+    bench_redirect_response
 );
 // The library's #[hotpath::main] already installs the counting allocator.
 criterion_main!(allocator = none; plugin_local_answers);
