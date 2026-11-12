@@ -65,7 +65,7 @@ The regression selection and iteration budgets live in
 coverage from extended diagnostics. Prefer complete local request paths and
 distinct algorithm/resource costs over repeated fixture permutations. Reports
 and compatible baseline comparisons stay in GitHub Actions. See
-`hotpath/README.md` for measurement boundaries, fixture invariants, and local
+`docs/benchmarks.md` for measurement boundaries, fixture invariants, and local
 validation. Keep network load/concurrency measurements in the separate
 `benchmarks/` pack rather than interpreting microbenchmarks as server capacity.
 

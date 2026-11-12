@@ -6,6 +6,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -149,17 +150,48 @@ def cell(value):
     return str(value).replace('|', '&#124;').replace('\n', ' ').replace('`', '')
 
 
-def summarize(directory, baseline=None):
-    lines = ['## Request-path benchmarks', '',
-             '| Benchmark | ns/op (diagnostic) | Instructions/op | Allocated B/op | Instruction change | Allocation change |',
-             '|---|---:|---:|---:|---|---|']
-    reports = sorted(directory.glob('*.json'))
-    baseline_revisions = set()
-    for path in reports:
+def policy():
+    # Keep regression thresholds in code, shared by CI and the PR publisher.
+    return {
+        'instructions_per_op': {'percent': 3, 'absolute': 0},
+        'allocated_bytes_per_op': {'percent': 20, 'absolute': 16},
+    }
+
+
+def validate_policy(rules):
+    if not isinstance(rules, dict) or set(rules) != {'instructions_per_op', 'allocated_bytes_per_op'}:
+        raise ValueError('gate policy must define instruction and allocation thresholds')
+    for rule in rules.values():
+        if not isinstance(rule, dict) or set(rule) != {'percent', 'absolute'}:
+            raise ValueError('each gate threshold needs percent and absolute')
+        for value in rule.values():
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                raise ValueError('gate thresholds must be finite nonnegative numbers')
+    return rules
+
+
+def change(current, previous, rule):
+    difference = current - previous
+    percent = difference / previous * 100 if previous else None
+    # Both relative and absolute thresholds must be exceeded. A newly nonzero
+    # metric has no finite relative delta and is judged by the absolute floor.
+    significant = abs(difference) > rule['absolute'] and (percent is None or abs(percent) > rule['percent'] + 1e-9)
+    status = ('regression' if difference > 0 else 'improvement') if significant else 'stable'
+    return {'current': current, 'baseline': previous, 'percent': percent, 'status': status}
+
+
+def assess(directory, baseline=None, rules=None):
+    rules = policy() if rules is None else rules
+    rows = []
+    for path in sorted(directory.glob('*.json')):
         report = json.loads(path.read_text())
+        validate(report['native'], report['id'], report['iterations'], 'native')
+        if report.get('callgrind'):
+            validate(report['callgrind'], report['id'], report['iterations'], 'callgrind')
         result = metrics(report)
-        delta = 'No baseline'
-        allocation_delta = 'No baseline'
+        reason = 'No baseline'
+        previous_metrics = None
+        baseline_revision = None
         if baseline and (baseline / path.name).is_file():
             try:
                 previous = json.loads((baseline / path.name).read_text())
@@ -168,35 +200,79 @@ def summarize(directory, baseline=None):
                     validate(previous['native'], report['id'], report['iterations'], 'native')
                     validate(previous['callgrind'], report['id'], report['iterations'], 'callgrind')
                     previous_metrics = metrics(previous)
-                    baseline_revisions.add(previous['provenance'].get('revision', 'unknown'))
+                    baseline_revision = previous['provenance'].get('revision')
             except (ValueError, KeyError, TypeError, AttributeError):
                 reason = 'invalid baseline report'
-            if reason:
-                delta = f'Not comparable: {reason}'
-                allocation_delta = delta
-            else:
-                old = previous_metrics['instructions_per_op']
-                delta = f'{(result["instructions_per_op"] / old - 1) * 100:+.2f}%' if old else 'Baseline is zero'
-                old_bytes = previous_metrics['allocated_bytes_per_op']
-                allocation_delta = f'{(result["allocated_bytes_per_op"] / old_bytes - 1) * 100:+.2f}%' if old_bytes else 'Baseline is zero'
-        instructions = result['instructions_per_op']
-        instruction_text = f'{instructions:,.2f}' if instructions is not None else 'Native only'
-        lines.append(f'| {cell(report["id"])} | {result["ns_per_op"]:.2f} | {instruction_text} | '
-                     f'{result["allocated_bytes_per_op"]:.2f} | {cell(delta)} | {cell(allocation_delta)} |')
-    if not reports:
-        lines.extend(['', 'No completed benchmark reports. Inspect the failed benchmark step.'])
-    else:
-        first = json.loads(reports[0].read_text())
-        lines[2:2] = [f'Current revision: `{cell(first["provenance"].get("revision", "unknown"))}`; '
-                      f'profile: `{cell(first["provenance"]["profile"])}`; '
-                      f'compiler: `{cell(first["native"]["meta"]["rustc"])}`.', '']
-    if baseline_revisions:
-        lines.extend(['', 'Compared baseline revision(s): ' + ', '.join(f'`{cell(revision)}`' for revision in sorted(baseline_revisions)) + '.'])
-    lines.extend(['', 'Timing includes profiler overhead and runner noise; it is not a regression gate.',
-                  'Allocated bytes include nested calls in the measured routine, excluding batched setup/teardown. '
-                  'Full per-function data is in the JSON artifacts. Display units may be rounded.',
-                  'Instruction changes are informational; changed fixtures/tools are not compared.', ''])
+        changes = {key: change(result[key], previous_metrics[key], rule)
+                   for key, rule in rules.items()} if previous_metrics else {}
+        statuses = {item['status'] for item in changes.values()}
+        status = ('skipped' if reason else 'regression' if 'regression' in statuses
+                  else 'improvement' if 'improvement' in statuses else 'stable')
+        rows.append({'id': report['id'], 'status': status, 'reason': reason,
+                     'metrics': result, 'changes': changes,
+                     'revision': report['provenance'].get('revision'), 'baseline_revision': baseline_revision})
+    counts = {status: sum(row['status'] == status for row in rows)
+              for status in ('regression', 'improvement', 'stable', 'skipped')}
+    return {'schema_version': 1, 'status': 'failed' if counts['regression'] or not rows
+            else 'skipped' if counts['skipped'] == len(rows) else 'passed',
+            'policy': rules, 'counts': counts, 'rows': rows}
+
+
+STATUS = {'regression': '🔴 Regression', 'improvement': '🟢 Improvement',
+          'stable': '⚪ Within limits', 'skipped': '⚠️ Not compared'}
+
+
+def delta_text(item):
+    if not item:
+        return '—'
+    difference = item['current'] - item['baseline']
+    symbol = {'regression': '🔴 ↑', 'improvement': '🟢 ↓',
+              'stable': '⚪ ↑' if difference > 0 else '⚪ ↓' if difference < 0 else '⚪ ='}[item['status']]
+    delta = f"{item['percent']:+.2f}%" if item['percent'] is not None else ('new cost' if difference else '0.00%')
+    return f'{symbol} {delta}'
+
+
+def render(assessment):
+    counts = assessment['counts']
+    title = {'failed': '🔴 Performance gate failed', 'passed': '✅ Performance gate passed',
+             'skipped': '⚠️ Performance gate not evaluated'}[assessment['status']]
+    lines = ['## ' + title, '',
+             f"🔴 **{counts['regression']} regressed** · 🟢 **{counts['improvement']} improved** · "
+             f"⚪ **{counts['stable']} stable** · ⚠️ **{counts['skipped']} not compared**", '',
+             'Lower instructions and allocated bytes are better. ↑ = more work/memory; ↓ = less.', '',
+             '| Result | Benchmark | Instructions/op (base → head) | Change | B/op (base → head) | Change |',
+             '|---|---|---:|---|---:|---|']
+    order = {'regression': 0, 'improvement': 1, 'skipped': 2, 'stable': 3}
+    for row in sorted(assessment['rows'], key=lambda row: (order[row['status']], row['id'])):
+        def value(key):
+            current = row['metrics'][key]
+            text = f'{current:,.2f}' if current is not None else 'Native only'
+            previous = row['changes'].get(key)
+            return f"{previous['baseline']:,.2f} → {text}" if previous else text
+        lines.append(f"| {STATUS[row['status']]} | {cell(row['id'])} | {value('instructions_per_op')} | "
+                     f"{delta_text(row['changes'].get('instructions_per_op'))} | {value('allocated_bytes_per_op')} | "
+                     f"{delta_text(row['changes'].get('allocated_bytes_per_op'))} |")
+    skipped = [row for row in assessment['rows'] if row['reason']]
+    if skipped:
+        lines.extend(['', '<details><summary>Comparison skipped</summary>', ''])
+        lines.extend(f"- {cell(row['id'])}: {cell(row['reason'])}" for row in skipped)
+        lines.extend(['', '</details>'])
+    lines.extend(['', '<details><summary>Native timing (diagnostic only)</summary>', '',
+                  '| Benchmark | ns/op |', '|---|---:|'])
+    lines.extend(f"| {cell(row['id'])} | {row['metrics']['ns_per_op']:.2f} |" for row in assessment['rows'])
+    lines.extend(['', '</details>', '', 'Gate thresholds (both percent and absolute increases must be exceeded):'])
+    for key, rule in assessment['policy'].items():
+        lines.append(f"- {key}: >{rule['percent']:g}% and >{rule['absolute']:g}/op.")
+    revisions = sorted({row['baseline_revision'] for row in assessment['rows'] if row['baseline_revision']})
+    if revisions:
+        lines.extend(['', 'Compared baseline revision(s): ' + ', '.join(f'`{cell(value)}`' for value in revisions)])
+    lines.extend(['', 'Timing includes profiler/runner noise and is never gated. Allocations include nested calls; '
+                  'display units may be rounded. Missing or incompatible baselines are explicitly skipped, not passed.', ''])
     return '\n'.join(lines)
+
+
+def summarize(directory, baseline=None):
+    return render(assess(directory, baseline))
 
 
 def run(args):
@@ -274,11 +350,22 @@ def main():
     summary = sub.add_parser('summary')
     summary.add_argument('directory', type=Path)
     summary.add_argument('--baseline', type=Path)
+    gate = sub.add_parser('gate')
+    gate.add_argument('directory', type=Path)
+    gate.add_argument('--baseline', type=Path)
+    gate.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if args.command == 'catalog':
         print(json.dumps({'include': catalog(args.tier)}, separators=(',', ':')))
     elif args.command == 'run':
         run(args)
+    elif args.command == 'gate':
+        result = assess(args.directory, args.baseline)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(result, indent=2) + '\n')
+        print(render(result))
+        if result['status'] == 'failed':
+            raise SystemExit(1)
     else:
         print(summarize(args.directory, args.baseline))
 

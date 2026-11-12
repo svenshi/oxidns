@@ -3,17 +3,16 @@ name: Hotpath
 on:
   push:
     branches: [main]
-    paths: &benchmark-paths
+    paths:
       - '**/*.rs'
       - '**/Cargo.toml'
       - Cargo.lock
       - justfile
-      - hotpath/**
       - .github/hotpath-benchmarks.json
       - .github/scripts/hotpath*.py
       - .github/workflows/hotpath.yml
+      - .github/workflows/hotpath-comment.yml
   pull_request:
-    paths: *benchmark-paths
   schedule:
     - cron: '0 19 * * 0'
   workflow_dispatch:
@@ -39,7 +38,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Validate report tooling
-        run: python3 -m unittest discover -s .github/scripts -p 'hotpath_test.py'
+        run: python3 -m unittest discover -s .github/scripts -p 'hotpath*_test.py'
       - id: catalog
         env:
           TIER: ${{ github.event_name == 'schedule' && 'all' || inputs.suite || 'core' }}
@@ -102,12 +101,20 @@ jobs:
         run: |
           python3 .github/scripts/hotpath.py run \
             --target "$BENCH_TARGET" --tier "$TIER" --output hotpath-reports
-      - name: Write benchmark summary
+      - name: Evaluate performance gate
         if: always()
         run: |
           mkdir -p hotpath-reports
-          python3 .github/scripts/hotpath.py summary hotpath-reports \
-            --baseline hotpath-baseline > hotpath-reports/summary.md
+          python3 .github/scripts/hotpath.py gate hotpath-reports \
+            --baseline hotpath-baseline --output hotpath-reports/gate/result.json \
+            > hotpath-reports/summary.md
+      - name: Write benchmark summary
+        if: always()
+        run: |
+          if [ ! -s hotpath-reports/summary.md ]; then
+            mkdir -p hotpath-reports
+            echo '## 🔴 Benchmark execution or report validation failed' > hotpath-reports/summary.md
+          fi
           cat hotpath-reports/summary.md >> "$GITHUB_STEP_SUMMARY"
       - name: Save reports
         if: always()
@@ -117,3 +124,16 @@ jobs:
           path: hotpath-reports/
           retention-days: 14
           if-no-files-found: error
+  gate:
+    name: Performance gate
+    if: always()
+    needs: [catalog, benchmark]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful benchmark and regression checks
+        env:
+          CATALOG_RESULT: ${{ needs.catalog.result }}
+          BENCHMARK_RESULT: ${{ needs.benchmark.result }}
+        run: |
+          test "$CATALOG_RESULT" = success
+          test "$BENCHMARK_RESULT" = success

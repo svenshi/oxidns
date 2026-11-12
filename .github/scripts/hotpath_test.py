@@ -125,7 +125,7 @@ class ReportTest(unittest.TestCase):
             self.assertIn('125.00', summary)
             changed['provenance']['fixture_sha256'] = 'changed'
             (current / 'case.json').write_text(json.dumps(changed))
-            self.assertIn('Not comparable: fixture_sha256 changed', hotpath.summarize(current, baseline))
+            self.assertIn('fixture_sha256 changed', hotpath.summarize(current, baseline))
         self.assertEqual(hotpath.cell('x|y\nz'), 'x&#124;y z')
 
     def test_invalid_units_are_rejected(self):
@@ -160,6 +160,71 @@ class CatalogTest(unittest.TestCase):
                 path.write_text(json.dumps(item))
                 with self.assertRaises(ValueError):
                     hotpath.catalog(path=path)
+
+
+class GateTest(unittest.TestCase):
+    def test_threshold_boundaries_and_zero_baseline(self):
+        rule = {'percent': 3, 'absolute': 0}
+        self.assertEqual(hotpath.change(103, 100, rule)['status'], 'stable')
+        self.assertEqual(hotpath.change(104, 100, rule)['status'], 'regression')
+        self.assertEqual(hotpath.change(96, 100, rule)['status'], 'improvement')
+        allocation = {'percent': 20, 'absolute': 16}
+        self.assertEqual(hotpath.change(16, 0, allocation)['status'], 'stable')
+        self.assertEqual(hotpath.change(17, 0, allocation)['status'], 'regression')
+        self.assertEqual(hotpath.change(0, 0, allocation)['status'], 'stable')
+        self.assertEqual(hotpath.change(110, 90, allocation)['status'], 'regression')
+
+    def test_timing_never_gates_and_regression_beats_improvement(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            current, baseline = Path(temporary) / 'head', Path(temporary) / 'base'
+            current.mkdir()
+            baseline.mkdir()
+            previous = combined()
+            changed = copy.deepcopy(previous)
+            changed['native']['functions_timing']['data'][1]['total'] = '99 s'
+            (baseline / 'case.json').write_text(json.dumps(previous))
+            (current / 'case.json').write_text(json.dumps(changed))
+            self.assertEqual(hotpath.assess(current, baseline)['status'], 'passed')
+            changed['callgrind']['functions_icount']['data'][0]['total'] = '24,690'
+            changed['native']['functions_alloc']['data'][0]['total'] = '0 B'
+            (current / 'case.json').write_text(json.dumps(changed))
+            assessment = hotpath.assess(current, baseline)
+            self.assertEqual(assessment['status'], 'failed')
+            self.assertEqual(assessment['counts']['regression'], 1)
+            summary = hotpath.render(assessment)
+            self.assertIn('🔴 ↑ +100.00%', summary)
+            self.assertIn('🟢 ↓ -100.00%', summary)
+            self.assertEqual(hotpath.assess(current)['status'], 'skipped')
+
+    def test_empty_results_fail_and_invalid_policy_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertEqual(hotpath.assess(Path(temporary))['status'], 'failed')
+        for bad in (float('nan'), float('inf'), -1, True, '3'):
+            rules = hotpath.policy()
+            rules['instructions_per_op']['percent'] = bad
+            with self.assertRaises(ValueError):
+                hotpath.validate_policy(rules)
+
+    def test_cli_exits_nonzero_but_preserves_report_on_regression(self):
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            head, base = root / 'head', root / 'base'
+            head.mkdir()
+            base.mkdir()
+            old = combined()
+            changed = copy.deepcopy(old)
+            changed['callgrind']['functions_icount']['data'][0]['total'] = '24,690'
+            (base / 'case.json').write_text(json.dumps(old))
+            (head / 'case.json').write_text(json.dumps(changed))
+            output = root / 'gate/result.json'
+            result = subprocess.run([sys.executable, hotpath.__file__, 'gate', str(head),
+                                     '--baseline', str(base), '--output', str(output)],
+                                    text=True, capture_output=True)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertEqual(json.loads(output.read_text())['status'], 'failed')
+            self.assertIn('🔴 Performance gate failed', result.stdout)
 
 
 if __name__ == '__main__':

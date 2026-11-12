@@ -3,7 +3,8 @@
 The [Hotpath workflow](../.github/workflows/hotpath.yml) runs benchmarks and
 publishes Markdown tables in GitHub Actions Summary. Full native and Callgrind
 reports are saved as artifacts on pushes and pull requests. No hotpath Cloud
-account, OIDC permission, relay workflow, or external reporting service is used.
+account, OIDC permission, or external reporting service is used. A separate
+comment workflow updates one PR comment after measurement, including fork PRs.
 
 ## Selection
 
@@ -76,11 +77,43 @@ Callgrind version match. A changed fixture starts a new comparison baseline.
 Native-only cases show their current timing/allocation values without an
 instruction delta. Raw reports remain inspectable when comparison is skipped.
 
-Changes are informational, not automatic failure thresholds. Native timing
-includes instrumentation and shared-runner noise. Do not treat these numbers as
-release performance claims, and do not compare Callgrind elapsed time with native
-time. Use the load-test pack separately for throughput, tail latency, and
-concurrency scaling.
+Regression thresholds are hardcoded in `policy()` in
+[the report script](../.github/scripts/hotpath.py); no policy file is needed. It gates per-operation instruction and cumulative allocation
+increases. Both a relative percentage and an absolute floor must be exceeded;
+equality is within the limit. A zero baseline is judged by the absolute floor.
+The same thresholds distinguish significant improvements. Current defaults are
+3% for instructions, and 20% plus 16 B/op for allocations. Review threshold
+changes in the script like workflow changes. Timing is diagnostic only and
+never fails the gate.
+
+The visual report follows the structure of the [official hotpath PR example](https://github.com/hotpath-rs/hotpath/pull/764#issuecomment-6430183334):
+a verdict and counts first, baseline → head values with percentages, and folded
+related metrics. 🔴 ↑ means a regression beyond policy; 🟢 ↓ is a significant
+improvement; ⚪ shows changes within limits; ⚠️ means no valid comparison.
+Regressions appear first. One regressed metric fails a case even if another
+metric improves. An empty report set fails; missing or incompatible baselines
+are explicitly skipped so the initial baseline can be established.
+
+`Performance gate` is the stable aggregate PR check. Any benchmark, report
+validation, or threshold failure makes it fail, while JSON artifacts and the
+Summary are preserved. PR workflows run even for docs-only changes so a required
+check does not remain pending due to path filters. To block merges, make
+`Performance gate` required in repository branch protection/rulesets; committing
+a workflow alone does not change those repository settings.
+
+[`hotpath-comment.yml`](../.github/workflows/hotpath-comment.yml) triggers on
+completion, including failed runs, and checks out only its trusted default-branch
+revision. The publisher resolves the PR through GitHub's API, checks the current
+head and newest run/attempt, and creates or updates a single bot-owned comment.
+It reads bounded JSON members from ZIP artifacts without extracting or executing
+them, validates metric values, and renders its own Markdown. Download redirects
+drop credentials when crossing hosts. It does not use `pull_request_target` or
+execute PR code with write permissions. The comment workflow must land on the
+default branch before GitHub can trigger it. Local tests mock all comment writes.
+
+Do not treat these numbers as release performance claims or compare Callgrind
+elapsed time with native time. Use the load-test pack separately for throughput,
+tail latency, and concurrency scaling.
 
 ## Local use and validation
 
@@ -101,8 +134,12 @@ HOTPATH_PROFILE=dev python3 .github/scripts/hotpath.py run \
 python3 .github/scripts/hotpath.py summary /tmp/oxidns-reports \
   --baseline /tmp/oxidns-baseline
 
-# Validate identity checks, metric normalization, and comparison rules.
-python3 -m unittest discover -s .github/scripts -p 'hotpath_test.py'
+# Evaluate policy and save a machine-readable result (exit 1 on regression).
+python3 .github/scripts/hotpath.py gate /tmp/oxidns-reports \
+  --baseline /tmp/oxidns-baseline --output /tmp/oxidns-gate/result.json
+
+# Validate metrics, thresholds, PR association, and safe comment updates.
+python3 -m unittest discover -s .github/scripts -p 'hotpath*_test.py'
 ```
 
 `just bench-hotpath <criterion-id> [cargo-benchmark-target]` remains the primitive
