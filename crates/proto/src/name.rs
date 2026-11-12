@@ -445,7 +445,6 @@ impl Name {
         let mut next_offset = None;
         let mut wire = WireBuf::new();
         let mut wire_label_offsets = WireLabelOffsets::new();
-        let mut visited = SmallVec::<[u16; 16]>::new();
         let mut pointer_count = 0usize;
         let mut wire_budget = MAX_NAME_WIRE_OCTETS;
 
@@ -514,9 +513,15 @@ impl Name {
                             "dns compression pointer exceeds packet length",
                         ));
                     }
-                    if visited.contains(&(ptr as u16)) {
+                    // RFC 1035 4.1.4: a pointer references a prior occurrence,
+                    // so every jump must land strictly before the current
+                    // position. Enforcing this makes each jump strictly
+                    // decrease the cursor, which rules out loops without the
+                    // previous O(n^2) visited-offset scan (a crafted packet
+                    // could burn ~1000x CPU on it).
+                    if ptr >= cursor {
                         return Err(DnsError::protocol(
-                            "dns name compression pointer loop detected",
+                            "dns compression pointer does not reference a prior occurrence",
                         ));
                     }
 
@@ -528,7 +533,6 @@ impl Name {
                     if next_offset.is_none() {
                         next_offset = Some(cursor + 2);
                     }
-                    visited.push(ptr as u16);
                     cursor = ptr;
                 }
                 _ => return Err(DnsError::protocol("invalid dns label type")),
@@ -792,6 +796,8 @@ mod tests {
             ("truncated pointer", vec![0xC0], false),
             ("pointer past end", vec![0xC0, 0x10], false),
             ("label exceeds packet", vec![3, b'w'], false),
+            // A pointer must reference a prior occurrence (RFC 1035 4.1.4).
+            ("forward pointer", vec![0xC0, 0x02, 0x00], false),
         ];
 
         for (name, packet, ok) in cases {
@@ -802,6 +808,51 @@ mod tests {
                 assert_eq!(parsed.to_fqdn(), "www.example.com.");
             }
         }
+    }
+
+    #[test]
+    // A crafted chain of forward pointers used to cost a quadratic scan over
+    // the visited offsets; the prior-occurrence rule now rejects the first
+    // forward jump, so the chain is never followed.
+    fn parse_wire_name_rejects_forward_pointer_chain() {
+        let mut packet = vec![0xC0, 0x02];
+        for step in 1..64u8 {
+            packet.push(0xC0);
+            packet.push((step + 1) * 2);
+        }
+        packet.push(0x00);
+
+        let error = Name::parse(&packet, 0).expect_err("forward pointer chain must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("does not reference a prior occurrence"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    // Backward pointers stay valid, and the pointer budget still bounds a
+    // long chain instead of letting it run away.
+    fn parse_wire_name_rejects_pointer_budget_overrun() {
+        // Offset 0 holds the terminating root label; every pointer jumps back
+        // to the previous pointer, so the chain is legal but needs more hops
+        // than the pointer budget allows.
+        let mut packet = vec![0x00];
+        for step in 1..=127u16 {
+            packet.push(0xC0);
+            let target = if step == 1 { 0 } else { step * 2 - 3 };
+            packet.push(target as u8);
+        }
+
+        let start = packet.len() - 2;
+        let error = Name::parse(&packet, start).expect_err("pointer budget must stop the chain");
+        assert!(
+            error
+                .to_string()
+                .contains("too many dns compression pointers"),
+            "{error}"
+        );
     }
 
     #[test]
