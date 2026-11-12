@@ -1938,6 +1938,43 @@ mod tests {
     }
 
     #[test]
+    fn cache_skip_total_emits_the_expected_reason_labels() {
+        #[derive(Default)]
+        struct SkipReasons(Vec<String>);
+
+        impl MetricSink for SkipReasons {
+            fn emit(&mut self, sample: MetricSample<'_>) {
+                if sample.name != "cache_skip_total" {
+                    return;
+                }
+                for label in sample.labels {
+                    if label.key == "reason" {
+                        self.0.push(label.value.to_string());
+                    }
+                }
+            }
+        }
+
+        let metrics = CacheMetrics::new("cache_test".to_string());
+        let mut reasons = SkipReasons::default();
+        metrics.collect(&mut reasons);
+
+        let mut reasons = reasons.0.clone();
+        reasons.sort();
+        assert_eq!(
+            reasons,
+            vec![
+                "incomplete_answer",
+                "low_positive_ttl",
+                "no_ttl",
+                "truncated"
+            ],
+            "cache_skip_total reason labels changed; keep the WebUI label map in sync \
+             (webui/lib/metrics.ts) and add the translation to webui/lib/i18n/locales/*/webui.ts",
+        );
+    }
+
+    #[test]
     fn parse_cache_quick_setup_supports_short_circuit() {
         let cfg = parse_cache_quick_setup("short_circuit=true").expect("quick setup should parse");
         assert_eq!(cfg.short_circuit, Some(true));
