@@ -89,6 +89,13 @@ The config API supports validation and version-aware saves. API clients should
 use the returned version instead of blindly overwriting concurrent edits.
 Overlapping reload requests are rejected; wait for the active reload to finish.
 
+For container API edits, mount the configuration's containing directory
+read-write so the file can be atomically replaced. A single-file mount that
+rejects replacement with `EBUSY` requires an in-place save, which cannot protect
+against partial writes on interruption or I/O failure. Keep a backup for this
+setup; read-only mounts remain unwritable. See the maintained Docker deployment
+guide for a directory mount that also preserves the image's WebUI assets.
+
 If replacement runtime initialization fails, diagnose the reported plugin and
 dependency error before retrying. Do not loop reload requests.
 

@@ -108,6 +108,20 @@ docker compose up -d
 docker compose logs -f oxidns
 ```
 
+## 通过 WebUI 保存配置
+
+上面的只读挂载适合在宿主机维护配置。若需通过 WebUI 保存，建议把配置放进单独的目录，并以可写方式挂载该目录：
+
+```yaml
+    volumes:
+      - ./conf:/etc/oxidns-config:rw
+    command: ["start", "-c", "/etc/oxidns-config/config.yaml", "-d", "/etc/oxidns"]
+```
+
+先把现有配置复制到宿主机的 `./conf/config.yaml`，再重新创建容器。这样配置文件可以原子替换，镜像内 `/etc/oxidns/webui` 的静态资源也仍然可用。RouterOS Container 同样建议挂载配置所在目录。
+
+单文件挂载的 `/etc/oxidns/config.yaml` 本身是挂载点，无法通过 rename 替换。1.7.0 在这种情况下保存会报 `Resource busy (os error 16)`，可通过上述目录挂载方式解决。加入兼容处理的版本遇到 `EBUSY` 时会原地写入已有文件；这种保存不具备原子性，中断或 I/O 错误仍可能留下不完整的配置，因此优先使用目录挂载并保留备份。只读挂载仍然不能通过 WebUI 保存。
+
 ## 更新镜像
 
 固定版本部署应先修改 image tag，再执行：
