@@ -226,15 +226,14 @@ async fn handle_hyper_request(
     let response = if !is_authorized(request.headers(), context.auth.as_ref()) {
         let mut response =
             simple_response(StatusCode::UNAUTHORIZED, Bytes::from("401 Unauthorized"));
-        let is_ajax = request.headers().get("x-requested-with").is_some()
-            || request.headers().get("x-no-browser-auth").is_some()
-            || request.headers().get("sec-fetch-mode").is_some()
+        let is_ajax = request.headers().contains_key("x-requested-with")
+            || request.headers().contains_key("x-no-browser-auth")
+            || request.headers().contains_key("sec-fetch-mode")
             || request
                 .headers()
                 .get(http::header::ACCEPT)
                 .and_then(|v| v.to_str().ok())
-                .map(|v| v.contains("application/json"))
-                .unwrap_or(false);
+                .is_some_and(|v| v.contains("application/json"));
         if !is_ajax {
             response.headers_mut().insert(
                 http::header::WWW_AUTHENTICATE,
