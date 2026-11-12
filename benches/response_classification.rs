@@ -5,7 +5,7 @@ use std::hint::black_box;
 use std::net::Ipv4Addr;
 
 use hotpath::criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use oxidns::core::response::classify_response;
+use oxidns::core::response::{NegativeResponseKind, ResponseDisposition, classify_response};
 use oxidns::proto::rdata::{A, CNAME, SOA};
 use oxidns::proto::{DNSClass, Message, Name, Question, RData, Rcode, Record, RecordType};
 
@@ -101,6 +101,17 @@ fn bench_response_classification(c: &mut Criterion) {
     let mut group = c.benchmark_group("response_classification");
 
     for (label, (question, response)) in &fixtures {
+        let expected = match *label {
+            "cname_only" => ResponseDisposition::IncompleteAlias,
+            "cname_nodata" => ResponseDisposition::DefinitiveNegative(NegativeResponseKind::NoData),
+            "nxdomain" => ResponseDisposition::DefinitiveNegative(NegativeResponseKind::NxDomain),
+            _ => ResponseDisposition::CompletePositive,
+        };
+        assert_eq!(
+            classify_response(response, Some(question)),
+            expected,
+            "invalid fixture: {label}"
+        );
         group.bench_function(BenchmarkId::from_parameter(label), |b| {
             b.iter(|| {
                 let disposition = classify_response(black_box(response), Some(black_box(question)));

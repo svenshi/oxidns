@@ -374,7 +374,6 @@ _dns-client-doh3 = ["_dns-client-doh", "dep:h3", "dep:h3-quinn", "dep:quinn"]
 # --- Profiling -------------------------------------------------------------
 hotpath = ["hotpath/hotpath"]
 hotpath-alloc = ["hotpath/hotpath-alloc"]
-hotpath-cloud = ["hotpath/hotpath-cloud"]
 hotpath-callgrind = ["hotpath/hotpath-callgrind"]
 
 [dev-dependencies]
@@ -409,6 +408,10 @@ harness = false
 
 [[bench]]
 name = "request_pipeline"
+harness = false
+
+[[bench]]
+name = "forward_local"
 harness = false
 
 
