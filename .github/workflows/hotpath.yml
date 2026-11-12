@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   catalog:
+    if: github.repository == 'svenshi/oxidns'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.catalog.outputs.matrix }}
@@ -23,7 +24,7 @@ jobs:
           matrix=$(jq -c '{include: .}' .github/hotpath-benchmarks.json)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
   upload:
-    if: github.event_name == 'push'
+    if: github.repository == 'svenshi/oxidns' && github.event_name == 'push'
     needs: catalog
     runs-on: ubuntu-26.04
     timeout-minutes: 60
