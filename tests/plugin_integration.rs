@@ -6520,10 +6520,12 @@ async fn test_server_unknown_opcode_returns_notimp_over_udp_and_tcp() -> Result<
     use oxidns::infra::network::transport::tcp::{TcpTransportReader, TcpTransportWriter};
     use oxidns::proto::{MessageType, Opcode};
 
-    let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let listen = reservation.local_addr()?;
-    let config = parse_config(&format!(
-        r#"
+    let mut initialized = None;
+    for _ in 0..16 {
+        let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let listen = reservation.local_addr()?;
+        let config = parse_config(&format!(
+            r#"
 plugins:
   - tag: ingress_sink
     type: black_hole
@@ -6538,9 +6540,18 @@ plugins:
       entry: ingress_sink
       listen: "{listen}"
 "#
-    ))?;
-    drop(reservation);
-    let runtime = plugin::init(config).await?;
+        ))?;
+        drop(reservation);
+        match plugin::init(config).await {
+            Ok(runtime) => {
+                initialized = Some((runtime, listen));
+                break;
+            }
+            Err(error) if error.to_string().contains("Failed to bind") => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let (runtime, listen) = initialized.expect("UDP and TCP test listeners should bind");
     let outcome = async {
         let client = UdpSocket::bind("127.0.0.1:0").await?;
         let mut unsolicited = Message::new();
@@ -6592,11 +6603,13 @@ plugins:
 async fn test_doq_shutdown_closes_partial_stream_and_drains_accepted_request() -> Result<()> {
     let upstream = UdpSocket::bind("127.0.0.1:0").await?;
     let upstream_addr = upstream.local_addr()?;
-    let reservation = UdpSocket::bind("127.0.0.1:0").await?;
-    let listen = reservation.local_addr()?;
-    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/server-tls");
-    let config = parse_config(&format!(
-        r#"
+    let mut initialized = None;
+    for _ in 0..16 {
+        let reservation = UdpSocket::bind("127.0.0.1:0").await?;
+        let listen = reservation.local_addr()?;
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/server-tls");
+        let config = parse_config(&format!(
+            r#"
 plugins:
   - tag: doq_drain_cache
     type: cache
@@ -6621,11 +6634,20 @@ plugins:
       cert: {}
       key: {}
 "#,
-        serde_json::to_string(&fixtures.join("cert.pem"))?,
-        serde_json::to_string(&fixtures.join("key.pem"))?
-    ))?;
-    drop(reservation);
-    let runtime = plugin::init(config).await?;
+            serde_json::to_string(&fixtures.join("cert.pem"))?,
+            serde_json::to_string(&fixtures.join("key.pem"))?
+        ))?;
+        drop(reservation);
+        match plugin::init(config).await {
+            Ok(runtime) => {
+                initialized = Some((runtime, listen));
+                break;
+            }
+            Err(error) if error.to_string().contains("Failed to bind") => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let (runtime, listen) = initialized.expect("QUIC test listener should bind");
     let outcome = async {
         let mut roots = rustls::RootCertStore::empty();
         for cert in
