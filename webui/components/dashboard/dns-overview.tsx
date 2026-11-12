@@ -442,25 +442,27 @@ export function DnsOverview() {
         const now = Date.now();
         const startOfWeekMs = getStartOfWeekMs(now);
 
-        let sinceMs: number | undefined;
+        const untilMs = now;
+        let sinceMs = untilMs - 60 * 60 * 1000;
         let bucket: "minute" | "hour" = "minute";
         let buckets = 60;
-        let rangeSinceMs = Math.max(now - 60 * 60 * 1000, startOfWeekMs);
+        let rangeSinceMs = untilMs - 60 * 60 * 1000;
 
         if (targetRange === "1h") {
-          rangeSinceMs = Math.max(now - 60 * 60 * 1000, startOfWeekMs);
-          sinceMs = rangeSinceMs;
+          rangeSinceMs = untilMs - 60 * 60 * 1000;
+          sinceMs = untilMs - 60 * 60 * 1000;
           bucket = "minute";
           buckets = 60;
         } else if (targetRange === "24h") {
-          rangeSinceMs = Math.max(now - 24 * 60 * 60 * 1000, startOfWeekMs);
-          sinceMs = rangeSinceMs;
+          rangeSinceMs = untilMs - 24 * 60 * 60 * 1000;
+          // Ensure within 24h limit (<= 86_400_000 ms) with a 10s safety buffer
+          sinceMs = untilMs - (24 * 60 * 60 * 1000 - 10_000);
           bucket = "hour";
           buckets = 24;
         } else {
           // live: 5s window for card metric, 15m window for chart
-          rangeSinceMs = Math.max(now - 5 * 1000, startOfWeekMs);
-          sinceMs = Math.max(now - 15 * 60 * 1000, startOfWeekMs);
+          rangeSinceMs = untilMs - 5 * 1000;
+          sinceMs = untilMs - 15 * 60 * 1000;
           bucket = "minute";
           buckets = 15;
         }
@@ -478,14 +480,14 @@ export function DnsOverview() {
           beforeWeekRecordRes,
           beforeRangeRecordRes,
         ] = await Promise.allSettled([
-          fetchQueryRecorderTimeseries(tag, { bucket, buckets, sinceMs, signal: abortController.signal }),
-          fetchQueryRecorderTopClients(tag, { limit: 6, sinceMs, signal: abortController.signal }),
-          fetchQueryRecorderTopQnames(tag, { limit: 7, sinceMs, signal: abortController.signal }),
-          fetchQueryRecorderTopQnames(tag, { limit: 7, sinceMs, status: "error", signal: abortController.signal }),
-          fetchQueryRecords(tag, { limit: 12, sinceMs, signal: abortController.signal }),
-          fetchQueryRecorderRcodeDistribution(tag, { sinceMs, signal: abortController.signal }),
-          fetchQueryRecorderQtypeDistribution(tag, { sinceMs, signal: abortController.signal }),
-          fetchQueryRecorderLatency(tag, { sinceMs, signal: abortController.signal }),
+          fetchQueryRecorderTimeseries(tag, { bucket, buckets, sinceMs, untilMs, signal: abortController.signal }),
+          fetchQueryRecorderTopClients(tag, { limit: 6, sinceMs, untilMs, signal: abortController.signal }),
+          fetchQueryRecorderTopQnames(tag, { limit: 7, sinceMs, untilMs, signal: abortController.signal }),
+          fetchQueryRecorderTopQnames(tag, { limit: 7, sinceMs, untilMs, status: "error", signal: abortController.signal }),
+          fetchQueryRecords(tag, { limit: 12, sinceMs, untilMs, signal: abortController.signal }),
+          fetchQueryRecorderRcodeDistribution(tag, { sinceMs, untilMs, signal: abortController.signal }),
+          fetchQueryRecorderQtypeDistribution(tag, { sinceMs, untilMs, signal: abortController.signal }),
+          fetchQueryRecorderLatency(tag, { sinceMs, untilMs, signal: abortController.signal }),
           fetchQueryRecords(tag, { limit: 1, signal: abortController.signal }),
           beforeWeekIdCacheRef.current !== null
             ? Promise.resolve({ ok: true, records: [{ id: beforeWeekIdCacheRef.current }] as unknown as QueryRecordRow[] })
@@ -567,9 +569,6 @@ export function DnsOverview() {
           newTimeseriesData = normalizeTimeseriesData([], targetRange, now);
         }
 
-        if (targetRange === "24h") {
-          calculatedPeriodCount = newTimeseriesData.reduce((acc, p) => acc + p.total, 0);
-        }
 
         let newTopClients: TopItem[] = [];
         if (clientsRes.status === "fulfilled" && clientsRes.value.ok && clientsRes.value.rows?.length > 0) {
