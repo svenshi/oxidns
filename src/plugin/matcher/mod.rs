@@ -27,6 +27,7 @@ mod control;
 pub mod any_match;
 pub mod client_ip;
 pub mod cname;
+pub mod edns0opt;
 pub mod env;
 pub mod false_matcher;
 pub mod has_cname;

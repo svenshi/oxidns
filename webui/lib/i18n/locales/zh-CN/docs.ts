@@ -589,6 +589,13 @@ export const zhCNDocs = {
   qclass: {
     args: "`qclass` 的 `args` 为类别列表。\n\n- 类型：`array`；必填：是；默认值：无\n- 作用：定义允许命中的查询类别集合。\n- 同时支持枚举文本和十进制数值，例如 `IN` / `CH` / `HS` 或 `1` / `3` / `4`；同一个列表中可以混用两种格式。\n- 未知或未来扩展类别可继续使用数值形式匹配。\n- 运行影响：\n  - 请求中的任意问题类别命中配置集合时返回 `true`。",
   },
+  edns0opt: {
+    codes:
+      "`codes` 为 EDNS0 option code 列表。\n\n- 类型：`array`；必填：是；默认值：无\n- 作用：定义需要存在的 EDNS0 option code 集合。\n- 仅支持十进制数值（例如 `8`、`12`），不提供 code 别名。\n- 运行影响：\n  - 列表为空时配置解析失败，不会静默生成永不命中的 matcher。",
+    require:
+      "- 类型：`string`；必填：否；默认值：`any`\n- 支持取值：\n  - `any`：任一配置 code 存在即命中\n  - `all`：全部配置 code 都必须存在\n- 运行影响：只影响多个 code 之间的组合判断方式。",
+    resp: "- 类型：`bool`；必填：否；默认值：`false`\n- 作用：为 `false` 时读取请求 OPT；为 `true` 时读取响应 OPT。\n- 运行影响：\n  - `resp: true` 且上下文中尚无响应时返回 `false`。\n  - 需要表达“无 OPT / 无匹配 option”时，对 matcher 整体取反即可，本 matcher 不提供额外开关。",
+  },
   client_ip: {
     args: "`client_ip` 的 `args` 采用规则列表形式。\n\n- 类型：`array`；必填：是；默认值：无\n- 作用：定义客户端来源地址匹配条件。\n- 支持元素：\n  - 单个 IP\n  - CIDR\n  - `ip_set` 引用\n- 运行影响：\n  - 只要客户端来源地址命中任一规则，matcher 即返回 `true`。",
   },
