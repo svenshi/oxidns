@@ -193,6 +193,72 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 
 ---
 
+## `edns0opt`
+
+### 作用
+
+按请求或响应 OPT 记录中的 EDNS0 option code 存在性匹配。只读取 OPT 的 option 列表，不修改消息。
+
+### 配置示例
+
+```yaml
+- tag: has_ecs
+  type: edns0opt
+  codes:
+    - 8
+  require: any
+  resp: false
+```
+
+匹配响应侧且要求多个 code 同时存在：
+
+```yaml
+- tag: has_subnet_and_padding
+  type: edns0opt
+  codes:
+    - 8
+    - 12
+  require: all
+  resp: true
+```
+
+### 配置项
+
+- `codes`
+  - 类型：`array`；必填：是；默认值：无
+  - 作用：定义需要存在的 EDNS0 option code 集合。
+  - 仅支持十进制数值，不提供 code 别名。
+  - 列表为空时配置解析失败，不会生成一个永不命中的 matcher。
+- `require`
+  - 类型：`string`；必填：否；默认值：`any`
+  - `any`：任一配置 code 存在即命中。
+  - `all`：全部配置 code 都必须存在。
+- `resp`
+  - 类型：`bool`；必填：否；默认值：`false`
+  - `false`：读取请求 OPT；`true`：读取响应 OPT。
+  - `resp: true` 且上下文中尚无响应时返回 `false`。
+
+### quick setup
+
+```yaml
+- matches: "edns0opt 8,12"
+- matches: "edns0opt all resp 8,12"
+```
+
+数字按 `codes` 解析；`any` / `all` 切换 `require`，`resp` 等价于 `resp: true`。
+
+### 行为说明
+
+- 只检查 OPT 记录中实际存在的 option，不检查 option data，也不做 code 别名。
+- 无 OPT 记录、或 OPT 中不存在目标 code 时返回 `false`。
+- 需要表达“无 OPT / 无匹配 option”时，对 matcher 整体取反即可（例如 `!$has_ecs`），本 matcher 不提供 `has_opt` 开关。
+
+### 典型用途
+
+- 根据客户端是否携带 ECS（code 8）或 padding（code 12）选择不同的上游或响应策略。
+
+---
+
 ## `client_ip`
 
 <PluginAvailability from="minimal" />

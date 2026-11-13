@@ -190,6 +190,72 @@ This example mixes text and numeric forms. Both formats are equivalent and can b
 
 ---
 
+## `edns0opt`
+
+### Purpose
+
+Matches by the presence of EDNS0 option codes in the request or response OPT record. Read-only: it inspects the OPT option list without modifying the message.
+
+### Example Configuration
+
+```yaml
+- tag: has_ecs
+  type: edns0opt
+  codes:
+    - 8
+  require: any
+  resp: false
+```
+
+Match the response side and require multiple codes at once:
+
+```yaml
+- tag: has_subnet_and_padding
+  type: edns0opt
+  codes:
+    - 8
+    - 12
+  require: all
+  resp: true
+```
+
+### Configuration Details
+
+- `codes`
+  - Type: `array`; Required: yes; Default: none
+  - Function: define the EDNS0 option codes that must be present.
+  - Decimal numeric values only; no code aliases.
+  - An empty list fails configuration parsing instead of producing a matcher that never hits.
+- `require`
+  - Type: `string`; Required: no; Default: `any`
+  - `any`: matches when at least one configured code is present.
+  - `all`: every configured code must be present.
+- `resp`
+  - Type: `bool`; Required: no; Default: `false`
+  - `false`: read the request OPT; `true`: read the response OPT.
+  - With `resp: true`, returns `false` when the context has no response yet.
+
+### quick setup
+
+```yaml
+- matches: "edns0opt 8,12"
+- matches: "edns0opt all resp 8,12"
+```
+
+Numeric tokens map to `codes`; `any` / `all` switch `require`, and `resp` is equivalent to `resp: true`.
+
+### Behavior
+
+- Only checks options actually present in the OPT record; it does not match option data and provides no code aliases.
+- Returns `false` when there is no OPT record or the OPT record lacks the target codes.
+- To express "no OPT / no matching option", negate the matcher as a whole (for example `!$has_ecs`); this matcher has no `has_opt` switch.
+
+### Typical Uses
+
+- Choose different upstreams or response policies based on whether the client carries ECS (code 8) or padding (code 12).
+
+---
+
 ## `client_ip`
 
 <PluginAvailability from="minimal" />

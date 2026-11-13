@@ -111,6 +111,44 @@ export const matcherPluginDefinitions: PluginKindDefinition[] = [
     },
   },
   {
+    kind: "edns0opt",
+    type: "matcher",
+    name: "EDNS0 Option",
+    description: "按请求或响应 OPT 中的 EDNS0 option code 存在性匹配",
+    icon: "FileQuestion",
+    configSchema: [
+      stringArrayField(
+        "codes",
+        "Option Code",
+        "8\n12",
+        true,
+        "必填且不能为空；定义需要存在的 EDNS0 option code 集合，仅支持数值。",
+      ),
+      {
+        key: "require",
+        label: "匹配要求",
+        description:
+          "any 表示任一 code 存在即命中；all 表示全部 code 都必须存在。",
+        type: "select",
+        default: "any",
+        options: [
+          { label: "任一", value: "any" },
+          { label: "全部", value: "all" },
+        ],
+      },
+      {
+        key: "resp",
+        label: "匹配响应侧",
+        description: "关闭时匹配请求 OPT（默认）；开启时匹配响应 OPT。",
+        type: "switch",
+        default: false,
+      },
+    ],
+    quickSetup: {
+      paramPlaceholder: "8,12",
+    },
+  },
+  {
     kind: "client_ip",
     type: "matcher",
     name: "Client IP",
