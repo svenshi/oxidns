@@ -1221,7 +1221,10 @@ pub(super) fn load_timeseries(
         &query.filter,
     )?;
     let where_sql = join_clauses(&clauses);
-    let sample_limit = query.filter.sample_limit.unwrap_or(PLUGIN_STATS_SAMPLE_LIMIT);
+    let sample_limit = query
+        .filter
+        .sample_limit
+        .unwrap_or(PLUGIN_STATS_SAMPLE_LIMIT);
     let is_unlimited = sample_limit == 0;
     let sql = if is_unlimited {
         format!(
@@ -1337,7 +1340,11 @@ pub(super) fn load_timeseries(
     Ok(TimeseriesResponse {
         ok: true,
         sample_size,
-        sample_limit: if is_unlimited { sample_size as usize } else { sample_limit },
+        sample_limit: if is_unlimited {
+            sample_size as usize
+        } else {
+            sample_limit
+        },
         sample_truncated,
         sample_since_ms,
         sample_until_ms,
