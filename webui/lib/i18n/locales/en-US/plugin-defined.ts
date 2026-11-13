@@ -2459,6 +2459,40 @@ export const enUSPluginDefined = {
         paramPlaceholder: "IN or 1",
       },
     },
+    edns0opt: {
+      name: "EDNS0 Option",
+      description:
+        "Match by the presence of EDNS0 option codes in the request or response OPT",
+      fields: {
+        codes: {
+          label: "Option Code",
+          description:
+            "Required and non-empty; define the EDNS0 option codes that must be present. Numeric values only.",
+          example: "8\n12",
+        },
+        "codes[]": {
+          label: "Enter value",
+          example: "8",
+        },
+        require: {
+          label: "Match requirement",
+          description:
+            "any matches when at least one code is present; all requires every code to be present.",
+          options: {
+            any: "Any",
+            all: "All",
+          },
+        },
+        resp: {
+          label: "Match response side",
+          description:
+            "Off matches the request OPT (default); on matches the response OPT.",
+        },
+      },
+      quickSetup: {
+        paramPlaceholder: "8,12",
+      },
+    },
     client_ip: {
       name: "Client IP",
       description: "Match client source IP",
