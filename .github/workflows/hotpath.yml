@@ -28,6 +28,7 @@ permissions:
 
 jobs:
   catalog:
+    if: github.repository == 'svenshi/oxidns'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.catalog.outputs.matrix }}
@@ -47,6 +48,7 @@ jobs:
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "tier=$TIER" >> "$GITHUB_OUTPUT"
   benchmark:
+    if: github.repository == 'svenshi/oxidns'
     needs: catalog
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -126,7 +128,7 @@ jobs:
           if-no-files-found: error
   gate:
     name: Performance gate
-    if: always()
+    if: github.repository == 'svenshi/oxidns' && always()
     needs: [catalog, benchmark]
     runs-on: ubuntu-latest
     steps:

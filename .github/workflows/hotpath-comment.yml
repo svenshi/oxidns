@@ -9,7 +9,7 @@ permissions: {}
 
 jobs:
   comment:
-    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion != 'cancelled'
+    if: github.repository == 'svenshi/oxidns' && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion != 'cancelled'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:

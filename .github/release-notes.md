@@ -1,3 +1,14 @@
+# OxiDNS v1.7.1 (Fork with Liquid Glass UI & Minute Stats Engine)
+
+## 🚀 发布概览
+
+本版本基于官方 **OxiDNS v1.7.1** 上游最新源码同步合并，同时保留并升级了定制功能：
+- **微秒级后台分钟归总引擎**（7×24h 毫秒级秒开 24h & 1h 完整走势，无缝兼容 v1.7.0/v1.7.1 24h 统计校验）；
+- **全屏流体玻璃定制登录界面**（带亮暗模式自适应、密码眼睛显隐切换，彻底消除浏览器原生 Basic Auth 弹窗）；
+- **Liquid Glass 现代美学监控大屏**（流光环形进度条、智能万位换算、平滑响应式卡片）。
+
+---
+
 # OxiDNS v1.7.1
 
 ## 🚀 发布概览
@@ -30,3 +41,145 @@
 - Telegram 发布消息：`python3 -m unittest discover -s .github/scripts -p '*_test.py'`。
 - full/minimal：`cargo build --locked --no-default-features --features full` / `minimal`，以及 `oxidns --version`、`oxidns build-info` 和对应的 `oxidns check -c config.yaml` / `oxidns check -c config.minimal.yaml`。
 - crates.io workspace dry-run：`cargo publish --locked --dry-run --allow-dirty --workspace`（包含打包后编译验证，未上传）。
+
+---
+
+# OxiDNS v1.6.18
+
+## 🚀 发布概览
+
+OxiDNS v1.6.18 后端（Rust 核心服务） 落地一套微秒级的后台分钟归总引擎；前端换用流体玻璃定制登录界面。
+
+## ✨ 实际更新内容 (Changelog)
+
+### 后台常驻静默记录（零开销）：
+
+- **OxiDNS 7×24 小时在后台处理 DNS 请求时，每分钟自动归卷一条统计记录： [时间戳, 本分钟请求总数, 拦截数, 平均延迟]。
+写入一个微型的 minute_stats 表。
+
+- **1 小时走势图也直接读取后台这 60 条连续分钟数据，无论当前 QPS 是几百还是几千，走势图都不会再因为 10,000 条上限而前半小时显示为 0。
+
+- **历史数据自动平滑继承：在启动升级时，后台自动把数据库里已有的历史记录按分钟一次性回填好，升级后立即就能看到平滑的过去 24 小时曲线。
+
+
+### 🎨 界面与体验改造要点
+
+- **彻底消除浏览器原生弹窗：
+
+后端拦截优化（src/api/server.rs）：当检测到请求来自 WebUI / Fetch（携带 X-Requested-With、Sec-Fetch-Mode 或 application/json）且未鉴权时，返回 401 Unauthorized 时抑制 WWW-Authenticate: Basic ... 响应头。浏览器不再强行弹出系统的 Basic Auth 弹窗，而是交由前端接管。
+前端双重保障（webui/lib/auth-store.ts & webui/lib/oxidns-api.ts）：请求探测时配置 credentials: "omit" 并携带 X-No-Browser-Auth 标头，杜绝任何浏览器拦截。
+
+- **流体玻璃定制登录界面（webui/components/auth/login-view.tsx）：
+
+  - 卡片头部排版：严格还原参考图布局，左侧为圆角微光 OxiDNS 图标徽章（亮色/暗色自适应），右侧为大标题“登录”与副标题“登录 OxiDNS 仪表盘”。
+  - 表单输入框：
+  - 用户名：圆角玻璃输入框，高对比度文字与占位提示。
+  - 密码与眼睛切换图标：右侧内置眼睛切换按钮（[Eye / EyeOff]），点击即可快速在密码掩码与明文之间无缝切换。
+  - 登录操作按钮：全宽翡翠绿微光渐变按钮（bg-emerald-500 + 光晕动效），点击时展示旋转加载动画与“登录中…”。
+  - 记住登录状态与高级设置：
+  - 勾选“记住登录状态”后凭据持久化，下次打开自动秒连；
+  - 提供“高级设置”可折叠面板，支持自定义后端 API 地址（默认 /api）；
+  - 提供底部“离线编辑配置”快速通道。
+  - 右上角浮动工具条：支持在登录页自由切换流体动态壁纸、明暗主题（浅色/暗色/跟随系统）与中英文界面语言。
+
+- **路由鉴权守卫（webui/app/(console)/layout.tsx）：
+
+  - 当后端开启认证且未登录时，全屏展示专注的居中登录视图，不再展示侧边栏等未授权骨架，登录成功后平滑进入管理控制台。
+
+
+
+# OxiDNS v1.6.17
+
+## 🚀 发布概览
+
+OxiDNS v1.6.17 前端增加24h数据库，用来统计和展示24h的数据，缓解后台取数压力，上10w后，数据载入较卡。
+
+
+# OxiDNS v1.6.8
+
+## 🚀 发布概览
+
+OxiDNS v1.6.8 带来全新的 **现代极简液态玻璃 (Liquid Glass)** 交互界面与深度优化的 DNS 遥测监控大屏。本次更新为 **100% 纯前端 WebUI 重构与体验飞跃**（后端 Rust 引擎 0 侵入），重点围绕 **Ein UI 霓虹渐变进度条**、**0ms 秒切与 60FPS 丝滑趋势图渲染**、**基于数据库流水差值彻底破解 1w 统计封顶** 以及 **每周周期与时段指标解耦重构** 等维度进行了深度打磨。
+
+---
+
+## ✨ 实际更新内容 (Changelog)
+
+### 🎨 界面视觉与组件升级 (Liquid Glass & Ein UI)
+- **Ein UI 玻璃拟态霓虹流光进度条**：
+  - 引入规范的 `GlassProgress` 液体玻璃进度条，采用 `from-cyan-400 via-blue-400 to-purple-400` 霓虹流光渐变与柔和发光氛围阴影（Glow Aura）。
+  - **统一度量衡与精准匹配**：进度条满条严格标定为 100%，上游 DNS 节点卡片进度条 1:1 严格绑定节点实际**解析成功率 (0% ~ 100%)**，解决此前进度条与成功率数据脱节的问题。
+- **时段控制面板精简**：
+  - 精简时间跨度控制为三个核心场景档位：**实时 (5s)**、**最近 1h**、**最近 24h**，移除了冗余的 6 小时等选项，界面更显利落。
+- **全透明毛玻璃与高对比度质感**：
+  - 全面适配高斯磨砂模糊（Backdrop Blur）、柔和镜面反射边框与多层环境光散射，深色与浅色模式均具备精致层次。
+- **移动端与全端响应式优化**：
+  - 针对手机竖屏深度优化，解决小屏卡片挤压与图表错位；实时解析流水表格支持水平丝滑滚动。
+
+### ⚡ 性能与交互极致优化 (0ms 秒切 & 60FPS 丝滑渲染)
+- **内存级 SWR 客户端缓存**：
+  - 新增时间档位（`最近 1h` / `最近 24h` / `实时 (5s)`）内存快照缓存系统。
+  - 用户在不同时段间切换时，图表与指标实现 **0ms 秒切展示**，无需等待网络请求白屏或加载动画。
+  - 切换后自动触发静默后台重校验（Silent Revalidation），数据热更新无任何界面闪烁。
+- **空闲预加载 (Idle Prefetching)**：
+  - 页面初次加载 600ms 后自动在空闲时间预拉取未激活的时段数据，确保首次点击任意档位均能秒开。
+- **连续时间轴槽位归一化补零 (Timeseries Slot Normalization)**：
+  - 针对低频或单点请求导致 Recharts 面积图断线、显示孤立单点的问题，重构了连续槽位对齐算法（1h 对应 60 分钟槽位、24h 对应 24 小时槽位、实时对应 15 分钟槽位）。
+  - 对无请求时段平滑补零，完美呈现连贯优雅的波浪连绵山脉走势图。
+- **消除 SVG 形状补间动画卡顿**：
+  - 关闭 Recharts 默认的高开销 SVG 路径补间计算，将高频轮询（每 4 秒）与档位切换时的 CPU 占用降低 90%，保障 60FPS 满帧丝滑。
+
+### 📊 统计指标重构与破除 1w 封顶 (Uncapped Metrics & Weekly Cycle)
+- **纯前端破解 1w（10,000）统计封顶瓶颈**：
+  - 在零修改后端 Rust 代码的前提下，利用 `query_recorder` 数据库的自增主键流水特性，通过时间边界记录差值算法（`latestId - beforeWeekId` 与 `latestId - beforeRangeId`）精确计算出真实的每周与时段请求总量。
+  - 彻底打破原版由于采样限制导致的 10,000 条封顶问题，真实支持数万至数百万级解析量的准确呈现。
+- **大数智能万位换算 (`w` 单位)**：
+  - 引入通用数字格式化引擎：当请求数 $\ge 10,000$ 时，智能以万为单位显示（如 `1w`、`1.2w`、`2.9w`、`25w`），保留 1 位有效小数并去除多余 `.0`；
+  - 鼠标悬浮数值时，可通过 `title` 气泡查看原生的完整数值（如 `12,345 次解析`）；
+  - 趋势图 Y 轴刻度标签与 Hover 提示框全面同步万位换算。
+- **指标层次与卡片重构**：
+  - **顶部大数字（主指标）**：固定展示【每周总解析请求】，以周一 00:00:00 至周日 23:59:59 作为一个独立计数周期，下周一零点自动清零；
+  - **下方副指标（分档数据）**：联动上方所选时间档位，独立展示对应的时段解析量（如 `最近 1h: 170`、`最近 24h: 2.9w`、`实时 (5s): 3`），去除了冗余的总计后缀，界面更加清爽专注。
+- **实时 DNS 解析流水打通**：
+  - 实时解析流水表格全面打通 `query_recorder` 记录数据，清晰展示时间戳、域名、解析类型、客户端 IP、路由流向与响应耗时。
+
+### 🔒 架构约束与工程质量 (Scope & Quality)
+- **零后端侵入**：100% 保持 Rust 内核代码完全不变，所有统计计算、格式化换算与缓存优化均封装在前端 `webui/` 模块中。
+- **严格类型与规范通过**：
+  - TypeScript 严格类型检查（`tsc --noEmit`）：0 error；
+  - React 19 / ESLint 代码规范：0 error, 0 warning。
+
+---
+
+## 📦 安装与升级说明
+
+- 保持原有 `config.yaml` 配置文件即可直接平滑启动或升级。
+- 根据操作系统平台下载对应的二进制压缩包或 `.deb` 安装包进行替换。
+
+---
+
+# OxiDNS v1.6.1
+
+## 🚀 发布概览
+
+- v1.6.1 是补丁版本，修复上游连接关闭后的资源释放与 IPv6 字面量解析，并改进连接池诊断。
+
+## ✨ 主要亮点
+
+- TCP/UDP 连接关闭后及时结束后台收发任务、取消等待中的查询，避免已关闭连接持续占用内存与套接字；TCP 写入失败或阻塞时也能退出。
+- 正确识别上游 URL 中带方括号的 IPv6 地址，直接连接，不再误走域名 bootstrap 解析；上游探测同步修正。
+- 连接池与关闭日志增加上游标识、主机、端口和传输信息；正常并发转发中的查询取消改为 debug 日志。
+- 更新 Rust 依赖。
+
+## ⚠️ 升级说明
+
+- v1.6.0 YAML 配置可直接升级，配置字段、默认值与 bundle 不变。替换二进制前建议运行 `oxidns check -c <配置文件>`。
+- 从 v1.6.0 升级无需迁移查询历史或重新安装 Windows 服务；从更早版本升级仍需遵循 v1.6.0 的迁移说明。
+- 根 crate 为 `1.6.1`，辅助 crate 版本保持不变；tag 为 `v1.6.1`。
+=======
+- 协议与 zoneparser：`cargo test --locked -p oxidns-proto -p oxidns-zoneparser`。
+- 双语文档：在 `website/` 运行 `npm run build`。
+- Telegram 发布消息：`python3 -m unittest discover -s .github/scripts -p '*_test.py'`。
+- full/minimal：`cargo build --locked --no-default-features --features full` / `minimal`，以及 `oxidns --version`、`oxidns build-info` 和对应的 `oxidns check -c config.yaml` / `oxidns check -c config.minimal.yaml`。
+- crates.io workspace dry-run：`cargo publish --locked --dry-run --allow-dirty --workspace`（包含打包后编译验证，未上传）。
+>>>>>>> upstream/main

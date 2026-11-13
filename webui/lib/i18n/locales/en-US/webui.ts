@@ -996,6 +996,11 @@ export const enUSWebui = {
   },
   connection: {
     loginTitle: "Sign in",
+    loginSubtitle: "Sign in to OxiDNS Dashboard",
+    togglePasswordVisibility: "Toggle password visibility",
+    serverAddress: "API Server Address",
+    advancedSettings: "Advanced Settings",
+    hideAdvancedSettings: "Hide Settings",
     credentialsExpired: "Your credentials expired. Enter your password again.",
     authRequired: "This service requires authentication. Sign in to continue.",
     username: "Username",

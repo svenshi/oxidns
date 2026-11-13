@@ -381,6 +381,7 @@ export interface QueryRecordFilters {
   rcodeBucket?: "_ERROR" | "_NO_RESPONSE" | "_UNKNOWN";
   status?: QueryRecordStatusFilter;
   matcherTag?: string;
+  sampleLimit?: number;
 }
 
 export type QueryRecorderPluginStatsKind =
@@ -1207,11 +1208,26 @@ function appendQueryRecordFilters(
   params: URLSearchParams,
   options: QueryRecordFilters,
 ) {
-  if (options.sinceMs !== undefined) {
-    params.set("since_ms", String(options.sinceMs));
+  let since = options.sinceMs;
+  let until = options.untilMs;
+
+  if (since !== undefined && until === undefined) {
+    until = Date.now();
   }
-  if (options.untilMs !== undefined) {
-    params.set("until_ms", String(options.untilMs));
+  if (since !== undefined && until !== undefined) {
+    if (until - since > 86_400_000) {
+      since = until - 86_400_000;
+    }
+    if (since >= until) {
+      since = Math.max(0, until - 1000);
+    }
+  }
+
+  if (since !== undefined) {
+    params.set("since_ms", String(since));
+  }
+  if (until !== undefined) {
+    params.set("until_ms", String(until));
   }
   if (options.qname) params.set("qname", options.qname);
   if (options.qnameExact) params.set("qname_exact", options.qnameExact);
@@ -1225,11 +1241,18 @@ function appendQueryRecordFilters(
     params.set("status", options.status);
   }
   if (options.matcherTag) params.set("matcher_tag", options.matcherTag);
+  if (options.sampleLimit !== undefined) {
+    params.set("sample_limit", String(options.sampleLimit));
+  }
 }
 
 export function apiHeaders() {
   const { serverConfig } = useAuthStore.getState();
-  const headers: Record<string, string> = { Accept: "application/json" };
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "X-Requested-With": "XMLHttpRequest",
+    "X-No-Browser-Auth": "true",
+  };
   if (serverConfig.requiresAuth && serverConfig.username) {
     headers.Authorization = `Basic ${btoa(`${serverConfig.username}:${serverConfig.password}`)}`;
   }

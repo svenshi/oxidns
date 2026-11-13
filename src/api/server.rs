@@ -226,10 +226,20 @@ async fn handle_hyper_request(
     let response = if !is_authorized(request.headers(), context.auth.as_ref()) {
         let mut response =
             simple_response(StatusCode::UNAUTHORIZED, Bytes::from("401 Unauthorized"));
-        response.headers_mut().insert(
-            http::header::WWW_AUTHENTICATE,
-            http::HeaderValue::from_static("Basic realm=\"oxidns\""),
-        );
+        let is_ajax = request.headers().contains_key("x-requested-with")
+            || request.headers().contains_key("x-no-browser-auth")
+            || request.headers().contains_key("sec-fetch-mode")
+            || request
+                .headers()
+                .get(http::header::ACCEPT)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.contains("application/json"));
+        if !is_ajax {
+            response.headers_mut().insert(
+                http::header::WWW_AUTHENTICATE,
+                http::HeaderValue::from_static("Basic realm=\"oxidns\""),
+            );
+        }
         with_cors(response, &request_headers, context.cors.as_ref())
     } else if let Some(handler) = lookup_handler(
         request.method(),

@@ -1221,18 +1221,32 @@ pub(super) fn load_timeseries(
         &query.filter,
     )?;
     let where_sql = join_clauses(&clauses);
-    // The extra row only detects truncation and never participates in
-    // statistics.
-    params.push(Value::Integer((PLUGIN_STATS_SAMPLE_LIMIT + 1) as i64));
-    let sql = format!(
-        "SELECT r.created_at_ms, r.elapsed_ms, r.error IS NOT NULL, r.has_response,
-                COALESCE(r.rcode = 'Server Failure', 0)
-         FROM {records} r
-         WHERE {where_sql}
-         ORDER BY r.created_at_ms DESC, r.id DESC
-         LIMIT ?",
-        records = backend.tables.records,
-    );
+    let sample_limit = query
+        .filter
+        .sample_limit
+        .unwrap_or(PLUGIN_STATS_SAMPLE_LIMIT);
+    let is_unlimited = sample_limit == 0;
+    let sql = if is_unlimited {
+        format!(
+            "SELECT r.created_at_ms, r.elapsed_ms, r.error IS NOT NULL, r.has_response,
+                    COALESCE(r.rcode = 'Server Failure', 0)
+             FROM {records} r
+             WHERE {where_sql}
+             ORDER BY r.created_at_ms DESC, r.id DESC",
+            records = backend.tables.records,
+        )
+    } else {
+        params.push(Value::Integer((sample_limit + 1) as i64));
+        format!(
+            "SELECT r.created_at_ms, r.elapsed_ms, r.error IS NOT NULL, r.has_response,
+                    COALESCE(r.rcode = 'Server Failure', 0)
+             FROM {records} r
+             WHERE {where_sql}
+             ORDER BY r.created_at_ms DESC, r.id DESC
+             LIMIT ?",
+            records = backend.tables.records,
+        )
+    };
 
     struct Sample {
         created_at_ms: i64,
@@ -1246,7 +1260,7 @@ pub(super) fn load_timeseries(
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params_from_iter(params))?;
     while let Some(row) = rows.next()? {
-        if samples.len() == PLUGIN_STATS_SAMPLE_LIMIT {
+        if !is_unlimited && samples.len() == sample_limit {
             sample_truncated = true;
             break;
         }
@@ -1326,7 +1340,11 @@ pub(super) fn load_timeseries(
     Ok(TimeseriesResponse {
         ok: true,
         sample_size,
-        sample_limit: PLUGIN_STATS_SAMPLE_LIMIT,
+        sample_limit: if is_unlimited {
+            sample_size as usize
+        } else {
+            sample_limit
+        },
         sample_truncated,
         sample_since_ms,
         sample_until_ms,
