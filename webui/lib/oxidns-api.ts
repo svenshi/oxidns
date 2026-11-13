@@ -381,6 +381,7 @@ export interface QueryRecordFilters {
   rcodeBucket?: "_ERROR" | "_NO_RESPONSE" | "_UNKNOWN";
   status?: QueryRecordStatusFilter;
   matcherTag?: string;
+  sampleLimit?: number;
 }
 
 export type QueryRecorderPluginStatsKind =
@@ -1240,6 +1241,9 @@ function appendQueryRecordFilters(
     params.set("status", options.status);
   }
   if (options.matcherTag) params.set("matcher_tag", options.matcherTag);
+  if (options.sampleLimit !== undefined) {
+    params.set("sample_limit", String(options.sampleLimit));
+  }
 }
 
 export function apiHeaders() {

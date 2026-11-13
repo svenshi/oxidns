@@ -48,7 +48,9 @@ import {
   fetchQueryRecords,
   type QueryRecordRow,
   type QueryRecorderLatencySummary,
+  type QueryRecorderTimeseriesBucket,
   type QueryRecorderTimeseriesPoint,
+  type QueryRecorderTimeseriesResponse,
 } from "@/lib/oxidns-api";
 import { GlassProgress } from "@/components/ui/glass-progress";
 
@@ -245,6 +247,62 @@ function normalizeTimeseriesData(
   }
 
   return result;
+}
+
+async function fetchFullTimeseries(
+  tag: string,
+  options: {
+    bucket?: QueryRecorderTimeseriesBucket;
+    buckets?: number;
+    sinceMs?: number;
+    untilMs?: number;
+    signal?: AbortSignal;
+  } = {},
+): Promise<QueryRecorderTimeseriesResponse> {
+  const firstRes = await fetchQueryRecorderTimeseries(tag, {
+    ...options,
+    sampleLimit: 0,
+  });
+
+  if (!firstRes.ok) return firstRes;
+
+  if (!firstRes.sample_truncated || !firstRes.sample_since_ms || options.sinceMs === undefined) {
+    return firstRes;
+  }
+
+  let allPoints = [...(firstRes.points || [])];
+  let curUntilMs = firstRes.sample_since_ms - 1;
+  let pages = 0;
+  const maxPages = 6;
+
+  while (curUntilMs > options.sinceMs && pages < maxPages) {
+    if (options.signal?.aborted) break;
+    pages++;
+    try {
+      const segRes = await fetchQueryRecorderTimeseries(tag, {
+        ...options,
+        sinceMs: options.sinceMs,
+        untilMs: curUntilMs,
+        sampleLimit: 0,
+      });
+      if (!segRes.ok) break;
+      if (segRes.points?.length) {
+        allPoints = allPoints.concat(segRes.points);
+      }
+      if (!segRes.sample_truncated || !segRes.sample_since_ms || segRes.sample_since_ms >= curUntilMs) {
+        break;
+      }
+      curUntilMs = segRes.sample_since_ms - 1;
+    } catch {
+      break;
+    }
+  }
+
+  return {
+    ...firstRes,
+    sample_truncated: false,
+    points: allPoints,
+  };
 }
 
 export function DnsOverview() {
@@ -480,7 +538,7 @@ export function DnsOverview() {
           beforeWeekRecordRes,
           beforeRangeRecordRes,
         ] = await Promise.allSettled([
-          fetchQueryRecorderTimeseries(tag, { bucket, buckets, sinceMs, untilMs, signal: abortController.signal }),
+          fetchFullTimeseries(tag, { bucket, buckets, sinceMs, untilMs, signal: abortController.signal }),
           fetchQueryRecorderTopClients(tag, { limit: 6, sinceMs, untilMs, signal: abortController.signal }),
           fetchQueryRecorderTopQnames(tag, { limit: 7, sinceMs, untilMs, signal: abortController.signal }),
           fetchQueryRecorderTopQnames(tag, { limit: 7, sinceMs, untilMs, status: "error", signal: abortController.signal }),
