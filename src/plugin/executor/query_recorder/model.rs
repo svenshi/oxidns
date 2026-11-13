@@ -178,6 +178,7 @@ pub(super) struct QueryRecordFilter {
     pub(super) rcode_bucket: Option<String>,
     pub(super) status: QueryRecordStatus,
     pub(super) matcher_tag: Option<String>,
+    pub(super) sample_limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
