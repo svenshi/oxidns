@@ -45,6 +45,8 @@ struct AdGuardRuleSnapshot {
     important_blocks: CompiledRuleSet,
     exceptions: CompiledRuleSet,
     blocks: CompiledRuleSet,
+    /// Files that could not be opened in the last build (empty = healthy).
+    degraded_files: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -88,7 +90,7 @@ impl AdGuardRule {
 
     #[hotpath::measure]
     fn build_snapshot(tag: &str, cfg: &AdGuardRuleConfig) -> DnsResult<AdGuardRuleSnapshot> {
-        let (important_exceptions, important_blocks, exceptions, blocks, stats) =
+        let (important_exceptions, important_blocks, exceptions, blocks, stats, degraded_files) =
             build_rule_buckets(tag, cfg)?;
 
         info!(
@@ -99,6 +101,7 @@ impl AdGuardRule {
             exception_rules = stats.exception_rules,
             important_rules = stats.important_rules,
             disabled_rules = stats.disabled_rules,
+            degraded_files = degraded_files.len(),
             "adguard_rule snapshot built"
         );
 
@@ -107,6 +110,7 @@ impl AdGuardRule {
             important_blocks,
             exceptions,
             blocks,
+            degraded_files,
         })
     }
 }
@@ -164,6 +168,10 @@ impl Provider for AdGuardRule {
         self.snapshot.store(Arc::new(snapshot));
         Ok(())
     }
+
+    fn degraded_files(&self) -> Vec<String> {
+        self.snapshot.load().degraded_files.clone()
+    }
 }
 
 impl PluginFactory for AdGuardRuleFactory {
@@ -182,6 +190,7 @@ impl PluginFactory for AdGuardRuleFactory {
                 important_blocks: CompiledRuleSet::default(),
                 exceptions: CompiledRuleSet::default(),
                 blocks: CompiledRuleSet::default(),
+                degraded_files: Vec::new(),
             }),
         })))
     }
@@ -224,7 +233,7 @@ mod tests {
     }
 
     fn make_provider(cfg: config::AdGuardRuleConfig) -> AdGuardRule {
-        let (important_exceptions, important_blocks, exceptions, blocks, _) =
+        let (important_exceptions, important_blocks, exceptions, blocks, _, degraded_files) =
             build_rule_buckets("agh", &cfg).expect("rules should build");
         AdGuardRule {
             tag: "agh".to_string(),
@@ -234,6 +243,7 @@ mod tests {
                 important_blocks,
                 exceptions,
                 blocks,
+                degraded_files,
             }),
         }
     }
@@ -319,7 +329,7 @@ mod tests {
             files: Vec::new(),
         };
 
-        let (_, important_blocks, _, blocks, _) =
+        let (_, important_blocks, _, blocks, _, _) =
             build_rule_buckets("agh", &cfg).expect("rules should build");
         assert!(important_blocks.is_empty());
         assert!(blocks.is_empty());
@@ -335,7 +345,7 @@ mod tests {
                 rules: rules.into_iter().map(str::to_string).collect(),
                 files: Vec::new(),
             };
-            let (_, _, _, blocks, stats) =
+            let (_, _, _, blocks, stats, _) =
                 build_rule_buckets("agh", &cfg).expect("rules should build");
             assert!(blocks.is_empty());
             assert_eq!(stats.disabled_rules, 1);
@@ -357,10 +367,34 @@ mod tests {
             ],
         };
 
-        let (_, _, _, blocks, stats) = build_rule_buckets("agh", &cfg).unwrap();
+        let (_, _, _, blocks, stats, _) = build_rule_buckets("agh", &cfg).unwrap();
 
         assert!(blocks.is_empty());
         assert_eq!(stats.disabled_rules, 1);
+    }
+
+    #[test]
+    fn missing_rule_file_degrades_but_keeps_other_files() {
+        let dir = tempdir().unwrap();
+        let present = dir.path().join("present.txt");
+        std::fs::write(&present, "||blocked.example^\n").unwrap();
+        let cfg = config::AdGuardRuleConfig {
+            rules: Vec::new(),
+            files: vec![
+                dir.path()
+                    .join("missing.txt")
+                    .to_string_lossy()
+                    .into_owned(),
+                present.to_string_lossy().into_owned(),
+            ],
+        };
+
+        let (_, _, _, blocks, _, degraded_files) = build_rule_buckets("agh", &cfg).unwrap();
+
+        assert_eq!(degraded_files.len(), 1);
+        assert!(degraded_files[0].contains("missing.txt"));
+        assert!(blocks.is_match_name_only(&Name::from_ascii("blocked.example").unwrap()));
+        assert!(!blocks.is_match_name_only(&Name::from_ascii("other.example").unwrap()));
     }
 
     #[test]
@@ -439,7 +473,7 @@ mod tests {
             files: vec![path.to_string_lossy().into_owned()],
         };
 
-        let (_, _, _, blocks, stats) = build_rule_buckets("agh", &cfg).unwrap();
+        let (_, _, _, blocks, stats, _) = build_rule_buckets("agh", &cfg).unwrap();
 
         assert_eq!(stats.total_rules, 20_000);
         assert_eq!(blocks.fast_matcher.trie_rule_count(), 20_000);
@@ -488,7 +522,7 @@ mod tests {
             ],
             files: Vec::new(),
         };
-        let (important_exceptions, important_blocks, exceptions, blocks, _) =
+        let (important_exceptions, important_blocks, exceptions, blocks, _, _) =
             build_rule_buckets("agh", &cfg).unwrap();
 
         assert!(important_exceptions.is_match_name_only(&Name::from_ascii("ie.example").unwrap()));
@@ -546,13 +580,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_reload_keeps_current_snapshot() {
+    async fn reload_with_missing_file_degrades_and_reports() {
         let mut provider = make_provider(config::AdGuardRuleConfig {
             rules: vec!["||existing.example.org^".to_string()],
             files: Vec::new(),
         });
         let existing = Name::from_ascii("existing.example.org.").unwrap();
-        assert!(provider.contains_name(&existing));
 
         let dir = tempdir().unwrap();
         provider.cfg = Arc::new(config::AdGuardRuleConfig {
@@ -565,7 +598,33 @@ mod tests {
             ],
         });
 
+        // A missing file degrades the reload instead of failing it.
+        assert!(provider.reload().await.is_ok());
+        assert_eq!(provider.degraded_files().len(), 1);
+        assert!(!provider.contains_name(&existing));
+    }
+
+    #[tokio::test]
+    async fn failed_reload_keeps_current_snapshot() {
+        let mut provider = make_provider(config::AdGuardRuleConfig {
+            rules: vec!["||existing.example.org^".to_string()],
+            files: Vec::new(),
+        });
+        let existing = Name::from_ascii("existing.example.org.").unwrap();
+        assert!(provider.contains_name(&existing));
+
+        // A rule-content error still aborts the candidate build, so the
+        // previous snapshot keeps serving.
+        let dir = tempdir().unwrap();
+        let invalid = dir.path().join("invalid-rules.txt");
+        std::fs::write(&invalid, "! comment\n/(/\n").unwrap();
+        provider.cfg = Arc::new(config::AdGuardRuleConfig {
+            rules: Vec::new(),
+            files: vec![invalid.to_string_lossy().into_owned()],
+        });
+
         assert!(provider.reload().await.is_err());
         assert!(provider.contains_name(&existing));
+        assert!(provider.degraded_files().is_empty());
     }
 }

@@ -21,7 +21,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use serde::Deserialize;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::config::types::PluginConfig;
 use crate::core::rule_matcher::{DomainRuleMatcher, split_domain_rule_expression};
@@ -51,6 +51,8 @@ struct DomainSetArgs {
 #[derive(Debug, Default)]
 struct DomainSetSnapshot {
     matcher: DomainRuleMatcher,
+    /// Files that could not be opened in the last build (empty = healthy).
+    degraded_files: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -66,8 +68,8 @@ impl DomainSet {
         let start_ms = AppClock::elapsed_millis();
         let mut matcher = DomainRuleMatcher::default();
         let mut local_rules = 0usize;
-        TextSource::new("args.exps", &args.exps, &args.files)
-            .scan(&LineClassifier::new(&["#"]), |line| {
+        let skipped = TextSource::new("args.exps", &args.exps, &args.files)
+            .scan_tolerant(&LineClassifier::new(&["#"]), |line| {
                 if line.annotations().blank || line.annotations().leading_comment.is_some() {
                     return Ok(());
                 }
@@ -75,6 +77,18 @@ impl DomainSet {
                 add_domain_rule_from_source(&mut matcher, line.trimmed(), line.location())
             })
             .map_err(|error| DnsError::plugin(format!("failed to load domain rules: {error}")))?;
+        for file in &skipped {
+            error!(
+                tag = %tag,
+                file = %file.path.display(),
+                reason = %file.reason,
+                "domain_set rule file unavailable, its rules are not in effect"
+            );
+        }
+        let degraded_files: Vec<String> = skipped
+            .into_iter()
+            .map(|file| file.path.display().to_string())
+            .collect();
         matcher.finalize().map_err(DnsError::plugin)?;
 
         let has_domain_rules = matcher.has_rules();
@@ -92,11 +106,15 @@ impl DomainSet {
             keyword_rules = total_keyword_rules,
             regex_rules = total_regex_rules,
             has_domain_rules,
+            degraded_files = degraded_files.len(),
             elapsed_ms,
             "domain_set snapshot built"
         );
 
-        Ok(DomainSetSnapshot { matcher })
+        Ok(DomainSetSnapshot {
+            matcher,
+            degraded_files,
+        })
     }
 }
 
@@ -171,6 +189,10 @@ impl Provider for DomainSet {
         .await?;
         self.snapshot.store(Arc::new(snapshot));
         Ok(())
+    }
+
+    fn degraded_files(&self) -> Vec<String> {
+        self.snapshot.load().degraded_files.clone()
     }
 
     fn supports_domain_matching(&self) -> bool {
@@ -249,8 +271,45 @@ fn add_domain_rule(matcher: &mut DomainRuleMatcher, exp: &str, source: &str) -> 
 mod tests {
     use std::net::IpAddr;
 
+    use tempfile::tempdir;
+
     use super::*;
+    use crate::infra::clock::AppClock;
     use crate::proto::Name;
+
+    #[tokio::test]
+    async fn missing_file_degrades_then_reload_restores() {
+        AppClock::start();
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("missing.txt");
+        let present = dir.path().join("present.txt");
+        std::fs::write(&present, "domain:kept.example\n").unwrap();
+        let args = DomainSetArgs {
+            exps: Vec::new(),
+            sets: Vec::new(),
+            files: vec![missing.display().to_string(), present.display().to_string()],
+        };
+        let provider = DomainSet {
+            tag: "domain-set-test".to_string(),
+            args: Arc::new(args),
+            referenced_sets: Vec::new(),
+            snapshot: ArcSwap::from_pointee(DomainSetSnapshot::default()),
+        };
+
+        provider.reload().await.unwrap();
+
+        let degraded = provider.degraded_files();
+        assert_eq!(degraded.len(), 1);
+        assert!(degraded[0].contains("missing.txt"));
+        assert!(provider.contains_name(&Name::from_ascii("kept.example").unwrap()));
+        assert!(!provider.contains_name(&Name::from_ascii("late.example").unwrap()));
+
+        std::fs::write(&missing, "domain:late.example\n").unwrap();
+        provider.reload().await.unwrap();
+
+        assert!(provider.degraded_files().is_empty());
+        assert!(provider.contains_name(&Name::from_ascii("late.example").unwrap()));
+    }
 
     fn load_rules_text(
         matcher: &mut DomainRuleMatcher,
@@ -372,7 +431,10 @@ mod tests {
             tag: "test".to_string(),
             args: Arc::new(DomainSetArgs::default()),
             referenced_sets: vec![shared.clone()],
-            snapshot: ArcSwap::from_pointee(DomainSetSnapshot { matcher: local }),
+            snapshot: ArcSwap::from_pointee(DomainSetSnapshot {
+                matcher: local,
+                degraded_files: Vec::new(),
+            }),
         };
         assert!(ds.contains_name(&Name::from_ascii("local.example").unwrap()));
         assert!(!ds.contains_name(&Name::from_ascii("none.example").unwrap()));

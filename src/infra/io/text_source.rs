@@ -111,6 +111,126 @@ impl<'a> TextSource<'a> {
         }
         Ok(())
     }
+
+    /// Scan inline values and then every physical file line, skipping files
+    /// that fail to open.
+    ///
+    /// Missing or unreadable files are reported in the returned list instead
+    /// of aborting the scan; callers decide how to surface them. Content and
+    /// read errors, and visitor errors, still abort the scan so per-line
+    /// diagnostics stay precise. Because each call re-opens files, callers
+    /// that scan multiple times must treat the result as an availability hint
+    /// rather than a guarantee across scans.
+    pub(crate) fn scan_tolerant<E, F>(
+        &self,
+        classifier: &LineClassifier<'_>,
+        mut visitor: F,
+    ) -> Result<Vec<SkippedTextFile>, TextScanError<E>>
+    where
+        F: FnMut(TextLine<'_>) -> Result<(), E>,
+    {
+        visit_inline(self.inline_field, self.inline, classifier, &mut visitor)?;
+
+        let mut buffer = String::with_capacity(256);
+        let mut skipped = Vec::new();
+        for path in self.files {
+            if path.trim().is_empty() {
+                continue;
+            }
+            let file = match File::open(path) {
+                Ok(file) => file,
+                Err(source) => {
+                    skipped.push(SkippedTextFile {
+                        path: PathBuf::from(path),
+                        reason: source.to_string(),
+                    });
+                    continue;
+                }
+            };
+            let mut reader = BufReader::with_capacity(TEXT_READER_CAPACITY, file);
+            visit_reader(&mut reader, path, classifier, &mut buffer, &mut visitor)?;
+        }
+        Ok(skipped)
+    }
+
+    /// Open a replay session that excludes files which fail to open.
+    ///
+    /// The set of available files is decided once here; every replay scan
+    /// then covers exactly the same input, keeping multi-pass consumers
+    /// consistent. A file that disappears after this call still aborts later
+    /// scans, matching the fingerprint-change protection. Returns the session
+    /// plus the files that were skipped at open time.
+    pub(crate) fn open_replay_tolerant(
+        &self,
+    ) -> Result<
+        (TextSourceSession<'a>, Vec<SkippedTextFile>),
+        TextScanError<std::convert::Infallible>,
+    > {
+        let paths = self
+            .files
+            .iter()
+            .map(String::as_str)
+            .filter(|path| !path.trim().is_empty())
+            .collect::<Vec<_>>();
+        let mut skipped = Vec::new();
+        let files = if paths.len() <= 1 {
+            let mut opened = Vec::with_capacity(paths.len());
+            for path in paths {
+                match open_file(path) {
+                    Ok(file) => opened.push(OpenTextFile {
+                        path,
+                        file,
+                        fingerprint: None,
+                    }),
+                    Err(TextScanError::Open { path, source }) => {
+                        skipped.push(SkippedTextFile {
+                            path,
+                            reason: source.to_string(),
+                        });
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            ReplayFiles::Opened(opened)
+        } else {
+            // Decide availability up front so no replay scan retains more
+            // than one descriptor for a multi-file source.
+            let mut available = Vec::with_capacity(paths.len());
+            for path in &paths {
+                match open_file(path) {
+                    Ok(file) => drop(file),
+                    Err(TextScanError::Open { path, source }) => {
+                        skipped.push(SkippedTextFile {
+                            path,
+                            reason: source.to_string(),
+                        });
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
+                available.push(*path);
+            }
+            ReplayFiles::Verified {
+                paths: available,
+                fingerprints: None,
+            }
+        };
+        Ok((
+            TextSourceSession {
+                inline_field: self.inline_field,
+                inline: self.inline,
+                files,
+            },
+            skipped,
+        ))
+    }
+}
+
+/// A file that could not be opened and was skipped by a tolerant scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SkippedTextFile {
+    pub(crate) path: PathBuf,
+    pub(crate) reason: String,
 }
 
 /// A text source session that rejects inconsistent input across replay scans.
@@ -688,6 +808,90 @@ mod tests {
             .scan(&LineClassifier::default(), |_| Err("invalid".to_string()))
             .unwrap_err();
         assert_eq!(error.to_string(), "rules[0]: invalid");
+    }
+
+    #[test]
+    fn tolerant_scan_skips_missing_files_but_keeps_others() {
+        let dir = TempDir::new().unwrap();
+        let present = dir.path().join("present.txt");
+        let mut present_file = std::fs::File::create(&present).unwrap();
+        writeln!(present_file, "kept").unwrap();
+        let files = vec![
+            "  ".to_string(),
+            dir.path().join("missing.txt").display().to_string(),
+            present.display().to_string(),
+        ];
+        let inline = vec!["inline-rule".to_string()];
+        let source = TextSource::new("rules", &inline, &files);
+
+        let mut lines = Vec::new();
+        let skipped = source
+            .scan_tolerant(&LineClassifier::default(), |line| {
+                lines.push(line.trimmed().to_owned());
+                Ok::<_, String>(())
+            })
+            .unwrap();
+
+        assert_eq!(lines, vec!["inline-rule", "kept"]);
+        assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].path.ends_with("missing.txt"));
+        assert!(!skipped[0].reason.is_empty());
+    }
+
+    #[test]
+    fn tolerant_scan_still_aborts_on_consumer_errors() {
+        let inline = vec!["bad".to_string()];
+        let source = TextSource::new("rules", &inline, &[]);
+        let error = source
+            .scan_tolerant(&LineClassifier::default(), |_| Err("invalid".to_string()))
+            .unwrap_err();
+        assert_eq!(error.to_string(), "rules[0]: invalid");
+    }
+
+    #[test]
+    fn tolerant_replay_excludes_missing_files_from_every_scan() {
+        let dir = TempDir::new().unwrap();
+        let first_path = dir.path().join("first.txt");
+        let second_path = dir.path().join("missing.txt");
+        std::fs::write(&first_path, "first\n").unwrap();
+        let files = vec![
+            first_path.display().to_string(),
+            second_path.display().to_string(),
+        ];
+        let source = TextSource::new("rules", &[], &files);
+
+        let (mut session, skipped) = source.open_replay_tolerant().unwrap();
+        assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].path.ends_with("missing.txt"));
+
+        for _ in 0..2 {
+            let mut lines = Vec::new();
+            session
+                .scan(&LineClassifier::default(), |line| {
+                    lines.push(line.trimmed().to_owned());
+                    Ok::<_, String>(())
+                })
+                .unwrap();
+            assert_eq!(lines, vec!["first"]);
+        }
+    }
+
+    #[test]
+    fn tolerant_replay_single_missing_file_yields_inline_only_session() {
+        let files = vec!["/definitely/missing/rules.txt".to_string()];
+        let inline = vec!["inline".to_string()];
+        let source = TextSource::new("rules", &inline, &files);
+
+        let (mut session, skipped) = source.open_replay_tolerant().unwrap();
+        assert_eq!(skipped.len(), 1);
+        let mut lines = Vec::new();
+        session
+            .scan(&LineClassifier::default(), |line| {
+                lines.push(line.trimmed().to_owned());
+                Ok::<_, String>(())
+            })
+            .unwrap();
+        assert_eq!(lines, vec!["inline"]);
     }
 
     #[cfg(unix)]

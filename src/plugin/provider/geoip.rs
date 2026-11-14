@@ -11,7 +11,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use serde::Deserialize;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::config::types::PluginConfig;
 use crate::core::rule_matcher::IpPrefixMatcher;
@@ -37,6 +37,11 @@ struct GeoIpSnapshot {
     matcher: IpPrefixMatcher,
     has_v4_rules: bool,
     has_v6_rules: bool,
+    /// Files that could not be loaded in the last build (empty = healthy).
+    ///
+    /// A dat file is the only rule source, so any build failure degrades the
+    /// whole provider to an empty matcher instead of aborting startup.
+    degraded_files: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -126,6 +131,7 @@ impl GeoIpProvider {
             matcher,
             has_v4_rules,
             has_v6_rules,
+            degraded_files: Vec::new(),
         })
     }
 }
@@ -168,12 +174,39 @@ impl Provider for GeoIpProvider {
     async fn reload(&self) -> DnsResult<()> {
         let tag = self.tag.clone();
         let args = self.args.clone();
-        let snapshot = spawn_isolated_build("geoip snapshot build", move || {
+        let build = spawn_isolated_build("geoip snapshot build", move || {
             Self::build_snapshot(&tag, &args)
         })
-        .await?;
-        self.snapshot.store(Arc::new(snapshot));
-        Ok(())
+        .await;
+        match build {
+            Ok(snapshot) => {
+                self.snapshot.store(Arc::new(snapshot));
+                Ok(())
+            }
+            // The dat file is this provider's only rule source. Report the
+            // failure loudly and keep serving an empty matcher instead of
+            // aborting startup; a later reload can restore the rules.
+            Err(DnsError::Plugin(error)) => {
+                error!(
+                    tag = %self.tag,
+                    file = %self.args.file,
+                    error = %error,
+                    "geoip dat file unavailable, provider degraded (matching disabled)"
+                );
+                self.snapshot.store(Arc::new(GeoIpSnapshot {
+                    degraded_files: vec![self.args.file.clone()],
+                    ..GeoIpSnapshot::default()
+                }));
+                Ok(())
+            }
+            // Thread spawn failures and panics are infrastructure bugs, not
+            // data availability problems; keep them fatal.
+            Err(other) => Err(other),
+        }
+    }
+
+    fn degraded_files(&self) -> Vec<String> {
+        self.snapshot.load().degraded_files.clone()
     }
 
     fn supports_ip_matching(&self) -> bool {
@@ -268,4 +301,29 @@ fn geoip_file_error(tag: &str, args: &GeoIpArgs, error: String) -> DnsError {
         "plugin '{}' failed to stream geoip dat file '{}': {}",
         tag, args.file, error
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infra::clock::AppClock;
+
+    #[tokio::test]
+    async fn missing_dat_file_degrades_instead_of_failing() {
+        AppClock::start();
+        let provider = GeoIpProvider {
+            tag: "geoip-test".to_string(),
+            args: Arc::new(GeoIpArgs {
+                file: "/definitely/missing/geoip.dat".to_string(),
+                selectors: Vec::new(),
+            }),
+            snapshot: ArcSwap::from_pointee(GeoIpSnapshot::default()),
+        };
+
+        provider.reload().await.unwrap();
+
+        let degraded = provider.degraded_files();
+        assert_eq!(degraded, vec!["/definitely/missing/geoip.dat"]);
+        assert!(!provider.contains_ip("1.1.1.1".parse().unwrap()));
+    }
 }

@@ -132,6 +132,75 @@ plugins:
 }
 
 #[tokio::test]
+async fn test_provider_missing_rule_file_degrades_startup_and_recovers() -> Result<()> {
+    let dir = TempDir::new()?;
+    let missing = dir.path().join("missing-rules.txt");
+    let present = dir.path().join("present-rules.txt");
+    std::fs::write(&present, "domain:kept.example\n")?;
+    let yaml = format!(
+        r#"
+log:
+  level: warn
+plugins:
+  - tag: degraded_set
+    type: domain_set
+    args:
+      files:
+        - {}
+        - {}
+  - tag: match_degraded
+    type: qname
+    args:
+      - $degraded_set
+  - tag: main
+    type: sequence
+    args:
+      - matches: $match_degraded
+        exec: mark 9
+"#,
+        yaml_path(&missing),
+        yaml_path(&present)
+    );
+
+    let config = parse_config(&yaml)?;
+    let registry = plugin::init(config).await?;
+
+    // Startup succeeds despite the missing rule file; the provider reports
+    // the degraded file and matches nothing from it.
+    let provider = registry
+        .get_plugin("degraded_set")
+        .expect("degraded domain_set should exist")
+        .to_provider();
+    let degraded = provider.degraded_files();
+    assert_eq!(degraded.len(), 1, "missing file should be reported");
+    assert!(degraded[0].contains("missing-rules.txt"));
+    assert!(provider.contains_name(&Name::from_ascii("kept.example.").unwrap()));
+    assert!(!provider.contains_name(&Name::from_ascii("late.example.").unwrap()));
+
+    let sequence = registry
+        .get_plugin("main")
+        .expect("main sequence should exist")
+        .to_executor();
+    let mut context = make_context(registry.clone(), "late.example.");
+    let step = sequence.execute(&mut context).await?;
+    assert_eq!(step, ExecStep::Next);
+    assert!(!context.marks().contains(&9));
+
+    // Once the file appears, a reload rebuilds the snapshot without restart.
+    std::fs::write(&missing, "domain:late.example\n")?;
+    provider.reload().await?;
+    assert!(provider.degraded_files().is_empty());
+    assert!(provider.contains_name(&Name::from_ascii("late.example.").unwrap()));
+
+    let mut context = make_context(registry.clone(), "late.example.");
+    sequence.execute(&mut context).await?;
+    assert!(context.marks().contains(&9));
+
+    registry.destroy().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_ecs_handler_upstream_policy_and_request_lifecycle() -> Result<()> {
     use std::panic::AssertUnwindSafe;
 
