@@ -2248,6 +2248,38 @@ export const zhCNPluginDefined = {
         paramPlaceholder: "IN 或 1",
       },
     },
+    edns0opt: {
+      name: "EDNS0 Option",
+      description: "按请求或响应 OPT 中的 EDNS0 option code 存在性匹配",
+      fields: {
+        codes: {
+          label: "Option Code",
+          description:
+            "必填且不能为空；定义需要存在的 EDNS0 option code 集合，仅支持数值。",
+          example: "8\n12",
+        },
+        "codes[]": {
+          label: "输入值",
+          example: "8",
+        },
+        require: {
+          label: "匹配要求",
+          description:
+            "any 表示任一 code 存在即命中；all 表示全部 code 都必须存在。",
+          options: {
+            any: "任一",
+            all: "全部",
+          },
+        },
+        resp: {
+          label: "匹配响应侧",
+          description: "关闭时匹配请求 OPT（默认）；开启时匹配响应 OPT。",
+        },
+      },
+      quickSetup: {
+        paramPlaceholder: "8,12",
+      },
+    },
     client_ip: {
       name: "Client IP",
       description: "匹配客户端来源 IP",
