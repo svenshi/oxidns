@@ -7207,3 +7207,75 @@ async fn test_edns_filter_upstream_scopes_and_composition() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn test_forward_drops_provider_bogus_answer_and_falls_back() -> Result<()> {
+    let bogus_socket = UdpSocket::bind("127.0.0.1:0").await?;
+    let bogus_addr = bogus_socket.local_addr()?;
+    let good_socket = UdpSocket::bind("127.0.0.1:0").await?;
+    let good_addr = good_socket.local_addr()?;
+
+    let yaml = format!(
+        r#"
+plugins:
+  - tag: reserved_ips
+    type: ip_set
+    args:
+      ips:
+        - "0.0.0.0/8"
+  - tag: bogus_forward
+    type: forward
+    args:
+      bogus_answer_ips:
+        - "$reserved_ips"
+      upstreams: [{{addr: 'udp://{bogus_addr}'}}]
+  - tag: good_forward
+    type: forward
+    args:
+      upstreams: [{{addr: 'udp://{good_addr}'}}]
+  - tag: fb
+    type: fallback
+    args: {{primary: bogus_forward, secondary: good_forward}}
+"#
+    );
+
+    let runtime = plugin::init(parse_config(&yaml)?).await?;
+    let mut context = make_context(runtime.clone(), "bogus-fallback.test.");
+    let fallback = runtime
+        .get_plugin("fb")
+        .expect("fallback executor")
+        .to_executor();
+
+    let answer = |socket: UdpSocket, ip: Ipv4Addr| async move {
+        let mut buf = [0; 4096];
+        let (len, remote) = socket.recv_from(&mut buf).await?;
+        let request = Message::from_bytes(&buf[..len])?;
+        let mut response = request.response(Rcode::NoError);
+        response.add_answer(oxidns::proto::Record::from_rdata(
+            Name::from_ascii("bogus-fallback.test.").unwrap(),
+            60,
+            oxidns::proto::RData::A(oxidns::proto::rdata::A(ip)),
+        ));
+        socket.send_to(&response.to_bytes()?, remote).await?;
+        Ok::<_, DnsError>(())
+    };
+
+    let (step, _, _) = timeout(Duration::from_secs(3), async {
+        tokio::join!(
+            fallback.execute(&mut context),
+            answer(bogus_socket, Ipv4Addr::UNSPECIFIED),
+            answer(good_socket, Ipv4Addr::new(192, 0, 2, 1)),
+        )
+    })
+    .await
+    .map_err(|_| DnsError::runtime("bogus fallback test timed out"))?;
+
+    assert!(matches!(step?, ExecStep::Next));
+    let response = context.response().expect("fallback response");
+    assert_eq!(
+        response.answer_ips(),
+        vec![IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))]
+    );
+    runtime.destroy().await;
+    Ok(())
+}
