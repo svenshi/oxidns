@@ -376,6 +376,20 @@ export const enUSPluginDefined = {
             consensus: "Negative consensus",
           },
         },
+        bogus_answer_ips: {
+          label: "Bogus answer addresses",
+          description:
+            "Rule list with single IPs, CIDRs, $ip_set references, and rule files: any matching A/AAAA in the answer section discards that upstream response; leave empty to disable.",
+          example: "0.0.0.0/8",
+        },
+        "bogus_answer_ips.$provider_ref": {
+          label: "Reference provider",
+          example: "reserved_ips",
+        },
+        "bogus_answer_ips.$input": {
+          label: "Enter value",
+          example: "0.0.0.0/8",
+        },
         upstreams: {
           label: "upstream list",
           description: "Define one or more upstream targets.",
@@ -489,6 +503,7 @@ export const enUSPluginDefined = {
           forward_success_total: "Successful forwards",
           forward_error_total: "Forward failures",
           forward_timeout_total: "Forward timeouts",
+          forward_bogus_answer_total: "Bogus answers dropped",
           forward_latency_count: "Latency samples",
           forward_latency_sum_ms: "Total latency (ms)",
           forward_upstream_query_total: "Upstream queries",
@@ -507,6 +522,8 @@ export const enUSPluginDefined = {
             "The total number of queries for which the upstream returned an error or could not get a response.",
           forward_timeout_total:
             "The total number of queries that did not receive a response from the upstream due to timeout.",
+          forward_bogus_answer_total:
+            "The total number of upstream responses discarded because an answer address matched bogus_answer_ips.",
           forward_latency_count:
             "The number of completed queries included in latency statistics.",
           forward_latency_sum_ms:

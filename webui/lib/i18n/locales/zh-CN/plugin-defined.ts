@@ -337,6 +337,20 @@ export const zhCNPluginDefined = {
             consensus: "负向共识",
           },
         },
+        bogus_answer_ips: {
+          label: "虚假应答地址",
+          description:
+            "规则列表形式：支持单个 IP、CIDR、$ip_set 引用与规则文件；answer 中任一 A/AAAA 命中即丢弃该上游应答；留空表示关闭。",
+          example: "0.0.0.0/8",
+        },
+        "bogus_answer_ips.$provider_ref": {
+          label: "引用 provider",
+          example: "reserved_ips",
+        },
+        "bogus_answer_ips.$input": {
+          label: "输入值",
+          example: "0.0.0.0/8",
+        },
         upstreams: {
           label: "上游列表",
           description: "定义一个或多个上游目标。",
@@ -445,6 +459,7 @@ export const zhCNPluginDefined = {
           forward_success_total: "成功",
           forward_error_total: "失败",
           forward_timeout_total: "超时",
+          forward_bogus_answer_total: "虚假应答丢弃",
           forward_latency_count: "延迟样本",
           forward_latency_sum_ms: "延迟累计(ms)",
           forward_upstream_query_total: "上游查询",
@@ -459,6 +474,8 @@ export const zhCNPluginDefined = {
           forward_success_total: "成功获得上游响应的查询总数。",
           forward_error_total: "上游返回错误或无法获得响应的查询总数。",
           forward_timeout_total: "因超时未得到上游响应的查询总数。",
+          forward_bogus_answer_total:
+            "因 answer 中的地址命中 bogus_answer_ips 而被丢弃的上游应答总数。",
           forward_latency_count: "纳入延迟统计的已完成查询数。",
           forward_latency_sum_ms: "所有已完成转发查询的总延迟（毫秒）。",
           forward_upstream_query_total: "向该上游发起的请求总数。",

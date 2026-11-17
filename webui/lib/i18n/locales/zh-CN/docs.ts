@@ -65,7 +65,9 @@ export const zhCNDocs = {
     concurrent:
       "- 类型：`integer`；必填：否；默认值：`1`\n- 取值范围：实际运行时会限制在 `1..=32`，且不会超过 upstream 数量。\n- 建议范围：`2..=8`；更高值适合高级观测或特殊部署。\n- 作用：定义多上游模式下的并发查询扇出数。\n- 运行影响：\n  - 值越大，多上游竞争越积极，但同时会增加上游请求量。",
     response_selection:
-      "- 类型：`string`；必填：否；默认值：`balanced`\n- 可选值：`fastest`、`balanced`、`prefer_positive`、`consensus`\n- 作用：定义并发上游返回多个响应时的选择策略。\n- 运行影响：\n  - `fastest`：第一个成功返回的 DNS 响应胜出。\n  - `balanced`：正向响应立即胜出；负向响应会短暂等待可能的正向响应。\n  - `prefer_positive`：正向响应优先；负向响应需要等待本轮并发完成。\n  - `consensus`：正向响应优先；负向响应需要兼容结果确认。",
+      "- 类型：`string`；必填：否；默认值：`balanced`\n- 可选值：`fastest`、`balanced`、`prefer_positive`、`consensus`\n- 作用：定义并发上游返回多个响应时的选择策略。\n- 运行影响：\n  - `fastest`：第一个成功返回的 DNS 响应胜出。\n  - `balanced`：正向响应立即胜出；负向响应会短暂等待可能的正向响应。\n  - `prefer_positive`：正向响应优先；负向响应需要等待本轮并发完成。\n  - `consensus`：正向响应优先；负向响应需要兼容结果确认。\n  - 命中 `bogus_answer_ips` 的应答会被提前丢弃，不参与以上任何策略。",
+    bogus_answer_ips:
+      "- 类型：`string` 或 `array`；必填：否；默认值：关闭\n- 作用：定义虚假应答地址规则，使用标准 IP 规则列表语法。\n- 支持元素：\n  - 单个 IP\n  - CIDR\n  - `$ip_set` 引用\n  - `&规则文件`\n- 运行影响：\n  - answer 区任一 A/AAAA 命中即丢弃该上游应答，不参与 `response_selection` 竞争。\n  - 单上游与多上游都生效；全部上游都被丢弃时本次 `forward` 返回错误，可交给 `fallback` 接管。\n  - 丢弃后不会写入正负缓存。\n- 注意事项：部分上游用 `0.0.0.0` 作为广告拦截应答；如需保留该语义，不要启用或不要包含 `0.0.0.0/8`。",
     upstreams:
       "- 类型：`array`；必填：是；默认值：无\n- 作用：定义一个或多个上游目标。\n- 运行影响：\n  - 数组长度为 `1` 时使用单上游模式。\n  - 数组长度大于 `1` 时使用竞争式查询模式。",
     short_circuit:
