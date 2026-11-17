@@ -53,6 +53,7 @@ pub(super) struct ForwardMetrics {
     pub(super) error_total: AtomicU64,
     pub(super) timeout_total: AtomicU64,
     pub(super) incomplete_alias_selected_total: AtomicU64,
+    pub(super) bogus_answer_total: AtomicU64,
     pub(super) latency_count: AtomicU64,
     latency_sum_ms: AtomicU64,
     upstreams: Vec<UpstreamMetrics>,
@@ -67,6 +68,7 @@ impl ForwardMetrics {
             error_total: AtomicU64::new(0),
             timeout_total: AtomicU64::new(0),
             incomplete_alias_selected_total: AtomicU64::new(0),
+            bogus_answer_total: AtomicU64::new(0),
             latency_count: AtomicU64::new(0),
             latency_sum_ms: AtomicU64::new(0),
             upstreams: upstream_names
@@ -101,6 +103,11 @@ impl ForwardMetrics {
     pub(super) fn record_incomplete_alias_selected(&self) {
         self.incomplete_alias_selected_total
             .fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub(super) fn record_bogus_answer(&self, count: u64) {
+        self.bogus_answer_total.fetch_add(count, Ordering::Relaxed);
     }
 
     #[inline]
@@ -178,6 +185,12 @@ impl MetricSource for ForwardMetrics {
             "Total selection-aware concurrent forward queries that selected an incomplete CNAME alias response as the best available result; single-upstream and fastest modes are excluded.",
             &labels,
             self.incomplete_alias_selected_total.load(Ordering::Relaxed),
+        ));
+        sink.emit(MetricSample::counter(
+            "forward_bogus_answer_total",
+            "Total upstream responses discarded because an answer address matched bogus_answer_ips.",
+            &labels,
+            self.bogus_answer_total.load(Ordering::Relaxed),
         ));
         sink.emit(MetricSample::counter(
             "forward_latency_count",

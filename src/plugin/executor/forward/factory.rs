@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use tracing::info;
 
+use super::bogus::{BogusAnswerFilter, dependency_specs};
 use super::concurrent::ConcurrentForwarder;
 use super::config::{
     MAX_CONCURRENT_QUERIES, make_default_upstream_config, parse_forward_config,
@@ -16,6 +17,7 @@ use super::single::SingleDnsForwarder;
 use crate::config::types::PluginConfig;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::network::upstream::{ConnectionInfo, Upstream, UpstreamBuilder, UpstreamConfig};
+use crate::plugin::dependency::DependencySpec;
 use crate::plugin::{PluginFactory, UninitializedPlugin};
 use crate::plugin_factory;
 
@@ -25,6 +27,10 @@ use crate::plugin_factory;
 pub struct ForwardFactory;
 
 impl PluginFactory for ForwardFactory {
+    fn get_dependency_specs(&self, plugin_config: &PluginConfig) -> Vec<DependencySpec> {
+        dependency_specs(plugin_config.args.as_ref())
+    }
+
     fn create(
         &self,
         plugin_config: &PluginConfig,
@@ -33,6 +39,7 @@ impl PluginFactory for ForwardFactory {
         let forward_config = parse_forward_config(plugin_config)?;
         let short_circuit = forward_config.short_circuit;
         let response_selection = forward_config.response_selection;
+        let bogus = BogusAnswerFilter::from_value(forward_config.bogus_answer_ips.as_ref())?;
 
         if forward_config.upstreams.len() == 1 {
             // Single upstream configuration
@@ -50,6 +57,7 @@ impl PluginFactory for ForwardFactory {
                     tag: plugin_config.tag.clone(),
                     upstream,
                     short_circuit,
+                    bogus,
                     metrics: Arc::new(ForwardMetrics::new(plugin_config.tag.clone(), names)),
                 },
             )))
@@ -79,6 +87,7 @@ impl PluginFactory for ForwardFactory {
                     upstreams,
                     short_circuit,
                     response_selection,
+                    bogus,
                     metrics: Arc::new(ForwardMetrics::new(plugin_config.tag.clone(), names)),
                 },
             )))
@@ -108,6 +117,7 @@ impl PluginFactory for ForwardFactory {
                     tag: tag.to_string(),
                     upstream,
                     short_circuit,
+                    bogus: BogusAnswerFilter::default(),
                     metrics: Arc::new(ForwardMetrics::new(tag.to_string(), names)),
                 },
             )))
@@ -131,6 +141,7 @@ impl PluginFactory for ForwardFactory {
                     upstreams,
                     short_circuit,
                     response_selection: ResponseSelectionMode::default(),
+                    bogus: BogusAnswerFilter::default(),
                     metrics: Arc::new(ForwardMetrics::new(tag.to_string(), names)),
                 },
             )))

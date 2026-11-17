@@ -8,9 +8,10 @@ use rand::RngExt;
 use tokio::task::JoinSet;
 use tracing::{Level, debug, event_enabled, info, warn};
 
+use super::bogus::BogusAnswerFilter;
 use super::is_timeout_error;
 use super::metrics::ForwardMetrics;
-use super::selection::{ResponseSelectionMode, SelectedResponse, select_response};
+use super::selection::{ResponseSelectionMode, SelectionOutcome, select_response};
 use crate::core::context::DnsContext;
 use crate::core::response::ResponseDisposition;
 use crate::infra::error::{DnsError, Result};
@@ -35,6 +36,8 @@ pub(super) struct ConcurrentForwarder {
 
     pub(super) response_selection: ResponseSelectionMode,
 
+    pub(super) bogus: BogusAnswerFilter,
+
     pub(super) metrics: Arc<ForwardMetrics>,
 }
 
@@ -44,8 +47,9 @@ impl Plugin for ConcurrentForwarder {
         self.tag.as_str()
     }
 
-    async fn init(&mut self, _context: &crate::plugin::PluginInitContext<'_>) -> Result<()> {
+    async fn init(&mut self, context: &crate::plugin::PluginInitContext<'_>) -> Result<()> {
         info!("DNS ConcurrentForwarder initialized tag: {}", self.tag);
+        self.bogus.init(context, &self.tag)?;
         register_metric_source(self.metrics.clone())
     }
 
@@ -60,8 +64,12 @@ impl Executor for ConcurrentForwarder {
     #[hotpath::measure]
     async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
         let start_ms = self.metrics.record_query_start();
-        let (response, last_error, timed_out) = self.query_upstreams(context.request.clone()).await;
-        if let Some(selected) = response {
+        let outcome = self.query_upstreams(context.request.clone()).await;
+        if outcome.bogus_dropped > 0 {
+            self.metrics
+                .record_bogus_answer(outcome.bogus_dropped as u64);
+        }
+        if let Some(selected) = outcome.selected {
             if selected.disposition == Some(ResponseDisposition::IncompleteAlias) {
                 self.metrics.record_incomplete_alias_selected();
             }
@@ -70,8 +78,17 @@ impl Executor for ConcurrentForwarder {
             return Ok(self.completion_step());
         }
 
-        let err = last_error.unwrap_or_else(|| "no upstream response".to_string());
-        self.metrics.record_error(start_ms, timed_out);
+        let err = outcome.last_error.unwrap_or_else(|| {
+            if outcome.bogus_dropped > 0 {
+                format!(
+                    "all responses contained bogus addresses ({} dropped)",
+                    outcome.bogus_dropped
+                )
+            } else {
+                "no upstream response".to_string()
+            }
+        });
+        self.metrics.record_error(start_ms, outcome.timed_out);
         warn!(
             "forward plugin '{}' failed across all concurrent upstreams: {}",
             self.tag, err
@@ -93,13 +110,15 @@ impl ConcurrentForwarder {
         }
     }
 
-    async fn query_upstreams(
-        &self,
-        request: Message,
-    ) -> (Option<SelectedResponse>, Option<String>, bool) {
+    async fn query_upstreams(&self, request: Message) -> SelectionOutcome {
         let total_upstreams = self.upstreams.len();
         if total_upstreams == 0 {
-            return (None, Some("no upstream configured".to_string()), false);
+            return SelectionOutcome {
+                selected: None,
+                last_error: Some("no upstream configured".to_string()),
+                timed_out: false,
+                bogus_dropped: 0,
+            };
         }
 
         let mut join_set = JoinSet::new();
@@ -139,6 +158,7 @@ impl ConcurrentForwarder {
             self.active_concurrent,
             question,
             self.response_selection,
+            &self.bogus,
         )
         .await
     }

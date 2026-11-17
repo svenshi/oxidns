@@ -25,6 +25,13 @@ pub struct ForwardConfig {
     #[serde(default)]
     pub response_selection: ResponseSelectionMode,
 
+    /// IP rules identifying upstream answers that must be discarded.
+    ///
+    /// Uses the standard IP rule-list syntax: a string
+    /// or list of strings containing single IPs, CIDRs, `$ip_set` provider
+    /// references, and `&file` rule files. Absent means the filter is disabled.
+    pub bogus_answer_ips: Option<serde_yaml_ng::Value>,
+
     /// List of upstream DNS servers
     pub upstreams: Vec<UpstreamConfig>,
 

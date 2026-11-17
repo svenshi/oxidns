@@ -6,6 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::{info, warn};
 
+use super::bogus::BogusAnswerFilter;
 use super::is_timeout_error;
 use super::metrics::ForwardMetrics;
 use crate::core::context::DnsContext;
@@ -31,6 +32,9 @@ pub(super) struct SingleDnsForwarder {
     /// Whether to stop the executor chain after a successful upstream response.
     pub(super) short_circuit: bool,
 
+    /// Upstream answers matching these rules are discarded.
+    pub(super) bogus: BogusAnswerFilter,
+
     pub(super) metrics: Arc<ForwardMetrics>,
 }
 
@@ -40,8 +44,9 @@ impl Plugin for SingleDnsForwarder {
         self.tag.as_str()
     }
 
-    async fn init(&mut self, _context: &crate::plugin::PluginInitContext<'_>) -> Result<()> {
+    async fn init(&mut self, context: &crate::plugin::PluginInitContext<'_>) -> Result<()> {
         info!("DNS SingleDnsForwarder initialized tag: {}", self.tag);
+        self.bogus.init(context, &self.tag)?;
         register_metric_source(self.metrics.clone())
     }
 
@@ -59,6 +64,23 @@ impl Executor for SingleDnsForwarder {
         self.metrics.record_upstream_start(0);
         match self.upstream.query(context.request.clone()).await {
             Ok(res) => {
+                if self.bogus.is_bogus(&res) {
+                    // The upstream did respond, so keep its success/latency
+                    // counters, but the answer itself is unusable.
+                    self.metrics.record_upstream_success(0, start_ms);
+                    self.metrics.record_bogus_answer(1);
+                    self.metrics.record_error(start_ms, false);
+                    warn!(
+                        "forward plugin '{}' discarded bogus answer from upstream '{}'",
+                        self.tag,
+                        self.upstream.connection_info().raw_addr
+                    );
+                    return Err(DnsError::plugin(format!(
+                        "forward plugin '{}' discarded bogus answer from upstream '{}'",
+                        self.tag,
+                        self.upstream.connection_info().raw_addr
+                    )));
+                }
                 context.set_response(res);
                 self.metrics.record_success(start_ms);
                 self.metrics.record_upstream_success(0, start_ms);

@@ -7,6 +7,7 @@ use serde::Deserialize;
 use tokio::task::{JoinError, JoinSet};
 use tracing::warn;
 
+use super::bogus::BogusAnswerFilter;
 use super::is_timeout_error;
 use crate::core::response::{
     NegativeResponseKind, ResponseDisposition, classify_response as classify_dns_response,
@@ -53,9 +54,21 @@ pub(super) struct SelectedResponse {
     pub(super) disposition: Option<ResponseDisposition>,
 }
 
+/// Result of one concurrent selection round.
+#[derive(Debug)]
+pub(super) struct SelectionOutcome {
+    pub(super) selected: Option<SelectedResponse>,
+    pub(super) last_error: Option<String>,
+    pub(super) timed_out: bool,
+    /// Responses discarded because an answer address matched
+    /// `bogus_answer_ips`.
+    pub(super) bogus_dropped: usize,
+}
+
 #[derive(Debug)]
 struct SelectionState<'a> {
     question: Option<&'a Question>,
+    filter: &'a BogusAnswerFilter,
     completed: usize,
     last_error: Option<String>,
     last_timeout: bool,
@@ -67,12 +80,14 @@ struct SelectionState<'a> {
     negative_votes: usize,
     nxdomain_votes: usize,
     nodata_votes: usize,
+    bogus_dropped: usize,
 }
 
 impl<'a> SelectionState<'a> {
-    fn new(question: Option<&'a Question>) -> Self {
+    fn new(question: Option<&'a Question>, filter: &'a BogusAnswerFilter) -> Self {
         Self {
             question,
+            filter,
             completed: 0,
             last_error: None,
             last_timeout: false,
@@ -84,10 +99,26 @@ impl<'a> SelectionState<'a> {
             negative_votes: 0,
             nxdomain_votes: 0,
             nodata_votes: 0,
+            bogus_dropped: 0,
         }
     }
 
-    fn record_response(&mut self, response: Message) -> ResponseClass {
+    /// Drop the response before classification when it is bogus.
+    ///
+    /// Bogus answers never become candidates, votes, or ranking entries, and
+    /// they do not start the negative grace window.
+    fn discard_if_bogus(&mut self, response: &Message) -> bool {
+        if self.filter.is_bogus(response) {
+            self.bogus_dropped += 1;
+            return true;
+        }
+        false
+    }
+
+    fn record_response(&mut self, response: Message) -> Option<ResponseClass> {
+        if self.discard_if_bogus(&response) {
+            return None;
+        }
         let disposition = classify_dns_response(&response, self.question);
         let class = response_class(disposition);
         if class == ResponseClass::Negative {
@@ -97,7 +128,7 @@ impl<'a> SelectionState<'a> {
             }
             self.best_negative_response = Some(response);
             self.best_negative_disposition = Some(disposition);
-            return class;
+            return Some(class);
         }
         let response_rank = response_rank(disposition);
         if self
@@ -108,7 +139,7 @@ impl<'a> SelectionState<'a> {
             self.best_response_rank = Some(response_rank);
             self.best_response_disposition = Some(disposition);
         }
-        class
+        Some(class)
     }
 
     fn record_error(&mut self, err: DnsError) {
@@ -145,17 +176,32 @@ impl<'a> SelectionState<'a> {
             })
     }
 
-    fn finish(mut self) -> (Option<SelectedResponse>, Option<String>, bool) {
+    fn finish(mut self) -> SelectionOutcome {
         let selected = self.take_selected_response();
-        (selected, self.last_error, self.last_timeout)
+        SelectionOutcome {
+            selected,
+            last_error: self.last_error,
+            timed_out: self.last_timeout,
+            bogus_dropped: self.bogus_dropped,
+        }
     }
 
-    fn finish_success(mut self) -> (Option<SelectedResponse>, Option<String>, bool) {
-        (self.take_selected_response(), None, false)
+    fn finish_success(mut self) -> SelectionOutcome {
+        SelectionOutcome {
+            selected: self.take_selected_response(),
+            last_error: None,
+            timed_out: false,
+            bogus_dropped: self.bogus_dropped,
+        }
     }
 
-    fn finish_negative_success(mut self) -> (Option<SelectedResponse>, Option<String>, bool) {
-        (self.take_negative_response(), None, false)
+    fn finish_negative_success(mut self) -> SelectionOutcome {
+        SelectionOutcome {
+            selected: self.take_negative_response(),
+            last_error: None,
+            timed_out: false,
+            bogus_dropped: self.bogus_dropped,
+        }
     }
 
     fn record_negative_vote(&mut self, key: NegativeResponseKey) {
@@ -175,37 +221,43 @@ pub(super) async fn select_response(
     active_concurrent: usize,
     question: Option<&Question>,
     mode: ResponseSelectionMode,
-) -> (Option<SelectedResponse>, Option<String>, bool) {
+    filter: &BogusAnswerFilter,
+) -> SelectionOutcome {
     match mode {
-        ResponseSelectionMode::Fastest => select_fastest(join_set).await,
+        ResponseSelectionMode::Fastest => select_fastest(join_set, filter).await,
         ResponseSelectionMode::Balanced => {
-            select_balanced(join_set, active_concurrent, question).await
+            select_balanced(join_set, active_concurrent, question, filter).await
         }
         ResponseSelectionMode::PreferPositive => {
-            select_prefer_positive(join_set, active_concurrent, question).await
+            select_prefer_positive(join_set, active_concurrent, question, filter).await
         }
         ResponseSelectionMode::Consensus => {
-            select_consensus(join_set, active_concurrent, question).await
+            select_consensus(join_set, active_concurrent, question, filter).await
         }
     }
 }
 
 async fn select_fastest(
     join_set: &mut JoinSet<Result<Message>>,
-) -> (Option<SelectedResponse>, Option<String>, bool) {
-    let mut state = SelectionState::new(None);
+    filter: &BogusAnswerFilter,
+) -> SelectionOutcome {
+    let mut state = SelectionState::new(None, filter);
     while let Some(joined) = join_set.join_next().await {
         match joined {
             Ok(Ok(response)) => {
+                if state.discard_if_bogus(&response) {
+                    continue;
+                }
                 join_set.abort_all();
-                return (
-                    Some(SelectedResponse {
+                return SelectionOutcome {
+                    selected: Some(SelectedResponse {
                         message: response,
                         disposition: None,
                     }),
-                    None,
-                    false,
-                );
+                    last_error: None,
+                    timed_out: false,
+                    bogus_dropped: state.bogus_dropped,
+                };
             }
             Ok(Err(err)) => state.record_error(err),
             Err(err) => state.record_join_error(err),
@@ -218,8 +270,9 @@ async fn select_prefer_positive(
     join_set: &mut JoinSet<Result<Message>>,
     active_concurrent: usize,
     question: Option<&Question>,
-) -> (Option<SelectedResponse>, Option<String>, bool) {
-    let mut state = SelectionState::new(question);
+    filter: &BogusAnswerFilter,
+) -> SelectionOutcome {
+    let mut state = SelectionState::new(question, filter);
     while let Some(class) = next_response_class(join_set, &mut state).await {
         if class == ResponseClass::Positive {
             join_set.abort_all();
@@ -236,8 +289,9 @@ async fn select_balanced(
     join_set: &mut JoinSet<Result<Message>>,
     active_concurrent: usize,
     question: Option<&Question>,
-) -> (Option<SelectedResponse>, Option<String>, bool) {
-    let mut state = SelectionState::new(question);
+    filter: &BogusAnswerFilter,
+) -> SelectionOutcome {
+    let mut state = SelectionState::new(question, filter);
     let negative_grace = tokio::time::sleep(BALANCED_NEGATIVE_GRACE);
     tokio::pin!(negative_grace);
 
@@ -285,12 +339,13 @@ async fn select_consensus(
     join_set: &mut JoinSet<Result<Message>>,
     active_concurrent: usize,
     question: Option<&Question>,
-) -> (Option<SelectedResponse>, Option<String>, bool) {
+    filter: &BogusAnswerFilter,
+) -> SelectionOutcome {
     if active_concurrent < CONSENSUS_NEGATIVE_VOTES {
-        return select_prefer_positive(join_set, active_concurrent, question).await;
+        return select_prefer_positive(join_set, active_concurrent, question, filter).await;
     }
 
-    let mut state = SelectionState::new(question);
+    let mut state = SelectionState::new(question, filter);
     while let Some(class) = next_response_class(join_set, &mut state).await {
         match class {
             ResponseClass::Positive => {
@@ -329,7 +384,7 @@ fn handle_joined_response(
 ) -> Option<ResponseClass> {
     state.completed += 1;
     match joined {
-        Ok(Ok(response)) => Some(state.record_response(response)),
+        Ok(Ok(response)) => state.record_response(response),
         Ok(Err(err)) => {
             state.record_error(err);
             None

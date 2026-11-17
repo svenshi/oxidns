@@ -5,6 +5,7 @@
 //!
 //! Forwards DNS queries to configured upstream resolvers.
 
+mod bogus;
 mod concurrent;
 mod config;
 mod factory;

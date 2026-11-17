@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use async_trait::async_trait;
 
+use super::bogus::BogusAnswerFilter;
 use super::concurrent::ConcurrentForwarder;
 use super::config::{
     MAX_CONCURRENT_QUERIES, parse_forward_config, parse_quick_setup_param,
@@ -39,6 +41,7 @@ struct MockUpstream {
     connection_info: ConnectionInfo,
     response_code: Option<Rcode>,
     answer: MockAnswer,
+    answer_ip: std::net::Ipv4Addr,
     fail_message: Option<String>,
     delay: Duration,
 }
@@ -51,6 +54,13 @@ impl MockUpstream {
     fn ok_with_answer(delay: Duration) -> Self {
         let mut upstream = Self::response(Rcode::NoError, delay);
         upstream.answer = MockAnswer::A;
+        upstream
+    }
+
+    /// Respond with an A record carrying `ip`.
+    fn ok_with_a(delay: Duration, ip: std::net::Ipv4Addr) -> Self {
+        let mut upstream = Self::ok_with_answer(delay);
+        upstream.answer_ip = ip;
         upstream
     }
 
@@ -72,6 +82,7 @@ impl MockUpstream {
                 .expect("mock upstream addr must be valid"),
             response_code: Some(response_code),
             answer: MockAnswer::None,
+            answer_ip: "192.0.2.1".parse().expect("default answer ip"),
             fail_message: None,
             delay,
         }
@@ -83,6 +94,7 @@ impl MockUpstream {
                 .expect("mock upstream addr must be valid"),
             response_code: None,
             answer: MockAnswer::None,
+            answer_ip: "192.0.2.1".parse().expect("default answer ip"),
             fail_message: Some(msg.to_string()),
             delay,
         }
@@ -106,7 +118,7 @@ impl Upstream for MockUpstream {
                 response.add_answer(Record::from_rdata(
                     Name::from_ascii("example.com.").unwrap(),
                     60,
-                    RData::A(A("192.0.2.1".parse().unwrap())),
+                    RData::A(A(self.answer_ip)),
                 ));
             }
             MockAnswer::Cname => {
@@ -187,6 +199,7 @@ async fn concurrent_returns_error_when_all_upstreams_fail() {
         ],
         short_circuit: false,
         response_selection: ResponseSelectionMode::default(),
+        bogus: BogusAnswerFilter::default(),
         metrics: metrics.clone(),
     };
 
@@ -341,6 +354,7 @@ async fn concurrent_success_sets_response() {
         upstreams: vec![Arc::new(MockUpstream::ok())],
         short_circuit: false,
         response_selection: ResponseSelectionMode::default(),
+        bogus: BogusAnswerFilter::default(),
         metrics: test_metrics(),
     };
 
@@ -357,6 +371,7 @@ async fn single_success_stops_when_short_circuit_enabled() {
         tag: "forward-test".to_string(),
         upstream: Box::new(MockUpstream::ok()),
         short_circuit: true,
+        bogus: BogusAnswerFilter::default(),
         metrics: metrics.clone(),
     };
 
@@ -379,6 +394,7 @@ async fn single_metrics_record_error_and_timeout() {
             Duration::ZERO,
         )),
         short_circuit: false,
+        bogus: BogusAnswerFilter::default(),
         metrics: metrics.clone(),
     };
 
@@ -399,6 +415,7 @@ async fn single_does_not_classify_for_incomplete_alias_metric() {
         tag: "forward-test".to_string(),
         upstream: Box::new(MockUpstream::ok_with_cname_answer(Duration::ZERO)),
         short_circuit: false,
+        bogus: BogusAnswerFilter::default(),
         metrics: metrics.clone(),
     };
 
@@ -426,6 +443,7 @@ async fn concurrent_selection_records_selected_incomplete_alias() {
         ],
         short_circuit: false,
         response_selection: ResponseSelectionMode::Balanced,
+        bogus: BogusAnswerFilter::default(),
         metrics: metrics.clone(),
     };
 
@@ -453,6 +471,7 @@ async fn fastest_does_not_classify_for_incomplete_alias_metric() {
         ],
         short_circuit: false,
         response_selection: ResponseSelectionMode::Fastest,
+        bogus: BogusAnswerFilter::default(),
         metrics: metrics.clone(),
     };
 
@@ -476,6 +495,7 @@ async fn concurrent_success_stops_when_short_circuit_enabled() {
         upstreams: vec![Arc::new(MockUpstream::ok())],
         short_circuit: true,
         response_selection: ResponseSelectionMode::default(),
+        bogus: BogusAnswerFilter::default(),
         metrics: test_metrics(),
     };
 
@@ -499,6 +519,7 @@ async fn concurrent_prefers_noerror_over_early_servfail() {
         ],
         short_circuit: false,
         response_selection: ResponseSelectionMode::default(),
+        bogus: BogusAnswerFilter::default(),
         metrics: test_metrics(),
     };
 
@@ -525,6 +546,7 @@ async fn concurrent_returns_last_non_preferred_rcode_when_no_preferred_response(
         ],
         short_circuit: false,
         response_selection: ResponseSelectionMode::default(),
+        bogus: BogusAnswerFilter::default(),
         metrics: test_metrics(),
     };
 
@@ -548,6 +570,7 @@ async fn fastest_selection_returns_early_nxdomain() {
         ],
         short_circuit: false,
         response_selection: ResponseSelectionMode::Fastest,
+        bogus: BogusAnswerFilter::default(),
         metrics: test_metrics(),
     };
 
@@ -571,6 +594,7 @@ async fn balanced_selection_waits_briefly_for_positive_after_negative() {
         ],
         short_circuit: false,
         response_selection: ResponseSelectionMode::Balanced,
+        bogus: BogusAnswerFilter::default(),
         metrics: test_metrics(),
     };
 
@@ -593,6 +617,7 @@ async fn balanced_selection_waits_for_complete_answer_after_cname_only() {
         ],
         short_circuit: false,
         response_selection: ResponseSelectionMode::Balanced,
+        bogus: BogusAnswerFilter::default(),
         metrics: test_metrics(),
     };
 
@@ -618,6 +643,7 @@ async fn balanced_selection_keeps_cname_only_above_negative_fallback() {
         ],
         short_circuit: false,
         response_selection: ResponseSelectionMode::Balanced,
+        bogus: BogusAnswerFilter::default(),
         metrics: test_metrics(),
     };
 
@@ -641,6 +667,7 @@ async fn prefer_positive_waits_for_late_positive() {
         ],
         short_circuit: false,
         response_selection: ResponseSelectionMode::PreferPositive,
+        bogus: BogusAnswerFilter::default(),
         metrics: test_metrics(),
     };
 
@@ -663,6 +690,7 @@ async fn prefer_positive_waits_for_complete_answer_after_cname_only() {
         ],
         short_circuit: false,
         response_selection: ResponseSelectionMode::PreferPositive,
+        bogus: BogusAnswerFilter::default(),
         metrics: test_metrics(),
     };
 
@@ -688,6 +716,7 @@ async fn prefer_positive_keeps_cname_only_above_negative_fallback() {
         ],
         short_circuit: false,
         response_selection: ResponseSelectionMode::PreferPositive,
+        bogus: BogusAnswerFilter::default(),
         metrics: test_metrics(),
     };
 
@@ -715,6 +744,7 @@ async fn consensus_selection_returns_after_two_negative_votes() {
         ],
         short_circuit: false,
         response_selection: ResponseSelectionMode::Consensus,
+        bogus: BogusAnswerFilter::default(),
         metrics: Arc::new(ForwardMetrics::new(
             "forward-test".to_string(),
             vec!["u0".to_string(), "u1".to_string(), "u2".to_string()],
@@ -748,6 +778,7 @@ async fn consensus_selection_returns_negative_over_incomplete_alias() {
         ],
         short_circuit: false,
         response_selection: ResponseSelectionMode::Consensus,
+        bogus: BogusAnswerFilter::default(),
         metrics: Arc::new(ForwardMetrics::new(
             "forward-test".to_string(),
             vec!["u0".to_string(), "u1".to_string(), "u2".to_string()],
@@ -777,6 +808,7 @@ async fn consensus_selection_waits_when_negative_votes_disagree() {
         ],
         short_circuit: false,
         response_selection: ResponseSelectionMode::Consensus,
+        bogus: BogusAnswerFilter::default(),
         metrics: Arc::new(ForwardMetrics::new(
             "forward-test".to_string(),
             vec!["u0".to_string(), "u1".to_string(), "u2".to_string()],
@@ -806,6 +838,7 @@ async fn consensus_selection_does_not_count_cname_only_as_negative_vote() {
         ],
         short_circuit: false,
         response_selection: ResponseSelectionMode::Consensus,
+        bogus: BogusAnswerFilter::default(),
         metrics: Arc::new(ForwardMetrics::new(
             "forward-test".to_string(),
             vec!["u0".to_string(), "u1".to_string(), "u2".to_string()],
@@ -834,6 +867,7 @@ async fn consensus_selection_keeps_cname_only_above_negative_fallback() {
         ],
         short_circuit: false,
         response_selection: ResponseSelectionMode::Consensus,
+        bogus: BogusAnswerFilter::default(),
         metrics: test_metrics(),
     };
 
@@ -859,6 +893,7 @@ async fn consensus_selection_counts_cname_with_soa_as_nodata() {
         ],
         short_circuit: false,
         response_selection: ResponseSelectionMode::Consensus,
+        bogus: BogusAnswerFilter::default(),
         metrics: test_metrics(),
     };
 
@@ -869,4 +904,219 @@ async fn consensus_selection_counts_cname_with_soa_as_nodata() {
     assert_eq!(response.rcode(), Rcode::NoError);
     assert!(response.has_answer_type(RecordType::CNAME));
     assert!(!response.authorities().is_empty());
+}
+
+fn bogus_filter(raw: &str) -> BogusAnswerFilter {
+    let value = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(raw).expect("yaml should parse");
+    BogusAnswerFilter::from_value(Some(&value)).expect("filter should build")
+}
+
+#[test]
+fn parse_forward_config_accepts_bogus_answer_ips() {
+    let cfg = parse_forward_config(&make_plugin_config(
+        r#"
+upstreams:
+  - addr: "udp://1.1.1.1:53"
+bogus_answer_ips:
+  - "0.0.0.0/8"
+"#,
+    ))
+    .expect("forward config should parse");
+
+    assert!(cfg.bogus_answer_ips.is_some());
+}
+
+#[test]
+fn create_rejects_empty_bogus_answer_ips() {
+    let factory = ForwardFactory;
+    let cfg = make_plugin_config(
+        r#"
+upstreams:
+  - addr: "udp://1.1.1.1:53"
+bogus_answer_ips: " , "
+"#,
+    );
+    let err = match crate::plugin::test_utils::create_plugin_for_test(&factory, &cfg) {
+        Ok(_) => panic!("expected create to fail for an empty rule list"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string()
+            .contains("requires at least one IP rule or ip_set tag")
+    );
+}
+
+#[tokio::test]
+async fn single_discards_bogus_answer() {
+    let metrics = test_metrics();
+    let forwarder = SingleDnsForwarder {
+        tag: "forward-test".to_string(),
+        upstream: Box::new(MockUpstream::ok_with_a(
+            Duration::ZERO,
+            Ipv4Addr::UNSPECIFIED,
+        )),
+        short_circuit: false,
+        bogus: bogus_filter("0.0.0.0/8"),
+        metrics: metrics.clone(),
+    };
+
+    let mut context = make_context();
+    let err = forwarder.execute(&mut context).await.unwrap_err();
+
+    assert!(err.to_string().contains("discarded bogus answer"));
+    assert!(context.response().is_none());
+    assert_eq!(metrics.query_total.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.success_total.load(Ordering::Relaxed), 0);
+    assert_eq!(metrics.error_total.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.bogus_answer_total.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.latency_count.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn single_keeps_bogus_answer_without_filter() {
+    let forwarder = SingleDnsForwarder {
+        tag: "forward-test".to_string(),
+        upstream: Box::new(MockUpstream::ok_with_a(
+            Duration::ZERO,
+            Ipv4Addr::UNSPECIFIED,
+        )),
+        short_circuit: false,
+        bogus: BogusAnswerFilter::default(),
+        metrics: test_metrics(),
+    };
+
+    let mut context = make_context();
+    let step = forwarder.execute(&mut context).await.unwrap();
+
+    assert!(matches!(step, ExecStep::Next));
+    assert!(context.response().is_some());
+}
+
+#[tokio::test(start_paused = true)]
+async fn balanced_skips_bogus_answer_and_selects_real_one() {
+    let metrics = test_metrics();
+    let forwarder = ConcurrentForwarder {
+        tag: "forward-test".to_string(),
+        active_concurrent: 2,
+        upstreams: vec![
+            Arc::new(MockUpstream::ok_with_a(
+                Duration::ZERO,
+                Ipv4Addr::UNSPECIFIED,
+            )),
+            Arc::new(MockUpstream::ok_with_answer(Duration::from_millis(20))),
+        ],
+        short_circuit: false,
+        response_selection: ResponseSelectionMode::Balanced,
+        bogus: bogus_filter("0.0.0.0/8"),
+        metrics: metrics.clone(),
+    };
+
+    let mut context = make_context();
+    let step = forwarder.execute(&mut context).await.unwrap();
+    let response = context.response().expect("response must exist");
+
+    assert!(matches!(step, ExecStep::Next));
+    assert_eq!(response.answers().len(), 1);
+    assert_eq!(
+        response.answer_ips(),
+        vec![IpAddr::from(Ipv4Addr::new(192, 0, 2, 1))]
+    );
+    assert_eq!(metrics.bogus_answer_total.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn fastest_skips_bogus_answer() {
+    let forwarder = ConcurrentForwarder {
+        tag: "forward-test".to_string(),
+        active_concurrent: 2,
+        upstreams: vec![
+            Arc::new(MockUpstream::ok_with_a(
+                Duration::ZERO,
+                Ipv4Addr::UNSPECIFIED,
+            )),
+            Arc::new(MockUpstream::ok_with_a(
+                Duration::from_millis(20),
+                Ipv4Addr::new(192, 0, 2, 1),
+            )),
+        ],
+        short_circuit: false,
+        response_selection: ResponseSelectionMode::Fastest,
+        bogus: bogus_filter("0.0.0.0/8"),
+        metrics: test_metrics(),
+    };
+
+    let mut context = make_context();
+    let step = forwarder.execute(&mut context).await.unwrap();
+    let response = context.response().expect("response must exist");
+
+    assert!(matches!(step, ExecStep::Next));
+    assert_eq!(
+        response.answer_ips(),
+        vec![IpAddr::from(Ipv4Addr::new(192, 0, 2, 1))]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn consensus_does_not_count_bogus_answer_as_positive() {
+    let metrics = test_metrics();
+    let forwarder = ConcurrentForwarder {
+        tag: "forward-test".to_string(),
+        active_concurrent: 2,
+        upstreams: vec![
+            Arc::new(MockUpstream::ok_with_a(
+                Duration::ZERO,
+                Ipv4Addr::UNSPECIFIED,
+            )),
+            Arc::new(MockUpstream::response(
+                Rcode::NXDomain,
+                Duration::from_millis(20),
+            )),
+        ],
+        short_circuit: false,
+        response_selection: ResponseSelectionMode::Consensus,
+        bogus: bogus_filter("0.0.0.0/8"),
+        metrics: metrics.clone(),
+    };
+
+    let mut context = make_context();
+    let step = forwarder.execute(&mut context).await.unwrap();
+    let response = context.response().expect("response must exist");
+
+    assert!(matches!(step, ExecStep::Next));
+    assert_eq!(response.rcode(), Rcode::NXDomain);
+    assert_eq!(metrics.bogus_answer_total.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn all_bogus_upstreams_fail_with_dropped_count() {
+    let metrics = test_metrics();
+    let forwarder = ConcurrentForwarder {
+        tag: "forward-test".to_string(),
+        active_concurrent: 2,
+        upstreams: vec![
+            Arc::new(MockUpstream::ok_with_a(
+                Duration::ZERO,
+                Ipv4Addr::UNSPECIFIED,
+            )),
+            Arc::new(MockUpstream::ok_with_a(
+                Duration::from_millis(20),
+                Ipv4Addr::new(127, 0, 0, 1),
+            )),
+        ],
+        short_circuit: false,
+        response_selection: ResponseSelectionMode::Balanced,
+        bogus: bogus_filter("0.0.0.0/8, 127.0.0.0/8"),
+        metrics: metrics.clone(),
+    };
+
+    let mut context = make_context();
+    let err = forwarder.execute(&mut context).await.unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("all responses contained bogus addresses (2 dropped)")
+    );
+    assert!(context.response().is_none());
+    assert_eq!(metrics.bogus_answer_total.load(Ordering::Relaxed), 2);
+    assert_eq!(metrics.error_total.load(Ordering::Relaxed), 1);
 }
