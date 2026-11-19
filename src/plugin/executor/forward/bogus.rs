@@ -7,6 +7,7 @@
 //! with any A/AAAA address matching the configured rules is discarded whole,
 //! so it never becomes a candidate, vote, or ranking entry.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use crate::core::rule_matcher::IpPrefixMatcher;
@@ -81,16 +82,27 @@ impl BogusAnswerFilter {
         Ok(())
     }
 
-    /// Whether every A/AAAA answer address is safe to discard.
+    /// Return the first answer address matching the bogus rules, if any.
     ///
-    /// Only the answer section is inspected.
-    pub(super) fn is_bogus(&self, response: &Message) -> bool {
+    /// Only the answer section is inspected. The search short-circuits on the
+    /// first hit and does not allocate.
+    pub(super) fn bogus_answer_ip(&self, response: &Message) -> Option<IpAddr> {
         if !self.enabled {
-            return false;
+            return None;
         }
-        response.has_answer_ip(|ip| {
-            self.ip_rules.contains_ip(ip) || self.ip_sets.iter().any(|set| set.contains_ip(ip))
-        })
+        response
+            .answers()
+            .iter()
+            .filter_map(|record| record.ip_addr())
+            .find(|ip| {
+                self.ip_rules.contains_ip(*ip)
+                    || self.ip_sets.iter().any(|set| set.contains_ip(*ip))
+            })
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_bogus(&self, response: &Message) -> bool {
+        self.bogus_answer_ip(response).is_some()
     }
 }
 
@@ -244,6 +256,25 @@ mod tests {
             IpAddr::from(Ipv4Addr::new(192, 0, 2, 1)),
             IpAddr::from(Ipv4Addr::UNSPECIFIED),
         ])));
+    }
+
+    #[test]
+    fn bogus_answer_ip_returns_the_matching_address() {
+        let filter = filter("0.0.0.0/8");
+        let bogus = IpAddr::from(Ipv4Addr::UNSPECIFIED);
+        assert_eq!(
+            filter.bogus_answer_ip(&response_with_ips(&[
+                IpAddr::from(Ipv4Addr::new(192, 0, 2, 1)),
+                bogus,
+            ])),
+            Some(bogus)
+        );
+        assert_eq!(
+            filter.bogus_answer_ip(&response_with_ips(&[IpAddr::from(Ipv4Addr::new(
+                192, 0, 2, 1
+            ))])),
+            None
+        );
     }
 
     #[test]

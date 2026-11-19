@@ -80,9 +80,20 @@ impl Executor for ConcurrentForwarder {
 
         let err = outcome.last_error.unwrap_or_else(|| {
             if outcome.bogus_dropped > 0 {
+                let (qname, qtype) = match context.request.first_question() {
+                    Some(question) => (
+                        question.name().normalized().to_string(),
+                        format!("{:?}", question.qtype()),
+                    ),
+                    None => ("<none>".to_string(), "<none>".to_string()),
+                };
+                let answer = outcome
+                    .bogus_answer_ip
+                    .map(|ip| format!(" answer {}", ip))
+                    .unwrap_or_default();
                 format!(
-                    "all responses contained bogus addresses ({} dropped)",
-                    outcome.bogus_dropped
+                    "all responses contained bogus addresses ({} dropped) for qname {} qtype {}{}",
+                    outcome.bogus_dropped, qname, qtype, answer
                 )
             } else {
                 "no upstream response".to_string()
@@ -118,6 +129,7 @@ impl ConcurrentForwarder {
                 last_error: Some("no upstream configured".to_string()),
                 timed_out: false,
                 bogus_dropped: 0,
+                bogus_answer_ip: None,
             };
         }
 
@@ -149,10 +161,7 @@ impl ConcurrentForwarder {
             });
         }
 
-        let question = match self.response_selection {
-            ResponseSelectionMode::Fastest => None,
-            _ => request.first_question(),
-        };
+        let question = request.first_question();
         select_response(
             &mut join_set,
             self.active_concurrent,

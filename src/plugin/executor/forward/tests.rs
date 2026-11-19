@@ -965,6 +965,9 @@ async fn single_discards_bogus_answer() {
     let err = forwarder.execute(&mut context).await.unwrap_err();
 
     assert!(err.to_string().contains("discarded bogus answer"));
+    assert!(err.to_string().contains("qname example.com"));
+    assert!(err.to_string().contains("qtype A"));
+    assert!(err.to_string().contains("answer 0.0.0.0"));
     assert!(context.response().is_none());
     assert_eq!(metrics.query_total.load(Ordering::Relaxed), 1);
     assert_eq!(metrics.success_total.load(Ordering::Relaxed), 0);
@@ -1126,6 +1129,9 @@ async fn all_bogus_upstreams_fail_with_dropped_count() {
         err.to_string()
             .contains("all responses contained bogus addresses (2 dropped)")
     );
+    assert!(err.to_string().contains("qname example.com"));
+    assert!(err.to_string().contains("qtype A"));
+    assert!(err.to_string().contains("answer 0.0.0.0"));
     assert!(context.response().is_none());
     assert_eq!(metrics.bogus_answer_total.load(Ordering::Relaxed), 2);
     assert_eq!(metrics.error_total.load(Ordering::Relaxed), 1);

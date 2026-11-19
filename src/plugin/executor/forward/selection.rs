@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::net::IpAddr;
 use std::time::Duration;
 
 use serde::Deserialize;
 use tokio::task::{JoinError, JoinSet};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::bogus::BogusAnswerFilter;
 use super::is_timeout_error;
@@ -64,6 +65,8 @@ pub(super) struct SelectionOutcome {
     /// Responses discarded because an answer address matched
     /// `bogus_answer_ips`.
     pub(super) bogus_dropped: usize,
+    /// First matching address, used to report which address was rejected.
+    pub(super) bogus_answer_ip: Option<IpAddr>,
 }
 
 #[derive(Debug)]
@@ -83,6 +86,7 @@ struct SelectionState<'a> {
     nxdomain_votes: usize,
     nodata_votes: usize,
     bogus_dropped: usize,
+    bogus_answer_ip: Option<IpAddr>,
 }
 
 impl<'a> SelectionState<'a> {
@@ -107,6 +111,7 @@ impl<'a> SelectionState<'a> {
             nxdomain_votes: 0,
             nodata_votes: 0,
             bogus_dropped: 0,
+            bogus_answer_ip: None,
         }
     }
 
@@ -115,11 +120,26 @@ impl<'a> SelectionState<'a> {
     /// Bogus answers never become candidates, votes, or ranking entries, and
     /// they do not start the negative grace window.
     fn discard_if_bogus(&mut self, idx: usize, response: &Message) -> bool {
-        if !self.filter.is_bogus(response) {
+        let Some(ip) = self.filter.bogus_answer_ip(response) else {
             return false;
-        }
+        };
+
         self.bogus_dropped += 1;
         self.metrics.record_upstream_bogus(idx);
+        if self.bogus_answer_ip.is_none() {
+            self.bogus_answer_ip = Some(ip);
+        }
+        let (qname, qtype) = match self.question {
+            Some(question) => (
+                question.name().normalized().to_string(),
+                format!("{:?}", question.qtype()),
+            ),
+            None => ("<none>".to_string(), "<none>".to_string()),
+        };
+        debug!(
+            "forward plugin '{}' discarded bogus answer from upstream[{}] for qname {} qtype {} answer {}",
+            self.metrics.tag, idx, qname, qtype, ip
+        );
         true
     }
 
@@ -191,6 +211,7 @@ impl<'a> SelectionState<'a> {
             last_error: self.last_error,
             timed_out: self.last_timeout,
             bogus_dropped: self.bogus_dropped,
+            bogus_answer_ip: self.bogus_answer_ip,
         }
     }
 
@@ -200,6 +221,7 @@ impl<'a> SelectionState<'a> {
             last_error: None,
             timed_out: false,
             bogus_dropped: self.bogus_dropped,
+            bogus_answer_ip: self.bogus_answer_ip,
         }
     }
 
@@ -209,6 +231,7 @@ impl<'a> SelectionState<'a> {
             last_error: None,
             timed_out: false,
             bogus_dropped: self.bogus_dropped,
+            bogus_answer_ip: self.bogus_answer_ip,
         }
     }
 
@@ -233,7 +256,7 @@ pub(super) async fn select_response(
     metrics: &ForwardMetrics,
 ) -> SelectionOutcome {
     match mode {
-        ResponseSelectionMode::Fastest => select_fastest(join_set, filter, metrics).await,
+        ResponseSelectionMode::Fastest => select_fastest(join_set, question, filter, metrics).await,
         ResponseSelectionMode::Balanced => {
             select_balanced(join_set, active_concurrent, question, filter, metrics).await
         }
@@ -248,10 +271,11 @@ pub(super) async fn select_response(
 
 async fn select_fastest(
     join_set: &mut JoinSet<(usize, Result<Message>)>,
+    question: Option<&Question>,
     filter: &BogusAnswerFilter,
     metrics: &ForwardMetrics,
 ) -> SelectionOutcome {
-    let mut state = SelectionState::new(None, filter, metrics);
+    let mut state = SelectionState::new(question, filter, metrics);
     while let Some(joined) = join_set.join_next().await {
         match joined {
             Ok((idx, Ok(response))) => {
@@ -267,6 +291,7 @@ async fn select_fastest(
                     last_error: None,
                     timed_out: false,
                     bogus_dropped: state.bogus_dropped,
+                    bogus_answer_ip: state.bogus_answer_ip,
                 };
             }
             Ok((_, Err(err))) => state.record_error(err),
