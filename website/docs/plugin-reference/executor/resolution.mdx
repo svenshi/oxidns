@@ -342,8 +342,11 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 - `forward_upstream_success_total`
 - `forward_upstream_error_total`
 - `forward_upstream_timeout_total`
+- `forward_upstream_bogus_total`
 - `forward_upstream_latency_count`
 - `forward_upstream_latency_sum_ms`
+
+`forward_upstream_bogus_total` 按上游统计因 answer 地址命中 `bogus_answer_ips` 而被丢弃的应答，可用于定位持续返回污染地址的上游；单上游配置同样计入。
 
 ### 常见用途
 

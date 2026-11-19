@@ -466,6 +466,7 @@ export const zhCNPluginDefined = {
           forward_upstream_success_total: "上游成功",
           forward_upstream_error_total: "上游失败",
           forward_upstream_timeout_total: "上游超时",
+          forward_upstream_bogus_total: "上游虚假应答丢弃",
           forward_upstream_latency_count: "上游延迟样本",
           forward_upstream_latency_sum_ms: "上游延迟累计(ms)",
         },
@@ -482,6 +483,8 @@ export const zhCNPluginDefined = {
           forward_upstream_success_total: "该上游返回成功响应的次数。",
           forward_upstream_error_total: "该上游请求失败的次数。",
           forward_upstream_timeout_total: "该上游请求超时的次数。",
+          forward_upstream_bogus_total:
+            "该上游应答因 answer 中的地址命中 bogus_answer_ips 而被丢弃的次数。",
           forward_upstream_latency_count: "纳入该上游延迟统计的请求数。",
           forward_upstream_latency_sum_ms: "该上游所有请求的总延迟（毫秒）。",
         },

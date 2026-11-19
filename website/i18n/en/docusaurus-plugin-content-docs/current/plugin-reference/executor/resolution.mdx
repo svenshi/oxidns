@@ -295,8 +295,11 @@ Per-upstream series are also exported with an `upstream` label (the upstream tag
 - `forward_upstream_success_total`
 - `forward_upstream_error_total`
 - `forward_upstream_timeout_total`
+- `forward_upstream_bogus_total`
 - `forward_upstream_latency_count`
 - `forward_upstream_latency_sum_ms`
+
+`forward_upstream_bogus_total` counts discarded answers per upstream, which helps identify an upstream that keeps returning polluted addresses; single-upstream configurations also increment it.
 
 ### Typical Uses
 

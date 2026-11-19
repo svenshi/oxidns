@@ -145,7 +145,7 @@ impl ConcurrentForwarder {
                         upstream.connection_info().raw_addr
                     );
                 }
-                result
+                (selected_idx, result)
             });
         }
 
@@ -159,6 +159,7 @@ impl ConcurrentForwarder {
             question,
             self.response_selection,
             &self.bogus,
+            &self.metrics,
         )
         .await
     }

@@ -69,6 +69,7 @@ impl Executor for SingleDnsForwarder {
                     // counters, but the answer itself is unusable.
                     self.metrics.record_upstream_success(0, start_ms);
                     self.metrics.record_bogus_answer(1);
+                    self.metrics.record_upstream_bogus(0);
                     self.metrics.record_error(start_ms, false);
                     warn!(
                         "forward plugin '{}' discarded bogus answer from upstream '{}'",

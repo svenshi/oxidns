@@ -510,6 +510,7 @@ export const enUSPluginDefined = {
           forward_upstream_success_total: "Upstream successes",
           forward_upstream_error_total: "Upstream failures",
           forward_upstream_timeout_total: "Upstream timeouts",
+          forward_upstream_bogus_total: "Upstream bogus answers dropped",
           forward_upstream_latency_count: "Upstream latency samples",
           forward_upstream_latency_sum_ms: "Upstream total latency (ms)",
         },
@@ -536,6 +537,8 @@ export const enUSPluginDefined = {
             "The number of times this upstream request failed.",
           forward_upstream_timeout_total:
             "The number of times this upstream request has timed out.",
+          forward_upstream_bogus_total:
+            "The number of responses from this upstream discarded because an answer address matched bogus_answer_ips.",
           forward_upstream_latency_count:
             "The number of requests included in this upstream latency statistics.",
           forward_upstream_latency_sum_ms:

@@ -382,6 +382,7 @@ async fn single_success_stops_when_short_circuit_enabled() {
     assert_eq!(metrics.query_total.load(Ordering::Relaxed), 1);
     assert_eq!(metrics.success_total.load(Ordering::Relaxed), 1);
     assert_eq!(metrics.latency_count.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.upstreams[0].bogus_total.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]
@@ -969,6 +970,7 @@ async fn single_discards_bogus_answer() {
     assert_eq!(metrics.success_total.load(Ordering::Relaxed), 0);
     assert_eq!(metrics.error_total.load(Ordering::Relaxed), 1);
     assert_eq!(metrics.bogus_answer_total.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.upstreams[0].bogus_total.load(Ordering::Relaxed), 1);
     assert_eq!(metrics.latency_count.load(Ordering::Relaxed), 1);
 }
 
@@ -1022,10 +1024,13 @@ async fn balanced_skips_bogus_answer_and_selects_real_one() {
         vec![IpAddr::from(Ipv4Addr::new(192, 0, 2, 1))]
     );
     assert_eq!(metrics.bogus_answer_total.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.upstreams[0].bogus_total.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.upstreams[1].bogus_total.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test(start_paused = true)]
 async fn fastest_skips_bogus_answer() {
+    let metrics = test_metrics();
     let forwarder = ConcurrentForwarder {
         tag: "forward-test".to_string(),
         active_concurrent: 2,
@@ -1042,7 +1047,7 @@ async fn fastest_skips_bogus_answer() {
         short_circuit: false,
         response_selection: ResponseSelectionMode::Fastest,
         bogus: bogus_filter("0.0.0.0/8"),
-        metrics: test_metrics(),
+        metrics: metrics.clone(),
     };
 
     let mut context = make_context();
@@ -1054,6 +1059,9 @@ async fn fastest_skips_bogus_answer() {
         response.answer_ips(),
         vec![IpAddr::from(Ipv4Addr::new(192, 0, 2, 1))]
     );
+    assert_eq!(metrics.bogus_answer_total.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.upstreams[0].bogus_total.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.upstreams[1].bogus_total.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1085,6 +1093,8 @@ async fn consensus_does_not_count_bogus_answer_as_positive() {
     assert!(matches!(step, ExecStep::Next));
     assert_eq!(response.rcode(), Rcode::NXDomain);
     assert_eq!(metrics.bogus_answer_total.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.upstreams[0].bogus_total.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.upstreams[1].bogus_total.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1119,4 +1129,6 @@ async fn all_bogus_upstreams_fail_with_dropped_count() {
     assert!(context.response().is_none());
     assert_eq!(metrics.bogus_answer_total.load(Ordering::Relaxed), 2);
     assert_eq!(metrics.error_total.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.upstreams[0].bogus_total.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.upstreams[1].bogus_total.load(Ordering::Relaxed), 1);
 }
