@@ -1138,3 +1138,43 @@ async fn all_bogus_upstreams_fail_with_dropped_count() {
     assert_eq!(metrics.upstreams[0].bogus_total.load(Ordering::Relaxed), 1);
     assert_eq!(metrics.upstreams[1].bogus_total.load(Ordering::Relaxed), 1);
 }
+
+#[tokio::test(start_paused = true)]
+async fn mixed_bogus_and_transport_error_reports_both() {
+    let metrics = test_metrics();
+    let forwarder = ConcurrentForwarder {
+        tag: "forward-test".to_string(),
+        active_concurrent: 2,
+        upstreams: vec![
+            Arc::new(MockUpstream::ok_with_a(
+                Duration::ZERO,
+                Ipv4Addr::UNSPECIFIED,
+            )),
+            Arc::new(MockUpstream::fail(
+                "DNS query timeout after 1s",
+                Duration::from_millis(20),
+            )),
+        ],
+        short_circuit: false,
+        response_selection: ResponseSelectionMode::Balanced,
+        bogus: bogus_filter("0.0.0.0/8"),
+        metrics: metrics.clone(),
+    };
+
+    let mut context = make_context();
+    let err = forwarder.execute(&mut context).await.unwrap_err();
+    let message = err.to_string();
+
+    // The transport error stays the primary cause, but the bogus drop is no
+    // longer hidden from the default warn/err path.
+    assert!(message.contains("DNS query timeout after 1s"));
+    assert!(message.contains("also dropped 1 bogus answer"));
+    assert!(message.contains("qname example.com"));
+    assert!(message.contains("qtype A"));
+    assert!(message.contains("answer 0.0.0.0"));
+    assert!(context.response().is_none());
+    assert_eq!(metrics.bogus_answer_total.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.error_total.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.upstreams[0].bogus_total.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.upstreams[1].bogus_total.load(Ordering::Relaxed), 0);
+}

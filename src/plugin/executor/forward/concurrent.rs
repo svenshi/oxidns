@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -19,7 +20,7 @@ use crate::infra::network::upstream::Upstream;
 use crate::infra::observability::metrics::{register_metric_source, unregister_metric_source};
 use crate::plugin::Plugin;
 use crate::plugin::executor::{ExecStep, Executor};
-use crate::proto::Message;
+use crate::proto::{Message, Question};
 
 #[derive(Debug)]
 pub(super) struct ConcurrentForwarder {
@@ -78,27 +79,25 @@ impl Executor for ConcurrentForwarder {
             return Ok(self.completion_step());
         }
 
-        let err = outcome.last_error.unwrap_or_else(|| {
-            if outcome.bogus_dropped > 0 {
-                let (qname, qtype) = match context.request.first_question() {
-                    Some(question) => (
-                        question.name().normalized().to_string(),
-                        format!("{:?}", question.qtype()),
-                    ),
-                    None => ("<none>".to_string(), "<none>".to_string()),
-                };
-                let answer = outcome
-                    .bogus_answer_ip
-                    .map(|ip| format!(" answer {}", ip))
-                    .unwrap_or_default();
-                format!(
-                    "all responses contained bogus addresses ({} dropped) for qname {} qtype {}{}",
-                    outcome.bogus_dropped, qname, qtype, answer
-                )
-            } else {
-                "no upstream response".to_string()
-            }
-        });
+        let err = match (outcome.last_error, outcome.bogus_dropped) {
+            // A transport error is the primary cause. When bogus answers were
+            // also dropped, append a short summary so the default warn log
+            // does not hide that pollution participated in the failure.
+            (Some(last_error), dropped) if dropped > 0 => format!(
+                "{}; also dropped {} bogus answer{} {}",
+                last_error,
+                dropped,
+                if dropped > 1 { "s" } else { "" },
+                bogus_context(outcome.bogus_answer_ip, context.request.first_question())
+            ),
+            (Some(last_error), _) => last_error,
+            (None, dropped) if dropped > 0 => format!(
+                "all responses contained bogus addresses ({} dropped) {}",
+                dropped,
+                bogus_context(outcome.bogus_answer_ip, context.request.first_question())
+            ),
+            (None, _) => "no upstream response".to_string(),
+        };
         self.metrics.record_error(start_ms, outcome.timed_out);
         warn!(
             "forward plugin '{}' failed across all concurrent upstreams: {}",
@@ -172,4 +171,20 @@ impl ConcurrentForwarder {
         )
         .await
     }
+}
+
+/// Context suffix for a bogus-drop failure message: question identity and the
+/// first answer address that matched `bogus_answer_ips`.
+fn bogus_context(bogus_ip: Option<IpAddr>, question: Option<&Question>) -> String {
+    let (qname, qtype) = match question {
+        Some(question) => (
+            question.name().normalized().to_string(),
+            format!("{:?}", question.qtype()),
+        ),
+        None => ("<none>".to_string(), "<none>".to_string()),
+    };
+    let answer = bogus_ip
+        .map(|ip| format!(" answer {}", ip))
+        .unwrap_or_default();
+    format!("for qname {} qtype {}{}", qname, qtype, answer)
 }
