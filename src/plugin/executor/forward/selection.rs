@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use tokio::task::{JoinError, JoinSet};
-use tracing::{debug, warn};
+use tracing::{Level, debug, event_enabled, warn};
 
 use super::bogus::BogusAnswerFilter;
 use super::is_timeout_error;
@@ -129,17 +129,22 @@ impl<'a> SelectionState<'a> {
         if self.bogus_answer_ip.is_none() {
             self.bogus_answer_ip = Some(ip);
         }
-        let (qname, qtype) = match self.question {
-            Some(question) => (
-                question.name().normalized().to_string(),
-                format!("{:?}", question.qtype()),
-            ),
-            None => ("<none>".to_string(), "<none>".to_string()),
-        };
-        debug!(
-            "forward plugin '{}' discarded bogus answer from upstream[{}] for qname {} qtype {} answer {}",
-            self.metrics.tag, idx, qname, qtype, ip
-        );
+        // Per-drop logging is debug-only. Avoid building qname/qtype strings
+        // when the level is disabled: bogus answers can be a high-frequency
+        // path, and the two allocations below are otherwise paid for nothing.
+        if event_enabled!(Level::DEBUG) {
+            let (qname, qtype) = match self.question {
+                Some(question) => (
+                    question.name().normalized().to_string(),
+                    format!("{:?}", question.qtype()),
+                ),
+                None => ("<none>".to_string(), "<none>".to_string()),
+            };
+            debug!(
+                "forward plugin '{}' discarded bogus answer from upstream[{}] for qname {} qtype {} answer {}",
+                self.metrics.tag, idx, qname, qtype, ip
+            );
+        }
         true
     }
 

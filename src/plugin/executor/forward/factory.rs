@@ -39,7 +39,10 @@ impl PluginFactory for ForwardFactory {
         let forward_config = parse_forward_config(plugin_config)?;
         let short_circuit = forward_config.short_circuit;
         let response_selection = forward_config.response_selection;
-        let bogus = BogusAnswerFilter::from_value(forward_config.bogus_answer_ips.as_ref())?;
+        let bogus = BogusAnswerFilter::from_value(
+            forward_config.bogus_answer_ips.as_ref(),
+            &plugin_config.tag,
+        )?;
 
         if forward_config.upstreams.len() == 1 {
             // Single upstream configuration

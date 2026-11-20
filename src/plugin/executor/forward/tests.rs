@@ -909,7 +909,7 @@ async fn consensus_selection_counts_cname_with_soa_as_nodata() {
 
 fn bogus_filter(raw: &str) -> BogusAnswerFilter {
     let value = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(raw).expect("yaml should parse");
-    BogusAnswerFilter::from_value(Some(&value)).expect("filter should build")
+    BogusAnswerFilter::from_value(Some(&value), "forward-test").expect("filter should build")
 }
 
 #[test]

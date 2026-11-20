@@ -41,7 +41,7 @@ impl BogusAnswerFilter {
     /// Inline rules and `&file` sources are compiled here. `$ip_set` tags are
     /// recorded and resolved in [`init`](Self::init), once the provider
     /// registry is available.
-    pub(super) fn from_value(value: Option<&serde_yaml_ng::Value>) -> Result<Self> {
+    pub(super) fn from_value(value: Option<&serde_yaml_ng::Value>, tag: &str) -> Result<Self> {
         let Some(value) = value else {
             return Ok(Self::default());
         };
@@ -50,8 +50,8 @@ impl BogusAnswerFilter {
         let (ip_rules, ip_set_tags) = parse_ip_rules_and_set_tags(rules, BOGUS_ANSWER_IPS_FIELD)?;
         if !ip_rules.has_v4_rules() && !ip_rules.has_v6_rules() && ip_set_tags.is_empty() {
             return Err(DnsError::plugin(format!(
-                "forward plugin '{}' requires at least one IP rule or ip_set tag",
-                BOGUS_ANSWER_IPS_FIELD
+                "forward plugin '{}' field '{}' requires at least one IP rule or ip_set tag",
+                tag, BOGUS_ANSWER_IPS_FIELD
             )));
         }
 
@@ -181,7 +181,7 @@ mod tests {
     fn filter(raw: &str) -> BogusAnswerFilter {
         let value =
             serde_yaml_ng::from_str::<serde_yaml_ng::Value>(raw).expect("yaml should parse");
-        BogusAnswerFilter::from_value(Some(&value)).expect("filter should build")
+        BogusAnswerFilter::from_value(Some(&value), "forward-test").expect("filter should build")
     }
 
     fn response_with_ips(ips: &[IpAddr]) -> Message {
@@ -298,27 +298,31 @@ mod tests {
     #[test]
     fn invalid_rule_reports_field_name() {
         let value = serde_yaml_ng::Value::String("999.0.0.0/8".to_string());
-        let err =
-            BogusAnswerFilter::from_value(Some(&value)).expect_err("invalid CIDR must be rejected");
+        let err = BogusAnswerFilter::from_value(Some(&value), "forward-test")
+            .expect_err("invalid CIDR must be rejected");
         assert!(err.to_string().contains(BOGUS_ANSWER_IPS_FIELD));
     }
 
     #[test]
     fn empty_rule_list_is_rejected() {
         let value = serde_yaml_ng::Value::String(" , ".to_string());
-        let err = BogusAnswerFilter::from_value(Some(&value))
+        let err = BogusAnswerFilter::from_value(Some(&value), "forward-test")
             .expect_err("empty rule list must be rejected");
         assert!(
             err.to_string()
                 .contains("requires at least one IP rule or ip_set tag")
+        );
+        assert!(
+            err.to_string()
+                .contains("forward plugin 'forward-test' field 'bogus_answer_ips'")
         );
     }
 
     #[test]
     fn non_string_sequence_item_is_rejected() {
         let value = serde_yaml_ng::from_str::<serde_yaml_ng::Value>("- 1").expect("yaml");
-        let err =
-            BogusAnswerFilter::from_value(Some(&value)).expect_err("numeric rule must be rejected");
+        let err = BogusAnswerFilter::from_value(Some(&value), "forward-test")
+            .expect_err("numeric rule must be rejected");
         assert!(err.to_string().contains("bogus_answer_ips[0]"));
     }
 
