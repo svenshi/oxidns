@@ -14,12 +14,13 @@ use crate::infra::observability::metrics::{MetricLabel, MetricSample, MetricSink
 /// its resolved address; both are startup-fixed and bounded by the config, so
 /// this stays within the generic metrics layer's low-cardinality contract.
 #[derive(Debug)]
-struct UpstreamMetrics {
+pub(super) struct UpstreamMetrics {
     name: String,
     query_total: AtomicU64,
     success_total: AtomicU64,
     error_total: AtomicU64,
     timeout_total: AtomicU64,
+    pub(super) bogus_total: AtomicU64,
     latency_count: AtomicU64,
     latency_sum_ms: AtomicU64,
 }
@@ -32,6 +33,7 @@ impl UpstreamMetrics {
             success_total: AtomicU64::new(0),
             error_total: AtomicU64::new(0),
             timeout_total: AtomicU64::new(0),
+            bogus_total: AtomicU64::new(0),
             latency_count: AtomicU64::new(0),
             latency_sum_ms: AtomicU64::new(0),
         }
@@ -53,9 +55,10 @@ pub(super) struct ForwardMetrics {
     pub(super) error_total: AtomicU64,
     pub(super) timeout_total: AtomicU64,
     pub(super) incomplete_alias_selected_total: AtomicU64,
+    pub(super) bogus_answer_total: AtomicU64,
     pub(super) latency_count: AtomicU64,
     latency_sum_ms: AtomicU64,
-    upstreams: Vec<UpstreamMetrics>,
+    pub(super) upstreams: Vec<UpstreamMetrics>,
 }
 
 impl ForwardMetrics {
@@ -67,6 +70,7 @@ impl ForwardMetrics {
             error_total: AtomicU64::new(0),
             timeout_total: AtomicU64::new(0),
             incomplete_alias_selected_total: AtomicU64::new(0),
+            bogus_answer_total: AtomicU64::new(0),
             latency_count: AtomicU64::new(0),
             latency_sum_ms: AtomicU64::new(0),
             upstreams: upstream_names
@@ -104,6 +108,11 @@ impl ForwardMetrics {
     }
 
     #[inline]
+    pub(super) fn record_bogus_answer(&self, count: u64) {
+        self.bogus_answer_total.fetch_add(count, Ordering::Relaxed);
+    }
+
+    #[inline]
     fn record_latency(&self, start_ms: u64) {
         let elapsed = AppClock::elapsed_millis().saturating_sub(start_ms);
         self.latency_count.fetch_add(1, Ordering::Relaxed);
@@ -134,6 +143,14 @@ impl ForwardMetrics {
                 up.timeout_total.fetch_add(1, Ordering::Relaxed);
             }
             up.record_latency(start_ms);
+        }
+    }
+
+    /// Count one upstream response discarded by `bogus_answer_ips`.
+    #[inline]
+    pub(super) fn record_upstream_bogus(&self, idx: usize) {
+        if let Some(up) = self.upstreams.get(idx) {
+            up.bogus_total.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -180,6 +197,12 @@ impl MetricSource for ForwardMetrics {
             self.incomplete_alias_selected_total.load(Ordering::Relaxed),
         ));
         sink.emit(MetricSample::counter(
+            "forward_bogus_answer_total",
+            "Total upstream responses discarded because an answer address matched bogus_answer_ips.",
+            &labels,
+            self.bogus_answer_total.load(Ordering::Relaxed),
+        ));
+        sink.emit(MetricSample::counter(
             "forward_latency_count",
             "Total forward queries included in latency statistics.",
             &labels,
@@ -222,6 +245,12 @@ impl MetricSource for ForwardMetrics {
                 up.timeout_total.load(Ordering::Relaxed),
             ));
             sink.emit(MetricSample::counter(
+                "forward_upstream_bogus_total",
+                "Total responses from this upstream discarded because an answer address matched bogus_answer_ips.",
+                &labels,
+                up.bogus_total.load(Ordering::Relaxed),
+            ));
+            sink.emit(MetricSample::counter(
                 "forward_upstream_latency_count",
                 "Total attempts against this upstream included in latency statistics.",
                 &labels,
@@ -254,4 +283,48 @@ pub(super) fn upstream_metric_names(infos: &[&ConnectionInfo]) -> Vec<String> {
         names.push(name);
     }
     names
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct CollectSink {
+        samples: Vec<(String, Option<String>, u64)>,
+    }
+
+    impl MetricSink for CollectSink {
+        fn emit(&mut self, sample: MetricSample<'_>) {
+            let upstream = sample
+                .labels
+                .iter()
+                .find(|label| label.key == "upstream")
+                .map(|label| label.value.to_string());
+            self.samples
+                .push((sample.name.to_string(), upstream, sample.value));
+        }
+    }
+
+    #[test]
+    fn upstream_bogus_metric_is_emitted_per_upstream() {
+        let metrics = ForwardMetrics::new(
+            "forward-test".to_string(),
+            vec!["u0".to_string(), "u1".to_string()],
+        );
+        metrics.record_upstream_bogus(0);
+        metrics.record_upstream_bogus(0);
+        metrics.record_upstream_bogus(1);
+
+        let mut sink = CollectSink::default();
+        metrics.collect(&mut sink);
+
+        let got: Vec<_> = sink
+            .samples
+            .iter()
+            .filter(|(name, _, _)| name == "forward_upstream_bogus_total")
+            .map(|(_, upstream, value)| (upstream.as_deref(), *value))
+            .collect();
+        assert_eq!(got, vec![(Some("u0"), 2), (Some("u1"), 1)]);
+    }
 }
