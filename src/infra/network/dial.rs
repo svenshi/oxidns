@@ -485,14 +485,10 @@ fn is_connect_in_progress(err: &std::io::Error) -> bool {
     }
 
     #[cfg(unix)]
-    {
-        err.raw_os_error() == Some(libc::EINPROGRESS)
-    }
-
+    let in_progress = err.raw_os_error() == Some(libc::EINPROGRESS);
     #[cfg(not(unix))]
-    {
-        false
-    }
+    let in_progress = false;
+    in_progress
 }
 
 /// Create and configure a direct TCP stream.
