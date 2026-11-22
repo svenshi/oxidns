@@ -204,6 +204,15 @@ async fn concurrent_returns_error_when_all_upstreams_fail() {
 }
 
 #[test]
+fn upstream_log_name_combines_tag_and_addr() {
+    let mut info = ConnectionInfo::with_addr("1.1.1.1").expect("mock upstream addr must be valid");
+    assert_eq!(super::upstream_log_name(&info), "1.1.1.1");
+
+    info.tag = Some("google".to_string());
+    assert_eq!(super::upstream_log_name(&info), "google(1.1.1.1)");
+}
+
+#[test]
 fn validate_rejects_empty_upstreams() {
     let factory = ForwardFactory;
     let cfg = make_plugin_config("upstreams: []");

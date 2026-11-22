@@ -116,7 +116,12 @@ impl ConcurrentForwarder {
                 match &result {
                     Ok(_) => metrics.record_upstream_success(selected_idx, up_start),
                     Err(e) => {
-                        metrics.record_upstream_error(selected_idx, up_start, is_timeout_error(e))
+                        metrics.record_upstream_error(selected_idx, up_start, is_timeout_error(e));
+                        warn!(
+                            "DNS query failed - upstream: {}, reason: {}",
+                            super::upstream_log_name(upstream.connection_info()),
+                            e
+                        );
                     }
                 }
                 if event_enabled!(Level::DEBUG) {

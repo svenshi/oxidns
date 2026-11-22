@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use tokio::task::{JoinError, JoinSet};
-use tracing::warn;
 
 use super::is_timeout_error;
 use crate::core::response::{
@@ -112,7 +111,6 @@ impl<'a> SelectionState<'a> {
     }
 
     fn record_error(&mut self, err: DnsError) {
-        warn!("DNS query failed: {}", err);
         self.last_timeout |= is_timeout_error(&err);
         self.last_error = Some(err.to_string());
     }

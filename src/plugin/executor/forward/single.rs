@@ -68,7 +68,8 @@ impl Executor for SingleDnsForwarder {
                 self.metrics.record_error(start_ms, timeout);
                 self.metrics.record_upstream_error(0, start_ms, timeout);
                 warn!(
-                    "DNS query failed - source: {}, queries: {:?}, id: {}, reason: {}",
+                    "DNS query failed - upstream: {}, source: {}, queries: {:?}, id: {}, reason: {}",
+                    super::upstream_log_name(self.upstream.connection_info()),
                     context.peer_addr(),
                     context.request.questions(),
                     context.request.id(),
