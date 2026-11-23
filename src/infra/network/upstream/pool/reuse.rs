@@ -118,11 +118,8 @@ impl<C: Connection> ConnectionPool<C> for ReusePool<C> {
             return;
         }
 
-        // A parked waiter cannot observe queue or capacity changes directly, so
-        // it must be woken when this round either puts a connection back in the
-        // queue or drops one (freeing its slot). Both matter because a round
-        // that only evicts idle/invalid connections may neither re-queue nor
-        // expand when the remaining count still meets `min_size`.
+        // Track every path that restores capacity a parked waiter can use: a
+        // connection re-queued here, or one dropped below (freeing its slot).
         let mut requeued = false;
         for _ in 0..check_count {
             if let Some(conn) = self.connections.pop() {
@@ -166,6 +163,8 @@ impl<C: Connection> ConnectionPool<C> for ReusePool<C> {
             }
         }
 
+        // Wake parked waiters once for either restored path; the expand below
+        // is skipped when the remaining count still meets `min_size`.
         if requeued || !drop_vec.is_empty() || !invalid_vec.is_empty() {
             self.release_notified.notify_waiters();
         }
