@@ -198,21 +198,18 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
           { label: "负向共识", value: "consensus" },
         ],
       },
-      {
-        ...stringArrayField(
-          "bogus_answer_ips",
-          "虚假应答地址",
-          "0.0.0.0/8\n127.0.0.0/8\n$reserved_ips",
-          false,
-          "规则列表形式：支持单个 IP、CIDR、$ip_set 引用与规则文件；answer 中任一 A/AAAA 命中即丢弃该上游应答；留空表示关闭。",
-          undefined,
-          [
-            providerReferenceArrayItem("reserved_ips"),
-            inputArrayItem("0.0.0.0/8"),
-          ],
-        ),
-        advanced: true,
-      },
+      stringArrayField(
+        "bogus_answer_ips",
+        "虚假应答地址",
+        "0.0.0.0/8\n127.0.0.0/8\n$reserved_ips",
+        false,
+        "规则列表形式：支持单个 IP、CIDR、$ip_set 引用与规则文件；answer 中任一 A/AAAA 命中即丢弃该上游应答；留空表示关闭。",
+        undefined,
+        [
+          providerReferenceArrayItem("reserved_ips"),
+          inputArrayItem("0.0.0.0/8"),
+        ],
+      ),
       {
         key: "upstreams",
         description: "定义一个或多个上游目标。",
