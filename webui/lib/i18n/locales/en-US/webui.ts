@@ -264,6 +264,7 @@ export const enUSWebui = {
     stale: "Stale",
     truncated: "Truncated response",
     noTtl: "No TTL",
+    incompleteAnswer: "Incomplete alias response",
     lowPositiveTtl: "Low positive TTL",
     started: "Started",
     success: "Success",

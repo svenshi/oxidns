@@ -610,7 +610,7 @@ export const enUSPluginDefined = {
           cache_insert_total:
             "The total number of times cache entries have been inserted or updated.",
           cache_skip_total:
-            "The total number of responses that were skipped from cache due to write policy (truncated responses, no TTL, low positive TTL).",
+            "The total number of responses that were skipped from cache due to write policy (truncated responses, no TTL, incomplete alias responses, low positive TTL).",
           cache_lazy_refresh_total:
             "Total number of Lazy Cache background refresh attempts (by result: started / success / failed).",
           cache_entry_count: "The number of entries currently in the cache.",
