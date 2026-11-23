@@ -445,7 +445,6 @@ export const zhCNPluginDefined = {
           forward_success_total: "成功",
           forward_error_total: "失败",
           forward_timeout_total: "超时",
-          forward_incomplete_alias_selected_total: "不完整别名响应",
           forward_latency_count: "延迟样本",
           forward_latency_sum_ms: "延迟累计(ms)",
           forward_upstream_query_total: "上游查询",
@@ -460,8 +459,6 @@ export const zhCNPluginDefined = {
           forward_success_total: "成功获得上游响应的查询总数。",
           forward_error_total: "上游返回错误或无法获得响应的查询总数。",
           forward_timeout_total: "因超时未得到上游响应的查询总数。",
-          forward_incomplete_alias_selected_total:
-            "并发选择模式（balanced、prefer_positive、consensus）将不完整的 CNAME 别名响应作为最佳结果选中的次数；单上游与 fastest 模式不统计。",
           forward_latency_count: "纳入延迟统计的已完成查询数。",
           forward_latency_sum_ms: "所有已完成转发查询的总延迟（毫秒）。",
           forward_upstream_query_total: "向该上游发起的请求总数。",
