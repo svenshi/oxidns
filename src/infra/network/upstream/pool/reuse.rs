@@ -118,6 +118,11 @@ impl<C: Connection> ConnectionPool<C> for ReusePool<C> {
             return;
         }
 
+        // A parked waiter cannot observe queue or capacity changes directly, so
+        // it must be woken when this round either puts a connection back in the
+        // queue or drops one (freeing its slot). Both matter because a round
+        // that only evicts idle/invalid connections may neither re-queue nor
+        // expand when the remaining count still meets `min_size`.
         let mut requeued = false;
         for _ in 0..check_count {
             if let Some(conn) = self.connections.pop() {
@@ -161,9 +166,7 @@ impl<C: Connection> ConnectionPool<C> for ReusePool<C> {
             }
         }
 
-        // A waiter can park against an empty queue while maintain holds the
-        // popped connections; re-queued entries must wake it.
-        if requeued {
+        if requeued || !drop_vec.is_empty() || !invalid_vec.is_empty() {
             self.release_notified.notify_waiters();
         }
 
@@ -278,9 +281,9 @@ impl<C: Connection> ReusePool<C> {
                 debug!("Pool is full, waiting for release...");
                 // Register as a waiter *before* the final re-check so a
                 // connection released between the check above and the await is
-                // not lost: `enable()` claims any stored `notify_one` permit,
-                // and once registered we will observe a later `notify_waiters`
-                // from a close that frees capacity.
+                // not lost: `enable()` registers this future in the notify wait
+                // list immediately, so a later `notify_one` from a release (or
+                // `notify_waiters` from a close) cannot slip past us.
                 let notified = self.release_notified.notified();
                 tokio::pin!(notified);
                 notified.as_mut().enable();
@@ -321,11 +324,10 @@ impl<C: Connection> ReusePool<C> {
             self.close_active_connection(conn);
         } else {
             debug!("Connection released back to pool");
-            // One stored permit can collapse across consecutive releases and
-            // strand a parked waiter despite free capacity; wake parked
-            // waiters as well.
+            // Waiters enable their notified future before the final capacity
+            // re-check, so they are already registered here and consecutive
+            // releases each wake a distinct one.
             self.release_notified.notify_one();
-            self.release_notified.notify_waiters();
         }
     }
 
@@ -364,8 +366,10 @@ impl<C: Connection> ReusePool<C> {
                 Ok(conn) => {
                     if self.connections.push(conn.clone()).is_ok() {
                         created.push(conn);
+                        // Each new queued connection wakes one registered
+                        // waiter; `enable()` guarantees they are registered
+                        // before their final capacity re-check.
                         self.release_notified.notify_one();
-                        self.release_notified.notify_waiters();
                     } else {
                         debug!("Pool queue is full while expanding, closing new connection");
                         self.close_active_connection(conn);
@@ -853,6 +857,87 @@ mod tests {
         assert_eq!(conn.close_calls(), 0);
         assert_eq!(pool.connections.len(), 1);
         assert_eq!(pool.active_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn test_maintain_wakes_waiter_after_requeueing_valid_connection() {
+        AppClock::start();
+        let pool = make_pool(0, 1, 10, MockBuilder::new(vec![]));
+        pool.active_count.store(1, Ordering::Relaxed);
+
+        let mut waiting = Box::pin(pool.get(QueryDeadline::new(Duration::from_secs(1))));
+        assert!(
+            futures::poll!(&mut waiting).is_pending(),
+            "get must park while the only connection slot is taken"
+        );
+
+        // Maintenance pops the queued connection, finds it valid, and re-queues
+        // it while the waiter is already parked.
+        let conn = Arc::new(MockConnection::new(true, 0, AppClock::elapsed_millis()));
+        pool.connections
+            .push(conn.clone())
+            .expect("queue should accept connection");
+        pool.maintain().await;
+
+        let borrowed = match futures::poll!(&mut waiting) {
+            std::task::Poll::Ready(result) => {
+                result.expect("waiter should reuse the requeued connection")
+            }
+            std::task::Poll::Pending => {
+                panic!("maintenance requeue must wake the parked waiter")
+            }
+        };
+        assert!(Arc::ptr_eq(
+            borrowed
+                .conn
+                .as_ref()
+                .expect("borrowed connection should exist"),
+            &conn
+        ));
+        borrowed.release();
+    }
+
+    #[tokio::test]
+    async fn test_maintain_wakes_waiter_when_dropping_connection_frees_capacity() {
+        AppClock::start();
+        let replacement = Arc::new(MockConnection::new(true, 0, 0));
+        let pool = make_pool(0, 1, 0, MockBuilder::new(vec![Ok(replacement.clone())]));
+        pool.active_count.store(1, Ordering::Relaxed);
+
+        let mut waiting = Box::pin(pool.get(QueryDeadline::new(Duration::from_secs(1))));
+        assert!(
+            futures::poll!(&mut waiting).is_pending(),
+            "get must park while the only connection slot is taken"
+        );
+
+        // The idle-timeout drop frees the only connection slot while the pool
+        // still meets `min_size`, so maintenance neither re-queues nor expands.
+        let idle = Arc::new(MockConnection::new(true, 0, 0));
+        pool.connections
+            .push(idle.clone())
+            .expect("queue should accept connection");
+        pool.maintain().await;
+
+        assert_eq!(idle.close_calls(), 1);
+        assert!(pool.connections.is_empty());
+        assert_eq!(pool.active_count.load(Ordering::Relaxed), 0);
+
+        let borrowed = match futures::poll!(&mut waiting) {
+            std::task::Poll::Ready(result) => {
+                result.expect("waiter should create a replacement connection")
+            }
+            std::task::Poll::Pending => {
+                panic!("freed connection capacity must wake the parked waiter")
+            }
+        };
+        assert!(Arc::ptr_eq(
+            borrowed
+                .conn
+                .as_ref()
+                .expect("borrowed connection should exist"),
+            &replacement
+        ));
+        borrowed.release();
     }
 
     #[tokio::test]
