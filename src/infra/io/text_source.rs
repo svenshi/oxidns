@@ -160,6 +160,10 @@ impl<'a> TextSource<'a> {
     /// consistent. A file that disappears after this call still aborts later
     /// scans, matching the fingerprint-change protection. Returns the session
     /// plus the files that were skipped at open time.
+    ///
+    /// Only feature-enabled consumers use this today; keep it available to the
+    /// always-compiled test suite and to future tolerant replay callers.
+    #[allow(dead_code)]
     pub(crate) fn open_replay_tolerant(
         &self,
     ) -> Result<
