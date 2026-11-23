@@ -118,8 +118,8 @@ impl<C: Connection> ConnectionPool<C> for ReusePool<C> {
             return;
         }
 
-        // Track every path that restores capacity a parked waiter can use: a
-        // connection re-queued here, or one dropped below (freeing its slot).
+        // Track every path that restores usable capacity for a parked waiter:
+        // a connection put back in the queue, or one dropped (freeing its slot).
         let mut requeued = false;
         for _ in 0..check_count {
             if let Some(conn) = self.connections.pop() {
@@ -281,8 +281,9 @@ impl<C: Connection> ReusePool<C> {
                 // Register as a waiter *before* the final re-check so a
                 // connection released between the check above and the await is
                 // not lost: `enable()` registers this future in the notify wait
-                // list immediately, so a later `notify_one` from a release (or
-                // `notify_waiters` from a close) cannot slip past us.
+                // list and claims any stored `notify_one` permit, so a wakeup
+                // sent after this point (release, close, expand, maintenance)
+                // cannot slip past us.
                 let notified = self.release_notified.notified();
                 tokio::pin!(notified);
                 notified.as_mut().enable();
@@ -324,8 +325,8 @@ impl<C: Connection> ReusePool<C> {
         } else {
             debug!("Connection released back to pool");
             // Waiters enable their notified future before the final capacity
-            // re-check, so they are already registered here and consecutive
-            // releases each wake a distinct one.
+            // re-check, so they are registered here and each release wakes a
+            // distinct one instead of collapsing into a stored permit.
             self.release_notified.notify_one();
         }
     }
@@ -365,9 +366,9 @@ impl<C: Connection> ReusePool<C> {
                 Ok(conn) => {
                     if self.connections.push(conn.clone()).is_ok() {
                         created.push(conn);
-                        // Each new queued connection wakes one registered
-                        // waiter; `enable()` guarantees they are registered
-                        // before their final capacity re-check.
+                        // Each queued connection sends one `notify_one`, which
+                        // wakes a waiter already registered via `enable()` or
+                        // leaves a permit for the next one to claim.
                         self.release_notified.notify_one();
                     } else {
                         debug!("Pool queue is full while expanding, closing new connection");
