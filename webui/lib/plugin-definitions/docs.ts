@@ -573,10 +573,11 @@ export const pluginFieldDocs = {
   },
   edns0opt: {
     codes:
-      "`codes` 为 EDNS0 option code 列表。\n\n- 类型：`array`；必填：是；默认值：无\n- 作用：定义需要存在的 EDNS0 option code 集合。\n- 仅支持十进制数值（例如 `8`、`12`），不提供 code 别名。\n- 运行影响：\n  - 列表为空时配置解析失败，不会静默生成永不命中的 matcher。",
+      "`codes` 为 EDNS0 option code 列表。\n\n- 类型：`array`；必填：是；默认值：无\n- 作用：定义需要存在的 EDNS0 option code 集合。\n- 支持整数与十进制数字字符串（例如 `8` 与 `\"8\"` 等价），可在同一列表中混用，统一按 u16 校验；不提供 code 别名。\n- 运行影响：\n  - 列表为空时配置解析失败，不会静默生成永不命中的 matcher。",
     require:
       "- 类型：`string`；必填：否；默认值：`any`\n- 支持取值：\n  - `any`：任一配置 code 存在即命中\n  - `all`：全部配置 code 都必须存在\n- 运行影响：只影响多个 code 之间的组合判断方式。",
-    resp: "- 类型：`bool`；必填：否；默认值：`false`\n- 作用：为 `false` 时读取请求 OPT；为 `true` 时读取响应 OPT。\n- 运行影响：\n  - `resp: true` 且上下文中尚无响应时返回 `false`。",
+    source:
+      "- 类型：`string`；必填：否；默认值：`request`\n- 支持取值：\n  - `request`：读取请求 OPT\n  - `response`：读取响应 OPT\n- 运行影响：\n  - `source: response` 且上下文中尚无响应时返回 `false`。",
   },
   client_ip: {
     args: "`client_ip` 的 `args` 采用规则列表形式。\n\n- 类型：`array`；必填：是；默认值：无\n- 作用：定义客户端来源地址匹配条件。\n- 支持元素：\n  - 单个 IP\n  - CIDR\n  - `ip_set` 引用\n- 运行影响：\n  - 只要客户端来源地址命中任一规则，matcher 即返回 `true`。",

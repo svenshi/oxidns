@@ -201,10 +201,12 @@ Matches by the presence of EDNS0 option codes in the request or response OPT rec
 ```yaml
 - tag: has_ecs
   type: edns0opt
-  codes:
-    - 8
-  require: any
-  resp: false
+  args:
+    codes:
+      - 8
+      - "12"
+    require: any
+    source: request
 ```
 
 Match the response side and require multiple codes at once:
@@ -212,37 +214,43 @@ Match the response side and require multiple codes at once:
 ```yaml
 - tag: has_subnet_and_padding
   type: edns0opt
-  codes:
-    - 8
-    - 12
-  require: all
-  resp: true
+  args:
+    codes:
+      - 8
+      - 12
+    require: all
+    source: response
 ```
 
 ### Configuration Details
 
+The configuration fields of `edns0opt` live under `args`:
+
 - `codes`
   - Type: `array`; Required: yes; Default: none
   - Function: define the EDNS0 option codes that must be present.
-  - Decimal numeric values only; no code aliases.
+  - Accepts both integers and decimal strings (so `8` and `"8"` are equivalent) and allows them to be mixed in one list; both forms are validated as u16. No code aliases.
   - An empty list fails configuration parsing instead of producing a matcher that never hits.
 - `require`
   - Type: `string`; Required: no; Default: `any`
   - `any`: matches when at least one configured code is present.
   - `all`: every configured code must be present.
-- `resp`
-  - Type: `bool`; Required: no; Default: `false`
-  - `false`: read the request OPT; `true`: read the response OPT.
-  - With `resp: true`, returns `false` when the context has no response yet.
+- `source`
+  - Type: `string`; Required: no; Default: `request`
+  - `request`: read the request OPT; `response`: read the response OPT.
+  - With `source: response`, returns `false` when the context has no response yet.
 
 ### quick setup
 
 ```yaml
 - matches: "edns0opt 8,12"
-- matches: "edns0opt all resp 8,12"
 ```
 
-Numeric tokens map to `codes`; `any` / `all` switch `require`, and `resp` is equivalent to `resp: true`.
+Quick setup only accepts a code list and is equivalent to `require: any` and `source: request`: it matches when any configured code is present in the request. Modifiers such as `any` / `all` / `resp` are rejected. To match the response side or require every code, define a named matcher with the full configuration above and reference it by `$tag`:
+
+```yaml
+- matches: "$has_subnet_and_padding"
+```
 
 ### Behavior
 

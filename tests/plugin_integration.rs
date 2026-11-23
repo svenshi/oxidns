@@ -1741,6 +1741,44 @@ plugins:
 }
 
 #[tokio::test]
+async fn test_edns0opt_matcher_config_under_args_initialize() -> Result<()> {
+    let yaml = r#"
+log:
+  level: info
+plugins:
+  - tag: has_ecs
+    type: edns0opt
+    args:
+      codes:
+        - 8
+      require: any
+      source: request
+  - tag: has_subnet_and_padding
+    type: edns0opt
+    args:
+      codes:
+        - 8
+        - "12"
+      require: all
+      source: response
+"#;
+
+    let config = parse_config(yaml)?;
+    let registry = plugin::init(config).await?;
+
+    for tag in ["has_ecs", "has_subnet_and_padding"] {
+        let matcher = registry
+            .get_plugin(tag)
+            .unwrap_or_else(|| panic!("{} matcher should be registered", tag));
+        assert_eq!(matcher.plugin_type, PluginType::Matcher);
+        assert_eq!(matcher.plugin_name, "edns0opt");
+    }
+
+    registry.destroy().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_sequence_accept_in_jump_stops_current_and_parent_sequences() -> Result<()> {
     let yaml = r#"
 log:

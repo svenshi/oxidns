@@ -596,10 +596,10 @@ export const enUSDocs = {
   },
   edns0opt: {
     codes:
-      "`codes` is a list of EDNS0 option codes.\n\n- Type: `array`; Required: Yes; Default: None\n- Function: Define the EDNS0 option codes that must be present.\n- Only decimal numeric values (such as `8`, `12`) are supported; no code aliases.\n- Operational impact:\n  - An empty list fails configuration parsing instead of silently producing a matcher that never hits.",
+      "`codes` is a list of EDNS0 option codes.\n\n- Type: `array`; Required: Yes; Default: None\n- Function: Define the EDNS0 option codes that must be present.\n- Accepts both integers and decimal strings (so `8` and `\"8\"` are equivalent) and allows them to be mixed in one list; both forms are validated as u16. No code aliases.\n- Operational impact:\n  - An empty list fails configuration parsing instead of silently producing a matcher that never hits.",
     require:
       "- Type: `string`; Required: No; Default: `any`\n- Supported values:\n  - `any`: match when at least one configured code is present\n  - `all`: every configured code must be present\n- Operational impact: only affects how multiple codes are combined.",
-    resp: '- Type: `bool`; Required: No; Default: `false`\n- Function: `false` reads the request OPT; `true` reads the response OPT.\n- Operational impact:\n  - With `resp: true`, returns `false` when the context has no response yet.',
+    source: '- Type: `string`; Required: No; Default: `request`\n- Supported values:\n  - `request`: read the request OPT\n  - `response`: read the response OPT\n- Operational impact:\n  - With `source: response`, returns `false` when the context has no response yet.',
   },
   client_ip: {
     args: "The `args` of `client_ip` takes the form of a list of rules.\n\n- Type: `array`; Required: Yes; Default: None\n- Function: Define client source address matching conditions.\n- Support elements:\n  - Single IP\n  - CIDR\n  - `ip_set` reference\n- Operational impact:\n  - As long as the client source address matches any rule, matcher returns `true`.",

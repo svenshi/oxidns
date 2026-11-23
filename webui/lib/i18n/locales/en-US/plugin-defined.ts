@@ -2467,7 +2467,7 @@ export const enUSPluginDefined = {
         codes: {
           label: "Option Code",
           description:
-            "Required and non-empty; define the EDNS0 option codes that must be present. Numeric values only.",
+            'Required and non-empty; define the EDNS0 option codes that must be present. Integers and decimal strings (8 and "8") are equivalent and may be mixed; all values are validated as u16.',
           example: "8\n12",
         },
         "codes[]": {
@@ -2477,16 +2477,20 @@ export const enUSPluginDefined = {
         require: {
           label: "Match requirement",
           description:
-            "any matches when at least one code is present; all requires every code to be present.",
+            "any (default) matches when at least one code is present; all requires every code to be present.",
           options: {
             any: "Any",
             all: "All",
           },
         },
-        resp: {
-          label: "Match response side",
+        source: {
+          label: "Match source",
           description:
-            "Off matches the request OPT (default); on matches the response OPT.",
+            "request (default) reads the request OPT; response reads the response OPT.",
+          options: {
+            request: "Request",
+            response: "Response",
+          },
         },
       },
       quickSetup: {
