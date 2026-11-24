@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::fs::File;
-use std::io::{BufReader, Read, Seek};
+use std::io::{BufReader, Error as IoError, Read, Seek};
 use std::path::{Path, PathBuf};
 
 use prost::Message;
@@ -117,11 +117,11 @@ pub(crate) struct DatFileSession {
 }
 
 impl DatFileSession {
-    pub(crate) fn open(path: &Path) -> Result<Self, String> {
-        let file = File::open(path)
-            .map_err(|error| format!("failed to open '{}': {error}", path.display()))?;
-        file.metadata()
-            .map_err(|error| format!("failed to inspect '{}': {error}", path.display()))?;
+    /// Open failures stay typed as I/O errors so callers can distinguish an
+    /// unavailable file from invalid dat content.
+    pub(crate) fn open(path: &Path) -> Result<Self, IoError> {
+        let file = File::open(path)?;
+        file.metadata()?;
         Ok(Self {
             path: path.to_path_buf(),
             file,
@@ -389,7 +389,9 @@ mod streaming_tests {
     where
         F: FnMut(GeoSite) -> Result<(), String>,
     {
-        DatFileSession::open(path)?.visit_geosite(on_entry)
+        DatFileSession::open(path)
+            .map_err(|error| format!("failed to open '{}': {error}", path.display()))?
+            .visit_geosite(on_entry)
     }
 
     fn encoded_site(code: &str) -> Vec<u8> {

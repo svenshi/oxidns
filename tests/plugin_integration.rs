@@ -4585,19 +4585,12 @@ plugins:
       - "$geoip_missing"
 "#
     );
-    // A selector with no matching entries degrades the provider instead of
-    // aborting startup: init succeeds, the file is reported degraded, and the
-    // provider matches nothing.
-    let registry = plugin::init(parse_config(&missing_code_yaml)?).await?;
-    let provider = registry
-        .get_plugin("geoip_missing")
-        .expect("degraded geoip provider should exist")
-        .to_provider();
-    let degraded = provider.degraded_files();
-    assert_eq!(degraded.len(), 1, "degraded file should be reported");
-    assert!(degraded[0].contains("geoip.dat"));
-    assert!(!provider.contains_ip("1.2.3.4".parse()?));
-    registry.destroy().await;
+    // A selector with no matching entries is a configuration error, not an
+    // unavailable file: it still aborts startup.
+    let err = plugin::init(parse_config(&missing_code_yaml)?)
+        .await
+        .expect_err("missing geoip code should fail");
+    assert!(err.to_string().contains("found no geoip entries"));
 
     let wrong_set_yaml = format!(
         r#"
