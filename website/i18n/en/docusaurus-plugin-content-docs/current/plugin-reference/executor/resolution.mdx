@@ -25,6 +25,10 @@ Sends DNS queries to upstreams.
     concurrent: 3
     # Concurrent upstream response selection: fastest / balanced / prefer_positive / consensus
     response_selection: balanced
+    # Optional: drop upstream answers whose addresses match these rules; standard IP rule-list syntax
+    bogus_answer_ips:
+      - "0.0.0.0/8"
+      - "127.0.0.0/8"
     upstreams:
       # Simplest UDP upstream
       - tag: "cf_udp"
@@ -82,11 +86,32 @@ Sends DNS queries to upstreams.
   - **Definitive negative**: `NXDOMAIN`, or NODATA that establishes the requested type is absent.
   - **Other**: for example `SERVFAIL`, `REFUSED`, a mismatched Question, unrelated Answers, a CNAME loop, or conflicting aliases.
 - If all started upstreams finish without an early winner, the common fallback order is `complete positive > incomplete alias > definitive negative > other`; the later completion wins among equal-ranked responses. Transport errors do not participate in this ranking and fail `forward` only when no upstream produced a DNS response.
+- Responses matching `bogus_answer_ips` are discarded as a whole before classification and do not participate in any strategy below.
 - Modes:
   - `fastest`: the first successfully returned DNS Message wins immediately, without query-aware classification. “Successful” means only that the upstream returned a DNS Message, so `NXDOMAIN`, `SERVFAIL`, `REFUSED`, or CNAME-only can win; transport errors cannot.
   - `balanced`: default mode. A complete positive wins immediately. The first definitive negative starts a fixed 100ms grace window that still allows a complete positive to win. When the window expires, or all upstreams finish, the common fallback order is used. Incomplete aliases and other responses do not start the grace window by themselves.
   - `prefer_positive`: a complete positive wins immediately. Otherwise, OxiDNS waits for every started upstream and then uses the common fallback order. Consequently, an incomplete alias outranks a single negative when no complete positive exists.
   - `consensus`: one complete positive still wins immediately. `NXDOMAIN` and NODATA are counted separately; two negatives of the same kind can confirm and return a negative early, without requiring identical SOA data or identical wire messages. Fan-out below two falls back to `prefer_positive`. If every upstream finishes without negative consensus, the common fallback order still returns the best available response and may therefore return a single negative. This is a negative-confidence policy, not strict majority voting across all responses.
+
+#### `bogus_answer_ips`
+
+- Type: `string` or `array`; Required: no; Default: disabled
+- Purpose: Defines bogus answer address rules; a matching upstream answer is discarded as a whole.
+- Syntax: standard IP rule-list syntax.
+  - A single IP
+  - CIDR
+  - `$ip_set` reference (declared as a provider dependency and validated with `supports_ip_matching()` at startup)
+  - `&rule file` (blank lines and `#` comments are supported)
+  - String values may be split into multiple entries by commas or whitespace; a list of strings is also accepted.
+- Match scope: A/AAAA records in the response answer section only; any matching address discards the entire response.
+- Runtime impact:
+  - Filtering runs before response classification and selection, so discarded answers never become candidates, votes, or ranking entries, and `fastest` skips them too.
+  - Applies to both single- and multi-upstream configurations; in single-upstream mode `forward` returns an error and writes no response.
+  - When every started upstream is discarded, `forward` fails and `fallback` can take over.
+  - Dropped responses are never written to the positive or negative cache.
+  - A field that parses to neither inline rules nor `$ip_set` references fails startup.
+- Recommended set (not a built-in default): `0.0.0.0/8`, `127.0.0.0/8`, `::/128`, `::1/128`.
+- Note: some upstreams answer ad-blocked domains with `0.0.0.0`. Deployments that rely on that behavior should not enable this field, or should exclude `0.0.0.0/8`.
 
 #### CNAME response handling
 
@@ -244,6 +269,7 @@ Use the full plugin form for bootstrap, proxy, HTTP/3, pool settings, and other 
 
 - Single-upstream mode queries the configured upstream directly.
 - Multi-upstream mode races queries from a randomized starting point and keeps the first successful answer.
+- Upstream answers matching `bogus_answer_ips` are discarded whole before classification and selection; they are never returned as usable results such as `0.0.0.0`.
 - With `short_circuit` enabled, a successful upstream response stops the remaining executor chain immediately.
 
 ### Metrics
@@ -255,10 +281,13 @@ Exported through the global `GET /api/metrics` endpoint:
 - `forward_error_total`
 - `forward_timeout_total`
 - `forward_incomplete_alias_selected_total`
+- `forward_bogus_answer_total`
 - `forward_latency_count`
 - `forward_latency_sum_ms`
 
 `forward_incomplete_alias_selected_total` only covers selection-aware concurrent modes (`balanced`, `prefer_positive`, and `consensus`). Single-upstream and `fastest` paths do not scan responses solely for this metric.
+
+`forward_bogus_answer_total` counts upstream responses discarded because an answer address matched `bogus_answer_ips`; both single- and multi-upstream paths increment it.
 
 Per-upstream series are also exported with an `upstream` label (the upstream tag, or its resolved address when no tag is configured):
 
@@ -266,8 +295,11 @@ Per-upstream series are also exported with an `upstream` label (the upstream tag
 - `forward_upstream_success_total`
 - `forward_upstream_error_total`
 - `forward_upstream_timeout_total`
+- `forward_upstream_bogus_total`
 - `forward_upstream_latency_count`
 - `forward_upstream_latency_sum_ms`
+
+`forward_upstream_bogus_total` counts discarded answers per upstream, which helps identify an upstream that keeps returning polluted addresses; single-upstream configurations also increment it.
 
 ### Typical Uses
 

@@ -7,7 +7,37 @@ use crate::infra::error::{DnsError, Result as DnsResult};
 
 pub(crate) fn parse_rules_from_value(args: Option<Value>) -> DnsResult<Vec<String>> {
     let args = args.ok_or_else(|| DnsError::plugin("matcher requires args"))?;
-    parse_rule_list_value(args)
+    parse_rule_list("matcher args", args)
+}
+
+/// Split a rule-list field into raw rule tokens.
+///
+/// Shared by matcher `args` and non-matcher consumers (for example the
+/// `forward` plugin's `bogus_answer_ips`). `field` names the offending
+/// configuration field in error messages.
+pub(crate) fn parse_rule_list(field: &str, value: Value) -> DnsResult<Vec<String>> {
+    match value {
+        Value::String(value) => Ok(split_rule_tokens(&value)),
+        Value::Sequence(sequence) => {
+            let mut rules = Vec::with_capacity(sequence.len());
+            for (idx, item) in sequence.into_iter().enumerate() {
+                match item {
+                    Value::String(value) => rules.extend(split_rule_tokens(&value)),
+                    other => {
+                        return Err(DnsError::plugin(format!(
+                            "{}[{}] must be a string, got {:?}",
+                            field, idx, other
+                        )));
+                    }
+                }
+            }
+            Ok(rules)
+        }
+        other => Err(DnsError::plugin(format!(
+            "{} must be a string or string array, got {:?}",
+            field, other
+        ))),
+    }
 }
 
 pub(crate) fn parse_enum_rules_from_value(
@@ -37,31 +67,6 @@ pub(crate) fn validate_non_empty_rules(field: &str, rules: &[String]) -> DnsResu
         )));
     }
     Ok(())
-}
-
-fn parse_rule_list_value(value: Value) -> DnsResult<Vec<String>> {
-    match value {
-        Value::String(value) => Ok(split_rule_tokens(&value)),
-        Value::Sequence(sequence) => {
-            let mut rules = Vec::with_capacity(sequence.len());
-            for item in sequence {
-                match item {
-                    Value::String(value) => rules.extend(split_rule_tokens(&value)),
-                    other => {
-                        return Err(DnsError::plugin(format!(
-                            "matcher args must be string list, got {:?}",
-                            other
-                        )));
-                    }
-                }
-            }
-            Ok(rules)
-        }
-        other => Err(DnsError::plugin(format!(
-            "matcher args must be string or string array, got {:?}",
-            other
-        ))),
-    }
 }
 
 fn parse_enum_rule_list_value(field: &str, value: Value) -> DnsResult<Vec<String>> {

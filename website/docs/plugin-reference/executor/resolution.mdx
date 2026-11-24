@@ -25,6 +25,10 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
     concurrent: 3
     # 并发上游结果选择模式：fastest / balanced / prefer_positive / consensus
     response_selection: balanced
+    # 可选：命中这些地址的上游应答整条丢弃；使用标准 IP 规则列表语法
+    bogus_answer_ips:
+      - "0.0.0.0/8"
+      - "127.0.0.0/8"
     upstreams:
       # 最简单的 UDP 上游
       - tag: "cf_udp"
@@ -83,11 +87,32 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
   - **确定负响应（definitive negative）**：`NXDOMAIN`，或者确认请求类型不存在的 NODATA。
   - **其他响应（other）**：例如 `SERVFAIL`、`REFUSED`、Question 不匹配、无关 Answer、CNAME 环或冲突。
 - 当策略等待到所有已启动上游结束、且没有触发提前返回时，统一按 `完整正响应 > 不完整别名 > 确定负响应 > 其他响应` 选择；同等级响应以后完成者为准。传输错误不参与响应排名，只有所有上游均未产生 DNS 响应时才导致 `forward` 失败。
+- 命中 `bogus_answer_ips` 的应答会在分类前被整条丢弃，不参与以下任何选择策略。
 - 模式说明：
   - `fastest`：第一个成功返回的 DNS Message 立即胜出，不执行 query-aware 分类。这里的“成功”只表示上游返回了 DNS Message，因此 `NXDOMAIN`、`SERVFAIL`、`REFUSED` 或 CNAME-only 都可能胜出；传输错误不会胜出。
   - `balanced`：默认模式。完整正响应立即胜出。第一个确定负响应会启动固定 100ms 的 grace window，窗口内仍等待完整正响应；窗口到期或全部上游完成后按上述统一排名选择。不完整别名和其他响应本身不会启动 grace window。
   - `prefer_positive`：完整正响应立即胜出；否则等待所有已启动上游完成，再按统一排名选择。因此在没有完整正响应时，不完整别名会优先于单个负响应。
   - `consensus`：完整正响应仍由一票立即胜出。`NXDOMAIN` 与 NODATA 分开计票，两个同类负响应可提前确认并返回对应负响应；不要求两个负响应的 SOA 或完整报文完全相同。若并发数小于 2，则退化为 `prefer_positive`。如果所有上游结束仍没有负共识，则按统一排名返回最佳可用响应，此时仍可能返回单个负响应；因此该模式是“负向谨慎”，不是严格的全响应多数决。
+
+#### `bogus_answer_ips`
+
+- 类型：`string` 或 `array`；必填：否；默认值：关闭
+- 作用：定义虚假应答地址规则，命中后整条上游应答被丢弃。
+- 语法：标准 IP 规则列表语法。
+  - 单个 IP
+  - CIDR
+  - `$ip_set` 引用（依赖图中声明为 provider 依赖，启动时校验 `supports_ip_matching()`）
+  - `&规则文件`（文件内支持空行与 `#` 注释）
+  - 字符串形式可按逗号/空白拆成多条；也支持字符串列表
+- 判定范围：仅 response answer 区的 A/AAAA；任一地址命中即丢弃整条应答。
+- 运行影响：
+  - 丢弃发生在响应分类与 selection 之前，因此命中项不会成为候选、投票或排名条目，`fastest` 也会跳过。
+  - 单上游与多上游配置都生效；单上游命中时 `forward` 返回错误且不写 response。
+  - 全部已启动上游都被丢弃时 `forward` 失败，可由 `fallback` 接管。
+  - 丢弃后不会写入正缓存或负缓存。
+  - 字段存在但解析后既无内联规则也无 `$ip_set` 引用时，启动失败。
+- 推荐集（非内置默认）：`0.0.0.0/8`、`127.0.0.0/8`、`::/128`、`::1/128`。
+- 注意：部分上游使用 `0.0.0.0` 作为广告拦截应答。需要保留该语义的部署不要启用本字段，或不要把 `0.0.0.0/8` 放入列表。
 
 #### CNAME 响应处理
 
@@ -291,6 +316,7 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 
 - 单上游模式：直接查询该上游。
 - 多上游模式：从随机起点选择上游并发查询，先返回成功结果者胜出。
+- 命中 `bogus_answer_ips` 的上游应答在分类和选择前被整条丢弃；不会被当成 0.0.0.0 之类的可用结果返回。
 - 开启 `short_circuit` 时，一旦拿到可用上游响应，就会立即停止后续 executor 链。
 
 ### Metrics
@@ -302,10 +328,13 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 - `forward_error_total`
 - `forward_timeout_total`
 - `forward_incomplete_alias_selected_total`
+- `forward_bogus_answer_total`
 - `forward_latency_count`
 - `forward_latency_sum_ms`
 
 `forward_incomplete_alias_selected_total` 仅统计执行语义分类的并发选择模式（`balanced`、`prefer_positive`、`consensus`）。单上游和 `fastest` 不会为了该指标额外扫描响应。
+
+`forward_bogus_answer_total` 统计因 answer 地址命中 `bogus_answer_ips` 而被丢弃的上游应答数量；单上游与多上游都会计入。
 
 每个上游另外导出带 `upstream` 标签的指标（标签值为上游 tag，未配置时为解析后的地址）：
 
@@ -313,8 +342,11 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 - `forward_upstream_success_total`
 - `forward_upstream_error_total`
 - `forward_upstream_timeout_total`
+- `forward_upstream_bogus_total`
 - `forward_upstream_latency_count`
 - `forward_upstream_latency_sum_ms`
+
+`forward_upstream_bogus_total` 按上游统计因 answer 地址命中 `bogus_answer_ips` 而被丢弃的应答，可用于定位持续返回污染地址的上游；单上游配置同样计入。
 
 ### 常见用途
 

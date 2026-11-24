@@ -9,7 +9,7 @@ mod providers;
 mod sources;
 
 pub(crate) use config::{
-    parse_enum_rules_from_value, parse_quick_setup_rules, parse_rules_from_value,
+    parse_enum_rules_from_value, parse_quick_setup_rules, parse_rule_list, parse_rules_from_value,
     validate_non_empty_rules,
 };
 pub(crate) use numeric::parse_u16_rules;
