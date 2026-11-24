@@ -503,6 +503,7 @@ export const enUSPluginDefined = {
           forward_success_total: "Successful forwards",
           forward_error_total: "Forward failures",
           forward_timeout_total: "Forward timeouts",
+          forward_incomplete_alias_selected_total: "Incomplete alias responses",
           forward_bogus_answer_total: "Bogus answers dropped",
           forward_latency_count: "Latency samples",
           forward_latency_sum_ms: "Total latency (ms)",
@@ -523,6 +524,8 @@ export const enUSPluginDefined = {
             "The total number of queries for which the upstream returned an error or could not get a response.",
           forward_timeout_total:
             "The total number of queries that did not receive a response from the upstream due to timeout.",
+          forward_incomplete_alias_selected_total:
+            "The number of times a selection-aware concurrent mode (balanced, prefer_positive, consensus) picked an incomplete CNAME alias response as the best available result; single-upstream and fastest modes are excluded.",
           forward_bogus_answer_total:
             "The total number of upstream responses discarded because an answer address matched bogus_answer_ips.",
           forward_latency_count:
@@ -630,7 +633,7 @@ export const enUSPluginDefined = {
           cache_insert_total:
             "The total number of times cache entries have been inserted or updated.",
           cache_skip_total:
-            "The total number of responses that were skipped from cache due to write policy (truncated responses, no TTL, low positive TTL).",
+            "The total number of responses that were skipped from cache due to write policy (truncated responses, no TTL, incomplete alias responses, low positive TTL).",
           cache_lazy_refresh_total:
             "Total number of Lazy Cache background refresh attempts (by result: started / success / failed).",
           cache_entry_count: "The number of entries currently in the cache.",
@@ -2477,6 +2480,44 @@ export const enUSPluginDefined = {
       },
       quickSetup: {
         paramPlaceholder: "IN or 1",
+      },
+    },
+    edns0opt: {
+      name: "EDNS0 Option",
+      description:
+        "Match by the presence of EDNS0 option codes in the request or response OPT",
+      fields: {
+        codes: {
+          label: "Option Code",
+          description:
+            'Required and non-empty; define the EDNS0 option codes that must be present. Integers and decimal strings (8 and "8") are equivalent and may be mixed; all values are validated as u16.',
+          example: "8\n12",
+        },
+        "codes[]": {
+          label: "Enter value",
+          example: "8",
+        },
+        require: {
+          label: "Match requirement",
+          description:
+            "any (default) matches when at least one code is present; all requires every code to be present.",
+          options: {
+            any: "Any",
+            all: "All",
+          },
+        },
+        source: {
+          label: "Match source",
+          description:
+            "request (default) reads the request OPT; response reads the response OPT.",
+          options: {
+            request: "Request",
+            response: "Response",
+          },
+        },
+      },
+      quickSetup: {
+        paramPlaceholder: "8,12",
       },
     },
     client_ip: {

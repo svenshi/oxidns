@@ -193,6 +193,79 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 
 ---
 
+## `edns0opt`
+
+### 作用
+
+按请求或响应 OPT 记录中的 EDNS0 option code 存在性匹配。只读取 OPT 的 option 列表，不修改消息。
+
+### 配置示例
+
+```yaml
+- tag: has_ecs
+  type: edns0opt
+  args:
+    codes:
+      - 8
+      - "12"
+    require: any
+    source: request
+```
+
+匹配响应侧且要求多个 code 同时存在：
+
+```yaml
+- tag: has_subnet_and_padding
+  type: edns0opt
+  args:
+    codes:
+      - 8
+      - 12
+    require: all
+    source: response
+```
+
+### 配置项
+
+`edns0opt` 的配置项位于 `args` 下：
+
+- `codes`
+  - 类型：`array`；必填：是；默认值：无
+  - 作用：定义需要存在的 EDNS0 option code 集合。
+  - 支持整数与十进制数字字符串（例如 `8` 与 `"8"` 等价），可在同一列表中混用；两种形式统一按 u16 校验，不提供 code 别名。
+  - 列表为空时配置解析失败，不会生成一个永不命中的 matcher。
+- `require`
+  - 类型：`string`；必填：否；默认值：`any`
+  - `any`：任一配置 code 存在即命中。
+  - `all`：全部配置 code 都必须存在。
+- `source`
+  - 类型：`string`；必填：否；默认值：`request`
+  - `request`：读取请求 OPT；`response`：读取响应 OPT。
+  - `source: response` 且上下文中尚无响应时返回 `false`。
+
+### quick setup
+
+```yaml
+- matches: "edns0opt 8,12"
+```
+
+quick setup 只接受 code 列表，等价于 `require: any`、`source: request`，即请求里任一 code 存在即命中；不接受 `any` / `all` / `resp` 等修饰符。需要匹配响应侧或要求全部 code 都存在时，先用完整配置定义命名 matcher，再通过 `$tag` 引用：
+
+```yaml
+- matches: "$has_subnet_and_padding"
+```
+
+### 行为说明
+
+- 只检查 OPT 记录中实际存在的 option，不检查 option data，也不做 code 别名。
+- 无 OPT 记录、或 OPT 中不存在目标 code 时返回 `false`。
+
+### 典型用途
+
+- 根据客户端是否携带 ECS（code 8）或 padding（code 12）选择不同的上游或响应策略。
+
+---
+
 ## `client_ip`
 
 <PluginAvailability from="minimal" />

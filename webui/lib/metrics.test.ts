@@ -12,7 +12,9 @@ import {
 } from "./dashboard-traffic";
 import {
   formatMetricValue,
+  groupMetricRows,
   selectCardMetrics,
+  type MetricSeries,
   type PluginMetricsMap,
 } from "./metrics";
 import { pluginKindDefinitions } from "./plugin-definitions";
@@ -122,6 +124,38 @@ describe("plugin metric formatting", () => {
       }),
     ).toBe("1,784,701,820");
   });
+});
+
+describe("cache skip reason labels", () => {
+  // Mirrors the `cache_skip_total` reason labels emitted by the cache executor
+  // in `src/plugin/executor/cache/mod.rs`. Keep both sides in sync.
+  const cases: [string, string, string][] = [
+    ["truncated", "原因=截断响应", "Reason=Truncated response"],
+    ["no_ttl", "原因=无 TTL", "Reason=No TTL"],
+    [
+      "incomplete_answer",
+      "原因=不完整别名响应",
+      "Reason=Incomplete alias response",
+    ],
+    ["low_positive_ttl", "原因=正响应 TTL 过低", "Reason=Low positive TTL"],
+  ];
+
+  it.each(cases)(
+    "localizes the %s cache skip reason instead of showing the raw label value",
+    (reason, zhKey, enKey) => {
+      const series: MetricSeries[] = [
+        { name: "cache_skip_total", labels: { reason }, value: 3 },
+      ];
+
+      const zhBreakdown = groupMetricRows(series, "zh-CN")[0]?.breakdown;
+      const enBreakdown = groupMetricRows(series, "en-US")[0]?.breakdown;
+
+      expect(zhBreakdown?.[0]?.key).toBe(zhKey);
+      expect(enBreakdown?.[0]?.key).toBe(enKey);
+      expect(zhBreakdown?.[0]?.key).not.toContain(reason);
+      expect(enBreakdown?.[0]?.key).not.toContain(reason);
+    },
+  );
 });
 
 describe("dashboard DNS traffic metrics", () => {

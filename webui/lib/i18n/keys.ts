@@ -252,6 +252,7 @@ export const WEBUI = {
     stale: "webui.metrics.stale",
     truncated: "webui.metrics.truncated",
     noTtl: "webui.metrics.noTtl",
+    incompleteAnswer: "webui.metrics.incompleteAnswer",
     lowPositiveTtl: "webui.metrics.lowPositiveTtl",
     started: "webui.metrics.started",
     success: "webui.metrics.success",

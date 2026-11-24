@@ -250,9 +250,10 @@ impl<C: Connection> PipelinePool<C> {
             } else {
                 // Pool is saturated. Register as a waiter *before* the final
                 // re-check so a slot released between the checks above and the
-                // await is not lost: `enable()` claims any stored `notify_one`
-                // permit, and once registered we are guaranteed to observe a
-                // later `notify_waiters` from a close/retire/expand event.
+                // await is not lost: `enable()` registers this future in the
+                // notify wait list and claims any stored `notify_one` permit,
+                // so a wakeup sent after this point (release, close, retire,
+                // expand, maintenance) cannot slip past us.
                 let notified = self.release_notified.notified();
                 tokio::pin!(notified);
                 notified.as_mut().enable();
@@ -518,11 +519,11 @@ impl<C: Connection> PipelineSlot<C> {
         if previous == 1 && self.state() != SLOT_ACTIVE {
             self.close();
         }
-        // Releasing one in-flight query frees exactly one unit of load on this
-        // slot, so wake a single waiter instead of stampeding all of them.
-        // `Notify` stores one permit if no waiter is currently parked, and the
-        // freed capacity is in any case visible to other acquirers via
-        // `try_acquire_existing`, so this cannot strand a waiter.
+        // Releasing one in-flight query frees exactly one unit of load on
+        // this slot, so wake a single waiter instead of stampeding all of
+        // them. Waiters enable their notified future before the final
+        // capacity re-check, so they are registered here and each release
+        // wakes a distinct one instead of collapsing into a stored permit.
         notify.notify_one();
     }
 

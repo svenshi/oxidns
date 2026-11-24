@@ -130,6 +130,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         forward_success_total: "成功",
         forward_error_total: "失败",
         forward_timeout_total: "超时",
+        forward_incomplete_alias_selected_total: "不完整别名响应",
         forward_bogus_answer_total: "虚假应答丢弃",
         forward_latency_count: "延迟样本",
         forward_latency_sum_ms: "延迟累计(ms)",
@@ -146,6 +147,8 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         forward_success_total: "成功获得上游响应的查询总数。",
         forward_error_total: "上游返回错误或无法获得响应的查询总数。",
         forward_timeout_total: "因超时未得到上游响应的查询总数。",
+        forward_incomplete_alias_selected_total:
+          "并发选择模式（balanced、prefer_positive、consensus）将不完整的 CNAME 别名响应作为最佳结果选中的次数；单上游与 fastest 模式不统计。",
         forward_bogus_answer_total:
           "因 answer 中的地址命中 bogus_answer_ips 而被丢弃的上游应答总数。",
         forward_latency_count: "纳入延迟统计的已完成查询数。",
@@ -403,7 +406,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         cache_expired_total: "查找时发现并移除过期条目的次数。",
         cache_insert_total: "缓存条目插入或更新的总次数。",
         cache_skip_total:
-          "因写入策略（截断响应、无 TTL、正响应 TTL 过低）而跳过缓存的响应总数。",
+          "因写入策略（截断响应、无 TTL、不完整别名响应、正响应 TTL 过低）而跳过缓存的响应总数。",
         cache_lazy_refresh_total:
           "Lazy Cache 后台刷新尝试总数（按结果：started / success / failed）。",
         cache_entry_count: "当前缓存中的条目数量。",
