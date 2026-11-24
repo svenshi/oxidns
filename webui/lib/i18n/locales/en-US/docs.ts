@@ -594,6 +594,13 @@ export const enUSDocs = {
   qclass: {
     args: "`args` of `qclass` is a list of categories.\n\n- Type: `array`; Required: Yes; Default: None\n- Function: Define the set of query categories that are allowed to hit.\n- Supports both enum literals and decimal values, such as `IN` / `CH` / `HS` or `1` / `3` / `4`; both formats can be mixed in the same list.\n- Unknown or future expanded categories can continue to use numeric matching.\n- Operational impact:\n  - Returns `true` if any issue category in the request hits the configuration collection.",
   },
+  edns0opt: {
+    codes:
+      "`codes` is a list of EDNS0 option codes.\n\n- Type: `array`; Required: Yes; Default: None\n- Function: Define the EDNS0 option codes that must be present.\n- Accepts both integers and decimal strings (so `8` and `\"8\"` are equivalent) and allows them to be mixed in one list; both forms are validated as u16. No code aliases.\n- Operational impact:\n  - An empty list fails configuration parsing instead of silently producing a matcher that never hits.",
+    require:
+      "- Type: `string`; Required: No; Default: `any`\n- Supported values:\n  - `any`: match when at least one configured code is present\n  - `all`: every configured code must be present\n- Operational impact: only affects how multiple codes are combined.",
+    source: '- Type: `string`; Required: No; Default: `request`\n- Supported values:\n  - `request`: read the request OPT\n  - `response`: read the response OPT\n- Operational impact:\n  - With `source: response`, returns `false` when the context has no response yet.',
+  },
   client_ip: {
     args: "The `args` of `client_ip` takes the form of a list of rules.\n\n- Type: `array`; Required: Yes; Default: None\n- Function: Define client source address matching conditions.\n- Support elements:\n  - Single IP\n  - CIDR\n  - `ip_set` reference\n- Operational impact:\n  - As long as the client source address matches any rule, matcher returns `true`.",
   },
