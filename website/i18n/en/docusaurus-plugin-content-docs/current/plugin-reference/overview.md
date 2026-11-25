@@ -150,6 +150,7 @@ See [Matcher Plugins](matcher.mdx) for full field reference.
 | [`question`](matcher/request.mdx#question) | Matches request questions using provider `contains_question` semantics. | <PluginAvailability from="minimal" compact /> |
 | [`qtype`](matcher/request.mdx#qtype) | Matches request qtypes. | <PluginAvailability from="minimal" compact /> |
 | [`qclass`](matcher/request.mdx#qclass) | Matches request qclasses. | <PluginAvailability from="minimal" compact /> |
+| [`edns0opt`](matcher/request.mdx#edns0opt) | Matches by the presence of EDNS0 option codes in the request or response OPT record. | <PluginAvailability from="minimal" compact /> |
 | [`client_ip`](matcher/request.mdx#client_ip) | Matches the client source IP. | <PluginAvailability from="minimal" compact /> |
 | [`ptr_ip`](matcher/request.mdx#ptr_ip) | Decodes the IP from a PTR query name and matches it. | <PluginAvailability from="minimal" compact /> |
 
