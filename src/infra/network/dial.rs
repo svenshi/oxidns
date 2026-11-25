@@ -480,18 +480,14 @@ async fn connect_tcp_socket(socket: Socket, socket_addr: SocketAddr) -> Result<T
 }
 
 fn is_connect_in_progress(err: &std::io::Error) -> bool {
-    if err.kind() == ErrorKind::WouldBlock {
-        return true;
-    }
-
     #[cfg(unix)]
     {
-        err.raw_os_error() == Some(libc::EINPROGRESS)
+        err.kind() == ErrorKind::WouldBlock || err.raw_os_error() == Some(libc::EINPROGRESS)
     }
 
     #[cfg(not(unix))]
     {
-        false
+        err.kind() == ErrorKind::WouldBlock
     }
 }
 
