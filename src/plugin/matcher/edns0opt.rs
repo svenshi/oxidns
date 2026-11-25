@@ -7,8 +7,8 @@
 //! OPT record.
 //!
 //! Configuration (all fields live under `args`):
-//! - `codes`: required, non-empty list of EDNS0 option codes. Both integers
-//!   and decimal strings are accepted and may be mixed in one list.
+//! - `codes`: required, non-empty list of EDNS0 option codes. Both integers and
+//!   decimal strings are accepted and may be mixed in one list.
 //! - `require`: `any` (default) or `all`.
 //! - `source`: `request` (default) or `response`.
 //!
