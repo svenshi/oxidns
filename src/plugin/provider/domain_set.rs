@@ -309,6 +309,15 @@ mod tests {
 
         assert!(provider.degraded_files().is_empty());
         assert!(provider.contains_name(&Name::from_ascii("late.example").unwrap()));
+
+        // A later reload re-evaluates the file set: removing the file again
+        // degrades once more and drops its rules, while other files stay in
+        // effect.
+        std::fs::remove_file(&missing).unwrap();
+        provider.reload().await.unwrap();
+        assert_eq!(provider.degraded_files().len(), 1);
+        assert!(provider.contains_name(&Name::from_ascii("kept.example").unwrap()));
+        assert!(!provider.contains_name(&Name::from_ascii("late.example").unwrap()));
     }
 
     fn load_rules_text(

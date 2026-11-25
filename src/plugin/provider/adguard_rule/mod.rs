@@ -588,20 +588,23 @@ mod tests {
         let existing = Name::from_ascii("existing.example.org.").unwrap();
 
         let dir = tempdir().unwrap();
+        let missing = dir.path().join("missing-rules.txt");
         provider.cfg = Arc::new(config::AdGuardRuleConfig {
             rules: Vec::new(),
-            files: vec![
-                dir.path()
-                    .join("missing-rules.txt")
-                    .to_string_lossy()
-                    .into_owned(),
-            ],
+            files: vec![missing.to_string_lossy().into_owned()],
         });
 
         // A missing file degrades the reload instead of failing it.
         assert!(provider.reload().await.is_ok());
         assert_eq!(provider.degraded_files().len(), 1);
         assert!(!provider.contains_name(&existing));
+
+        // Every reload re-reads all sources: once the file exists again its
+        // rules take effect and the degraded list clears.
+        std::fs::write(&missing, "||restored.example.org^\n").unwrap();
+        provider.reload().await.unwrap();
+        assert!(provider.degraded_files().is_empty());
+        assert!(provider.contains_name(&Name::from_ascii("restored.example.org.").unwrap()));
     }
 
     #[tokio::test]

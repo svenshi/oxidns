@@ -36,6 +36,8 @@ struct GeoSiteArgs {
 #[derive(Debug, Default)]
 struct GeoSiteSnapshot {
     matcher: DomainRuleMatcher,
+    /// Files that could not be loaded in the last build (empty = healthy).
+    degraded_files: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -43,9 +45,6 @@ pub struct GeoSiteProvider {
     tag: String,
     args: Arc<GeoSiteArgs>,
     snapshot: ArcSwap<GeoSiteSnapshot>,
-    /// Unavailable-file state is kept outside the snapshot so a failed reload
-    /// can report degradation without discarding the last good matcher.
-    degraded_files: ArcSwap<Vec<String>>,
 }
 
 impl GeoSiteProvider {
@@ -134,7 +133,10 @@ impl GeoSiteProvider {
             "geosite snapshot built"
         );
 
-        Ok(GeoSiteSnapshot { matcher })
+        Ok(GeoSiteSnapshot {
+            matcher,
+            degraded_files: Vec::new(),
+        })
     }
 }
 
@@ -180,12 +182,12 @@ impl Provider for GeoSiteProvider {
         match build {
             Ok(snapshot) => {
                 self.snapshot.store(Arc::new(snapshot));
-                self.degraded_files.store(Arc::new(Vec::new()));
                 Ok(())
             }
-            // Only an unavailable dat file degrades the provider. Keep the
-            // currently published snapshot: at startup it is empty, and on a
-            // later reload it still holds the last good rules.
+            // The dat file is this provider's only rule source. An I/O failure
+            // degrades it to an empty snapshot and a later reload can restore
+            // the rules. Content/configuration and infrastructure failures stay
+            // fatal and leave the published snapshot untouched.
             Err(DnsError::Io(source)) => {
                 error!(
                     tag = %self.tag,
@@ -193,19 +195,18 @@ impl Provider for GeoSiteProvider {
                     error = %source,
                     "geosite dat file unavailable, provider degraded (matching disabled)"
                 );
-                self.degraded_files
-                    .store(Arc::new(vec![self.args.file.clone()]));
+                self.snapshot.store(Arc::new(GeoSiteSnapshot {
+                    degraded_files: vec![self.args.file.clone()],
+                    ..GeoSiteSnapshot::default()
+                }));
                 Ok(())
             }
-            // Content/configuration errors and infrastructure failures are
-            // not data availability problems; keep them fatal and leave the
-            // published snapshot untouched.
             Err(other) => Err(other),
         }
     }
 
     fn degraded_files(&self) -> Vec<String> {
-        (**self.degraded_files.load()).clone()
+        self.snapshot.load().degraded_files.clone()
     }
 
     fn supports_domain_matching(&self) -> bool {
@@ -241,7 +242,6 @@ impl PluginFactory for GeoSiteFactory {
             tag: plugin_config.tag.clone(),
             args: Arc::new(args),
             snapshot: ArcSwap::from_pointee(GeoSiteSnapshot::default()),
-            degraded_files: ArcSwap::from_pointee(Vec::new()),
         })))
     }
 }
@@ -307,7 +307,6 @@ mod tests {
             tag: "geosite-test".to_string(),
             args: Arc::new(GeoSiteArgs { file, selectors }),
             snapshot: ArcSwap::from_pointee(GeoSiteSnapshot::default()),
-            degraded_files: ArcSwap::from_pointee(Vec::new()),
         }
     }
 
@@ -327,6 +326,13 @@ mod tests {
         provider.reload().await.unwrap();
         assert!(provider.degraded_files().is_empty());
         assert!(provider.contains_name(&name));
+
+        // A later reload re-evaluates the file: removing it again degrades
+        // the provider and drops its rules.
+        std::fs::remove_file(&file).unwrap();
+        provider.reload().await.unwrap();
+        assert_eq!(provider.degraded_files(), vec![file.display().to_string()]);
+        assert!(!provider.contains_name(&name));
     }
 
     #[tokio::test]
