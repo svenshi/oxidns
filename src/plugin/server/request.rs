@@ -178,11 +178,44 @@ impl RequestHandle {
             }
             response.set_edns(edns);
         }
+
+        Self::restore_question_echo(request, response);
+    }
+
+    /// Restore the request's original question spelling in the response.
+    ///
+    /// DNS names compare case-insensitively, and the cache key is normalized to
+    /// lowercase, so an upstream or cached response may echo a differently
+    /// cased (or missing) question. RFC 1035 4.1.2 requires the response
+    /// question section to echo the query, so align it before the response
+    /// leaves the server. The common case only swaps `Name` handles; a length
+    /// mismatch rebuilds the question section from the request.
+    fn restore_question_echo(request: &Message, response: &mut Message) {
+        let request_questions = request.questions();
+        let response_questions = response.questions_mut();
+
+        if response_questions.len() != request_questions.len() {
+            response_questions.clear();
+            response_questions.extend(request_questions.iter().cloned());
+            return;
+        }
+
+        for (response_question, request_question) in
+            response_questions.iter_mut().zip(request_questions)
+        {
+            if response_question.name() == request_question.name()
+                && response_question.qtype() == request_question.qtype()
+                && response_question.qclass() == request_question.qclass()
+            {
+                response_question.set_name(request_question.name().clone());
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Mutex;
 
     use async_trait::async_trait;
@@ -191,7 +224,9 @@ mod tests {
     use crate::continue_next;
     use crate::infra::error::Result;
     use crate::plugin::Plugin;
-    use crate::proto::{Name, Question, RecordType};
+    use crate::plugin::test_utils::encoded_question_fqdn;
+    use crate::proto::rdata::A;
+    use crate::proto::{Name, Question, RData, Record, RecordType};
 
     fn make_request(id: u16, qname: &str) -> Message {
         let mut request = Message::new();
@@ -285,6 +320,44 @@ mod tests {
             let step = continue_next!(next, context)?;
             context.set_response(context.request.response(Rcode::NXDomain));
             Ok(step)
+        }
+    }
+
+    #[derive(Debug)]
+    struct LowercasedQuestionExecutor;
+
+    #[async_trait]
+    impl Plugin for LowercasedQuestionExecutor {
+        fn tag(&self) -> &str {
+            "lowercased_question"
+        }
+
+        async fn init(&mut self, _context: &crate::plugin::PluginInitContext<'_>) -> Result<()> {
+            Ok(())
+        }
+
+        async fn destroy(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Executor for LowercasedQuestionExecutor {
+        async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
+            let mut response = context.request.response(Rcode::NoError);
+            if let Some(question) = response.questions_mut().first_mut() {
+                question.set_name(
+                    Name::from_ascii(question.name().normalized())
+                        .expect("normalized name should parse"),
+                );
+            }
+            response.add_answer(Record::from_rdata(
+                Name::from_ascii("www.example.com.").expect("answer name should parse"),
+                60,
+                RData::A(A(Ipv4Addr::new(192, 0, 2, 1))),
+            ));
+            context.set_response(response);
+            Ok(ExecStep::Return)
         }
     }
 
@@ -443,5 +516,41 @@ mod tests {
 
         assert_eq!(result.response.rcode(), Rcode::NXDomain);
         assert_eq!(result.exit, RequestExit::Completed);
+    }
+
+    #[test]
+    fn finalize_response_rebuilds_missing_question_section() {
+        let request = make_request(33, "WWW.Example.COM.");
+
+        let mut response = Message::new();
+        response.set_id(33);
+        RequestHandle::finalize_response(&request, &mut response);
+
+        assert!(response.recursion_available());
+        assert_eq!(encoded_question_fqdn(&response), "WWW.Example.COM.");
+    }
+
+    #[tokio::test]
+    async fn test_handle_request_restores_request_question_case_from_upstream() {
+        let request_handle = make_request_handle(Arc::new(LowercasedQuestionExecutor));
+        let request = make_request(31, "WWW.Example.COM.");
+
+        let result = request_handle
+            .handle_request(
+                request,
+                SocketAddr::from(([127, 0, 0, 1], 5303)),
+                RequestMeta::default(),
+            )
+            .await;
+
+        assert_eq!(
+            result.response.answer_ips(),
+            vec![IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))]
+        );
+        assert_eq!(
+            encoded_question_fqdn(&result.response),
+            "WWW.Example.COM.",
+            "the final response must echo the request's original question case"
+        );
     }
 }

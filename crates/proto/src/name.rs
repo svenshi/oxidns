@@ -747,6 +747,18 @@ mod tests {
     }
 
     #[test]
+    fn name_equality_and_hash_ignore_ascii_case() {
+        let upper = Name::from_ascii("WWW.Example.COM.").unwrap();
+        let lower = Name::from_ascii("www.example.com.").unwrap();
+
+        assert_eq!(upper, lower);
+
+        let mut names = std::collections::HashSet::new();
+        names.insert(upper);
+        assert!(names.contains(&lower));
+    }
+
+    #[test]
     // Reserved label type prefixes 01xxxxxx and 10xxxxxx are forbidden by RFC
     // 1035.
     fn parse_wire_name_rejects_reserved_label_types() {
