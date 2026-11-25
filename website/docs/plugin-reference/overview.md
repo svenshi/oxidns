@@ -150,6 +150,7 @@ server -> sequence
 | [`question`](matcher/request.mdx#question) | 按 provider 的 `contains_question` 语义匹配请求中的 question。 | <PluginAvailability from="minimal" compact /> |
 | [`qtype`](matcher/request.mdx#qtype) | 匹配请求中的 qtype。 | <PluginAvailability from="minimal" compact /> |
 | [`qclass`](matcher/request.mdx#qclass) | 匹配请求中的 qclass。 | <PluginAvailability from="minimal" compact /> |
+| [`edns0opt`](matcher/request.mdx#edns0opt) | 按请求或响应 OPT 记录中 EDNS0 option code 的存在性匹配。 | <PluginAvailability from="minimal" compact /> |
 | [`client_ip`](matcher/request.mdx#client_ip) | 匹配客户端来源 IP。 | <PluginAvailability from="minimal" compact /> |
 | [`ptr_ip`](matcher/request.mdx#ptr_ip) | 从 PTR 请求名中解析 IP 并做匹配。 | <PluginAvailability from="minimal" compact /> |
 
