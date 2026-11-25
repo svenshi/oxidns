@@ -11,6 +11,6 @@ pub(crate) use fingerprint::FingerprintReader;
 // not need to be named by current callers.
 #[allow(unused_imports)]
 pub(crate) use text_source::{
-    LineAnnotations, LineClassifier, TextLine, TextLocation, TextScanError, TextSource,
-    TextSourceSession,
+    LineAnnotations, LineClassifier, SkippedTextFile, TextLine, TextLocation, TextScanError,
+    TextSource, TextSourceSession,
 };

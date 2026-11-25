@@ -16,7 +16,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use serde::Deserialize;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::config::types::PluginConfig;
 use crate::core::rule_matcher::{IpPrefixMatcher, IpRuleFamily};
@@ -48,6 +48,8 @@ struct IpSetSnapshot {
     /// Family-level fast guards to avoid useless scans.
     has_v4_rules: bool,
     has_v6_rules: bool,
+    /// Files that could not be opened in the last build (empty = healthy).
+    degraded_files: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -64,9 +66,21 @@ impl IpSet {
         let (local_rules, v4_capacity, v6_capacity) = count_ip_rules(args)?;
         let mut matcher = IpPrefixMatcher::default();
         matcher.reserve_rules(v4_capacity, v6_capacity);
-        scan_ip_rules(args, |raw, source| {
+        let skipped = scan_ip_rules(args, |raw, source| {
             add_ip_rule_from_source(&mut matcher, raw, source)
         })?;
+        for file in &skipped {
+            error!(
+                tag = %tag,
+                file = %file.path.display(),
+                reason = %file.reason,
+                "ip_set rule file unavailable, its rules are not in effect"
+            );
+        }
+        let degraded_files = skipped
+            .into_iter()
+            .map(|file| file.path.display().to_string())
+            .collect();
         matcher.finalize_compact();
 
         let has_v4_rules = matcher.has_v4_rules();
@@ -90,6 +104,7 @@ impl IpSet {
             matcher,
             has_v4_rules,
             has_v6_rules,
+            degraded_files,
         })
     }
 }
@@ -160,6 +175,10 @@ impl Provider for IpSet {
         Ok(())
     }
 
+    fn degraded_files(&self) -> Vec<String> {
+        self.snapshot.load().degraded_files.clone()
+    }
+
     fn supports_ip_matching(&self) -> bool {
         true
     }
@@ -214,12 +233,15 @@ impl PluginFactory for IpSetFactory {
     }
 }
 
-fn scan_ip_rules<F>(args: &IpSetArgs, mut on_rule: F) -> DnsResult<()>
+fn scan_ip_rules<F>(
+    args: &IpSetArgs,
+    mut on_rule: F,
+) -> DnsResult<Vec<crate::infra::io::SkippedTextFile>>
 where
     F: FnMut(&str, TextLocation<'_>) -> DnsResult<()>,
 {
     TextSource::new("args.ips", &args.ips, &args.files)
-        .scan(&LineClassifier::new(&["#"]), |line: TextLine<'_>| {
+        .scan_tolerant(&LineClassifier::new(&["#"]), |line: TextLine<'_>| {
             if line.annotations().blank || line.annotations().leading_comment.is_some() {
                 return Ok(());
             }
@@ -284,7 +306,44 @@ fn normalize_ip_rule_line(line: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
+
     use super::*;
+    use crate::infra::clock::AppClock;
+
+    #[tokio::test]
+    async fn missing_file_degrades_then_reload_restores() {
+        AppClock::start();
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("missing.txt");
+        let present = dir.path().join("present.txt");
+        std::fs::write(&present, "192.168.1.0/24\n").unwrap();
+        let args = IpSetArgs {
+            ips: Vec::new(),
+            sets: Vec::new(),
+            files: vec![missing.display().to_string(), present.display().to_string()],
+        };
+        let provider = IpSet {
+            tag: "ip-set-test".to_string(),
+            args: Arc::new(args),
+            referenced_sets: Vec::new(),
+            snapshot: ArcSwap::from_pointee(IpSetSnapshot::default()),
+        };
+
+        provider.reload().await.unwrap();
+
+        let degraded = provider.degraded_files();
+        assert_eq!(degraded.len(), 1);
+        assert!(degraded[0].contains("missing.txt"));
+        assert!(provider.contains_ip("192.168.1.7".parse().unwrap()));
+        assert!(!provider.contains_ip("10.0.0.1".parse().unwrap()));
+
+        std::fs::write(&missing, "10.0.0.0/8\n").unwrap();
+        provider.reload().await.unwrap();
+
+        assert!(provider.degraded_files().is_empty());
+        assert!(provider.contains_ip("10.1.2.3".parse().unwrap()));
+    }
 
     fn load_rules_text(
         matcher: &mut IpPrefixMatcher,

@@ -70,6 +70,16 @@ pub trait Provider: Plugin {
     /// Reload the provider's internal data using the same startup config.
     async fn reload(&self) -> DnsResult<()>;
 
+    /// Files that failed to load in the last snapshot build (empty = healthy).
+    ///
+    /// A provider that degraded at init or reload stores the unavailable file
+    /// paths inside its current snapshot and keeps serving whatever loaded.
+    /// The returned vector is a cold-path clone for management surfaces;
+    /// providers keep the authoritative list inside their snapshot.
+    fn degraded_files(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     #[inline]
     fn supports_ip_matching(&self) -> bool {
         false

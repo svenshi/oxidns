@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use ahash::AHashSet;
-use tracing::warn;
+use tracing::{error, warn};
 
 use super::config::AdGuardRuleConfig;
 use super::model::{BuildStats, CompiledRule, CompiledRuleSet, DnsTypeConstraint};
@@ -148,17 +148,32 @@ pub(super) fn build_rule_buckets(
     CompiledRuleSet,
     CompiledRuleSet,
     BuildStats,
+    Vec<String>,
 )> {
     // Sources without badfilter need one planning scan and one compilation
     // scan. A non-empty global badfilter set adds an active-capacity scan so
     // disabled rules do not leave proportional allocations in the snapshot.
     let source = TextSource::new("args.rules", &cfg.rules, &cfg.files);
     let classifier = LineClassifier::new(&["!", "#"]);
-    let mut session = source.open_replay().map_err(|error| {
+    // Files that fail to open are excluded from every scan of this build and
+    // reported as degraded state instead of aborting the snapshot.
+    let (mut session, skipped_files) = source.open_replay_tolerant().map_err(|error| {
         DnsError::plugin(format!(
             "adguard_rule '{tag}' failed to open rule sources: {error}"
         ))
     })?;
+    for file in &skipped_files {
+        error!(
+            tag,
+            file = %file.path.display(),
+            reason = %file.reason,
+            "adguard_rule rule file unavailable, its rules are not in effect"
+        );
+    }
+    let degraded_files = skipped_files
+        .into_iter()
+        .map(|file| file.path.display().to_string())
+        .collect();
     let (badfilter_keys, capacities) = plan_build(tag, &mut session, &classifier)?;
     let mut buckets = RuleBuckets::with_capacities(capacities);
     let mut stats = BuildStats::default();
@@ -236,6 +251,7 @@ pub(super) fn build_rule_buckets(
         buckets.exceptions,
         buckets.blocks,
         stats,
+        degraded_files,
     ))
 }
 

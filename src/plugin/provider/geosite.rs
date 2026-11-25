@@ -10,7 +10,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use serde::Deserialize;
-use tracing::info;
+use tracing::{error, info};
 
 use crate::config::types::PluginConfig;
 use crate::core::rule_matcher::{DomainRuleKind, DomainRuleMatcher};
@@ -36,6 +36,8 @@ struct GeoSiteArgs {
 #[derive(Debug, Default)]
 struct GeoSiteSnapshot {
     matcher: DomainRuleMatcher,
+    /// Files that could not be loaded in the last build (empty = healthy).
+    degraded_files: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -55,8 +57,7 @@ impl GeoSiteProvider {
             ))
         })?;
         let path = Path::new(&args.file);
-        let mut source =
-            DatFileSession::open(path).map_err(|error| geosite_file_error(tag, args, error))?;
+        let mut source = DatFileSession::open(path).map_err(DnsError::Io)?;
         let mut matched_entries = 0usize;
         let mut matched_domains = 0usize;
         let mut full = 0usize;
@@ -132,7 +133,10 @@ impl GeoSiteProvider {
             "geosite snapshot built"
         );
 
-        Ok(GeoSiteSnapshot { matcher })
+        Ok(GeoSiteSnapshot {
+            matcher,
+            degraded_files: Vec::new(),
+        })
     }
 }
 
@@ -171,12 +175,38 @@ impl Provider for GeoSiteProvider {
     async fn reload(&self) -> DnsResult<()> {
         let tag = self.tag.clone();
         let args = self.args.clone();
-        let snapshot = spawn_isolated_build("geosite snapshot build", move || {
+        let build = spawn_isolated_build("geosite snapshot build", move || {
             Self::build_snapshot(&tag, &args)
         })
-        .await?;
-        self.snapshot.store(Arc::new(snapshot));
-        Ok(())
+        .await;
+        match build {
+            Ok(snapshot) => {
+                self.snapshot.store(Arc::new(snapshot));
+                Ok(())
+            }
+            // The dat file is this provider's only rule source. An I/O failure
+            // degrades it to an empty snapshot and a later reload can restore
+            // the rules. Content/configuration and infrastructure failures stay
+            // fatal and leave the published snapshot untouched.
+            Err(DnsError::Io(source)) => {
+                error!(
+                    tag = %self.tag,
+                    file = %self.args.file,
+                    error = %source,
+                    "geosite dat file unavailable, provider degraded (matching disabled)"
+                );
+                self.snapshot.store(Arc::new(GeoSiteSnapshot {
+                    degraded_files: vec![self.args.file.clone()],
+                    ..GeoSiteSnapshot::default()
+                }));
+                Ok(())
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    fn degraded_files(&self) -> Vec<String> {
+        self.snapshot.load().degraded_files.clone()
     }
 
     fn supports_domain_matching(&self) -> bool {
@@ -255,4 +285,73 @@ fn geosite_file_error(tag: &str, args: &GeoSiteArgs, error: String) -> DnsError 
         "plugin '{}' failed to stream geosite dat file '{}': {}",
         tag, args.file, error
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::infra::clock::AppClock;
+
+    fn test_dat_path(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/testdata/rules")
+            .join(name)
+    }
+
+    fn provider_with_file(file: String, selectors: Vec<String>) -> GeoSiteProvider {
+        GeoSiteProvider {
+            tag: "geosite-test".to_string(),
+            args: Arc::new(GeoSiteArgs { file, selectors }),
+            snapshot: ArcSwap::from_pointee(GeoSiteSnapshot::default()),
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_dat_file_degrades_then_reload_restores() {
+        AppClock::start();
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("geosite.dat");
+        let provider = provider_with_file(file.display().to_string(), Vec::new());
+        let name = Name::from_ascii("265.com.").unwrap();
+
+        provider.reload().await.unwrap();
+        assert_eq!(provider.degraded_files(), vec![file.display().to_string()]);
+        assert!(!provider.contains_name(&name));
+
+        std::fs::copy(test_dat_path("geosite.dat"), &file).unwrap();
+        provider.reload().await.unwrap();
+        assert!(provider.degraded_files().is_empty());
+        assert!(provider.contains_name(&name));
+
+        // A later reload re-evaluates the file: removing it again degrades
+        // the provider and drops its rules.
+        std::fs::remove_file(&file).unwrap();
+        provider.reload().await.unwrap();
+        assert_eq!(provider.degraded_files(), vec![file.display().to_string()]);
+        assert!(!provider.contains_name(&name));
+    }
+
+    #[tokio::test]
+    async fn invalid_selector_fails_reload_and_keeps_last_good_snapshot() {
+        AppClock::start();
+        let dat = test_dat_path("geosite.dat").display().to_string();
+        let mut provider = provider_with_file(dat.clone(), vec!["cn".to_string()]);
+        let name = Name::from_ascii("265.com.").unwrap();
+
+        provider.reload().await.unwrap();
+        assert!(provider.contains_name(&name));
+
+        provider.args = Arc::new(GeoSiteArgs {
+            file: dat,
+            selectors: vec!["not-found-code".to_string()],
+        });
+        let error = provider.reload().await.unwrap_err();
+        assert!(error.to_string().contains("found no geosite entries"));
+        assert!(provider.degraded_files().is_empty());
+        assert!(provider.contains_name(&name));
+    }
 }
