@@ -14,6 +14,7 @@ mod selection;
 mod single;
 
 pub use config::ForwardConfig;
+pub(crate) use default_resolver::DefaultResolverTransports;
 pub use factory::ForwardFactory;
 pub use selection::ResponseSelectionMode;
 

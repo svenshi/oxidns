@@ -1,15 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::net::IpAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, OnceLock};
 
-use arc_swap::ArcSwap;
+use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
+use tokio::sync::Notify;
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
-use tracing::{debug, warn};
+use tracing::warn;
 
 use super::config::{MAX_CONCURRENT_QUERIES, resolve_active_concurrent};
 use super::is_timeout_error;
@@ -18,19 +18,106 @@ use super::selection::{ResponseSelectionMode, select_response};
 use crate::core::context::DnsContext;
 use crate::core::response::ResponseDisposition;
 use crate::infra::error::{DnsError, Result};
-use crate::infra::network::default_resolver::{Discovery, NetworkIdentity, discover};
+use crate::infra::network::default_resolver::DefaultResolver;
 use crate::infra::network::upstream::{ConnectionInfo, Upstream, UpstreamBuilder};
 use crate::infra::observability::metrics::{register_metric_source, unregister_metric_source};
 use crate::plugin::executor::{ExecStep, Executor};
 use crate::plugin::{Plugin, PluginInitContext};
 use crate::proto::Message;
 
-const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+#[derive(Debug, Default)]
+struct TransportGeneration {
+    upstreams: Vec<Arc<dyn Upstream>>,
+    invalidated: CancellationToken,
+}
 
 #[derive(Debug, Default)]
-struct ResolverSet {
-    network: NetworkIdentity,
-    upstreams: Vec<Arc<dyn Upstream>>,
+struct TransportState {
+    snapshot: ArcSwapOption<TransportGeneration>,
+    ready: Notify,
+}
+
+impl TransportState {
+    async fn wait_ready(&self) -> Arc<TransportGeneration> {
+        loop {
+            let ready = self.ready.notified();
+            if let Some(snapshot) = self.snapshot.load_full() {
+                return snapshot;
+            }
+            ready.await;
+        }
+    }
+
+    fn publish(&self, next: TransportGeneration) {
+        if let Some(previous) = self.snapshot.swap(Some(Arc::new(next))) {
+            previous.invalidated.cancel();
+        }
+        self.ready.notify_waiters();
+    }
+
+    async fn run(self: Arc<Self>) {
+        if let Err(error) = self.watch().await {
+            warn!(%error, "Default resolver network notifications stopped; clearing cache");
+            self.publish(TransportGeneration::default());
+        }
+    }
+
+    async fn watch(&self) -> std::io::Result<()> {
+        let mut resolver = DefaultResolver::new()?;
+        loop {
+            let upstreams = resolver
+                .refresh()
+                .await?
+                .iter()
+                .take(MAX_CONCURRENT_QUERIES)
+                .filter_map(|ip| {
+                    match ConnectionInfo::with_addr(&ip.to_string())
+                        .and_then(UpstreamBuilder::with_connection_info)
+                    {
+                        Ok(upstream) => Some(Arc::from(upstream)),
+                        Err(error) => {
+                            warn!(%error, "Could not build discovered DNS upstream");
+                            None
+                        }
+                    }
+                })
+                .collect();
+            self.publish(TransportGeneration {
+                upstreams,
+                invalidated: CancellationToken::new(),
+            });
+            resolver.changed().await?;
+            // Clear and cancel the prior generation even if the same IPs
+            // are reachable again after this network transition.
+            if let Some(previous) = self.snapshot.swap(None) {
+                previous.invalidated.cancel();
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct DefaultResolverTransports {
+    state: Arc<TransportState>,
+    worker: OnceLock<AbortOnDropHandle<()>>,
+}
+
+impl DefaultResolverTransports {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: Arc::new(TransportState::default()),
+            worker: OnceLock::new(),
+        }
+    }
+
+    async fn get(&self) -> Arc<TransportGeneration> {
+        if let Some(snapshot) = self.state.snapshot.load_full() {
+            return snapshot;
+        }
+        self.worker
+            .get_or_init(|| AbortOnDropHandle::new(tokio::spawn(self.state.clone().run())));
+        self.state.wait_ready().await
+    }
 }
 
 #[derive(Debug)]
@@ -39,8 +126,7 @@ pub(super) struct DefaultResolverForwarder {
     concurrent: Option<usize>,
     response_selection: ResponseSelectionMode,
     short_circuit: bool,
-    snapshot: Arc<ArcSwap<ResolverSet>>,
-    refresh: Option<AbortOnDropHandle<()>>,
+    transports: Option<Arc<DefaultResolverTransports>>,
     metrics: Arc<ForwardMetrics>,
 }
 
@@ -57,67 +143,9 @@ impl DefaultResolverForwarder {
             concurrent,
             response_selection,
             short_circuit,
-            snapshot: Arc::new(ArcSwap::from_pointee(ResolverSet::default())),
-            refresh: None,
+            transports: None,
         }
     }
-}
-
-async fn refresh_snapshot(snapshot: &ArcSwap<ResolverSet>) {
-    let observation = discover().await;
-    let previous = snapshot.load();
-    let Discovery {
-        network,
-        mut servers,
-    } = match observation {
-        Ok(discovery) => discovery,
-        Err(error) => {
-            if !previous.upstreams.is_empty() {
-                warn!(%error, "Clearing previously discovered default DNS servers");
-            } else {
-                debug!(%error, "Default DNS discovery failed");
-            }
-            Discovery::default()
-        }
-    };
-    servers.truncate(MAX_CONCURRENT_QUERIES);
-
-    let peer_ip = |upstream: &Arc<dyn Upstream>| upstream.connection_info().remote_ip;
-    let unchanged_network = previous.network == network;
-    if unchanged_network
-        && previous
-            .upstreams
-            .iter()
-            .map(peer_ip)
-            .eq(servers.iter().map(|ip| Some(IpAddr::V4(*ip))))
-    {
-        return;
-    }
-
-    let reusable = if unchanged_network {
-        previous.upstreams.as_slice()
-    } else {
-        &[]
-    };
-    let mut upstreams = Vec::with_capacity(servers.len());
-    for ip in servers {
-        if let Some(upstream) = reusable
-            .iter()
-            .find(|upstream| peer_ip(upstream) == Some(ip.into()))
-        {
-            upstreams.push(upstream.clone());
-        } else {
-            // Use direct numeric endpoints, bypassing system DNS and outbound
-            // profiles.
-            match ConnectionInfo::with_addr(&ip.to_string())
-                .and_then(UpstreamBuilder::with_connection_info)
-            {
-                Ok(upstream) => upstreams.push(Arc::from(upstream)),
-                Err(error) => warn!(%error, "Could not build discovered DNS upstream"),
-            }
-        }
-    }
-    snapshot.store(Arc::new(ResolverSet { network, upstreams }));
 }
 
 #[async_trait]
@@ -126,24 +154,13 @@ impl Plugin for DefaultResolverForwarder {
         &self.tag
     }
 
-    async fn init(&mut self, _context: &PluginInitContext<'_>) -> Result<()> {
-        // Finish the first probe before publishing this executor to listeners.
-        refresh_snapshot(&self.snapshot).await;
+    async fn init(&mut self, context: &PluginInitContext<'_>) -> Result<()> {
         register_metric_source(self.metrics.clone())?;
-        let snapshot = self.snapshot.clone();
-        self.refresh = Some(AbortOnDropHandle::new(tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(REFRESH_INTERVAL).await;
-                refresh_snapshot(&snapshot).await;
-            }
-        })));
+        self.transports = Some(context.default_resolver_transports());
         Ok(())
     }
 
     async fn destroy(&self) -> Result<()> {
-        if let Some(refresh) = &self.refresh {
-            refresh.abort();
-        }
         unregister_metric_source(&self.tag);
         Ok(())
     }
@@ -153,8 +170,16 @@ impl Plugin for DefaultResolverForwarder {
 impl Executor for DefaultResolverForwarder {
     async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
         let start = self.metrics.record_query_start();
-        let snapshot = self.snapshot.load_full();
-        let result = self.query(&snapshot.upstreams, &context.request).await;
+        let transports = self
+            .transports
+            .as_ref()
+            .ok_or_else(|| DnsError::plugin("default resolver was not initialized"))?;
+        let snapshot = transports.get().await;
+        let result = tokio::select! {
+            biased;
+            _ = snapshot.invalidated.cancelled() => Err(DnsError::plugin("default network changed during DNS query")),
+            result = self.query(&snapshot.upstreams, &context.request) => result,
+        };
         match result {
             Ok(message) => {
                 context.set_response(message);

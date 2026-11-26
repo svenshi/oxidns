@@ -22,40 +22,82 @@ pub(crate) const fn is_supported() -> bool {
     cfg!(any(target_os = "linux", target_os = "macos", windows))
 }
 
-#[derive(Debug, Default, Eq, PartialEq)]
-pub(crate) struct NetworkIdentity {
-    // Using the route interface as well as the assigned addresses keeps pools
-    // from following a stale source address when networks reuse a resolver IP.
-    interface: Option<String>,
-    gateway: Option<Ipv4Addr>,
-    local: Vec<Ipv4Addr>,
-}
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+type Network = (Vec<Ipv4Addr>, Option<Ipv4Addr>, Vec<Ipv4Addr>);
 
-#[derive(Debug, Default)]
-pub(crate) struct Discovery {
-    pub(crate) network: NetworkIdentity,
-    pub(crate) servers: Vec<Ipv4Addr>,
-}
-
-pub(crate) async fn discover() -> io::Result<Discovery> {
+async fn discover() -> io::Result<Vec<Ipv4Addr>> {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
-        let (dns, mut network) =
+        let (dns, gateway, local) =
             tokio::time::timeout(2 * COMMAND_TIMEOUT, platform::discover()).await??;
-        network.local.sort_unstable();
-        network.local.dedup();
-        let servers = select_servers(dns, network.gateway, &network.local);
-        Ok(Discovery { network, servers })
+        Ok(select_servers(dns, gateway, &local))
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "default_resolver is not supported on this platform",
+        "default_resolver is not supported",
     ))
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-type Network = (Vec<Ipv4Addr>, NetworkIdentity);
+use platform::Monitor;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+struct Monitor;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+impl Monitor {
+    pub(crate) fn new() -> io::Result<Self> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "default_resolver is not supported",
+        ))
+    }
+
+    pub(crate) async fn changed(&mut self) -> io::Result<()> {
+        std::future::pending().await
+    }
+}
+
+/// The shared list of system-discovered DNS addresses, independent of
+/// forwarding.
+pub(crate) struct DefaultResolver {
+    addresses: Vec<Ipv4Addr>,
+    monitor: Monitor,
+}
+
+impl DefaultResolver {
+    pub(crate) fn new() -> io::Result<Self> {
+        Ok(Self {
+            addresses: Vec::new(),
+            monitor: Monitor::new()?,
+        })
+    }
+
+    /// Cache the first complete observation. A newer event supersedes any read
+    /// that was still in progress when it arrived.
+    pub(crate) async fn refresh(&mut self) -> io::Result<&[Ipv4Addr]> {
+        loop {
+            tokio::select! {
+                biased;
+                event = self.monitor.changed() => event?,
+                result = discover() => {
+                    self.addresses = result.unwrap_or_else(|error| {
+                        tracing::debug!(%error, "Default DNS discovery failed");
+                        Vec::new()
+                    });
+                    return Ok(&self.addresses);
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn changed(&mut self) -> io::Result<()> {
+        self.monitor.changed().await?;
+        self.addresses.clear();
+        Ok(())
+    }
+}
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn select_servers(
@@ -91,12 +133,19 @@ fn parse_addresses(value: &str) -> Vec<Ipv4Addr> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-async fn output(program: impl AsRef<std::ffi::OsStr>, args: &[&str]) -> io::Result<String> {
-    let program = program.as_ref();
-    let mut cmd = Command::new(program);
-    cmd.args(args).env("LC_ALL", "C").kill_on_drop(true);
+fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut cmd = Command::new(program.as_ref());
+    cmd.env("LC_ALL", "C").kill_on_drop(true);
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    cmd
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+async fn output(program: impl AsRef<std::ffi::OsStr>, args: &[&str]) -> io::Result<String> {
+    let program = program.as_ref();
+    let mut cmd = command(program);
+    cmd.args(args);
     let result = tokio::time::timeout(COMMAND_TIMEOUT, cmd.output()).await??;
     if !result.status.success() {
         return Err(io::Error::other(format!(

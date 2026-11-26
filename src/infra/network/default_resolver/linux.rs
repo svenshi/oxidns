@@ -3,10 +3,13 @@
 
 use std::io;
 use std::net::Ipv4Addr;
+use std::process::Stdio;
 
 use serde::Deserialize;
+use tokio::io::{AsyncBufReadExt, BufReader, Lines};
+use tokio::process::{Child, ChildStdout};
 
-use super::{Network, NetworkIdentity, output, parse_addresses};
+use super::{Network, output, parse_addresses};
 
 #[derive(Deserialize)]
 struct Route {
@@ -67,14 +70,7 @@ pub(super) async fn discover() -> io::Result<Network> {
         .iter()
         .flat_map(|iface| iface.addr_info.iter().map(|addr| addr.local))
         .collect();
-    Ok((
-        dns,
-        NetworkIdentity {
-            interface: Some(interface.ifname.clone()),
-            gateway: route.gateway,
-            local,
-        },
-    ))
+    Ok((dns, route.gateway, local))
 }
 
 fn nm_dns(options: &str) -> Vec<Ipv4Addr> {
@@ -94,4 +90,38 @@ fn networkd_dns(lease: &str) -> Vec<Ipv4Addr> {
         .filter_map(|line| line.strip_prefix("DNS="))
         .flat_map(parse_addresses)
         .collect()
+}
+
+pub(crate) struct Monitor {
+    _child: Child,
+    events: Lines<BufReader<ChildStdout>>,
+}
+
+impl Monitor {
+    pub(crate) fn new() -> io::Result<Self> {
+        let mut child = super::command("ip")
+            .args(["-o", "-4", "monitor", "link", "address", "route"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("missing ip monitor output"))?;
+        Ok(Self {
+            _child: child,
+            events: BufReader::new(stdout).lines(),
+        })
+    }
+
+    pub(crate) async fn changed(&mut self) -> io::Result<()> {
+        if self.events.next_line().await?.is_some() {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "ip monitor stopped",
+            ))
+        }
+    }
 }

@@ -101,7 +101,7 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 
 - 类型：`boolean`；默认值：`false`。设为 `true` 时，不要配置静态 `upstreams`。
 - 从 OxiDNS 所在主机的 IPv4 默认网络读取 DHCPv4 下发的 DNS（选项 6），不读取系统当前生效的 DNS。忽略回环和本机地址；没有可用 DHCP DNS 时尝试 IPv4 默认网关。没有可用目标时，该转发器返回错误，不使用旧网络的地址。
-- 启动时完成首次探测，之后在后台约每 5 秒刷新一次。接口、网关或本机 IPv4 地址变化时会更新连接池，即使 DNS 地址没有变化。默认向所有发现的地址并发查询（最多 32 个），可用 `concurrent` 限制；发现的地址使用普通 DNS 直连。
+- 首次调用时才读取当前网络的 DNS，之后共享缓存，不定时刷新。收到系统网络变更通知时立即清空缓存、取消旧查询，并重新探测；即使 DNS 地址相同也重建连接池。默认向所有发现的地址并发查询（最多 32 个），可用 `concurrent` 限制；发现的地址使用普通 DNS 直连。
 - Linux 需要 `iproute2` 的 `ip`，支持 NetworkManager 的 `nmcli` 或可读的 systemd-networkd DHCP 租约；macOS 使用 `ipconfig`；Windows 使用系统 PowerShell 读取 DHCP 租约。暂不支持 IPv6 路由器通告、DHCPv6 或自动追加 DHCP 搜索后缀。
 - 建议只在 sequence 中将需要的局域网或认证域名交给此转发器，避免把其他查询发给访客网络，也不要为这条分支复用跨网络的 DNS 缓存。
 

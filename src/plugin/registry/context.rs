@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::infra::error::Result;
 use crate::plugin::executor::Executor;
+use crate::plugin::executor::forward::DefaultResolverTransports;
 use crate::plugin::matcher::MatcherRef;
 use crate::plugin::provider::Provider;
 use crate::plugin::{
@@ -67,6 +68,16 @@ impl<'a> PluginInitContext<'a> {
             tag: tag.into(),
             create_context,
         }
+    }
+
+    pub(crate) fn default_resolver_transports(&self) -> Arc<DefaultResolverTransports> {
+        let mut slot = super::lock_mutex(&self.registry.default_resolver_transports);
+        if let Some(cache) = slot.upgrade() {
+            return cache;
+        }
+        let cache = Arc::new(DefaultResolverTransports::new());
+        *slot = Arc::downgrade(&cache);
+        cache
     }
 
     pub fn tag(&self) -> &str {

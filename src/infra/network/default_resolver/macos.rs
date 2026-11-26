@@ -3,7 +3,7 @@
 
 use std::io;
 
-use super::{Network, NetworkIdentity, output, parse_addresses};
+use super::{Network, output, parse_addresses};
 
 pub(super) async fn discover() -> io::Result<Network> {
     let route = output("/sbin/route", &["-n", "get", "-inet", "default"]).await?;
@@ -29,14 +29,7 @@ pub(super) async fn discover() -> io::Result<Network> {
             fields.next()?.parse().ok()
         })
         .collect();
-    Ok((
-        dns,
-        NetworkIdentity {
-            interface: Some(interface.to_owned()),
-            gateway,
-            local,
-        },
-    ))
+    Ok((dns, gateway, local))
 }
 
 fn field<'a>(route: &'a str, key: &str) -> Option<&'a str> {
@@ -44,3 +37,7 @@ fn field<'a>(route: &'a str, key: &str) -> Option<&'a str> {
         .lines()
         .find_map(|line| line.trim().strip_prefix(key).map(str::trim))
 }
+
+#[path = "macos_monitor.rs"]
+mod monitor;
+pub(crate) use monitor::Monitor;

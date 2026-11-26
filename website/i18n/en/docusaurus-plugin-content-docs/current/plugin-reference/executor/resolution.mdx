@@ -100,7 +100,7 @@ Sends DNS queries to upstreams.
 
 - Type: `boolean`; default: `false`. When enabled, omit static `upstreams`.
 - Reads DNS addresses advertised by DHCPv4 (option 6) on the OxiDNS host's default IPv4 network, independently of the effective system DNS settings. Loopback and local addresses are ignored; the IPv4 default gateway is tried if no usable DHCP DNS address is found. Without a usable target, forwarding fails rather than using addresses from the old network.
-- Discovery runs once at startup, then refreshes in the background roughly every five seconds. A change in interface, gateway, or local IPv4 addresses resets the upstream connection pools even when the DNS addresses match. By default it queries all discovered servers concurrently (up to 32); `concurrent` can limit this. It connects directly using plain DNS.
+- Discovery is lazy and runs on the first invocation. All current-network forwarders share the cache with no periodic refresh. An OS network change invalidates the cache and cancels outgoing queries from the old generation before rediscovery. Connections are rebuilt even when DNS addresses match. By default it queries all discovered servers concurrently (up to 32); `concurrent` can limit this. It connects directly using plain DNS.
 - Linux requires `ip` from iproute2 and supports NetworkManager via `nmcli` or a readable systemd-networkd DHCP lease. macOS uses `ipconfig`. Windows uses Windows PowerShell to read the DHCP lease. IPv6 router advertisements, DHCPv6 and automatic DHCP search-suffix expansion are not supported.
 - Use sequence rules to send only the intended LAN or captive-portal domains to this forwarder. Avoid sharing a DNS cache across networks for this branch.
 

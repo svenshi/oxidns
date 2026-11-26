@@ -7,7 +7,7 @@
 //! enabling better testability and support for multiple server instances.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 
 use dashmap::DashMap;
 use tracing::{debug, error, info, warn};
@@ -16,6 +16,7 @@ use crate::config::types::PluginConfig;
 use crate::infra::error::{DnsError, Result};
 use crate::plugin::dependency::DependencyKind;
 use crate::plugin::executor::Executor;
+use crate::plugin::executor::forward::DefaultResolverTransports;
 #[cfg(feature = "api")]
 use crate::plugin::matcher::MatcherRuntimeControl;
 use crate::plugin::matcher::{Matcher, MatcherRef};
@@ -98,6 +99,8 @@ pub struct PluginRegistry {
     /// Initialization order of plugins (for deterministic shutdown)
     init_order: Mutex<Vec<String>>,
 
+    default_resolver_transports: Mutex<Weak<DefaultResolverTransports>>,
+
     #[cfg(debug_assertions)]
     test_runtime_guard: Mutex<Option<TestRuntimeGuard>>,
 }
@@ -111,6 +114,7 @@ impl PluginRegistry {
             factory_kinds: HashMap::new(),
             plugins: DashMap::new(),
             init_order: Mutex::new(Vec::new()),
+            default_resolver_transports: Mutex::new(Weak::new()),
             #[cfg(debug_assertions)]
             test_runtime_guard: Mutex::new(None),
         }
