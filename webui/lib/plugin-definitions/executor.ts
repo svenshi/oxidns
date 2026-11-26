@@ -195,11 +195,18 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         ],
       },
       {
+        key: "default_resolver",
+        description:
+          "使用当前网络通过 DHCPv4 下发的 DNS；没有可用地址时尝试 IPv4 默认网关。不能与静态上游同时配置。",
+        label: "使用当前网络 DNS",
+        type: "switch",
+        default: false,
+      },
+      {
         key: "upstreams",
-        description: "定义一个或多个上游目标。",
+        description: "定义一个或多个静态上游目标。未启用当前网络 DNS 时必填。",
         label: "上游列表",
         type: "array",
-        required: true,
         example: "udp://1.1.1.1:53",
         item: {
           type: "object",

@@ -63,7 +63,7 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 
 #### `concurrent`
 
-- 类型：`integer`；必填：否；默认值：`1`
+- 类型：`integer`；必填：否；默认值：静态模式为 `1`，当前网络模式为发现的上游数（最多 32 个）
 - 取值范围：实际运行时会限制在 `1..=32`，且不会超过上游数量
 - 作用：定义多上游模式下的并发查询扇出数。
 - 运行影响：
@@ -76,7 +76,7 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 - 类型：`string`；必填：否；默认值：`balanced`
 - 取值：`fastest`、`balanced`、`prefer_positive`、`consensus`
 - 作用：定义多上游并发返回不一致时的结果选择策略。
-- 生效范围：仅用于 `upstreams` 多于一个的竞争式查询。只有一个上游时直接使用单上游转发器，不执行 response selection；多上游配置使用 `concurrent: 1` 时，每次也只随机启动其中一个上游，不会为了 selection 再查询其他上游。
+- 生效范围：用于配置或检测到多个上游时的竞争式查询。只有一个上游时直接使用单上游转发器，不执行 response selection；多上游配置使用 `concurrent: 1` 时，每次也只启动其中一个上游（静态模式随机选择，当前网络模式使用 DHCP 列表中的第一个），不会为了 selection 再查询其他上游。
 - 除 `fastest` 外，响应会按原始 Question 分类为：
   - **完整正响应（complete positive）**：请求类型位于原始 QNAME 或其 CNAME 链终点。
   - **不完整别名（incomplete alias）**：存在 CNAME 链，但没有最终请求类型，也没有 SOA 否定证明。
@@ -97,10 +97,26 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 - `forward` 不执行隐藏式 fallback 或 CNAME chase；需要更多上游竞争时请显式提高 `concurrent`。
 - `fallback` executor 只判断分支是否产生了 response，不理解 response disposition；incomplete alias 或 `SERVFAIL` Message 也会被视为成功响应。若希望这些结果显式触发另一个上游，应使用 `has_wanted_ans`、`rcode` 等 matcher 组合 sequence，而不是依赖隐藏式 fallback。
 
+#### `default_resolver`
+
+- 类型：`boolean`；默认值：`false`。设为 `true` 时，不要配置静态 `upstreams`。
+- 从 OxiDNS 所在主机的 IPv4 默认网络读取 DHCPv4 下发的 DNS（选项 6），不读取系统当前生效的 DNS。忽略回环和本机地址；没有可用 DHCP DNS 时尝试 IPv4 默认网关。没有可用目标时，该转发器返回错误，不使用旧网络的地址。
+- 启动时完成首次探测，之后在后台约每 5 秒刷新一次。接口、网关或本机 IPv4 地址变化时会更新连接池，即使 DNS 地址没有变化。默认向所有发现的地址并发查询（最多 32 个），可用 `concurrent` 限制；发现的地址使用普通 DNS 直连。
+- Linux 需要 `iproute2` 的 `ip`，支持 NetworkManager 的 `nmcli` 或可读的 systemd-networkd DHCP 租约；macOS 使用 `ipconfig`；Windows 使用系统 PowerShell 读取 DHCP 租约。暂不支持 IPv6 路由器通告、DHCPv6 或自动追加 DHCP 搜索后缀。
+- 建议只在 sequence 中将需要的局域网或认证域名交给此转发器，避免把其他查询发给访客网络，也不要为这条分支复用跨网络的 DNS 缓存。
+
+```yaml
+- tag: forward_local
+  type: forward
+  args:
+    default_resolver: true
+    short_circuit: true
+```
+
 #### `upstreams`
 
-- 类型：`array`；必填：是；默认值：无
-- 作用：定义一个或多个上游目标。
+- 类型：`array`；未启用 `default_resolver` 时必填。
+- 作用：定义一个或多个静态上游目标。
 - 运行影响：
   - 数组长度为 `1` 时使用单上游模式。
   - 数组长度大于 `1` 时使用竞争式查询模式。

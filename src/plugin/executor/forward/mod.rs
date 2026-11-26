@@ -7,6 +7,7 @@
 
 mod concurrent;
 mod config;
+mod default_resolver;
 mod factory;
 mod metrics;
 mod selection;

@@ -64,7 +64,7 @@ Sends DNS queries to upstreams.
 
 #### `concurrent`
 
-- Type: `integer`; Required: no; Default: `1`
+- Type: `integer`; Required: no; Default: `1` with static upstreams; all discovered servers (up to 32) with `default_resolver`
 - Runtime range is clamped to `1..=32` and never exceeds the upstream count.
 - Purpose: Number of concurrent upstream fan-out requests.
 - This is the number of upstreams actually started for one request. OxiDNS does not sequentially retry unstarted upstreams after a CNAME-only response, so `concurrent: 1` retains single-attempt selection semantics.
@@ -75,7 +75,7 @@ Sends DNS queries to upstreams.
 - Type: `string`; Required: no; Default: `balanced`
 - Values: `fastest`, `balanced`, `prefer_positive`, `consensus`
 - Purpose: Selects the winning response when concurrent upstreams return different results.
-- Scope: applies only when `upstreams` contains more than one target. A single configured upstream uses the single-upstream forwarder and bypasses response selection. With multiple upstreams and `concurrent: 1`, each request still starts only one randomly selected upstream; selection does not query additional upstreams.
+- Scope: applies when more than one upstream is configured or discovered. A single configured upstream uses the single-upstream forwarder and bypasses response selection. With multiple upstreams and `concurrent: 1`, each request still starts only one upstream (randomly selected in static mode, first in the discovered list in current-network mode); selection does not query additional upstreams.
 - Except in `fastest` mode, every response is classified against the original Question as:
   - **Complete positive**: the requested type exists at the original QNAME or its CNAME-chain terminal.
   - **Incomplete alias**: a CNAME chain exists, but neither the final requested type nor an SOA denial is present.
@@ -96,10 +96,26 @@ Sends DNS queries to upstreams.
 - `forward` does not perform hidden fallback or CNAME chasing. Raise `concurrent` when more upstreams must participate in the race.
 - The `fallback` executor checks only whether a branch produced a response; it does not understand response dispositions. An incomplete alias or a `SERVFAIL` Message therefore counts as a successful branch result. To make those outcomes explicitly trigger another upstream, compose a sequence with matchers such as `has_wanted_ans` or `rcode` instead of relying on hidden fallback.
 
+#### `default_resolver`
+
+- Type: `boolean`; default: `false`. When enabled, omit static `upstreams`.
+- Reads DNS addresses advertised by DHCPv4 (option 6) on the OxiDNS host's default IPv4 network, independently of the effective system DNS settings. Loopback and local addresses are ignored; the IPv4 default gateway is tried if no usable DHCP DNS address is found. Without a usable target, forwarding fails rather than using addresses from the old network.
+- Discovery runs once at startup, then refreshes in the background roughly every five seconds. A change in interface, gateway, or local IPv4 addresses resets the upstream connection pools even when the DNS addresses match. By default it queries all discovered servers concurrently (up to 32); `concurrent` can limit this. It connects directly using plain DNS.
+- Linux requires `ip` from iproute2 and supports NetworkManager via `nmcli` or a readable systemd-networkd DHCP lease. macOS uses `ipconfig`. Windows uses Windows PowerShell to read the DHCP lease. IPv6 router advertisements, DHCPv6 and automatic DHCP search-suffix expansion are not supported.
+- Use sequence rules to send only the intended LAN or captive-portal domains to this forwarder. Avoid sharing a DNS cache across networks for this branch.
+
+```yaml
+- tag: forward_local
+  type: forward
+  args:
+    default_resolver: true
+    short_circuit: true
+```
+
 #### `upstreams`
 
-- Type: `array`; Required: yes; Default: none
-- Purpose: Defines one or more upstream targets.
+- Type: `array`; required unless `default_resolver` is enabled.
+- Purpose: Defines one or more static upstream targets.
 - Runtime impact:
   - One upstream means normal forwarding.
   - More than one enables racing behavior.

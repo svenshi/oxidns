@@ -376,9 +376,15 @@ export const enUSPluginDefined = {
             consensus: "Negative consensus",
           },
         },
+        default_resolver: {
+          label: "Use current network DNS",
+          description:
+            "Use DNS advertised via DHCPv4 on the current network, falling back to the IPv4 default gateway. Cannot be combined with static upstreams.",
+        },
         upstreams: {
           label: "upstream list",
-          description: "Define one or more upstream targets.",
+          description:
+            "Define one or more static upstream targets. Required unless current network DNS is enabled.",
           example: "udp://1.1.1.1:53",
         },
         "upstreams[].tag": {

@@ -32,6 +32,7 @@
 //!   and connection pooling across supported upstream protocols.
 pub mod buffer_pool;
 pub(crate) mod deadline;
+pub(crate) mod default_resolver;
 pub(crate) mod dial;
 #[cfg(feature = "_http-client")]
 pub mod http_client;

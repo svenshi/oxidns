@@ -657,6 +657,10 @@ impl<C: Connection> Drop for PipelinePool<C> {
         if let Some(handle) = task_handle {
             handle.stop_detached();
         }
+        // The connection owns a listener task, so dropping slots is not enough.
+        for slot in self.slots.load().iter() {
+            slot.close();
+        }
     }
 }
 

@@ -16,7 +16,8 @@ pub(super) const MAX_CONCURRENT_QUERIES: usize = 32;
 pub struct ForwardConfig {
     /// Number of upstreams to query concurrently in multi-upstream mode.
     ///
-    /// Defaults to `1`, and clamped to `1..=32` and the upstream count.
+    /// Defaults to `1` for static upstreams, or all discovered upstreams in
+    /// current-network mode. Clamped to `1..=32` and the upstream count.
     pub concurrent: Option<usize>,
 
     /// Concurrent upstream response selection mode.
@@ -25,7 +26,12 @@ pub struct ForwardConfig {
     #[serde(default)]
     pub response_selection: ResponseSelectionMode,
 
-    /// List of upstream DNS servers
+    /// Use IPv4 DNS servers advertised on the host's current network.
+    #[serde(default)]
+    pub default_resolver: bool,
+
+    /// List of static upstream DNS servers.
+    #[serde(default)]
     pub upstreams: Vec<UpstreamConfig>,
 
     /// Whether to stop the executor chain after a successful upstream response.
@@ -35,7 +41,7 @@ pub struct ForwardConfig {
 
 pub(super) fn parse_forward_config(plugin_config: &PluginConfig) -> Result<ForwardConfig> {
     let cfg = plugin_config.args.clone().ok_or_else(|| {
-        DnsError::plugin("forward plugin requires 'concurrent' and 'upstreams' configuration")
+        DnsError::plugin("forward plugin requires 'upstreams' or 'default_resolver' configuration")
     })?;
     let cfg = serde_yaml_ng::from_value::<ForwardConfig>(cfg)
         .map_err(|e| DnsError::plugin(format!("failed to parse forward plugin config: {}", e)))?;
@@ -44,6 +50,20 @@ pub(super) fn parse_forward_config(plugin_config: &PluginConfig) -> Result<Forwa
 }
 
 fn validate_forward_config(cfg: &ForwardConfig) -> Result<()> {
+    if cfg.default_resolver {
+        if !cfg.upstreams.is_empty() {
+            return Err(DnsError::plugin(
+                "forward default_resolver cannot be combined with static upstreams",
+            ));
+        }
+        if !crate::infra::network::default_resolver::is_supported() {
+            return Err(DnsError::plugin(
+                "forward default_resolver is not supported on this platform",
+            ));
+        }
+        return Ok(());
+    }
+
     if cfg.upstreams.is_empty() {
         return Err(DnsError::plugin(
             "forward plugin requires at least one upstream",

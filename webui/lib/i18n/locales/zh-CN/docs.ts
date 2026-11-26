@@ -66,8 +66,10 @@ export const zhCNDocs = {
       "- 类型：`integer`；必填：否；默认值：`1`\n- 取值范围：实际运行时会限制在 `1..=32`，且不会超过 upstream 数量。\n- 建议范围：`2..=8`；更高值适合高级观测或特殊部署。\n- 作用：定义多上游模式下的并发查询扇出数。\n- 运行影响：\n  - 值越大，多上游竞争越积极，但同时会增加上游请求量。",
     response_selection:
       "- 类型：`string`；必填：否；默认值：`balanced`\n- 可选值：`fastest`、`balanced`、`prefer_positive`、`consensus`\n- 作用：定义并发上游返回多个响应时的选择策略。\n- 运行影响：\n  - `fastest`：第一个成功返回的 DNS 响应胜出。\n  - `balanced`：正向响应立即胜出；负向响应会短暂等待可能的正向响应。\n  - `prefer_positive`：正向响应优先；负向响应需要等待本轮并发完成。\n  - `consensus`：正向响应优先；负向响应需要兼容结果确认。",
+    default_resolver:
+      "- 类型：`boolean`；默认值：`false`\n- 使用默认网络的 DHCPv4 DNS，没有可用地址时尝试 IPv4 默认网关。不能与静态上游同时配置。",
     upstreams:
-      "- 类型：`array`；必填：是；默认值：无\n- 作用：定义一个或多个上游目标。\n- 运行影响：\n  - 数组长度为 `1` 时使用单上游模式。\n  - 数组长度大于 `1` 时使用竞争式查询模式。",
+      "- 类型：`array`；未启用 `default_resolver` 时必填。\n- 作用：定义一个或多个静态上游目标。\n- 运行影响：\n  - 数组长度为 `1` 时使用单上游模式。\n  - 数组长度大于 `1` 时使用竞争式查询模式。",
     short_circuit:
       "- 类型：`boolean`；必填：否；默认值：`false`\n- 作用：控制在拿到成功上游响应后，是否立即停止后续 executor 链。\n- 说明：\n  - 关闭时，`forward` 仍会写入 `response`，但后续 executor 还能继续处理这份响应。\n  - 开启时，成功返回后会直接结束后续 executor 链。",
     "upstreams[].addr":

@@ -551,6 +551,9 @@ impl<C: Connection> Drop for ReusePool<C> {
         if let Some(handle) = task_handle {
             handle.stop_detached();
         }
+        while let Some(connection) = self.connections.pop() {
+            connection.close();
+        }
     }
 }
 
