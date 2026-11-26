@@ -316,6 +316,11 @@ export const WEBUI = {
   },
   connection: {
     loginTitle: "webui.connection.loginTitle",
+    loginSubtitle: "webui.connection.loginSubtitle",
+    togglePasswordVisibility: "webui.connection.togglePasswordVisibility",
+    serverAddress: "webui.connection.serverAddress",
+    advancedSettings: "webui.connection.advancedSettings",
+    hideAdvancedSettings: "webui.connection.hideAdvancedSettings",
     credentialsExpired: "webui.connection.credentialsExpired",
     authRequired: "webui.connection.authRequired",
     username: "webui.connection.username",

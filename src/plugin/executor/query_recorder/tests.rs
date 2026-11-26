@@ -1877,6 +1877,19 @@ async fn test_timeseries_sample_cutoff_and_query_plan() {
     .unwrap();
     assert!(!filtered.sample_truncated);
     assert_eq!(filtered.sample_size, 10_000);
+    let uncapped = load_timeseries(
+        backend.clone(),
+        TimeseriesQuery {
+            filter: QueryRecordFilter {
+                sample_limit: Some(0),
+                ..QueryRecordFilter::default()
+            },
+            ..query
+        },
+    )
+    .unwrap();
+    assert_eq!(uncapped.sample_size, 10_001);
+    assert!(!uncapped.sample_truncated);
     let plan_sql = format!(
         "EXPLAIN QUERY PLAN SELECT created_at_ms, elapsed_ms, error IS NOT NULL, has_response, COALESCE(rcode = 'Server Failure', 0) FROM {} WHERE created_at_ms >= 0 AND created_at_ms <= 120000 ORDER BY created_at_ms DESC, id DESC LIMIT 10001",
         backend.tables.records

@@ -96,6 +96,8 @@ export const useAuthStore = create<AuthState>()(
           }
           const headers: Record<string, string> = {
             Accept: "application/json",
+            "X-Requested-With": "XMLHttpRequest",
+            "X-No-Browser-Auth": "true",
           };
           if (serverConfig.requiresAuth) {
             if (!serverConfig.username || !serverConfig.password) {
@@ -113,6 +115,7 @@ export const useAuthStore = create<AuthState>()(
           const response = await fetch(`${url.replace(/\/$/, "")}/health`, {
             method: "GET",
             headers,
+            credentials: "omit",
           });
           if (response.status === 401) {
             set({
@@ -147,16 +150,16 @@ export const useAuthStore = create<AuthState>()(
           }));
           return true;
         } catch (error) {
-          set({
+          set((state) => ({
             isConnected: false,
             isAuthenticated: false,
             isConnecting: false,
-            needsCredentials: false,
+            needsCredentials: state.needsCredentials || serverConfig.requiresAuth,
             connectionError:
               error instanceof Error
                 ? error.message
                 : tClient(WEBUI.storeErrors.connectionFailed),
-          });
+          }));
           return false;
         }
       },

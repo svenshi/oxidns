@@ -672,6 +672,11 @@ fn apply_filter_param(
             }
         }
         "matcher_tag" => filter.matcher_tag = optional_text(value),
+        "sample_limit" => {
+            if let Ok(limit) = value.parse::<usize>() {
+                filter.sample_limit = Some(limit);
+            }
+        }
         _ => {}
     }
     Ok(())
