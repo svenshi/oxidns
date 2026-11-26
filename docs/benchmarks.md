@@ -66,14 +66,17 @@ hashes, feature selection, profile, compiler, platform, and profiler versions.
 
 ## Baselines and interpretation
 
-The workflow tries to download the last successful push run on the repository's
-default branch. Missing/expired artifacts or unavailable read permissions do not
-prevent measurement. The first run after migration establishes the baseline;
-old Cloud artifacts are not compared.
+For each benchmark target, the workflow looks for a downloadable artifact in
+recent successful push, scheduled, or manually dispatched runs on the default
+branch, newest first. Missing or expired artifacts fall back to older candidates.
+Unavailable baselines do not prevent measurement. Old Cloud artifacts are not
+compared.
 
 Instruction and allocation changes are shown only when fixture identity,
-iterations, profile, features, compiler, architecture, hotpath version, and
-Callgrind version match. A changed fixture starts a new comparison baseline.
+iterations, profile, features, compiler, OS and architecture, runner image OS,
+hotpath version, and Callgrind version match. Weekly image build numbers remain
+in report metadata for diagnosis and do not invalidate comparisons by themselves.
+A changed fixture starts a new comparison baseline.
 Native-only cases show their current timing/allocation values without an
 instruction delta. Raw reports remain inspectable when comparison is skipped.
 

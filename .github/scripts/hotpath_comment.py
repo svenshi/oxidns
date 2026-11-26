@@ -17,6 +17,13 @@ import hotpath
 
 MARKER = '<!-- oxidns-hotpath -->'
 MAX_ARCHIVE = 64 * 1024 * 1024
+SKIP_REASONS = {
+    'No baseline', 'invalid baseline report', 'baseline report format changed',
+    'schema_version changed', 'benchmark changed', 'id changed', 'target changed',
+    'iterations changed', 'fixture_sha256 changed', 'profile changed', 'features changed',
+    'runner OS image changed', 'runner_image changed', 'rustc changed', 'os changed',
+    'hotpath version changed', 'Callgrind unavailable or version changed',
+}
 
 
 class SafeRedirect(urllib.request.HTTPRedirectHandler):
@@ -98,8 +105,12 @@ def artifact_rows(archive):
                   else 'improvement' if 'improvement' in statuses else 'stable')
         revision = row.get('baseline_revision')
         revision = revision if isinstance(revision, str) and re.fullmatch(r'[0-9a-f]{40}', revision) else None
+        reason = None
+        if not comparable:
+            value = row.get('reason')
+            reason = value if isinstance(value, str) and value in SKIP_REASONS else 'Baseline unavailable or incompatible'
         rows.append({'id': row['id'], 'metrics': metrics, 'changes': changes if comparable else {},
-                     'status': status, 'reason': None if comparable else 'Baseline unavailable or incompatible',
+                     'status': status, 'reason': reason,
                      'baseline_revision': revision})
     return rows, rules
 

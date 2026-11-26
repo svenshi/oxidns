@@ -131,9 +131,17 @@ def compatibility(current, baseline):
     for field in ('schema_version', 'benchmark', 'id', 'target', 'iterations'):
         if current[field] != baseline[field]:
             return f'{field} changed'
-    for field in ('fixture_sha256', 'profile', 'features', 'runner_image'):
+    for field in ('fixture_sha256', 'profile', 'features'):
         if current['provenance'].get(field) != baseline['provenance'].get(field):
             return f'{field} changed'
+    # GitHub rolls out image builds independently across runners of the same
+    # OS. Keep the build number in the artifact for diagnosis, but compare
+    # only the image OS alongside the compiler, architecture and profiler.
+    def image_os(report):
+        return (report['provenance'].get('runner_image') or {}).get('ImageOS')
+
+    if image_os(current) != image_os(baseline):
+        return 'runner OS image changed'
     for field in ('rustc', 'os'):
         if current['native']['meta'][field] != baseline['native']['meta'][field]:
             return f'{field} changed'
@@ -144,6 +152,31 @@ def compatibility(current, baseline):
     if not current_tool or current_tool != baseline_tool:
         return 'Callgrind unavailable or version changed'
     return None
+
+
+def download_baseline(branch, target, output):
+    runs = json.loads(subprocess.check_output([
+        'gh', 'run', 'list', '--workflow', 'hotpath.yml', '--branch', branch,
+        '--status', 'success', '--limit', '12', '--json', 'databaseId,event',
+    ], text=True))
+    artifact = f'hotpath-{target}'
+    for candidate in runs:
+        if candidate['event'] not in ('push', 'schedule', 'workflow_dispatch'):
+            continue
+        run_id = str(candidate['databaseId'])
+        # Each download gets an empty directory, so a failed extraction cannot
+        # leave parts of a different baseline in the comparison directory.
+        with tempfile.TemporaryDirectory(dir=output.parent) as temporary:
+            result = subprocess.run([
+                'gh', 'run', 'download', run_id, '--name', artifact, '--dir', temporary,
+            ], capture_output=True)
+            if result.returncode or not any(Path(temporary).glob('*.json')):
+                print(f'No usable {artifact} artifact in run {run_id}; trying an older run.', flush=True)
+                continue
+            Path(temporary).rename(output)
+        print(f'Using {artifact} from {candidate["event"]} run {run_id}.', flush=True)
+        return
+    print(f'No downloadable {artifact} baseline on {branch}.', flush=True)
 
 
 def cell(value):
@@ -354,11 +387,17 @@ def main():
     gate.add_argument('directory', type=Path)
     gate.add_argument('--baseline', type=Path)
     gate.add_argument('--output', type=Path, required=True)
+    baseline = sub.add_parser('download-baseline')
+    baseline.add_argument('--branch', required=True)
+    baseline.add_argument('--target', required=True)
+    baseline.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if args.command == 'catalog':
         print(json.dumps({'include': catalog(args.tier)}, separators=(',', ':')))
     elif args.command == 'run':
         run(args)
+    elif args.command == 'download-baseline':
+        download_baseline(args.branch, args.target, args.output)
     elif args.command == 'gate':
         result = assess(args.directory, args.baseline)
         args.output.parent.mkdir(parents=True, exist_ok=True)

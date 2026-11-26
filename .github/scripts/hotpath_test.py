@@ -4,8 +4,10 @@
 import copy
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import hotpath
 
@@ -31,6 +33,14 @@ def combined():
 
 
 class ReportTest(unittest.TestCase):
+    def test_runner_build_rollout_does_not_invalidate_baseline(self):
+        current, baseline = combined(), combined()
+        current['provenance']['runner_image'] = {'ImageOS': 'ubuntu24', 'ImageVersion': 'new'}
+        baseline['provenance']['runner_image'] = {'ImageOS': 'ubuntu24', 'ImageVersion': 'old'}
+        self.assertIsNone(hotpath.compatibility(current, baseline))
+        baseline['provenance']['runner_image']['ImageOS'] = 'ubuntu22'
+        self.assertEqual(hotpath.compatibility(current, baseline), 'runner OS image changed')
+
     def test_normalize_routine_not_outer_bench_or_rounded_average(self):
         result = hotpath.metrics(combined())
         self.assertEqual(result['ns_per_op'], 125)
@@ -225,6 +235,36 @@ class GateTest(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertEqual(json.loads(output.read_text())['status'], 'failed')
             self.assertIn('🔴 Performance gate failed', result.stdout)
+
+
+class BaselineDownloadTest(unittest.TestCase):
+    def test_skip_pr_and_partial_download_then_use_scheduled_baseline(self):
+        history = [
+            {'databaseId': 30, 'event': 'pull_request'},
+            {'databaseId': 20, 'event': 'workflow_dispatch'},
+            {'databaseId': 10, 'event': 'schedule'},
+            {'databaseId': 5, 'event': 'push'},
+        ]
+        attempts = []
+
+        def download(command, **kwargs):
+            run_id = command[3]
+            attempts.append(run_id)
+            root = Path(command[command.index('--dir') + 1])
+            if run_id == '20':
+                (root / 'partial.json').write_text('{}')
+                return subprocess.CompletedProcess(command, 1)
+            (root / 'codec.json').write_text('{}')
+            return subprocess.CompletedProcess(command, 0)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'baseline'
+            with patch.object(hotpath.subprocess, 'check_output', return_value=json.dumps(history)) as query:
+                with patch.object(hotpath.subprocess, 'run', side_effect=download):
+                    hotpath.download_baseline('main', 'message_codec', output)
+            self.assertIn('--branch', query.call_args.args[0])
+            self.assertEqual(attempts, ['20', '10'])
+            self.assertEqual([path.name for path in output.iterdir()], ['codec.json'])
 
 
 if __name__ == '__main__':

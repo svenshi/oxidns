@@ -12,13 +12,13 @@ import hotpath
 import hotpath_comment as comment
 
 
-def archive(identifier='group/test', baseline=100, current=110):
+def archive(identifier='group/test', baseline=100, current=110, reason='@everyone untrusted Markdown'):
     result = {'schema_version': 1, 'policy': hotpath.policy(), 'rows': [{
         'id': identifier, 'metrics': {'ns_per_op': 123, 'instructions_per_op': current,
                                     'allocated_bytes_per_op': 100},
         'changes': {'instructions_per_op': {'baseline': baseline},
-                    'allocated_bytes_per_op': {'baseline': 100}},
-        'status': 'stable', 'reason': '@everyone untrusted Markdown',
+                    'allocated_bytes_per_op': {'baseline': 100}} if baseline is not None else {},
+        'status': 'stable', 'reason': reason,
         'baseline_revision': '@everyone'}]}
     output = io.BytesIO()
     with zipfile.ZipFile(output, 'w') as bundle:
@@ -71,6 +71,13 @@ class FakeGitHub:
 
 
 class CommentTest(unittest.TestCase):
+    def test_skip_reason_is_kept_only_for_known_messages(self):
+        for reason, expected in (('runner OS image changed', 'runner OS image changed'),
+                                 ('No baseline', 'No baseline'),
+                                 ('@everyone', 'Baseline unavailable or incompatible')):
+            rows, _ = comment.artifact_rows(archive(baseline=None, reason=reason))
+            self.assertEqual(rows[0]['reason'], expected)
+
     def test_data_only_archive_recomputes_verdict_and_does_not_extract_paths(self):
         rows, _ = comment.artifact_rows(archive())
         self.assertEqual(rows[0]['status'], 'regression')
