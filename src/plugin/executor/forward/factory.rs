@@ -10,7 +10,6 @@ use super::config::{
     MAX_CONCURRENT_QUERIES, make_default_upstream_config, parse_forward_config,
     parse_quick_setup_param, resolve_active_concurrent, validate_upstream_addr,
 };
-use super::default_resolver::DefaultResolverForwarder;
 use super::metrics::{ForwardMetrics, upstream_metric_names};
 use super::selection::ResponseSelectionMode;
 use super::single::SingleDnsForwarder;
@@ -34,17 +33,6 @@ impl PluginFactory for ForwardFactory {
         let forward_config = parse_forward_config(plugin_config)?;
         let short_circuit = forward_config.short_circuit;
         let response_selection = forward_config.response_selection;
-
-        if forward_config.default_resolver {
-            return Ok(UninitializedPlugin::Executor(Box::new(
-                DefaultResolverForwarder::new(
-                    plugin_config.tag.clone(),
-                    forward_config.concurrent,
-                    response_selection,
-                    short_circuit,
-                ),
-            )));
-        }
 
         if forward_config.upstreams.len() == 1 {
             // Single upstream configuration

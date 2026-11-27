@@ -64,7 +64,7 @@ Sends DNS queries to upstreams.
 
 #### `concurrent`
 
-- Type: `integer`; Required: no; Default: `1` with static upstreams; all discovered servers (up to 32) with `default_resolver`
+- Type: `integer`; Required: no; Default: `1`
 - Runtime range is clamped to `1..=32` and never exceeds the upstream count.
 - Purpose: Number of concurrent upstream fan-out requests.
 - This is the number of upstreams actually started for one request. OxiDNS does not sequentially retry unstarted upstreams after a CNAME-only response, so `concurrent: 1` retains single-attempt selection semantics.
@@ -75,7 +75,7 @@ Sends DNS queries to upstreams.
 - Type: `string`; Required: no; Default: `balanced`
 - Values: `fastest`, `balanced`, `prefer_positive`, `consensus`
 - Purpose: Selects the winning response when concurrent upstreams return different results.
-- Scope: applies when more than one upstream is configured or discovered. A single configured upstream uses the single-upstream forwarder and bypasses response selection. With multiple upstreams and `concurrent: 1`, each request still starts only one upstream (randomly selected in static mode, first in the discovered list in current-network mode); selection does not query additional upstreams.
+- Scope: applies only when `upstreams` contains more than one target. A single configured upstream uses the single-upstream forwarder and bypasses response selection. With multiple upstreams and `concurrent: 1`, each request still starts only one randomly selected upstream; selection does not query additional upstreams.
 - Except in `fastest` mode, every response is classified against the original Question as:
   - **Complete positive**: the requested type exists at the original QNAME or its CNAME-chain terminal.
   - **Incomplete alias**: a CNAME chain exists, but neither the final requested type nor an SOA denial is present.
@@ -96,26 +96,10 @@ Sends DNS queries to upstreams.
 - `forward` does not perform hidden fallback or CNAME chasing. Raise `concurrent` when more upstreams must participate in the race.
 - The `fallback` executor checks only whether a branch produced a response; it does not understand response dispositions. An incomplete alias or a `SERVFAIL` Message therefore counts as a successful branch result. To make those outcomes explicitly trigger another upstream, compose a sequence with matchers such as `has_wanted_ans` or `rcode` instead of relying on hidden fallback.
 
-#### `default_resolver`
-
-- Type: `boolean`; default: `false`. When enabled, omit static `upstreams`.
-- Reads DNS addresses advertised by DHCPv4 (option 6) on the OxiDNS host's default IPv4 network, independently of the effective system DNS settings. Loopback and local addresses are ignored; the IPv4 default gateway is tried if no usable DHCP DNS address is found. Without a usable target, forwarding fails rather than using addresses from the old network.
-- Discovery is lazy and runs on the first invocation. All current-network forwarders share the cache with no periodic refresh. An OS network change invalidates the cache and cancels outgoing queries from the old generation before rediscovery. Connections are rebuilt even when DNS addresses match. By default it queries all discovered servers concurrently (up to 32); `concurrent` can limit this. It connects directly using plain DNS.
-- Linux requires `ip` from iproute2 and supports NetworkManager via `nmcli` or a readable systemd-networkd DHCP lease. macOS uses `ipconfig`. Windows uses Windows PowerShell to read the DHCP lease. IPv6 router advertisements, DHCPv6 and automatic DHCP search-suffix expansion are not supported.
-- Use sequence rules to send only the intended LAN or captive-portal domains to this forwarder. Avoid sharing a DNS cache across networks for this branch.
-
-```yaml
-- tag: forward_local
-  type: forward
-  args:
-    default_resolver: true
-    short_circuit: true
-```
-
 #### `upstreams`
 
-- Type: `array`; required unless `default_resolver` is enabled.
-- Purpose: Defines one or more static upstream targets.
+- Type: `array`; Required: yes; Default: none
+- Purpose: Defines one or more upstream targets.
 - Runtime impact:
   - One upstream means normal forwarding.
   - More than one enables racing behavior.
@@ -296,6 +280,32 @@ Per-upstream series are also exported with an `upstream` label (the upstream tag
 - More upstreams are not automatically better. Keep upstream groups semantically clear.
 
 </Admonition>
+
+---
+
+## `dhcp_dns_servers`
+
+<PluginAvailability from="minimal" />
+
+Forwards DNS queries to DNS servers advertised through DHCPv4 on the default IPv4 network. If there are no usable DHCP DNS addresses, it tries the IPv4 default gateway. It does not use the system's effective DNS settings, append search suffixes, or use broadcast or mDNS.
+
+```yaml
+- tag: forward_local
+  type: dhcp_dns_servers
+  args:
+    short_circuit: true
+```
+
+- `concurrent`: By default, queries all discovered addresses concurrently (at most 32). Set to `1` to query only the first address in discovery order.
+- `response_selection`: Uses the same selection modes as [`forward`](#forward), defaulting to `balanced`.
+- `short_circuit`: Stops the chain after a successful response when enabled; defaults to `false`.
+- Static `upstreams` are not accepted. Use `forward` to set fixed upstreams.
+
+Discovery starts with the first query and runs again on supported network-change notifications. Discovered addresses are queried over plain DNS. DHCP may advertise public resolvers, so this is not a LAN-only guarantee. Do not share answer caches across networks for local names. If names must stay on the LAN, use an explicitly configured trusted LAN resolver.
+
+Runtime platforms: Linux (requires iproute2; reads DHCP DNS from NetworkManager or a readable systemd-networkd lease), macOS, and Windows. The official BusyBox image does not ship iproute2; use static `forward` or provide the required runtime. DHCPv6 is not supported.
+
+To migrate from the experimental branch, change `type: forward` to `type: dhcp_dns_servers`, remove `args.default_resolver`, and preserve the plugin `tag` and other options.
 
 ---
 

@@ -5,6 +5,7 @@ use std::sync::{Arc, OnceLock};
 
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
+use serde::Deserialize;
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -15,6 +16,7 @@ use super::config::{MAX_CONCURRENT_QUERIES, resolve_active_concurrent};
 use super::is_timeout_error;
 use super::metrics::ForwardMetrics;
 use super::selection::{ResponseSelectionMode, select_response};
+use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
 use crate::core::response::ResponseDisposition;
 use crate::infra::error::{DnsError, Result};
@@ -22,8 +24,47 @@ use crate::infra::network::default_resolver::DefaultResolver;
 use crate::infra::network::upstream::{ConnectionInfo, Upstream, UpstreamBuilder};
 use crate::infra::observability::metrics::{register_metric_source, unregister_metric_source};
 use crate::plugin::executor::{ExecStep, Executor};
-use crate::plugin::{Plugin, PluginInitContext};
+use crate::plugin::{Plugin, PluginFactory, PluginInitContext, UninitializedPlugin};
+use crate::plugin_factory;
 use crate::proto::Message;
+
+const PLUGIN_TYPE: &str = "dhcp_dns_servers";
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct DhcpDnsServersConfig {
+    concurrent: Option<usize>,
+    response_selection: ResponseSelectionMode,
+    short_circuit: bool,
+}
+
+#[derive(Debug)]
+#[plugin_factory("dhcp_dns_servers")]
+struct DhcpDnsServersFactory;
+
+impl PluginFactory for DhcpDnsServersFactory {
+    fn create(
+        &self,
+        plugin_config: &PluginConfig,
+        _context: &PluginInitContext<'_>,
+    ) -> Result<UninitializedPlugin> {
+        if !crate::infra::network::default_resolver::is_supported() {
+            return Err(DnsError::plugin(
+                "dhcp_dns_servers is not supported on this platform",
+            ));
+        }
+        let config = plugin_config
+            .args
+            .clone()
+            .map(serde_yaml_ng::from_value::<DhcpDnsServersConfig>)
+            .transpose()
+            .map_err(|e| DnsError::plugin(format!("failed to parse dhcp_dns_servers config: {e}")))?
+            .unwrap_or_default();
+        Ok(UninitializedPlugin::Executor(Box::new(
+            DhcpDnsServersForwarder::new(plugin_config.tag.clone(), config),
+        )))
+    }
+}
 
 #[derive(Debug, Default)]
 struct TransportGeneration {
@@ -121,7 +162,7 @@ impl DefaultResolverTransports {
 }
 
 #[derive(Debug)]
-pub(super) struct DefaultResolverForwarder {
+struct DhcpDnsServersForwarder {
     tag: String,
     concurrent: Option<usize>,
     response_selection: ResponseSelectionMode,
@@ -130,26 +171,25 @@ pub(super) struct DefaultResolverForwarder {
     metrics: Arc<ForwardMetrics>,
 }
 
-impl DefaultResolverForwarder {
-    pub(super) fn new(
-        tag: String,
-        concurrent: Option<usize>,
-        response_selection: ResponseSelectionMode,
-        short_circuit: bool,
-    ) -> Self {
+impl DhcpDnsServersForwarder {
+    fn new(tag: String, config: DhcpDnsServersConfig) -> Self {
         Self {
-            metrics: Arc::new(ForwardMetrics::new(tag.clone(), Vec::new())),
+            metrics: Arc::new(ForwardMetrics::for_plugin(
+                tag.clone(),
+                Vec::new(),
+                PLUGIN_TYPE,
+            )),
             tag,
-            concurrent,
-            response_selection,
-            short_circuit,
+            concurrent: config.concurrent,
+            response_selection: config.response_selection,
+            short_circuit: config.short_circuit,
             transports: None,
         }
     }
 }
 
 #[async_trait]
-impl Plugin for DefaultResolverForwarder {
+impl Plugin for DhcpDnsServersForwarder {
     fn tag(&self) -> &str {
         &self.tag
     }
@@ -167,13 +207,13 @@ impl Plugin for DefaultResolverForwarder {
 }
 
 #[async_trait]
-impl Executor for DefaultResolverForwarder {
+impl Executor for DhcpDnsServersForwarder {
     async fn execute(&self, context: &mut DnsContext) -> Result<ExecStep> {
         let start = self.metrics.record_query_start();
         let transports = self
             .transports
             .as_ref()
-            .ok_or_else(|| DnsError::plugin("default resolver was not initialized"))?;
+            .ok_or_else(|| DnsError::plugin("dhcp_dns_servers was not initialized"))?;
         let snapshot = transports.get().await;
         let result = tokio::select! {
             biased;
@@ -198,11 +238,11 @@ impl Executor for DefaultResolverForwarder {
     }
 }
 
-impl DefaultResolverForwarder {
+impl DhcpDnsServersForwarder {
     async fn query(&self, upstreams: &[Arc<dyn Upstream>], request: &Message) -> Result<Message> {
         match upstreams {
             [] => Err(DnsError::plugin(format!(
-                "forward plugin '{}': no usable DNS server on the default network",
+                "dhcp_dns_servers plugin '{}': no usable DNS server on the default network",
                 self.tag
             ))),
             [one] => one.query(request.clone()).await,
@@ -225,7 +265,7 @@ impl DefaultResolverForwarder {
                     select_response(&mut queries, count, question, self.response_selection).await;
                 let selected = selected.ok_or_else(|| {
                     DnsError::plugin(format!(
-                        "forward plugin '{}': {}",
+                        "dhcp_dns_servers plugin '{}': {}",
                         self.tag,
                         error.as_deref().unwrap_or("no upstream response")
                     ))

@@ -65,6 +65,7 @@ server -> sequence
 | 插件 | 作用 | 内置版本 |
 | --- | --- | --- |
 | [`forward`](executor/resolution.mdx#forward) | 向上游发起 DNS 查询。 | <PluginAvailability from="minimal" compact /> |
+| [`dhcp_dns_servers`](executor/resolution.mdx#dhcp_dns_servers) | 将查询转发给默认网络的 DHCPv4 DNS。 | <PluginAvailability from="minimal" compact /> |
 | [`cache`](executor/resolution.mdx#cache) | 对响应做 TTL 感知缓存，支持负缓存与持久化。 | <PluginAvailability from="minimal" compact /> |
 | [`hosts`](executor/resolution.mdx#hosts) | 按域名规则直接返回静态 `A` / `AAAA`。 | <PluginAvailability from="minimal" compact /> |
 | [`arbitrary`](executor/resolution.mdx#arbitrary) | 加载任意静态 DNS 记录并在命中时直接构造应答。 | <PluginAvailability from="standard" compact /> |

@@ -64,15 +64,20 @@ export const enUSDocs = {
     restore_request:
       "- Type: `boolean`; required: no; default: `true`\n- Restore the entire entry request on normal return, error, early termination, or cancellation, including downstream edits even if no option was removed\n- Disable to retain request changes; response, marks, and extensions are not rolled back\n- next covers the remaining sequence; use a child sequence to limit scope\n- Without a continuation, restoring execution leaves the request unchanged; non-restoring execution retains filtering",
   },
+  dhcp_dns_servers: {
+    concurrent:
+      "Query all discovered DHCPv4 DNS addresses concurrently by default, up to 32.",
+    response_selection:
+      "Uses the same selection modes as forward; defaults to balanced.",
+    short_circuit: "Stop after receiving a DNS response; defaults to false.",
+  },
   forward: {
     concurrent:
       "- Type: `integer`; required: no; default value: `1`\n- Value range: clamped to `1..=32` during actual operation, and never above the upstream count.\n- Recommended range: `2..=8`; higher values are intended for advanced observation or special deployments.\n- Function: Define the number of concurrent query fanouts in multi-upstream mode.\n- Operational impact:\n  - The larger the value, the more active the multi-upstream competition will be, but at the same time it will increase the amount of upstream requests.",
     response_selection:
       "- Type: `string`; Required: No; Default: `balanced`\n- Supported values: `fastest`, `balanced`, `prefer_positive`, `consensus`\n- Function: Defines how to choose among multiple responses returned by concurrent upstreams.\n- Operational impact:\n  - `fastest`: The first successful DNS response wins.\n  - `balanced`: Positive responses win immediately; negative responses wait briefly for a possible positive response.\n  - `prefer_positive`: Positive responses are preferred; negative responses wait until the current fanout completes.\n  - `consensus`: Positive responses are preferred; negative responses require compatible confirmation.",
-    default_resolver:
-      "- Type: `boolean`; default: `false`\n- Use DHCPv4 DNS on the default network, or the IPv4 default gateway if no usable servers are available. Mutually exclusive with static upstreams.",
     upstreams:
-      "- Type: `array`; Required unless `default_resolver` is enabled.\n- Function: Define one or more static upstream targets.\n- Operational impact:\n  - Use single upstream mode when array length is `1`.\n  - Use competitive query mode when the array length is greater than `1`.",
+      "- Type: `array`; Required: Yes; Default: None\n- Function: Define one or more upstream targets.\n- Operational impact:\n  - Use single upstream mode when array length is `1`.\n  - Use competitive query mode when the array length is greater than `1`.",
     short_circuit:
       "- Type: `boolean`; required: no; default value: `false`\n- Function: Control whether to stop the subsequent executor chain immediately after receiving a successful upstream response.\n- Description:\n  - When closed, `forward` will still write `response`, but subsequent executors can continue to process the response.\n  - When enabled, subsequent executor chains will be terminated directly upon successful return.",
     "upstreams[].addr":
@@ -598,10 +603,11 @@ export const enUSDocs = {
   },
   edns0opt: {
     codes:
-      "`codes` is a list of EDNS0 option codes.\n\n- Type: `array`; Required: Yes; Default: None\n- Function: Define the EDNS0 option codes that must be present.\n- Accepts both integers and decimal strings (so `8` and `\"8\"` are equivalent) and allows them to be mixed in one list; both forms are validated as u16. No code aliases.\n- Operational impact:\n  - An empty list fails configuration parsing instead of silently producing a matcher that never hits.",
+      '`codes` is a list of EDNS0 option codes.\n\n- Type: `array`; Required: Yes; Default: None\n- Function: Define the EDNS0 option codes that must be present.\n- Accepts both integers and decimal strings (so `8` and `"8"` are equivalent) and allows them to be mixed in one list; both forms are validated as u16. No code aliases.\n- Operational impact:\n  - An empty list fails configuration parsing instead of silently producing a matcher that never hits.',
     require:
       "- Type: `string`; Required: No; Default: `any`\n- Supported values:\n  - `any`: match when at least one configured code is present\n  - `all`: every configured code must be present\n- Operational impact: only affects how multiple codes are combined.",
-    source: '- Type: `string`; Required: No; Default: `request`\n- Supported values:\n  - `request`: read the request OPT\n  - `response`: read the response OPT\n- Operational impact:\n  - With `source: response`, returns `false` when the context has no response yet.',
+    source:
+      "- Type: `string`; Required: No; Default: `request`\n- Supported values:\n  - `request`: read the request OPT\n  - `response`: read the response OPT\n- Operational impact:\n  - With `source: response`, returns `false` when the context has no response yet.",
   },
   client_ip: {
     args: "The `args` of `client_ip` takes the form of a list of rules.\n\n- Type: `array`; Required: Yes; Default: None\n- Function: Define client source address matching conditions.\n- Support elements:\n  - Single IP\n  - CIDR\n  - `ip_set` reference\n- Operational impact:\n  - As long as the client source address matches any rule, matcher returns `true`.",

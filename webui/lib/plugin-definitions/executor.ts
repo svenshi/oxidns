@@ -12,6 +12,54 @@ import {
   stringArrayField,
 } from "./shared";
 
+const forwardMetrics = {
+  metricLabels: {
+    forward_query_total: "转发查询",
+    forward_success_total: "成功",
+    forward_error_total: "失败",
+    forward_timeout_total: "超时",
+    forward_incomplete_alias_selected_total: "不完整别名响应",
+    forward_latency_count: "延迟样本",
+    forward_latency_sum_ms: "延迟累计(ms)",
+    forward_upstream_query_total: "上游查询",
+    forward_upstream_success_total: "上游成功",
+    forward_upstream_error_total: "上游失败",
+    forward_upstream_timeout_total: "上游超时",
+    forward_upstream_latency_count: "上游延迟样本",
+    forward_upstream_latency_sum_ms: "上游延迟累计(ms)",
+  },
+  metricHelp: {
+    forward_query_total: "转发执行器发起的查询总数。",
+    forward_success_total: "成功获得上游响应的查询总数。",
+    forward_error_total: "上游返回错误或无法获得响应的查询总数。",
+    forward_timeout_total: "因超时未得到上游响应的查询总数。",
+    forward_incomplete_alias_selected_total:
+      "并发选择模式（balanced、prefer_positive、consensus）将不完整的 CNAME 别名响应作为最佳结果选中的次数；单上游与 fastest 模式不统计。",
+    forward_latency_count: "纳入延迟统计的已完成查询数。",
+    forward_latency_sum_ms: "所有已完成转发查询的总延迟（毫秒）。",
+    forward_upstream_query_total: "向该上游发起的请求总数。",
+    forward_upstream_success_total: "该上游返回成功响应的次数。",
+    forward_upstream_error_total: "该上游请求失败的次数。",
+    forward_upstream_timeout_total: "该上游请求超时的次数。",
+    forward_upstream_latency_count: "纳入该上游延迟统计的请求数。",
+    forward_upstream_latency_sum_ms: "该上游所有请求的总延迟（毫秒）。",
+  },
+  cardPriority: [
+    "forward_query_total",
+    "forward_timeout_total",
+    "forward_error_total",
+  ],
+  derivedCard: [
+    {
+      kind: "percent",
+      numerator: "forward_success_total",
+      denominator: "forward_query_total",
+      label: "成功率",
+    },
+    { kind: "latency", prefix: "forward", label: "平均延迟" },
+  ],
+} satisfies PluginMetricsDef;
+
 export const executorPluginDefinitions: PluginKindDefinition[] = [
   {
     kind: "sequence",
@@ -123,53 +171,7 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
     name: "Forward",
     description: "向一个或多个上游 DNS 发起查询",
     icon: "ArrowUpRight",
-    metrics: {
-      metricLabels: {
-        forward_query_total: "转发查询",
-        forward_success_total: "成功",
-        forward_error_total: "失败",
-        forward_timeout_total: "超时",
-        forward_incomplete_alias_selected_total: "不完整别名响应",
-        forward_latency_count: "延迟样本",
-        forward_latency_sum_ms: "延迟累计(ms)",
-        forward_upstream_query_total: "上游查询",
-        forward_upstream_success_total: "上游成功",
-        forward_upstream_error_total: "上游失败",
-        forward_upstream_timeout_total: "上游超时",
-        forward_upstream_latency_count: "上游延迟样本",
-        forward_upstream_latency_sum_ms: "上游延迟累计(ms)",
-      },
-      metricHelp: {
-        forward_query_total: "转发执行器发起的查询总数。",
-        forward_success_total: "成功获得上游响应的查询总数。",
-        forward_error_total: "上游返回错误或无法获得响应的查询总数。",
-        forward_timeout_total: "因超时未得到上游响应的查询总数。",
-        forward_incomplete_alias_selected_total:
-          "并发选择模式（balanced、prefer_positive、consensus）将不完整的 CNAME 别名响应作为最佳结果选中的次数；单上游与 fastest 模式不统计。",
-        forward_latency_count: "纳入延迟统计的已完成查询数。",
-        forward_latency_sum_ms: "所有已完成转发查询的总延迟（毫秒）。",
-        forward_upstream_query_total: "向该上游发起的请求总数。",
-        forward_upstream_success_total: "该上游返回成功响应的次数。",
-        forward_upstream_error_total: "该上游请求失败的次数。",
-        forward_upstream_timeout_total: "该上游请求超时的次数。",
-        forward_upstream_latency_count: "纳入该上游延迟统计的请求数。",
-        forward_upstream_latency_sum_ms: "该上游所有请求的总延迟（毫秒）。",
-      },
-      cardPriority: [
-        "forward_query_total",
-        "forward_timeout_total",
-        "forward_error_total",
-      ],
-      derivedCard: [
-        {
-          kind: "percent",
-          numerator: "forward_success_total",
-          denominator: "forward_query_total",
-          label: "成功率",
-        },
-        { kind: "latency", prefix: "forward", label: "平均延迟" },
-      ],
-    } satisfies PluginMetricsDef,
+    metrics: forwardMetrics,
     configSchema: [
       {
         key: "concurrent",
@@ -195,18 +197,11 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         ],
       },
       {
-        key: "default_resolver",
-        description:
-          "使用当前网络通过 DHCPv4 下发的 DNS；没有可用地址时尝试 IPv4 默认网关。不能与静态上游同时配置。",
-        label: "使用当前网络 DNS",
-        type: "switch",
-        default: false,
-      },
-      {
         key: "upstreams",
-        description: "定义一个或多个静态上游目标。未启用当前网络 DNS 时必填。",
+        description: "定义一个或多个上游目标。",
         label: "上游列表",
         type: "array",
+        required: true,
         example: "udp://1.1.1.1:53",
         item: {
           type: "object",
@@ -368,6 +363,45 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
     quickSetup: {
       paramPlaceholder: "1.1.1.1 short_circuit=true",
     },
+  },
+  {
+    kind: "dhcp_dns_servers",
+    type: "executor",
+    name: "DHCP DNS",
+    description:
+      "将查询转发给默认网络的 DHCPv4 DNS，没有可用地址时尝试默认网关。",
+    icon: "ArrowUpRight",
+    metrics: forwardMetrics,
+    configSchema: [
+      {
+        key: "concurrent",
+        description: "默认并发查询所有发现的 DNS 地址，最多 32 个。",
+        label: "并发上游数",
+        type: "number",
+        advanced: true,
+      },
+      {
+        key: "response_selection",
+        description: "定义多上游并发返回不一致时的结果选择策略。",
+        label: "结果选择",
+        type: "select",
+        default: "balanced",
+        advanced: true,
+        options: [
+          { label: "最快响应", value: "fastest" },
+          { label: "平衡", value: "balanced" },
+          { label: "优先正向答案", value: "prefer_positive" },
+          { label: "负向共识", value: "consensus" },
+        ],
+      },
+      {
+        key: "short_circuit",
+        label: "成功后停止后续执行",
+        description: "成功收到 DNS 响应后停止执行链。",
+        type: "switch",
+        default: false,
+      },
+    ],
   },
   {
     kind: "cache",

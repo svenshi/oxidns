@@ -337,15 +337,9 @@ export const zhCNPluginDefined = {
             consensus: "负向共识",
           },
         },
-        default_resolver: {
-          label: "使用当前网络 DNS",
-          description:
-            "使用当前网络通过 DHCPv4 下发的 DNS；没有可用地址时尝试 IPv4 默认网关。不能与静态上游同时配置。",
-        },
         upstreams: {
           label: "上游列表",
-          description:
-            "定义一个或多个静态上游目标。未启用当前网络 DNS 时必填。",
+          description: "定义一个或多个上游目标。",
           example: "udp://1.1.1.1:53",
         },
         "upstreams[].tag": {
@@ -480,6 +474,31 @@ export const zhCNPluginDefined = {
         derived: {
           "percent:forward_success_total/forward_query_total": "成功率",
           "latency:forward": "平均延迟",
+        },
+      },
+    },
+    dhcp_dns_servers: {
+      name: "DHCP DNS",
+      description:
+        "将查询转发给默认网络的 DHCPv4 DNS，没有可用地址时尝试默认网关。",
+      fields: {
+        concurrent: {
+          label: "并发上游数",
+          description: "省略时并发查询所有发现的地址，最多 32 个。",
+        },
+        response_selection: {
+          label: "响应选择",
+          description: "默认使用 balanced。",
+          options: {
+            fastest: "最快响应",
+            balanced: "平衡",
+            prefer_positive: "优先正向答案",
+            consensus: "负向共识",
+          },
+        },
+        short_circuit: {
+          label: "成功后停止后续执行",
+          description: "成功收到 DNS 响应后停止执行链。",
         },
       },
     },

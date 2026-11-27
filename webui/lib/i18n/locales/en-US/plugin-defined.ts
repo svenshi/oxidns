@@ -376,15 +376,9 @@ export const enUSPluginDefined = {
             consensus: "Negative consensus",
           },
         },
-        default_resolver: {
-          label: "Use current network DNS",
-          description:
-            "Use DNS advertised via DHCPv4 on the current network, falling back to the IPv4 default gateway. Cannot be combined with static upstreams.",
-        },
         upstreams: {
           label: "upstream list",
-          description:
-            "Define one or more static upstream targets. Required unless current network DNS is enabled.",
+          description: "Define one or more upstream targets.",
           example: "udp://1.1.1.1:53",
         },
         "upstreams[].tag": {
@@ -536,6 +530,33 @@ export const enUSPluginDefined = {
         derived: {
           "percent:forward_success_total/forward_query_total": "Success rate",
           "latency:forward": "Average latency",
+        },
+      },
+    },
+    dhcp_dns_servers: {
+      name: "DHCP DNS",
+      description:
+        "Forward queries to DHCPv4 DNS on the default network, or try the IPv4 default gateway.",
+      fields: {
+        concurrent: {
+          label: "Number of concurrent upstreams",
+          description:
+            "If omitted, query all discovered servers concurrently, up to 32.",
+        },
+        response_selection: {
+          label: "Response selection",
+          description: "Defaults to balanced.",
+          options: {
+            fastest: "Fastest response",
+            balanced: "Balanced",
+            prefer_positive: "Prefer positive answer",
+            consensus: "Negative consensus",
+          },
+        },
+        short_circuit: {
+          label: "Stop on success",
+          description:
+            "Stop the executor chain after receiving a DNS response.",
         },
       },
     },
