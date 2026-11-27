@@ -216,6 +216,13 @@ pub struct DnsContext {
     pub response: Option<Message>,
     pub execution_path: ExecutionPath,
     pub runtime: RuntimeContext,
+    /// The request exactly as the client sent it, snapshotted at ingress.
+    ///
+    /// `request` is mutable plugin surface (`request_mut`, `replace_request`,
+    /// subquery result application), so executors may legally rewrite or
+    /// replace it mid-pipeline. Server-level response fixes must compare
+    /// against this pristine copy instead of the live request.
+    original_request: Message,
 }
 
 impl DnsContext {
@@ -223,11 +230,19 @@ impl DnsContext {
     pub fn new(peer_addr: SocketAddr, request: Message) -> Self {
         Self {
             ingress: IngressContext::new(peer_addr),
+            original_request: request.clone(),
             request,
             response: None,
             execution_path: ExecutionPath::default(),
             runtime: RuntimeContext::default(),
         }
+    }
+
+    /// Return the client's request as received at ingress, immune to
+    /// downstream request rewrites.
+    #[inline]
+    pub fn original_request(&self) -> &Message {
+        &self.original_request
     }
 
     #[inline]
@@ -367,6 +382,7 @@ impl DnsContext {
     pub fn copy_for_subquery(&self) -> DnsContext {
         DnsContext {
             ingress: self.ingress.clone(),
+            original_request: self.original_request.clone(),
             request: self.request.clone(),
             response: self.response.clone(),
             execution_path: self.execution_path.clone(),
@@ -384,6 +400,9 @@ impl DnsContext {
         self.execution_path = sub_ctx.execution_path;
         self.runtime.marks = sub_ctx.runtime.marks;
         self.runtime.extensions = sub_ctx.runtime.extensions;
+        // `original_request` is deliberately not applied: the subquery's
+        // snapshot is a clone of this context's own, and the client-facing
+        // ingress request must stay invariant across the pipeline.
     }
 }
 
