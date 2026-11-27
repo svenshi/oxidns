@@ -49,3 +49,35 @@ pub(crate) fn test_context() -> DnsContext {
         Message::new(),
     )
 }
+
+/// Read the first question name back from the encoded wire message.
+///
+/// `Name::to_fqdn` returns the case-folded presentation form, so assertions
+/// about the echoed case must inspect the bytes the client receives.
+pub(crate) fn encoded_question_fqdn(message: &Message) -> String {
+    let bytes = message.to_bytes().expect("message should encode");
+    assert_eq!(
+        u16::from_be_bytes([bytes[4], bytes[5]]),
+        1,
+        "test helper expects exactly one question"
+    );
+
+    let mut fqdn = String::new();
+    let mut offset = 12;
+    loop {
+        let len = bytes[offset] as usize;
+        if len == 0 {
+            break;
+        }
+        if !fqdn.is_empty() {
+            fqdn.push('.');
+        }
+        fqdn.push_str(
+            std::str::from_utf8(&bytes[offset + 1..offset + 1 + len])
+                .expect("question label should be ASCII"),
+        );
+        offset += 1 + len;
+    }
+    fqdn.push('.');
+    fqdn
+}

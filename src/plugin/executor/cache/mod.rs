@@ -1862,7 +1862,7 @@ pub(crate) fn persistence_test_dump() -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{Ipv4Addr, SocketAddr};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
     use async_trait::async_trait;
@@ -1870,6 +1870,8 @@ mod tests {
     use super::*;
     use crate::plugin::executor::Executor;
     use crate::plugin::executor::sequence::chain::ChainProgram;
+    use crate::plugin::server::{RequestHandle, RequestMeta};
+    use crate::plugin::test_utils::encoded_question_fqdn;
     use crate::proto::rdata::{CNAME, SOA};
     use crate::proto::{
         DNSClass, Edns, EdnsOption, Message, Name, Question, RData, Rcode, Record, RecordType,
@@ -2964,6 +2966,63 @@ mod tests {
             1
         );
         assert_eq!(cache.metrics.insert_total.load(AtomicOrdering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn cache_hit_restores_current_request_question_case() {
+        AppClock::start();
+        let mut cache = test_cache(CacheConfig {
+            short_circuit: Some(true),
+            ..default_test_config()
+        });
+        cache
+            .init_for_test()
+            .await
+            .expect("cache should initialize for the test");
+
+        let mut cached_context =
+            make_context(make_request_with_query("WWW.Example.COM.", false, false));
+        let key = Cache::build_cache_key(&mut cached_context, false).unwrap();
+
+        // Simulate an upstream response that lowercased the question name
+        // before the entry was stored.
+        let mut cached_response = cached_context.request.response(Rcode::NoError);
+        cached_response.questions_mut()[0].set_name(Name::from_ascii("www.example.com.").unwrap());
+        cached_response.add_answer(Record::from_rdata(
+            Name::from_ascii("www.example.com.").unwrap(),
+            120,
+            RData::A(crate::proto::rdata::A(Ipv4Addr::new(192, 0, 2, 55))),
+        ));
+
+        let disposition = response_disposition_for_cache(&cached_response, &key);
+        cache.update_cache_entry(
+            cache.cache_map.get().unwrap(),
+            key,
+            cached_response,
+            120,
+            disposition,
+        );
+
+        let request_handle = RequestHandle::new(Arc::new(cache) as Arc<dyn Executor>);
+        let request = make_request_with_query("WwW.ExAmPlE.CoM.", false, false);
+        let result = request_handle
+            .handle_request(
+                request,
+                "127.0.0.1:5300".parse().unwrap(),
+                RequestMeta::default(),
+            )
+            .await;
+
+        assert_eq!(
+            result.response.answer_ips(),
+            vec![IpAddr::V4(Ipv4Addr::new(192, 0, 2, 55))],
+            "the differently cased request must hit the cached entry"
+        );
+        assert_eq!(
+            encoded_question_fqdn(&result.response),
+            "WwW.ExAmPlE.CoM.",
+            "a cache hit must echo the current request's question case"
+        );
     }
 
     #[tokio::test]

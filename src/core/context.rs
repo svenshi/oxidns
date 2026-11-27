@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use ahash::{AHashMap, AHashSet};
 
-use crate::proto::Message;
+use crate::proto::{Message, Opcode, Question};
 
 /// Typed metadata attached to the request by the inbound server layer.
 #[derive(Debug, Default, Clone, Eq, PartialEq)]
@@ -209,6 +209,91 @@ impl ExecutionPath {
     }
 }
 
+/// Server-relevant state of the request exactly as the client sent it.
+///
+/// `request` is mutable plugin surface (`request_mut`, `replace_request`,
+/// subquery result application), so executors may legally rewrite or replace
+/// it mid-pipeline. Server-level response fixes must compare against this
+/// pristine copy instead of the live request. The capture is allocation-free
+/// for the single-question case: `Question::clone` only bumps the `Name`'s
+/// `Arc`.
+#[derive(Debug, Clone)]
+pub(crate) struct OriginalQuery {
+    id: u16,
+    opcode: Opcode,
+    recursion_desired: bool,
+    checking_disabled: bool,
+    /// `None` when the ingress request carried no EDNS.
+    edns_do: Option<bool>,
+    questions: OriginalQuestions,
+}
+
+#[derive(Debug, Clone)]
+enum OriginalQuestions {
+    None,
+    Single(Question),
+    Many(Vec<Question>),
+}
+
+impl OriginalQuestions {
+    #[inline]
+    fn as_slice(&self) -> &[Question] {
+        match self {
+            Self::None => &[],
+            Self::Single(question) => std::slice::from_ref(question),
+            Self::Many(questions) => questions,
+        }
+    }
+}
+
+impl OriginalQuery {
+    #[inline]
+    pub(crate) fn capture(request: &Message) -> Self {
+        Self {
+            id: request.id(),
+            opcode: request.opcode(),
+            recursion_desired: request.recursion_desired(),
+            checking_disabled: request.checking_disabled(),
+            edns_do: request.edns().as_ref().map(|edns| edns.flags().dnssec_ok),
+            questions: match request.questions() {
+                [] => OriginalQuestions::None,
+                [question] => OriginalQuestions::Single(question.clone()),
+                many => OriginalQuestions::Many(many.to_vec()),
+            },
+        }
+    }
+
+    #[inline]
+    pub(crate) fn id(&self) -> u16 {
+        self.id
+    }
+
+    #[inline]
+    pub(crate) fn opcode(&self) -> Opcode {
+        self.opcode
+    }
+
+    #[inline]
+    pub(crate) fn recursion_desired(&self) -> bool {
+        self.recursion_desired
+    }
+
+    #[inline]
+    pub(crate) fn checking_disabled(&self) -> bool {
+        self.checking_disabled
+    }
+
+    #[inline]
+    pub(crate) fn edns_do(&self) -> Option<bool> {
+        self.edns_do
+    }
+
+    #[inline]
+    pub(crate) fn questions(&self) -> &[Question] {
+        self.questions.as_slice()
+    }
+}
+
 /// Context object for a DNS request/response lifecycle.
 pub struct DnsContext {
     pub ingress: IngressContext,
@@ -216,6 +301,9 @@ pub struct DnsContext {
     pub response: Option<Message>,
     pub execution_path: ExecutionPath,
     pub runtime: RuntimeContext,
+    /// Pristine ingress snapshot used by server-level response fixes; see
+    /// [`OriginalQuery`].
+    original_query: OriginalQuery,
 }
 
 impl DnsContext {
@@ -223,11 +311,19 @@ impl DnsContext {
     pub fn new(peer_addr: SocketAddr, request: Message) -> Self {
         Self {
             ingress: IngressContext::new(peer_addr),
+            original_query: OriginalQuery::capture(&request),
             request,
             response: None,
             execution_path: ExecutionPath::default(),
             runtime: RuntimeContext::default(),
         }
+    }
+
+    /// Return the client's request state as received at ingress, immune to
+    /// downstream request rewrites.
+    #[inline]
+    pub(crate) fn original_query(&self) -> &OriginalQuery {
+        &self.original_query
     }
 
     #[inline]
@@ -367,6 +463,7 @@ impl DnsContext {
     pub fn copy_for_subquery(&self) -> DnsContext {
         DnsContext {
             ingress: self.ingress.clone(),
+            original_query: self.original_query.clone(),
             request: self.request.clone(),
             response: self.response.clone(),
             execution_path: self.execution_path.clone(),
@@ -384,6 +481,9 @@ impl DnsContext {
         self.execution_path = sub_ctx.execution_path;
         self.runtime.marks = sub_ctx.runtime.marks;
         self.runtime.extensions = sub_ctx.runtime.extensions;
+        // `original_query` is deliberately not applied: the subquery's
+        // snapshot is a clone of this context's own, and the client-facing
+        // ingress state must stay invariant across the pipeline.
     }
 }
 
