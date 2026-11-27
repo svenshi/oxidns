@@ -122,6 +122,7 @@ oxidns probe upstream tcp://dns.example.com:53 -c config.yaml --outbound remote
 - `service start`
 - `service stop`
 - `service restart`
+- `service status`
 - `service uninstall`
 
 ### `service install`
@@ -164,6 +165,18 @@ sudo oxidns service stop
 ```bash
 sudo oxidns service restart
 ```
+
+### `service status`
+
+查询操作系统服务管理器报告的 OxiDNS 系统服务状态。不会启动、停止服务，也不会检查 DNS 是否能够响应请求。
+
+```bash
+oxidns service status
+```
+
+stdout 的第一行固定为 `running`（正在运行）、`stopped`（已停止）或 `not-installed`（未安装）。如果服务管理器提供停止原因，随后会以 `reason: ` 开头输出该原因。
+
+成功查询这三种状态时，退出码均为 `0`。查询失败时，错误写入 stderr，退出码非零。脚本应读取 stdout 第一行来判断服务状态，而不是用退出码判断服务是否运行。
 
 ### `service uninstall`
 

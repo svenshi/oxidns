@@ -122,6 +122,7 @@ Supported subcommands:
 - `service start`
 - `service stop`
 - `service restart`
+- `service status`
 - `service uninstall`
 
 ### `service install`
@@ -164,6 +165,18 @@ Restarts the installed system service.
 ```bash
 sudo oxidns service restart
 ```
+
+### `service status`
+
+Queries the operating-system service manager for the OxiDNS system service status. It does not start or stop the service, or check whether DNS queries are being answered.
+
+```bash
+oxidns service status
+```
+
+The first line on stdout is always `running`, `stopped`, or `not-installed`. If the service manager provides a reason for a stopped service, it is printed after the status with a `reason: ` prefix.
+
+All three states return exit code `0` when the query succeeds. If the query fails, the error goes to stderr and the exit code is nonzero. Scripts should read the first line of stdout to determine the state rather than using the exit code to test whether the service is running.
 
 ### `service uninstall`
 

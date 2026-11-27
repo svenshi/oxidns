@@ -14,6 +14,7 @@ OxiDNS 只有一个 `oxidns` 二进制。本页按任务导航命令；完整参
 | 临时调试日志 | `oxidns start -c config.yaml -l debug` | [运行、探测与系统服务](cli/runtime.md) |
 | 探测上游 | `oxidns probe upstream tcp://1.1.1.1:53` | [运行、探测与系统服务](cli/runtime.md) |
 | 安装系统服务 | `sudo oxidns service install -d /var/lib/oxidns -c /etc/oxidns/config.yaml` | [运行、探测与系统服务](cli/runtime.md) |
+| 查询系统服务状态 | `oxidns service status` | [运行、探测与系统服务](cli/runtime.md#service-status) |
 | 查看编译能力 | `oxidns build-info` | [配置与数据工具](cli/tools.md) |
 | 导出 dat 规则 | `oxidns export-dat ...` | [配置与数据工具](cli/tools.md) |
 | 检查或应用升级 | `oxidns upgrade check` / `oxidns upgrade apply` | [升级命令](cli/upgrade.md) |
