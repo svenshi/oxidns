@@ -6,7 +6,16 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Clock3, Pause, Play, Trash2, WifiOff, WrapText } from "lucide-react";
+import {
+  Check,
+  Clock3,
+  Copy,
+  Pause,
+  Play,
+  Trash2,
+  WifiOff,
+  WrapText,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +36,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { useToast } from "@/components/ui/toast";
 import { WEBUI } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
 import {
@@ -35,6 +45,7 @@ import {
   compactLogTarget,
   formatLogElapsed,
   formatLogTimestamp,
+  formatVisibleLogs,
 } from "@/lib/log-display";
 import { streamLogs, type LogEntry } from "@/lib/oxidns-api";
 
@@ -156,8 +167,40 @@ function LogLine({
   );
 }
 
+function selectLogContents(element: HTMLElement | null) {
+  if (!element) return;
+  element.focus({ preventScroll: true });
+  const selection = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+function copyOnInsecurePage(text: string): boolean {
+  const input = document.createElement("textarea");
+  input.value = text;
+  input.readOnly = true;
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  const previous = document.activeElement;
+  document.body.append(input);
+  try {
+    input.select();
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    input.remove();
+    if (previous instanceof HTMLElement)
+      previous.focus({ preventScroll: true });
+  }
+}
+
 export function LogViewer() {
   const { t } = useI18n();
+  const { toast } = useToast();
+  const [copied, setCopied] = useState(false);
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [levelFilter, setLevelFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
@@ -168,6 +211,12 @@ export function LogViewer() {
   const [displaySettings, setDisplaySettings] = useState(
     loadLogDisplaySettings,
   );
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 1800);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const pausedRef = useRef(false);
@@ -282,6 +331,21 @@ export function LogViewer() {
     }
     return true;
   });
+
+  const copyVisible = async () => {
+    if (filtered.length === 0) return;
+    const text = formatVisibleLogs(filtered, displaySettings);
+    try {
+      if (navigator.clipboard?.writeText)
+        await navigator.clipboard.writeText(text);
+      else if (!copyOnInsecurePage(text)) throw new Error();
+      setCopied(true);
+    } catch {
+      setCopied(false);
+      selectLogContents(scrollRef.current);
+      toast({ variant: "warning", title: t(WEBUI.logs.copyBlocked) });
+    }
+  };
 
   return (
     <div className="flex flex-1 flex-col min-h-0 w-full">
@@ -433,6 +497,25 @@ export function LogViewer() {
           {t(WEBUI.logs.wrap)}
         </Button>
 
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-7 px-2 text-xs"
+          disabled={filtered.length === 0}
+          onClick={copyVisible}
+          aria-label={t(WEBUI.logs.copy)}
+        >
+          {copied ? (
+            <Check className="mr-1 size-3" />
+          ) : (
+            <Copy className="mr-1 size-3" />
+          )}
+          <span aria-live="polite">
+            {t(copied ? WEBUI.configEditor.copied : WEBUI.logs.copy)}
+          </span>
+        </Button>
+
         {/* Clear */}
         <Button
           variant="ghost"
@@ -468,7 +551,22 @@ export function LogViewer() {
       {/* Log content */}
       <div
         ref={scrollRef}
-        className="oxidns-dialog-scrollbar min-h-0 flex-1 overflow-auto overscroll-contain bg-zinc-950 p-2 pb-4 font-mono text-xs leading-relaxed dark:bg-zinc-950"
+        tabIndex={0}
+        role="region"
+        aria-label={t(WEBUI.shell.logs)}
+        onKeyDown={(event) => {
+          if (
+            event.target === event.currentTarget &&
+            (event.ctrlKey || event.metaKey) &&
+            !event.altKey &&
+            !event.shiftKey &&
+            event.key.toLowerCase() === "a"
+          ) {
+            event.preventDefault();
+            if (filtered.length > 0) selectLogContents(event.currentTarget);
+          }
+        }}
+        className="focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring oxidns-dialog-scrollbar min-h-0 flex-1 overflow-auto overscroll-contain bg-zinc-950 p-2 pb-4 font-mono text-xs leading-relaxed dark:bg-zinc-950"
       >
         {filtered.length === 0 ? (
           <div className="flex items-center justify-center h-full text-zinc-600">

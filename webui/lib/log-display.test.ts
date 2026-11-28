@@ -10,6 +10,7 @@ import {
   compactLogTarget,
   formatLogElapsed,
   formatLogTimestamp,
+  formatVisibleLogs,
 } from "./log-display";
 
 describe("log timestamp display", () => {
@@ -64,5 +65,30 @@ describe("log target compaction", () => {
     expect(
       compactLogTarget("very-long-generated-source-file-name.rs", 18),
     ).toBe("…urce-file-name.rs");
+  });
+});
+
+describe("log copy", () => {
+  const first = {
+    timestamp: "2026-07-22T14:08:09.123+08:00",
+    elapsed_ms: 42,
+    level: "INFO",
+    target: "oxidns::some::very::long::module::path::with::the::full::target",
+    message: "first line\nsecond line",
+  };
+  it("preserves complete targets and original newlines in visible order", () => {
+    expect(
+      formatVisibleLogs(
+        [first, { ...first, target: "short", message: "last" }],
+        { timeFormat: "HH:mm:ss.SSS", showElapsed: true },
+      ),
+    ).toBe(
+      `14:08:09.123 T+42ms INFO ${first.target} first line\nsecond line\n14:08:09.123 T+42ms INFO short last`,
+    );
+  });
+  it("omits elapsed time when hidden and has no text when empty", () => {
+    const display = { timeFormat: "HH:mm:ss", showElapsed: false };
+    expect(formatVisibleLogs([first], display)).not.toContain("T+");
+    expect(formatVisibleLogs([], display)).toBe("");
   });
 });

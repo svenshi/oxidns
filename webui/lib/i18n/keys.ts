@@ -287,6 +287,8 @@ export const WEBUI = {
     uptimeS: "webui.dashboard.uptimeS",
   },
   logs: {
+    copy: "webui.logs.copy",
+    copyBlocked: "webui.logs.copyBlocked",
     connected: "webui.logs.connected",
     disconnected: "webui.logs.disconnected",
     allLevels: "webui.logs.allLevels",

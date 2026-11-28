@@ -925,6 +925,8 @@ export const zhCNWebui = {
     uptimeS: "{s}秒",
   },
   logs: {
+    copy: "复制日志",
+    copyBlocked: "无法访问剪贴板，已选中日志。请按 Ctrl+C 或 ⌘C 复制。",
     connected: "已连接",
     disconnected: "断开",
     allLevels: "全部级别",
