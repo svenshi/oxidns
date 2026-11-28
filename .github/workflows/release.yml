@@ -232,6 +232,7 @@ jobs:
         with:
           name: oxidns-${{ matrix.target }}.deb
           path: target/debian/*.deb
+          archive: false
           if-no-files-found: error
 
       - name: Run UPX (supported Linux targets only)
@@ -297,6 +298,7 @@ jobs:
         with:
           name: oxidns-${{ matrix.target }}.${{ matrix.archive_ext }}
           path: target/${{ matrix.target }}/release/oxidns-${{ matrix.target }}.${{ matrix.archive_ext }}
+          archive: false
           if-no-files-found: error
 
   slim-release:
@@ -387,6 +389,7 @@ jobs:
         with:
           name: oxidns-${{ matrix.bundle }}-${{ matrix.target }}.tar.gz
           path: target/${{ matrix.target }}/release/oxidns-${{ matrix.bundle }}-${{ matrix.target }}.tar.gz
+          archive: false
           if-no-files-found: error
 
   publish:
