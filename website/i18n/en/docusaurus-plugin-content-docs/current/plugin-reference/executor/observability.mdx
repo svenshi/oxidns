@@ -223,6 +223,8 @@ To reclaim space manually, resolve the actual `path` first (relative paths use t
     memory_tail: 1024
     # Retention window in days; minimum 1
     retention_days: 7
+    # Maximum persisted record count; optional, empty means unlimited, minimum 1
+    retention_size: 1000
     # Cleanup interval in hours; minimum 1
     cleanup_interval_hours: 1
     # Maximum concurrent SQLite readers; minimum 1
@@ -261,6 +263,12 @@ To reclaim space manually, resolve the actual `path` first (relative paths use t
 - Type: `integer`; Required: no; Default: `7`; Minimum: `1`
 - Purpose: Record retention window. Expired rows are deleted by the cleanup task.
 
+#### `retention_size`
+
+- Type: `integer`; Required: no; Default: none (no limit); Minimum: `1`
+- Purpose: Maximum number of persisted records; the oldest rows are deleted once the limit is exceeded, together with the `retention_days` threshold (whichever is reached first).
+- Enforcement: the count is checked and trimmed right after each background write batch (at most one delete batch per pass), without waiting for the cleanup interval. This suits small caps on flash-constrained devices; `retention_size: 1` approximates keeping disk usage minimal while observing live records through the in-memory tail.
+
 #### `cleanup_interval_hours`
 
 - Type: `integer`; Required: no; Default: `1`; Minimum: `1`
@@ -273,7 +281,8 @@ To reclaim space manually, resolve the actual `path` first (relative paths use t
 
 ### Behavior
 
-- Set `retention_days` to control how long records are kept; expired records are cleaned up every `cleanup_interval_hours`. Small deletions may not immediately shrink the file, but the freed space can be reused for new records.
+- Set `retention_days` to control how long records are kept; expired records are cleaned up every `cleanup_interval_hours`. `retention_size` additionally trims by record count right after each background write; whichever threshold is reached first triggers cleanup. Small deletions may not immediately shrink the file, but the freed space can be reused for new records.
+- With `retention_size` enabled, steady-state disk usage stays around the record volume of that count; on an existing large database, the file shrinks only after the next periodic space reclamation. Deletion causes disk operations comparable to writes, so sustained high traffic still produces steady write activity.
 - Multiple recorders can share a database file. History is isolated by tag, so clearing one recorder preserves the others.
 - `client_ip` is the source address OxiDNS sees. Local forwarding may make it appear as `127.0.0.1` instead of the actual device address.
 - The first space reclamation on an older database may require temporary disk space and briefly pause history queries and record writes. DNS resolution continues.

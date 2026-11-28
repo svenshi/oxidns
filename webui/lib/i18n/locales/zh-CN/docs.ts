@@ -312,6 +312,8 @@ export const zhCNDocs = {
       "- 类型：`integer`；必填：否；默认值：`1024`\n- 作用：定义最近记录的内存 tail 长度，用于 `stream?tail=n` 回放。",
     retention_days:
       "- 类型：`integer`；必填：否；默认值：`7`\n- 最小值：`1`\n- 作用：定义日志保留天数；过期数据会被定时实际删除。",
+    retention_size:
+      "- 类型：`integer`；必填：否；默认值：无（不限制）\n- 最小值：`1`\n- 作用：定义最多保留的持久化记录条数，超过后删除最旧记录；与 `retention_days` 任一阈值达到即触发清理。",
     cleanup_interval_hours:
       "- 类型：`integer`；必填：否；默认值：`1`\n- 最小值：`1`\n- 作用：定义过期清理任务的执行周期。",
     reader_concurrency:

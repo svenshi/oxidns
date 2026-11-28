@@ -1361,6 +1361,12 @@ export const enUSPluginDefined = {
           description:
             "Defines how many days logs are retained; expired data is periodically deleted.",
         },
+        retention_size: {
+          label: "Retention size",
+          description:
+            "Defines the maximum number of persisted records; the oldest records are cleaned up once the limit is exceeded, together with the retention days threshold (whichever is reached first). Leave empty for no limit.",
+          example: "1000",
+        },
         cleanup_interval_hours: {
           label: "Cleanup interval (hours)",
           description: "Defines how often the expired-data cleanup task runs.",

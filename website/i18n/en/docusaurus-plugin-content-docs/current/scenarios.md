@@ -436,6 +436,9 @@ plugins:
       flush_interval_ms: 200
       memory_tail: 1024
       retention_days: 7
+      # Cap persisted records by count; set a small value on memory/flash
+      # constrained devices (leave empty for no limit)
+      retention_size: 1000
 
   - tag: summary_main
     type: query_summary
