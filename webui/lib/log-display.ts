@@ -100,3 +100,27 @@ export function compactLogTarget(target: string, maxLength = 36): string {
 
   return `…${separator}${suffix}`;
 }
+
+/** Copy the filtered rows as plain text, without visual truncation or wrapping. */
+export function formatVisibleLogs(
+  entries: readonly {
+    timestamp: string;
+    elapsed_ms: number;
+    level: string;
+    target: string;
+    message: string;
+  }[],
+  { timeFormat, showElapsed }: { timeFormat: string; showElapsed: boolean },
+): string {
+  return entries
+    .map((entry) =>
+      [
+        formatLogTimestamp(entry.timestamp, timeFormat),
+        ...(showElapsed ? [`T+${formatLogElapsed(entry.elapsed_ms)}`] : []),
+        entry.level,
+        entry.target,
+        entry.message,
+      ].join(" "),
+    )
+    .join("\n");
+}

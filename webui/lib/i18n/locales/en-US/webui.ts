@@ -964,6 +964,9 @@ export const enUSWebui = {
     uptimeS: "{s}s",
   },
   logs: {
+    copy: "Copy logs",
+    copyBlocked:
+      "Clipboard unavailable. Logs selected; press Ctrl+C or ⌘C to copy.",
     connected: "Connected",
     disconnected: "Disconnected",
     allLevels: "All levels",
