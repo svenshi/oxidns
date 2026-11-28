@@ -61,6 +61,11 @@ export const zhCNDocs = {
     restore_request:
       "- 类型：`boolean`；必填：否；默认值：`true`\n- 开启时在正常退出、错误、提前结束或取消时恢复进入插件的整份请求，包括下游修改，即使没有删除 Option\n- 关闭时保留请求修改；响应、marks 和扩展属性均不回滚\n- next 包含当前 sequence 的剩余链路；使用子 sequence 限定过滤范围\n- 无 continuation 时，开启恢复最终请求不变；关闭时保留过滤结果",
   },
+  dhcp_dns_servers: {
+    concurrent: "默认并发查询所有发现的 DHCPv4 DNS 地址，最多 32 个。",
+    response_selection: "与 forward 的响应选择策略相同；默认 balanced。",
+    short_circuit: "成功收到 DNS 响应后停止执行链；默认 false。",
+  },
   forward: {
     concurrent:
       "- 类型：`integer`；必填：否；默认值：`1`\n- 取值范围：实际运行时会限制在 `1..=32`，且不会超过 upstream 数量。\n- 建议范围：`2..=8`；更高值适合高级观测或特殊部署。\n- 作用：定义多上游模式下的并发查询扇出数。\n- 运行影响：\n  - 值越大，多上游竞争越积极，但同时会增加上游请求量。",
@@ -591,7 +596,7 @@ export const zhCNDocs = {
   },
   edns0opt: {
     codes:
-      "`codes` 为 EDNS0 option code 列表。\n\n- 类型：`array`；必填：是；默认值：无\n- 作用：定义需要存在的 EDNS0 option code 集合。\n- 支持整数与十进制数字字符串（例如 `8` 与 `\"8\"` 等价），可在同一列表中混用，统一按 u16 校验；不提供 code 别名。\n- 运行影响：\n  - 列表为空时配置解析失败，不会静默生成永不命中的 matcher。",
+      '`codes` 为 EDNS0 option code 列表。\n\n- 类型：`array`；必填：是；默认值：无\n- 作用：定义需要存在的 EDNS0 option code 集合。\n- 支持整数与十进制数字字符串（例如 `8` 与 `"8"` 等价），可在同一列表中混用，统一按 u16 校验；不提供 code 别名。\n- 运行影响：\n  - 列表为空时配置解析失败，不会静默生成永不命中的 matcher。',
     require:
       "- 类型：`string`；必填：否；默认值：`any`\n- 支持取值：\n  - `any`：任一配置 code 存在即命中\n  - `all`：全部配置 code 都必须存在\n- 运行影响：只影响多个 code 之间的组合判断方式。",
     source:

@@ -368,3 +368,56 @@ plugins:
 "#;
     start_ok(yaml).await;
 }
+
+const DHCP_DNS_SERVER_CONFIG: &str = r#"
+plugins:
+  - tag: forward_local
+    type: dhcp_dns_servers
+  - tag: udp_main
+    type: udp_server
+    args:
+      entry: forward_local
+      listen: "127.0.0.1:0"
+"#;
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[tokio::test]
+async fn dhcp_dns_servers_registers_as_executor_with_optional_args() {
+    start_ok(DHCP_DNS_SERVER_CONFIG).await;
+    let configured = DHCP_DNS_SERVER_CONFIG.replace(
+        "    type: dhcp_dns_servers",
+        "    type: dhcp_dns_servers\n    args:\n      concurrent: 1\n      response_selection: prefer_positive\n      short_circuit: true",
+    );
+    start_ok(&configured).await;
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[tokio::test]
+async fn dhcp_dns_servers_rejects_static_upstreams() {
+    let configured = DHCP_DNS_SERVER_CONFIG.replace(
+        "    type: dhcp_dns_servers",
+        "    type: dhcp_dns_servers\n    args:\n      upstreams: []",
+    );
+    let err = start_error(&configured).await;
+    assert!(
+        err.contains("unknown field") && err.contains("upstreams"),
+        "{err}"
+    );
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+#[tokio::test]
+async fn dhcp_dns_servers_reports_unsupported_platform() {
+    let err = start_error(DHCP_DNS_SERVER_CONFIG).await;
+    assert!(err.contains("not supported on this platform"), "{err}");
+}
+
+#[tokio::test]
+async fn forward_still_requires_static_upstreams() {
+    let configured = DHCP_DNS_SERVER_CONFIG.replace(
+        "    type: dhcp_dns_servers",
+        "    type: forward\n    args:\n      default_resolver: true",
+    );
+    let err = start_error(&configured).await;
+    assert!(err.contains("upstreams"), "{err}");
+}

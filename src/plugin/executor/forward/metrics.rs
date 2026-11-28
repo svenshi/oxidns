@@ -48,6 +48,7 @@ impl UpstreamMetrics {
 #[derive(Debug)]
 pub(super) struct ForwardMetrics {
     pub(super) tag: String,
+    plugin_type: &'static str,
     pub(super) query_total: AtomicU64,
     pub(super) success_total: AtomicU64,
     pub(super) error_total: AtomicU64,
@@ -60,8 +61,17 @@ pub(super) struct ForwardMetrics {
 
 impl ForwardMetrics {
     pub(super) fn new(tag: String, upstream_names: Vec<String>) -> Self {
+        Self::for_plugin(tag, upstream_names, "forward")
+    }
+
+    pub(super) fn for_plugin(
+        tag: String,
+        upstream_names: Vec<String>,
+        plugin_type: &'static str,
+    ) -> Self {
         Self {
             tag,
+            plugin_type,
             query_total: AtomicU64::new(0),
             success_total: AtomicU64::new(0),
             error_total: AtomicU64::new(0),
@@ -144,7 +154,7 @@ impl MetricSource for ForwardMetrics {
     }
 
     fn plugin_type(&self) -> &'static str {
-        "forward"
+        self.plugin_type
     }
 
     fn collect(&self, sink: &mut dyn MetricSink) {

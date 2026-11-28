@@ -283,6 +283,32 @@ Per-upstream series are also exported with an `upstream` label (the upstream tag
 
 ---
 
+## `dhcp_dns_servers`
+
+<PluginAvailability from="minimal" />
+
+Forwards DNS queries to DNS servers advertised through DHCPv4 on the default IPv4 network. If there are no usable DHCP DNS addresses, it tries the IPv4 default gateway. It does not use the system's effective DNS settings, append search suffixes, or use broadcast or mDNS.
+
+```yaml
+- tag: forward_local
+  type: dhcp_dns_servers
+  args:
+    short_circuit: true
+```
+
+- `concurrent`: By default, queries all discovered addresses concurrently (at most 32). Set to `1` to query only the first address in discovery order.
+- `response_selection`: Uses the same selection modes as [`forward`](#forward), defaulting to `balanced`.
+- `short_circuit`: Stops the chain after a successful response when enabled; defaults to `false`.
+- Static `upstreams` are not accepted. Use `forward` to set fixed upstreams.
+
+Discovery starts with the first query and runs again on supported network-change notifications. Discovered addresses are queried over plain DNS. DHCP may advertise public resolvers, so this is not a LAN-only guarantee. Do not share answer caches across networks for local names. If names must stay on the LAN, use an explicitly configured trusted LAN resolver.
+
+Runtime platforms: Linux (requires iproute2; reads DHCP DNS from NetworkManager or a readable systemd-networkd lease), macOS, and Windows. The official BusyBox image does not ship iproute2; use static `forward` or provide the required runtime. DHCPv6 is not supported.
+
+To migrate from the experimental branch, change `type: forward` to `type: dhcp_dns_servers`, remove `args.default_resolver`, and preserve the plugin `tag` and other options.
+
+---
+
 ## `cache`
 
 <PluginAvailability from="minimal" />

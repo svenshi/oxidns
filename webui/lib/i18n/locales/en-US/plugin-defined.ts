@@ -533,6 +533,33 @@ export const enUSPluginDefined = {
         },
       },
     },
+    dhcp_dns_servers: {
+      name: "DHCP DNS",
+      description:
+        "Forward queries to DHCPv4 DNS on the default network, or try the IPv4 default gateway.",
+      fields: {
+        concurrent: {
+          label: "Number of concurrent upstreams",
+          description:
+            "If omitted, query all discovered servers concurrently, up to 32.",
+        },
+        response_selection: {
+          label: "Response selection",
+          description: "Defaults to balanced.",
+          options: {
+            fastest: "Fastest response",
+            balanced: "Balanced",
+            prefer_positive: "Prefer positive answer",
+            consensus: "Negative consensus",
+          },
+        },
+        short_circuit: {
+          label: "Stop on success",
+          description:
+            "Stop the executor chain after receiving a DNS response.",
+        },
+      },
+    },
     cache: {
       name: "Cache",
       description:

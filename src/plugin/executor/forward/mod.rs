@@ -7,12 +7,14 @@
 
 mod concurrent;
 mod config;
+mod dhcp_dns_servers;
 mod factory;
 mod metrics;
 mod selection;
 mod single;
 
 pub use config::ForwardConfig;
+pub(crate) use dhcp_dns_servers::DefaultResolverTransports;
 pub use factory::ForwardFactory;
 pub use selection::ResponseSelectionMode;
 

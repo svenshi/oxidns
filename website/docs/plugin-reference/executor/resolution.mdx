@@ -331,6 +331,32 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 
 ---
 
+## `dhcp_dns_servers`
+
+<PluginAvailability from="minimal" />
+
+将 DNS 查询转发给默认 IPv4 网络上由 DHCPv4 下发的 DNS 服务器；没有可用 DHCP DNS 时尝试 IPv4 默认网关。不读取系统当前生效的 DNS，不补搜索后缀，不使用广播或 mDNS。
+
+```yaml
+- tag: forward_local
+  type: dhcp_dns_servers
+  args:
+    short_circuit: true
+```
+
+- `concurrent`：省略时并发查询所有发现的地址（最多 32 个）；设为 `1` 时只查询按发现顺序的第一个地址。
+- `response_selection`：与 [`forward`](#forward) 使用同样的响应选择策略，默认 `balanced`。
+- `short_circuit`：成功收到响应后是否停止执行链，默认 `false`。
+- 不接受静态 `upstreams`；需要固定上游时用 `forward`。
+
+首个查询时探测地址，在收到支持的网络变更通知后重新探测。发现的地址通过普通 DNS 直连；DHCP 可以下发公网地址，所以这不是「只问局域网」的保证。不要让本地域名共用跨网络答案缓存。必须确保本地域名不出网时，请显式配置可信的局域网 DNS。
+
+运行平台：Linux（需要 iproute2；通过 NetworkManager 或可读的 systemd-networkd 租约读取 DHCP DNS）、macOS 和 Windows。官方 BusyBox 镜像未打包 iproute2，请使用静态 `forward` 或提供所需运行环境。目前不支持 DHCPv6。
+
+从实验分支迁移：把 `type: forward` 改成 `type: dhcp_dns_servers`，删除 `args.default_resolver`，保留插件的 `tag` 和其他选项。
+
+---
+
 ## `cache`
 
 <PluginAvailability from="minimal" />

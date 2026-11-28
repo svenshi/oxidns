@@ -65,6 +65,7 @@ See [Executor Plugins](executor.mdx) for full field reference. Grouped as: polic
 | Plugin | Purpose | Included in |
 | --- | --- | --- |
 | [`forward`](executor/resolution.mdx#forward) | Sends DNS queries to upstreams. | <PluginAvailability from="minimal" compact /> |
+| [`dhcp_dns_servers`](executor/resolution.mdx#dhcp_dns_servers) | Forwards queries to DHCPv4 DNS on the default network. | <PluginAvailability from="minimal" compact /> |
 | [`cache`](executor/resolution.mdx#cache) | TTL-aware response caching with negative cache and persistence support. | <PluginAvailability from="minimal" compact /> |
 | [`hosts`](executor/resolution.mdx#hosts) | Returns local static `A` / `AAAA` answers using host-style entries. | <PluginAvailability from="minimal" compact /> |
 | [`arbitrary`](executor/resolution.mdx#arbitrary) | Injects arbitrary DNS records from zone-style rule strings. | <PluginAvailability from="standard" compact /> |
