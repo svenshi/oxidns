@@ -14,6 +14,7 @@ OxiDNS ships as a single `oxidns` binary. This page maps tasks to commands; comp
 | Temporarily enable debug logging | `oxidns start -c config.yaml -l debug` | [Runtime, Probes, and Services](cli/runtime.md) |
 | Probe an upstream | `oxidns probe upstream tcp://1.1.1.1:53` | [Runtime, Probes, and Services](cli/runtime.md) |
 | Install a system service | `sudo oxidns service install -d /var/lib/oxidns -c /etc/oxidns/config.yaml` | [Runtime, Probes, and Services](cli/runtime.md) |
+| Query system service status | `oxidns service status` | [Runtime, Probes, and Services](cli/runtime.md#service-status) |
 | Inspect compiled capabilities | `oxidns build-info` | [Configuration and Data Tools](cli/tools.md) |
 | Export dat rules | `oxidns export-dat ...` | [Configuration and Data Tools](cli/tools.md) |
 | Check or apply an upgrade | `oxidns upgrade check` / `oxidns upgrade apply` | [Upgrade Command](cli/upgrade.md) |

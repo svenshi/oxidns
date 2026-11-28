@@ -336,6 +336,8 @@ pub enum ServiceCommand {
     Stop,
     /// Restart the installed service.
     Restart,
+    /// Show the operating-system service status.
+    Status,
     /// Uninstall the installed service.
     Uninstall,
 }

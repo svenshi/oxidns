@@ -3,6 +3,8 @@
 
 //! CLI adapter for operating-system service management commands.
 
+use service_manager::ServiceStatus;
+
 use crate::cli::{ServiceCommand, ServiceOptions};
 use crate::infra::error::Result;
 use crate::infra::service::ServiceInstallConfig;
@@ -16,6 +18,21 @@ pub fn run(options: ServiceOptions) -> Result<()> {
         ServiceCommand::Start => crate::infra::service::start(),
         ServiceCommand::Stop => crate::infra::service::stop(),
         ServiceCommand::Restart => crate::infra::service::restart_installed_service(),
+        ServiceCommand::Status => print_status(),
         ServiceCommand::Uninstall => crate::infra::service::uninstall(),
     }
+}
+
+fn print_status() -> Result<()> {
+    match crate::infra::service::status()? {
+        ServiceStatus::Running => println!("running"),
+        ServiceStatus::Stopped(reason) => {
+            println!("stopped");
+            if let Some(reason) = reason {
+                println!("reason: {reason}");
+            }
+        }
+        ServiceStatus::NotInstalled => println!("not-installed"),
+    }
+    Ok(())
 }
