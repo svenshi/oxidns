@@ -59,10 +59,13 @@ fn shared_objects_survive_batches_restart_and_reclaim_last_reference() {
         conn.execute(&format!("DELETE FROM {}", t.traces), [])
             .is_err()
     );
-    assert_eq!(delete_batch(&mut conn, &t, Some(2)).unwrap(), 1);
+    assert_eq!(
+        delete_batch(&mut conn, &t, CleanupScope::OlderThan(2)).unwrap(),
+        1
+    );
     assert_eq!(count(&conn, &t.traces), 1);
     assert_eq!(count(&conn, &t.question_sets), 1);
-    assert_eq!(delete_batch(&mut conn, &t, None).unwrap(), 1);
+    assert_eq!(delete_batch(&mut conn, &t, CleanupScope::All).unwrap(), 1);
     for name in [
         &t.records,
         &t.traces,
@@ -167,10 +170,137 @@ fn failed_insert_and_failed_reclamation_roll_back_whole_batch() {
         &[PreparedRecord::new(sample_record_row(), vec![step(0, "a")]).unwrap()],
     );
     conn.execute_batch(&format!("CREATE TRIGGER fail_reclaim BEFORE DELETE ON {} BEGIN SELECT RAISE(ABORT,'injected'); END;",t.traces)).unwrap();
-    assert!(delete_batch(&mut conn, &t, None).is_err());
+    assert!(delete_batch(&mut conn, &t, CleanupScope::All).is_err());
     assert_eq!(count(&conn, &t.records), 1);
     assert_eq!(count(&conn, &t.traces), 1);
     assert_eq!(count(&conn, &t.trace_steps), 1);
+}
+
+#[test]
+fn count_retention_scope_deletes_oldest_records() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    let t = table_names("count_scope");
+    create_schema(&mut conn, &t).unwrap();
+    for created_at_ms in 1..=4i64 {
+        let mut row = sample_record_row();
+        row.created_at_ms = created_at_ms;
+        write(&mut conn, &t, &[PreparedRecord::new(row, vec![]).unwrap()]);
+    }
+
+    assert_eq!(
+        delete_batch(&mut conn, &t, CleanupScope::Oldest(0)).unwrap(),
+        0
+    );
+    assert_eq!(count(&conn, &t.records), 4);
+
+    assert_eq!(
+        delete_batch(&mut conn, &t, CleanupScope::Oldest(2)).unwrap(),
+        2
+    );
+    let remaining: Vec<i64> = conn
+        .prepare(&format!(
+            "SELECT created_at_ms FROM {} ORDER BY created_at_ms",
+            t.records
+        ))
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(remaining, vec![3, 4]);
+
+    // An oversized count is clamped to one batch and removes only what is left.
+    assert_eq!(
+        delete_batch(&mut conn, &t, CleanupScope::Oldest(10_000)).unwrap(),
+        2
+    );
+    assert_eq!(count(&conn, &t.records), 0);
+    assert_eq!(count(&conn, &t.traces), 0);
+    assert_eq!(count(&conn, &t.question_sets), 0);
+}
+
+#[test]
+fn size_retention_cleanup_trims_to_limit_and_keeps_newest() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("size-retention.db");
+    let t = table_names("size_retention");
+    let mut conn = open_writer_database(&path).unwrap();
+    create_schema(&mut conn, &t).unwrap();
+    for created_at_ms in 1..=6i64 {
+        let mut row = sample_record_row();
+        row.created_at_ms = created_at_ms;
+        write(&mut conn, &t, &[PreparedRecord::new(row, vec![]).unwrap()]);
+    }
+
+    let result = run_cleanup(
+        &mut conn,
+        &path,
+        &t,
+        CleanupPolicy {
+            cutoff_ms: 0,
+            max_records: Some(2),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.deleted_expired, 0);
+    assert_eq!(result.deleted_overflow, 4);
+    assert_eq!(result.deleted_records, 4);
+    let remaining: Vec<i64> = conn
+        .prepare(&format!(
+            "SELECT created_at_ms FROM {} ORDER BY created_at_ms",
+            t.records
+        ))
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(remaining, vec![5, 6]);
+    // The shared trace/question set is still referenced by the survivors.
+    assert_eq!(count(&conn, &t.traces), 1);
+    assert_eq!(count(&conn, &t.question_sets), 1);
+    assert_eq!(result.space.after.freelist_count, 0);
+}
+
+#[test]
+fn size_and_time_thresholds_combine_in_one_cleanup_pass() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    let t = table_names("combined_retention");
+    create_schema(&mut conn, &t).unwrap();
+    for created_at_ms in 1..=6i64 {
+        let mut row = sample_record_row();
+        row.created_at_ms = created_at_ms;
+        write(&mut conn, &t, &[PreparedRecord::new(row, vec![]).unwrap()]);
+    }
+
+    // Time retention removes 1..2 first; the size threshold then trims the
+    // oldest survivor so exactly the newest three records remain.
+    let result = run_cleanup(
+        &mut conn,
+        Path::new("/nonexistent/query-recorder-combined.sqlite"),
+        &t,
+        CleanupPolicy {
+            cutoff_ms: 3,
+            max_records: Some(3),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.deleted_expired, 2);
+    assert_eq!(result.deleted_overflow, 1);
+    assert_eq!(result.deleted_records, 3);
+    let remaining: Vec<i64> = conn
+        .prepare(&format!(
+            "SELECT created_at_ms FROM {} ORDER BY created_at_ms",
+            t.records
+        ))
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(remaining, vec![4, 5, 6]);
 }
 
 #[test]
@@ -235,7 +365,16 @@ fn schema_revision_and_v1_are_isolated() {
         &t,
         &[PreparedRecord::new(sample_record_row(), vec![]).unwrap()],
     );
-    run_cleanup(&mut conn, &path, &t, i64::MAX).unwrap();
+    run_cleanup(
+        &mut conn,
+        &path,
+        &t,
+        CleanupPolicy {
+            cutoff_ms: i64::MAX,
+            max_records: None,
+        },
+    )
+    .unwrap();
     write(
         &mut conn,
         &t,

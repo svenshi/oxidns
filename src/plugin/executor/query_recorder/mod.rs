@@ -39,7 +39,7 @@ use jiff::Timestamp;
 use serde_yaml_ng::Value as YamlValue;
 use tracing::warn;
 
-use self::backend::RecorderBackend;
+use self::backend::{CleanupPolicy, RecorderBackend};
 use self::model::{PendingRecord, QueryRecorderConfig, ResolvedRecorderConfig};
 use crate::config::types::PluginConfig;
 use crate::core::context::DnsContext;
@@ -79,6 +79,7 @@ impl Plugin for QueryRecorder {
 
         let recorder_backend = backend.clone();
         let retention_ms = self.config.retention_days.saturating_mul(ONE_DAY_MS) as i64;
+        let max_records = self.config.retention_size;
         self.cleanup_task_handle = Some(
             match task_center::spawn_fixed(
                 format!("query_recorder:{}:cleanup", self.tag),
@@ -88,10 +89,12 @@ impl Plugin for QueryRecorder {
                     let recorder_backend = recorder_backend.clone();
                     async move {
                         let cutoff_ms = Timestamp::now().as_millisecond() - retention_ms;
-                        match tokio::task::spawn_blocking(move || {
-                            recorder_backend.cleanup(cutoff_ms)
-                        })
-                        .await
+                        let policy = CleanupPolicy {
+                            cutoff_ms,
+                            max_records,
+                        };
+                        match tokio::task::spawn_blocking(move || recorder_backend.cleanup(policy))
+                            .await
                         {
                             Ok(Ok(_)) => {}
                             Ok(Err(err)) => warn!("query_recorder cleanup failed: {}", err),
@@ -216,6 +219,7 @@ fn resolve_config(args: Option<YamlValue>) -> Result<ResolvedRecorderConfig> {
         .unwrap_or(DEFAULT_FLUSH_INTERVAL_MS);
     let memory_tail = parsed.memory_tail.unwrap_or(DEFAULT_MEMORY_TAIL);
     let retention_days = parsed.retention_days.unwrap_or(DEFAULT_RETENTION_DAYS);
+    let retention_size = parsed.retention_size;
     let cleanup_interval_hours = parsed
         .cleanup_interval_hours
         .unwrap_or(DEFAULT_CLEANUP_INTERVAL_HOURS);
@@ -248,6 +252,11 @@ fn resolve_config(args: Option<YamlValue>) -> Result<ResolvedRecorderConfig> {
             "query_recorder retention_days must be at least 1",
         ));
     }
+    if retention_size == Some(0) {
+        return Err(DnsError::plugin(
+            "query_recorder retention_size must be at least 1",
+        ));
+    }
     if cleanup_interval_hours == 0 {
         return Err(DnsError::plugin(
             "query_recorder cleanup_interval_hours must be at least 1",
@@ -266,6 +275,7 @@ fn resolve_config(args: Option<YamlValue>) -> Result<ResolvedRecorderConfig> {
         flush_interval_ms,
         memory_tail,
         retention_days,
+        retention_size,
         cleanup_interval_hours,
         reader_concurrency,
     })

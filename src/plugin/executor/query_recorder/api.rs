@@ -850,6 +850,7 @@ mod tests {
                 flush_interval_ms: Some(10),
                 memory_tail: Some(16),
                 retention_days: Some(7),
+                retention_size: None,
                 cleanup_interval_hours: Some(1),
                 reader_concurrency: Some(2),
             })

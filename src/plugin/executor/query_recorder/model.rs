@@ -17,6 +17,7 @@ pub(super) struct QueryRecorderConfig {
     pub(super) flush_interval_ms: Option<u64>,
     pub(super) memory_tail: Option<usize>,
     pub(super) retention_days: Option<u64>,
+    pub(super) retention_size: Option<u64>,
     pub(super) cleanup_interval_hours: Option<u64>,
     pub(super) reader_concurrency: Option<usize>,
 }
@@ -29,6 +30,7 @@ pub(super) struct ResolvedRecorderConfig {
     pub(super) flush_interval_ms: u64,
     pub(super) memory_tail: usize,
     pub(super) retention_days: u64,
+    pub(super) retention_size: Option<u64>,
     pub(super) cleanup_interval_hours: u64,
     pub(super) reader_concurrency: usize,
 }

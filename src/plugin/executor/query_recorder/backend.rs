@@ -70,6 +70,8 @@ impl SpaceReclaimResult {
 #[derive(Debug, Clone)]
 pub(super) struct CleanupResult {
     pub(super) deleted_records: usize,
+    pub(super) deleted_expired: usize,
+    pub(super) deleted_overflow: usize,
     pub(super) space: SpaceReclaimResult,
 }
 
@@ -77,6 +79,15 @@ pub(super) struct CleanupResult {
 pub(super) struct ClearHistoryResult {
     pub(super) cleared_records: usize,
     pub(super) space: SpaceReclaimResult,
+}
+
+/// Combined retention thresholds for one cleanup pass. The periodic task
+/// computes `cutoff_ms` at fire time; `max_records` bounds the persisted
+/// record count regardless of age (`None` disables the size threshold).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct CleanupPolicy {
+    pub(super) cutoff_ms: i64,
+    pub(super) max_records: Option<u64>,
 }
 
 pub(super) type CleanupReply = std::result::Result<CleanupResult, String>;
@@ -88,7 +99,7 @@ pub(super) type FlushReply = std::result::Result<(), String>;
 pub(super) enum WriterCommand {
     Insert(Box<PendingRecord>),
     Cleanup {
-        cutoff_ms: i64,
+        policy: CleanupPolicy,
         reply_tx: ReplySender<CleanupReply>,
     },
     ClearHistory {
@@ -110,6 +121,7 @@ pub(super) struct WriterThreadContext {
     pub(super) broadcaster: broadcast::Sender<RecordDetail>,
     pub(super) batch_size: usize,
     pub(super) flush_interval: Duration,
+    pub(super) retention_size: Option<u64>,
     pub(super) database_coordinator: Arc<DatabaseCoordinator>,
 }
 
@@ -227,6 +239,7 @@ impl RecorderBackend {
         let memory_tail = config.memory_tail.max(1);
         let batch_size = config.batch_size;
         let flush_interval = Duration::from_millis(config.flush_interval_ms);
+        let retention_size = config.retention_size;
         let writer_database_coordinator = database_coordinator.clone();
         let writer_handle = thread::Builder::new()
             .name(format!("query-recorder-{}", tag))
@@ -241,6 +254,7 @@ impl RecorderBackend {
                         broadcaster: writer_broadcaster,
                         batch_size,
                         flush_interval,
+                        retention_size,
                         database_coordinator: writer_database_coordinator,
                     },
                     queue_rx,
@@ -276,14 +290,11 @@ impl RecorderBackend {
         }
     }
 
-    pub(super) fn cleanup(&self, cutoff_ms: i64) -> CleanupReply {
+    pub(super) fn cleanup(&self, policy: CleanupPolicy) -> CleanupReply {
         let started = Instant::now();
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         self.queue_tx
-            .send(WriterCommand::Cleanup {
-                cutoff_ms,
-                reply_tx,
-            })
+            .send(WriterCommand::Cleanup { policy, reply_tx })
             .map_err(|err| format!("query_recorder cleanup enqueue failed: {err}"))?;
         let result = reply_rx
             .recv()
@@ -293,6 +304,7 @@ impl RecorderBackend {
                 &self.tag,
                 "periodic",
                 result.deleted_records,
+                Some((result.deleted_expired, result.deleted_overflow)),
                 &result.space,
                 started.elapsed(),
             );
@@ -314,6 +326,7 @@ impl RecorderBackend {
                 &self.tag,
                 "manual",
                 result.cleared_records,
+                None,
                 &result.space,
                 started.elapsed(),
             );
@@ -337,13 +350,17 @@ fn log_space_reclaim(
     tag: &str,
     operation: &str,
     deleted_records: usize,
+    threshold_breakdown: Option<(usize, usize)>,
     space: &SpaceReclaimResult,
     elapsed: Duration,
 ) {
+    let (deleted_expired, deleted_overflow) = threshold_breakdown.unwrap_or((0, 0));
     info!(
         query_recorder_tag = tag,
         operation,
         deleted_records,
+        deleted_expired,
+        deleted_overflow,
         migrated = space.migrated,
         auto_vacuum_before = space.reclaimable.auto_vacuum,
         auto_vacuum_after = space.after.auto_vacuum,

@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 use rusqlite::Connection;
 use tempfile::NamedTempFile;
 
-use super::backend::WriterCommand;
+use super::backend::{CleanupPolicy, WriterCommand};
 use super::model::{
     DistributionQuery, LatencyQuery, ListQuery, PendingRecord, PluginStatsKind, PluginsStatsQuery,
     QueryRecordFilter, QueryRecordStatus, QueryRecorderConfig, TimeseriesBucket, TimeseriesQuery,
@@ -36,6 +36,7 @@ fn recorder_config(path: &str) -> serde_yaml_ng::Value {
         flush_interval_ms: Some(10),
         memory_tail: Some(16),
         retention_days: Some(7),
+        retention_size: None,
         cleanup_interval_hours: Some(1),
         reader_concurrency: Some(2),
     })
@@ -50,6 +51,7 @@ fn recorder_space_config(path: &str) -> serde_yaml_ng::Value {
         flush_interval_ms: Some(10),
         memory_tail: Some(16),
         retention_days: Some(7),
+        retention_size: None,
         cleanup_interval_hours: Some(1),
         reader_concurrency: Some(2),
     })
@@ -317,6 +319,7 @@ async fn test_query_recorder_execute_enqueues_record() {
             flush_interval_ms: Some(10),
             memory_tail: Some(8),
             retention_days: Some(7),
+            retention_size: None,
             cleanup_interval_hours: Some(1),
             reader_concurrency: Some(2),
         })
@@ -370,6 +373,7 @@ async fn test_query_recorder_list_cursor_only_when_more_records_exist() {
             flush_interval_ms: Some(10),
             memory_tail: Some(8),
             retention_days: Some(7),
+            retention_size: None,
             cleanup_interval_hours: Some(1),
             reader_concurrency: Some(2),
         })
@@ -520,10 +524,15 @@ async fn test_query_recorder_periodic_cleanup_reclaims_database_and_wal_space() 
 
     seed_bulk_records(&backend, 2_000).await;
     let cleanup_backend = backend.clone();
-    let result = tokio::task::spawn_blocking(move || cleanup_backend.cleanup(i64::MAX))
-        .await
-        .unwrap()
-        .unwrap();
+    let result = tokio::task::spawn_blocking(move || {
+        cleanup_backend.cleanup(CleanupPolicy {
+            cutoff_ms: i64::MAX,
+            max_records: None,
+        })
+    })
+    .await
+    .unwrap()
+    .unwrap();
 
     assert_eq!(result.deleted_records, 2_000);
     assert!(!result.space.migrated);
@@ -534,6 +543,54 @@ async fn test_query_recorder_periodic_cleanup_reclaims_database_and_wal_space() 
     assert!(result.space.reclaimable.freelist_count > 0);
     assert!(result.space.after.page_count < result.space.reclaimable.page_count);
     assert!(result.space.after.total_bytes() < result.space.before.total_bytes());
+
+    plugin.destroy().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_query_recorder_retention_size_enforced_after_flush() {
+    let temp = NamedTempFile::new().unwrap();
+    let config = resolve_config(Some(
+        serde_yaml_ng::to_value(QueryRecorderConfig {
+            path: temp.path().display().to_string(),
+            queue_size: Some(64),
+            batch_size: Some(8),
+            flush_interval_ms: Some(10),
+            memory_tail: Some(64),
+            retention_days: Some(7),
+            retention_size: Some(10),
+            cleanup_interval_hours: Some(1),
+            reader_concurrency: Some(2),
+        })
+        .unwrap(),
+    ))
+    .unwrap();
+    let mut plugin = QueryRecorder::new("retention_size".to_string(), config);
+    plugin.init_for_test().await.unwrap();
+    let backend = plugin.backend.as_ref().unwrap().clone();
+
+    seed_bulk_records(&backend, 30).await;
+    // Inline enforcement trims down to retention_size right after the flush,
+    // deleting the oldest records first.
+    let conn = open_reader_database(&backend.path).unwrap();
+    let retained: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM {}", backend.tables.records),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained, 10);
+    let oldest_retained: i64 = conn
+        .query_row(
+            &format!("SELECT MIN(created_at_ms) FROM {}", backend.tables.records),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(oldest_retained, 20);
+    // The memory tail is independent of the disk retention thresholds.
+    assert_eq!(backend.tail.lock().unwrap().len(), 30);
 
     plugin.destroy().await.unwrap();
 }
@@ -585,10 +642,15 @@ async fn test_query_recorder_periodic_cleanup_migrates_legacy_database() {
 
     seed_bulk_records(&backend, 1_000).await;
     let cleanup_backend = backend.clone();
-    let result = tokio::task::spawn_blocking(move || cleanup_backend.cleanup(i64::MAX))
-        .await
-        .unwrap()
-        .unwrap();
+    let result = tokio::task::spawn_blocking(move || {
+        cleanup_backend.cleanup(CleanupPolicy {
+            cutoff_ms: i64::MAX,
+            max_records: None,
+        })
+    })
+    .await
+    .unwrap()
+    .unwrap();
 
     assert_eq!(result.deleted_records, 1_000);
     assert!(result.space.migrated);
@@ -744,9 +806,14 @@ async fn test_query_recorder_cleanup_failure_does_not_stop_writer() {
     let blocker = Connection::open(temp.path()).unwrap();
     blocker.execute_batch("BEGIN IMMEDIATE;").unwrap();
     let cleanup_backend = backend.clone();
-    let result = tokio::task::spawn_blocking(move || cleanup_backend.cleanup(i64::MAX))
-        .await
-        .unwrap();
+    let result = tokio::task::spawn_blocking(move || {
+        cleanup_backend.cleanup(CleanupPolicy {
+            cutoff_ms: i64::MAX,
+            max_records: None,
+        })
+    })
+    .await
+    .unwrap();
     assert!(result.is_err());
     blocker.execute_batch("ROLLBACK;").unwrap();
 
@@ -783,6 +850,7 @@ async fn test_query_recorder_cleanup_is_not_skipped_when_record_queue_is_full() 
             flush_interval_ms: Some(10),
             memory_tail: Some(8),
             retention_days: Some(7),
+            retention_size: None,
             cleanup_interval_hours: Some(1),
             reader_concurrency: Some(2),
         })
@@ -832,7 +900,12 @@ async fn test_query_recorder_cleanup_is_not_skipped_when_record_queue_is_full() 
     assert!(queue_was_full);
 
     let cleanup_backend = backend.clone();
-    let mut cleanup_task = tokio::task::spawn_blocking(move || cleanup_backend.cleanup(i64::MAX));
+    let mut cleanup_task = tokio::task::spawn_blocking(move || {
+        cleanup_backend.cleanup(CleanupPolicy {
+            cutoff_ms: i64::MAX,
+            max_records: None,
+        })
+    });
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(50), &mut cleanup_task)
             .await
@@ -1426,6 +1499,7 @@ async fn test_load_top_clients_allows_limit_above_200() {
             flush_interval_ms: Some(10),
             memory_tail: Some(16),
             retention_days: Some(7),
+            retention_size: None,
             cleanup_interval_hours: Some(1),
             reader_concurrency: Some(2),
         })
@@ -1996,8 +2070,26 @@ fn test_resolve_config_rejects_zero_limits() {
         flush_interval_ms: Some(1),
         memory_tail: Some(1),
         retention_days: Some(1),
+        retention_size: None,
         cleanup_interval_hours: Some(1),
         reader_concurrency: Some(2),
+    })
+    .unwrap();
+    assert!(resolve_config(Some(config)).is_err());
+}
+
+#[test]
+fn test_resolve_config_rejects_zero_retention_size() {
+    let config = serde_yaml_ng::to_value(QueryRecorderConfig {
+        path: "test.db".to_string(),
+        queue_size: Some(1),
+        batch_size: Some(1),
+        flush_interval_ms: Some(1),
+        memory_tail: Some(1),
+        retention_days: Some(1),
+        retention_size: Some(0),
+        cleanup_interval_hours: Some(1),
+        reader_concurrency: Some(1),
     })
     .unwrap();
     assert!(resolve_config(Some(config)).is_err());
