@@ -10,10 +10,11 @@ use std::sync::{Arc, Mutex};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use tokio::sync::broadcast;
+use tracing::warn;
 
 use super::backend::{
-    CleanupResult, ClearHistoryResult, DatabaseCoordinator, RecorderBackend, SpaceReclaimResult,
-    SpaceStats, WriterCommand, WriterThreadContext,
+    CleanupPolicy, CleanupResult, ClearHistoryResult, DatabaseCoordinator, RecorderBackend,
+    SpaceReclaimResult, SpaceStats, WriterCommand, WriterThreadContext,
 };
 #[cfg(test)]
 use super::model::StepJson;
@@ -129,51 +130,28 @@ pub(super) fn run_writer_thread(
     rx: Receiver<WriterCommand>,
     mut conn: Connection,
 ) -> Result<()> {
-    let WriterThreadContext {
-        path,
-        tables,
-        stop_requested,
-        tail,
-        memory_tail,
-        broadcaster,
-        batch_size,
-        flush_interval,
-        database_coordinator,
-    } = context;
-
-    let mut pending = Vec::with_capacity(batch_size);
+    let mut pending = Vec::with_capacity(context.batch_size);
     loop {
-        match rx.recv_timeout(flush_interval) {
+        match rx.recv_timeout(context.flush_interval) {
             Ok(WriterCommand::Insert(record)) => {
                 pending.push(*record);
-                if pending.len() >= batch_size {
-                    flush_pending_coordinated(
-                        &mut conn,
-                        &tables,
-                        &mut pending,
-                        &tail,
-                        memory_tail,
-                        &broadcaster,
-                        &database_coordinator,
-                    )?;
+                if pending.len() >= context.batch_size {
+                    flush_pending_coordinated(&mut conn, &mut pending, &context)?;
                 }
             }
-            Ok(WriterCommand::Cleanup {
-                cutoff_ms,
-                reply_tx,
-            }) => {
+            Ok(WriterCommand::Cleanup { policy, reply_tx }) => {
                 let result = (|| {
                     let prepared = prepare_pending(&mut pending)?;
-                    let _access = database_coordinator.write_access()?;
+                    let _access = context.database_coordinator.write_access()?;
                     flush_prepared(
                         &mut conn,
-                        &tables,
+                        &context.tables,
                         prepared,
-                        &tail,
-                        memory_tail,
-                        &broadcaster,
+                        &context.tail,
+                        context.memory_tail,
+                        &context.broadcaster,
                     )?;
-                    run_cleanup(&mut conn, &path, &tables, cutoff_ms)
+                    run_cleanup(&mut conn, &context.path, &context.tables, policy)
                 })()
                 .map_err(|err: DnsError| err.to_string());
                 let _ = reply_tx.send(result);
@@ -181,58 +159,34 @@ pub(super) fn run_writer_thread(
             Ok(WriterCommand::ClearHistory { reply_tx }) => {
                 let result = (|| {
                     let prepared = prepare_pending(&mut pending)?;
-                    let _access = database_coordinator.write_access()?;
+                    let _access = context.database_coordinator.write_access()?;
                     flush_prepared(
                         &mut conn,
-                        &tables,
+                        &context.tables,
                         prepared,
-                        &tail,
-                        memory_tail,
-                        &broadcaster,
+                        &context.tail,
+                        context.memory_tail,
+                        &context.broadcaster,
                     )?;
-                    run_clear_history(&mut conn, &path, &tables, &tail)
+                    run_clear_history(&mut conn, &context.path, &context.tables, &context.tail)
                 })()
                 .map_err(|err: DnsError| err.to_string());
                 let _ = reply_tx.send(result);
             }
             #[cfg(test)]
             Ok(WriterCommand::Flush { reply_tx }) => {
-                let result = flush_pending_coordinated(
-                    &mut conn,
-                    &tables,
-                    &mut pending,
-                    &tail,
-                    memory_tail,
-                    &broadcaster,
-                    &database_coordinator,
-                )
-                .map_err(|err| err.to_string());
+                let result = flush_pending_coordinated(&mut conn, &mut pending, &context)
+                    .map_err(|err| err.to_string());
                 let _ = reply_tx.send(result);
             }
             Err(RecvTimeoutError::Timeout) => {
-                flush_pending_coordinated(
-                    &mut conn,
-                    &tables,
-                    &mut pending,
-                    &tail,
-                    memory_tail,
-                    &broadcaster,
-                    &database_coordinator,
-                )?;
-                if stop_requested.load(Ordering::Relaxed) {
+                flush_pending_coordinated(&mut conn, &mut pending, &context)?;
+                if context.stop_requested.load(Ordering::Relaxed) {
                     break;
                 }
             }
             Err(RecvTimeoutError::Disconnected) => {
-                flush_pending_coordinated(
-                    &mut conn,
-                    &tables,
-                    &mut pending,
-                    &tail,
-                    memory_tail,
-                    &broadcaster,
-                    &database_coordinator,
-                )?;
+                flush_pending_coordinated(&mut conn, &mut pending, &context)?;
                 break;
             }
         }
@@ -243,17 +197,29 @@ pub(super) fn run_writer_thread(
 
 fn flush_pending_coordinated(
     conn: &mut Connection,
-    tables: &TableNames,
     pending: &mut Vec<PendingRecord>,
-    tail: &Arc<Mutex<VecDeque<RecordDetail>>>,
-    memory_tail: usize,
-    broadcaster: &broadcast::Sender<RecordDetail>,
-    database_coordinator: &DatabaseCoordinator,
+    context: &WriterThreadContext,
 ) -> Result<()> {
     let prepared = prepare_pending(pending)?;
-    let _access = database_coordinator.read_access()?;
-    let _writer = database_coordinator.writer()?;
-    flush_prepared(conn, tables, prepared, tail, memory_tail, broadcaster)
+    {
+        let _access = context.database_coordinator.read_access()?;
+        let _writer = context.database_coordinator.writer()?;
+        flush_prepared(
+            conn,
+            &context.tables,
+            prepared,
+            &context.tail,
+            context.memory_tail,
+            &context.broadcaster,
+        )?;
+    }
+    enforce_size_limit(
+        conn,
+        &context.tables,
+        &context.database_coordinator,
+        context.retention_size,
+    );
+    Ok(())
 }
 
 fn flush_prepared(
@@ -299,21 +265,32 @@ fn insert_record(
     Ok(prepared.detail)
 }
 
+/// Row-selection strategy for one cleanup batch. Selection always runs
+/// oldest-first so both retention thresholds converge to "keep the newest".
+#[derive(Debug, Clone, Copy)]
+pub(super) enum CleanupScope {
+    /// Records strictly older than a millisecond cutoff (time-based retention).
+    OlderThan(i64),
+    /// The oldest N records regardless of age (count-based retention). The
+    /// per-batch limit is clamped to `CLEANUP_BATCH_SIZE` internally.
+    Oldest(usize),
+    /// Every record (manual clear).
+    All,
+}
+
 // Record deletion and reclamation of only the affected dictionary entries
 // share one transaction, so a failed batch cannot strand orphaned entries.
-fn delete_batch(
-    conn: &mut Connection,
-    tables: &TableNames,
-    cutoff_ms: Option<i64>,
-) -> Result<usize> {
+fn delete_batch(conn: &mut Connection, tables: &TableNames, scope: CleanupScope) -> Result<usize> {
     let tx = conn.transaction()?;
-    let predicate = if cutoff_ms.is_some() {
-        "created_at_ms < ?1"
-    } else {
-        "1=1"
+    let (predicate, batch_limit, cutoff_ms) = match scope {
+        CleanupScope::OlderThan(cutoff_ms) => {
+            ("created_at_ms < ?1", CLEANUP_BATCH_SIZE, Some(cutoff_ms))
+        }
+        CleanupScope::Oldest(count) => ("1=1", count.min(CLEANUP_BATCH_SIZE), None),
+        CleanupScope::All => ("1=1", CLEANUP_BATCH_SIZE, None),
     };
     let sql = format!(
-        "SELECT id,trace_id,question_set_id FROM {} WHERE {predicate} ORDER BY created_at_ms,id LIMIT {CLEANUP_BATCH_SIZE}",
+        "SELECT id,trace_id,question_set_id FROM {} WHERE {predicate} ORDER BY created_at_ms,id LIMIT {batch_limit}",
         tables.records
     );
     let mut stmt = tx.prepare(&sql)?;
@@ -358,31 +335,96 @@ fn delete_batch(
     Ok(selected.len())
 }
 
+fn record_count(conn: &Connection, tables: &TableNames) -> Result<i64> {
+    Ok(conn.query_row(
+        &format!("SELECT COUNT(*) FROM {}", tables.records),
+        [],
+        |row| row.get(0),
+    )?)
+}
+
+// The count is only used to size one delete batch; clamp defensively so an
+// unexpected value can neither wrap the subtraction nor overflow the batch.
+fn excess_records(retained: i64, max_records: u64) -> usize {
+    let retained = u64::try_from(retained).unwrap_or(u64::MAX);
+    usize::try_from(retained.saturating_sub(max_records)).unwrap_or(usize::MAX)
+}
+
 fn run_cleanup(
     conn: &mut Connection,
     path: &Path,
     tables: &TableNames,
-    cutoff_ms: i64,
+    policy: CleanupPolicy,
 ) -> Result<CleanupResult> {
     checkpoint_wal(conn)?;
     let before = read_space_stats(conn, path)?;
-    let mut deleted_records = 0usize;
+    let mut deleted_expired = 0usize;
+    let mut deleted_overflow = 0usize;
     let mut peak_wal_bytes = 0;
     loop {
-        let deleted = delete_batch(conn, tables, Some(cutoff_ms))?;
+        let deleted = delete_batch(conn, tables, CleanupScope::OlderThan(policy.cutoff_ms))?;
         if deleted == 0 {
             break;
         }
-        deleted_records = deleted_records.saturating_add(deleted);
+        deleted_expired = deleted_expired.saturating_add(deleted);
         observe_wal_size(path, &mut peak_wal_bytes)?;
         checkpoint_wal(conn)?;
+    }
+    if let Some(max_records) = policy.max_records {
+        loop {
+            let excess = excess_records(record_count(conn, tables)?, max_records);
+            if excess == 0 {
+                break;
+            }
+            let deleted = delete_batch(conn, tables, CleanupScope::Oldest(excess))?;
+            if deleted == 0 {
+                break;
+            }
+            deleted_overflow = deleted_overflow.saturating_add(deleted);
+            observe_wal_size(path, &mut peak_wal_bytes)?;
+            checkpoint_wal(conn)?;
+        }
     }
     let reclaimable = read_space_stats(conn, path)?;
     let space = reclaim_database_space(conn, path, before, reclaimable, peak_wal_bytes)?;
     Ok(CleanupResult {
-        deleted_records,
+        deleted_records: deleted_expired.saturating_add(deleted_overflow),
+        deleted_expired,
+        deleted_overflow,
         space,
     })
+}
+
+// Writer-thread inline enforcement: keeps the persisted record count at
+// `retention_size` between periodic cleanups so flash-constrained hosts can
+// bound disk usage below one `cleanup_interval_hours` window regardless of
+// traffic rate. Deliberately bounded work: at most one delete batch per
+// flush, no space reclaim (the periodic cleanup owns VACUUM), and failures
+// only log so record writing continues.
+fn enforce_size_limit(
+    conn: &mut Connection,
+    tables: &TableNames,
+    database_coordinator: &DatabaseCoordinator,
+    retention_size: Option<u64>,
+) {
+    let Some(max_records) = retention_size else {
+        return;
+    };
+    let result: Result<usize> = (|| {
+        let excess = excess_records(record_count(conn, tables)?, max_records);
+        if excess == 0 {
+            return Ok(0usize);
+        }
+        let _access = database_coordinator.write_access()?;
+        let deleted = delete_batch(conn, tables, CleanupScope::Oldest(excess))?;
+        // Reclaim WAL space opportunistically; a busy checkpoint from a
+        // concurrent reader is harmless here.
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE)");
+        Ok(deleted)
+    })();
+    if let Err(err) = result {
+        warn!("query_recorder size-limit enforcement failed: {err}");
+    }
 }
 
 fn run_clear_history(
@@ -413,7 +455,7 @@ where
     let mut cleared_records = 0usize;
     let mut peak_wal_bytes = 0;
     loop {
-        let deleted = delete_batch(conn, tables, None)?;
+        let deleted = delete_batch(conn, tables, CleanupScope::All)?;
         if deleted == 0 {
             break;
         }

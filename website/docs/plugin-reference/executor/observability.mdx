@@ -229,6 +229,8 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
     memory_tail: 1024
     # 日志保留天数；最小 1
     retention_days: 7
+    # 最多保留的持久化记录条数；可选，留空表示不限制，最小 1
+    retention_size: 1000
     # 定时清理周期，单位小时；最小 1
     cleanup_interval_hours: 1
     # SQLite 读取侧最大并发数；最小 1
@@ -268,6 +270,13 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 - 最小值：`1`
 - 作用：定义日志保留天数；过期数据会被定时实际删除。
 
+#### `retention_size`
+
+- 类型：`integer`；必填：否；默认值：无（不限制）
+- 最小值：`1`
+- 作用：定义最多保留的持久化记录条数，超过后删除最旧记录；与 `retention_days` 任一阈值达到即触发清理。
+- 生效时机：每次后台批量写入后即检查并裁剪（单次至多一个删除批次），无需等待定时清理周期；因此适合闪存受限设备上的小上限场景。`retention_size: 1` 近似"磁盘只留占位、以内存 tail 观察实时记录"的用法。
+
 #### `cleanup_interval_hours`
 
 - 类型：`integer`；必填：否；默认值：`1`
@@ -282,7 +291,8 @@ import PluginAvailability from "@site/src/components/PluginAvailability";
 
 ### 行为说明
 
-- 通过 `retention_days` 控制保留天数，过期记录按 `cleanup_interval_hours` 定时清理。少量删除后文件可能不会立即变小，释放的空间可供后续记录复用。
+- 通过 `retention_days` 控制保留天数，过期记录按 `cleanup_interval_hours` 定时清理；`retention_size` 在每次后台写入后按条数裁剪，两个阈值任一达到即触发。少量删除后文件可能不会立即变小，释放的空间可供后续记录复用。
+- 启用 `retention_size` 后，稳态磁盘占用约为该条数对应的记录量；在已有大库上配置后，文件收缩仍需等待下一次定时清理的空间回收。删除与写入的磁盘操作量相当，持续高流量场景仍会产生稳定写入。
 - 多个 recorder 可以共用数据库文件；记录按 tag 隔离，清空一个不会删除其他 recorder 的历史。
 - `client_ip` 是 OxiDNS 看到的来源地址。经过本机转发时可能显示 `127.0.0.1`，而非真实终端 IP。
 - 较旧数据库首次回收空间时可能需要额外临时磁盘空间，并短暂影响历史查询和记录写入；DNS 解析继续运行。

@@ -316,6 +316,8 @@ export const enUSDocs = {
       "- Type: `integer`; required: no; default value: `1024`\n- Function: Define how many recent records are kept in memory for `stream?tail=n` replay.",
     retention_days:
       "- Type: `integer`; required: no; default value: `7`\n- Minimum value: `1`\n- Function: Define how many days logs are retained; expired data is periodically deleted.",
+    retention_size:
+      "- Type: `integer`; required: no; default value: none (no limit)\n- Minimum value: `1`\n- Function: Define the maximum number of persisted records; the oldest records are deleted once the limit is exceeded, together with the `retention_days` threshold (whichever is reached first).",
     cleanup_interval_hours:
       "- Type: `integer`; required: no; default value: `1`\n- Minimum value: `1`\n- Function: Define how often the expired-data cleanup task runs.",
     reader_concurrency:

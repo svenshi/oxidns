@@ -436,6 +436,8 @@ plugins:
       flush_interval_ms: 200
       memory_tail: 1024
       retention_days: 7
+      # 按条数限制持久化记录；内存/闪存受限设备可设小值（留空表示不限制）
+      retention_size: 1000
 
   - tag: summary_main
     type: query_summary

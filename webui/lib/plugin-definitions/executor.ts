@@ -1450,6 +1450,15 @@ export const executorPluginDefinitions: PluginKindDefinition[] = [
         default: 7,
       },
       {
+        key: "retention_size",
+        description:
+          "定义最多保留的持久化记录条数，超过后最旧记录会被清理；与保留天数任一阈值达到即触发清理。留空表示不限制。",
+        label: "保留条数",
+        type: "number",
+        example: "1000",
+        required: false,
+      },
+      {
         key: "cleanup_interval_hours",
         description: "定义过期清理任务的执行周期。",
         label: "清理周期(小时)",

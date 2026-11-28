@@ -119,7 +119,8 @@ impl<C: Connection> ConnectionPool<C> for ReusePool<C> {
         }
 
         // Track every path that restores usable capacity for a parked waiter:
-        // a connection put back in the queue, or one dropped (freeing its slot).
+        // a connection put back in the queue, or one dropped (freeing its
+        // slot).
         let mut requeued = false;
         for _ in 0..check_count {
             if let Some(conn) = self.connections.pop() {
